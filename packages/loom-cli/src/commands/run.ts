@@ -20,6 +20,7 @@ import {
   CodeReviewAgent,
   stallConfigWarning,
   validateCursorModels,
+  registerReviewerSkills,
 } from '@loom-ai/core';
 import type { WorkerEvent, SkillEvent, McpJsonEntry } from '@loom-ai/core';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
@@ -364,6 +365,7 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   // targeting policy.agents.review_model_id when review_model='cross'.
   // Both paths stay session-based (claude-cli or cursor-cli).
   let reviewAgent: CodeReviewAgent | undefined;
+  let reviewerLlm: ReturnType<typeof createLLMClient> | undefined;
   if (policy.agents.review_strategy !== 'off') {
     try {
       const cross =
@@ -372,17 +374,31 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
       // large-diff reviews don't silently time out at the hardcoded 10-min
       // ClaudeCliClient default. Mirrors the MCP path.
       const reviewerTimeoutMs = policy.agents.review_timeout_minutes * 60_000;
+      reviewerLlm = cross
+        ? undefined
+        : createLLMClient(policy.agents.llm_backend, { timeoutMs: reviewerTimeoutMs });
       reviewAgent = new CodeReviewAgent({
         projectRoot,
         llm: cross
           ? new CursorCliClient({ timeoutMs: reviewerTimeoutMs })
-          : createLLMClient(policy.agents.llm_backend, { timeoutMs: reviewerTimeoutMs }),
+          : reviewerLlm!,
         model: cross ? policy.agents.review_model_id! : policy.agents.model,
       });
     } catch (err) {
       reviewAgent = undefined;
+      reviewerLlm = undefined;
       console.log(`  (code review disabled: ${(err as Error).message})`);
     }
+  }
+
+  // Register LLM-backed reviewer skills when the Review Forge path is active.
+  // Must be called before the first reviewer invocation (ADR-001 ordering).
+  if (policy.agents.review_strategy === 'block-and-revise' && reviewerLlm) {
+    registerReviewerSkills({
+      llm: reviewerLlm,
+      model: policy.agents.model,
+      projectRoot,
+    });
   }
 
   // loom's own MCP server entry, threaded into worker worktree configs by the
@@ -417,6 +433,8 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
       stallMs: policy.agents.story_stall_minutes * 60_000,
       absoluteCapMs: policy.agents.story_absolute_cap_minutes * 60_000,
       phases: policy.agents.phases,
+      db,
+      llm: reviewerLlm,
     }),
     maxConcurrent: policy.agents.max_concurrent,
     skillStore,
