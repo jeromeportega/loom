@@ -38,6 +38,14 @@ import {
 import type { AttemptClass, InfraSignature } from './resilience/types.js';
 import type { CodeReviewAgent } from '../review/CodeReviewAgent.js';
 import type { ReviewFinding } from '../review/types.js';
+import {
+  runReviewPass,
+  runReviewLoop,
+  type ReviewPassDeps,
+  type ReviewPassResult,
+  type ReviewerInput,
+} from '../review/orchestrator.js';
+import type { Finding } from '../findings/schema.js';
 
 export type PrStrategy = 'per-story' | 'per-epic' | 'both';
 
@@ -109,6 +117,17 @@ export interface CliWorkerOptions {
    *                          bounded by maxReviewRevisions)
    */
   reviewReviseTrigger?: 'blockers' | 'any';
+  /**
+   * Review Forge orchestrator hook (epic-001 story-003). When set, the
+   * post-commit review pass fans out to the three reviewers this returns
+   * (the CodeReviewAgent adapter plus the ported adversarial-review /
+   * edge-case-hunter reviewers), unions and dedupes their findings, and
+   * revises while any blocker/high finding remains — bounded by
+   * `maxReviewRevisions`. Constructed by the caller that holds the loom db
+   * (so skill invocations are audited). Unset → the legacy single-
+   * CodeReviewAgent pass applies, so existing callers are byte-identical.
+   */
+  reviewOrchestrator?: (assignment: WorkerAssignment) => ReviewPassDeps;
   /**
    * Per-story token budget (Epic 16 story-016-005). When set and the worker's
    * cumulative token usage crosses this, the subprocess is SIGTERM'd and the
@@ -194,6 +213,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
   private reviewStrategy: 'off' | 'comment' | 'block-and-revise';
   private maxReviewRevisions: number;
   private reviewReviseTrigger: 'blockers' | 'any';
+  private reviewOrchestrator?: (assignment: WorkerAssignment) => ReviewPassDeps;
   private budgetTokensPerStory?: number;
   private operatorGuidance: 'off' | 'on';
   private sharedContractEnabled: boolean;
@@ -216,6 +236,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
     this.reviewStrategy = opts.reviewStrategy ?? 'off';
     this.maxReviewRevisions = opts.maxReviewRevisions ?? 2;
     this.reviewReviseTrigger = opts.reviewReviseTrigger ?? 'blockers';
+    this.reviewOrchestrator = opts.reviewOrchestrator;
     this.budgetTokensPerStory = opts.budgetTokensPerStory;
     this.operatorGuidance = opts.operatorGuidance ?? 'off';
     this.sharedContractEnabled = (opts.sharedContract ?? 'off') === 'on';
@@ -684,7 +705,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
    * if review is `off` or no agent was configured.
    */
   private async runReviewPass(assignment: WorkerAssignment): Promise<ReviewOutcome> {
-    if (!this.reviewAgent || this.reviewStrategy === 'off') {
+    if (this.reviewStrategy === 'off' || (!this.reviewAgent && !this.reviewOrchestrator)) {
       return { status: 'skipped', blockerCount: 0, totalCount: 0, summary: '', revisions: 0 };
     }
     try {
@@ -708,7 +729,16 @@ export abstract class BaseCliWorker implements WorkerRunner {
   }
 
   private async runReviewPassUnsafe(assignment: WorkerAssignment): Promise<ReviewOutcome> {
-    if (!this.reviewAgent || this.reviewStrategy === 'off') {
+    if (this.reviewStrategy === 'off') {
+      return { status: 'skipped', blockerCount: 0, totalCount: 0, summary: '', revisions: 0 };
+    }
+    // Review Forge path (epic-001 story-003): when an orchestrator hook is
+    // wired, fan out to the three reviewers, union+dedupe, and revise while a
+    // blocker/high finding remains. Otherwise the legacy single-agent pass.
+    if (this.reviewOrchestrator) {
+      return this.runOrchestratedReviewPass(assignment, this.reviewOrchestrator(assignment));
+    }
+    if (!this.reviewAgent) {
       return { status: 'skipped', blockerCount: 0, totalCount: 0, summary: '', revisions: 0 };
     }
     let revisions = 0;
@@ -769,6 +799,94 @@ export abstract class BaseCliWorker implements WorkerRunner {
       commentBody: lastFindings.length > 0 ? renderReviewComment(lastFindings, lastSummary) : undefined,
       revisions,
     };
+  }
+
+  /**
+   * Review Forge orchestrated pass (epic-001 story-003). Drives the bounded
+   * review/revise loop via the shared orchestrator: each pass unions the three
+   * reviewers' findings, dedupes them, and a `blocker`/`high` survivor triggers
+   * another worker revision until the `maxReviewRevisions` cap. The cap lives
+   * in {@link runReviewLoop}; this method only translates the final pass into a
+   * `ReviewOutcome` for the rest of the worker flow.
+   */
+  private async runOrchestratedReviewPass(
+    assignment: WorkerAssignment,
+    deps: ReviewPassDeps
+  ): Promise<ReviewOutcome> {
+    const blockAndRevise = this.reviewStrategy === 'block-and-revise';
+    const { finalPass, revisions } = await runReviewLoop({
+      maxRevisions: this.maxReviewRevisions,
+      blockAndRevise,
+      runPass: (revisionIndex) =>
+        runReviewPass(this.buildReviewerInput(assignment), {
+          story_id: assignment.storyId,
+          epic_id: assignment.epicId,
+          revision_index: revisionIndex,
+          reviewers: deps.reviewers,
+          audit: deps.audit,
+          warn: deps.warn,
+        }),
+      revise: async (pass) => {
+        const revisePrompt = buildWorkerPrompt(assignment, {
+          revisionContext: renderOrchestratedFindings(pass.findings),
+          includeOperatorGuidance: this.operatorGuidance === 'on',
+          includeSharedContract: this.sharedContractEnabled,
+          includeUpstreamContext: this.contextNotesEnabled,
+          pullGuidanceHint: this.pullGuidanceHint(),
+        });
+        const proc = await this.spawnAgent(assignment, revisePrompt);
+        return !(proc.spawnError || proc.timedOut);
+      },
+    });
+
+    const findings = finalPass.findings;
+    const blockerCount = findings.filter(
+      (f) => f.severity === 'blocker' || f.severity === 'high'
+    ).length;
+    const totalCount = findings.length;
+    let status: ReviewOutcome['status'];
+    if (blockAndRevise && finalPass.triggers_revision) {
+      status = 'blocked';
+    } else if (totalCount > 0) {
+      status = 'commented';
+    } else {
+      status = 'passed';
+    }
+    const summary = renderOrchestratedSummary(finalPass);
+    return {
+      status,
+      blockerCount,
+      totalCount,
+      summary,
+      commentBody:
+        findings.length > 0 ? renderOrchestratedComment(findings, summary) : undefined,
+      revisions,
+    };
+  }
+
+  /** Builds the reviewer input (diff, changed files, story context) for a pass. */
+  private buildReviewerInput(assignment: WorkerAssignment): ReviewerInput {
+    return {
+      diff: this.workerDiff(assignment),
+      changed_files: this.changedFiles(assignment),
+      story_context: [
+        `Story ${assignment.storyId}: ${assignment.story.title}`,
+        assignment.story.description,
+        'Acceptance criteria:',
+        ...assignment.story.acceptance_criteria.map((ac) => `- ${ac}`),
+      ].join('\n'),
+    };
+  }
+
+  /** Names of files the worker touched on its story branch since baseSha. */
+  private changedFiles(assignment: WorkerAssignment): string[] {
+    const range = assignment.baseSha ? `${assignment.baseSha}..HEAD` : 'HEAD';
+    const res = gitSafe(assignment.worktreePath, ['diff', '--name-only', range]);
+    if (!res.ok) return [];
+    return res.output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
   }
 
   /** Runs the CodeReviewAgent once over the worktree's diff since baseSha. */
@@ -1182,6 +1300,49 @@ function renderReviewComment(findings: ReviewFinding[], summary: string): string
     lines.push(`- **${f.severity}** ${loc} — ${f.issue}`);
     if (f.suggestion) {
       lines.push(`  - Suggestion: ${f.suggestion}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/** Renders deduped findings as revision context for the worker re-prompt. */
+function renderOrchestratedFindings(findings: Finding[]): string {
+  return findings
+    .map((f) => {
+      const loc = f.location.line ? `${f.location.file}:${f.location.line}` : f.location.file;
+      const fix = f.suggested_fix ? `\n  Suggestion: ${f.suggested_fix}` : '';
+      return `- [${f.severity}] (${f.source}) ${loc} — ${f.description}${fix}`;
+    })
+    .join('\n');
+}
+
+/** A one-line summary of a pass: total findings and a severity tally. */
+function renderOrchestratedSummary(pass: ReviewPassResult): string {
+  if (pass.findings.length === 0) return 'Review produced no findings.';
+  const tally = pass.findings.reduce<Record<string, number>>((acc, f) => {
+    acc[f.severity] = (acc[f.severity] ?? 0) + 1;
+    return acc;
+  }, {});
+  const parts = (['blocker', 'high', 'medium', 'low', 'info'] as const)
+    .filter((sev) => tally[sev])
+    .map((sev) => `${tally[sev]} ${sev}`);
+  return `${pass.findings.length} finding(s): ${parts.join(', ')}.`;
+}
+
+/** Renders the PR/review comment body for the orchestrated findings. */
+function renderOrchestratedComment(findings: Finding[], summary: string): string {
+  const lines: string[] = ['## Automated review (loom)'];
+  if (summary) {
+    lines.push('', summary);
+  }
+  lines.push('', '### Findings');
+  for (const f of findings) {
+    const loc = f.location.line
+      ? `\`${f.location.file}:${f.location.line}\``
+      : `\`${f.location.file}\``;
+    lines.push(`- **${f.severity}** (${f.source}) ${loc} — ${f.description}`);
+    if (f.suggested_fix) {
+      lines.push(`  - Suggestion: ${f.suggested_fix}`);
     }
   }
   return lines.join('\n');
