@@ -1,204 +1,219 @@
-# Architecture: Worker MCP Isolation — Allowlist-Only Servers, Materialized Per-Worktree, Audit-Logged
+# Activate Review Forge — System Architecture
 
 ## Architecture Philosophy
 
-Three constraints drive every decision below:
+Epic-001 already shipped the load-bearing logic — the frozen `ReviewerOutput` zod schema, the lexical dedupe, the deterministic try→repair→warn-and-continue router, the bounded `runReviewPass`/`runReviewLoop`, and both reviewer adapters. This epic is **activation, not invention**. Four constraints drive every decision:
 
-1. **Structural, not prompt-based.** Isolation must hold against an adversarial or confused LLM. We act at worktree-setup / spawn time, in code paths the worker cannot influence — the same posture as the existing policy engine (`loom guard check`) and worktree isolation.
-2. **One generation point, per-backend enforcement.** The allowlisted server set is computed once, in the Supervisor's dispatch path, from `policy.mcp.registry` via the existing `McpRegistry` / `adapter.ts` machinery. Backends differ only in how they're forced to honor it: claude-code has a real strict flag; cursor-cli must be wrangled with explicit disables. We accept that asymmetry rather than pretending both CLIs offer the same contract.
-3. **Boring plumbing, existing seams.** No new tables, no new config formats, no new dependencies. The audit row reuses `audit_log.detail` (a JSON TEXT column); config generation reuses `toMcpJsonEntry()`; enforcement hangs off `Supervisor.dispatch()` exactly where the worktree is created and the `dispatch` audit row is already written.
+1. **Touch the seam, not the engine.** The schema (`findings/schema.ts`), dedupe (`review/dedupe.ts`), router and loop (`review/orchestrator.ts`) are correct and out of scope. We change exactly two things: the *content* of two registered skill handlers (stub → LLM-backed) and the *wiring* that constructs `reviewOrchestrator`. Trade-off accepted: we work within the existing global skill registry rather than redesigning it.
 
-The trade-off accepted overall: a deliberate behavior break for operators who relied on inherited `~/.cursor/mcp.json` servers, in exchange for a closed, auditable tool surface. Migration is `loom mcp add`.
+2. **Byte-identical legacy path.** Operators on `comment`/`off` must see zero behavioral change. `reviewOrchestrator` is an *optional* hook on `BaseCliWorker` (`BaseCliWorker.ts:130`); unset → the existing single-`CodeReviewAgent` pass runs unchanged. The new path is reachable only when `db`, an `LLMClient`, a `reviewAgent`, and `review_strategy='block-and-revise'` are all present. The activation is additive and gated.
+
+3. **Provenance flows through one path.** Every reviewer invocation writes `skill_usage` + `audit_log` via the *existing* `invokeSkill` (`skills/types.ts:84`). The new handlers add no provenance writes of their own (FR-4). Trade-off: handlers must be invoked *through* `invokeSkill`/`skillReviewer`, never called directly.
+
+4. **No live model in any test.** The `LLMClient` interface (`llm/LLMClient.ts`) is the single injection seam. Production wiring supplies a CLI-backed client; tests supply a stub returning canned JSON. This is the design's central testability lever — it must be injectable all the way down to the skill handler.
 
 ## Component Diagram
 
 ```mermaid
 flowchart TD
-    subgraph cli["loom-cli"]
-        run["loom run command"]
-        mcpadd["loom mcp add\n(commands/mcp.ts)"]
-    end
+  subgraph cli["packages/loom-cli"]
+    RUN["run.ts<br/>opens db, builds LLMClient,<br/>builds CodeReviewAgent"]
+  end
 
-    subgraph core["loom-core"]
-        sup["Supervisor.dispatch()\n(orchestrator/Supervisor.ts)"]
-        wtm["WorktreeManager.create()\n(orchestrator/WorktreeManager.ts)"]
-        mat["WorktreeMcpMaterializer\n(mcp/WorktreeMcp.ts — NEW)"]
-        reg["McpRegistry + adapter\n(mcp/McpRegistry.ts, mcp/adapter.ts)"]
-        enf["CursorMcpEnforcer\n(orchestrator/CursorMcpEnforcer.ts — NEW)"]
-        audit["AuditLog.record()\n(state/AuditLog.ts)"]
-        ccw["ClaudeCodeWorker.agentArgs()\n(orchestrator/ClaudeCodeWorker.ts)"]
-        caw["CursorAgentWorker\n(orchestrator/CursorAgentWorker.ts)"]
-    end
+  subgraph factory["orchestrator/workerFactory.ts"]
+    CW["createWorker(opts + db + llm)<br/>builds reviewOrchestrator closure"]
+  end
 
-    registry[("policy.mcp.registry\nservers/&lt;name&gt;/server.json")]
-    wtcfg[".loom/worktrees/&lt;story&gt;/.cursor/mcp.json\n(generated, allowlist-only)"]
-    db[("audit_log\n(SQLite)")]
+  subgraph worker["orchestrator/BaseCliWorker.ts"]
+    RUNST["run() → post-commit review"]
+    GATE{"reviewOrchestrator set<br/>AND block-and-revise?"}
+    ORCH["runOrchestratedReviewPass()"]
+    LEGACY["legacy single-agent pass<br/>(unchanged)"]
+  end
 
-    mcpadd -->|"upsertMcpServer"| registry
-    run --> sup
-    sup --> wtm
-    sup --> mat
-    mat --> reg
-    reg --- registry
-    mat -->|writes| wtcfg
-    sup -->|"backend = cursor-cli"| enf
-    enf -->|"cursor-agent mcp list / disable\n(cwd = worktree)"| wtcfg
-    sup -->|"action: worker_mcp_servers\n(BEFORE worker.run)"| audit
-    audit --> db
-    sup -->|"worker.run(assignment)"| ccw
-    sup -->|"worker.run(assignment)"| caw
-    ccw -->|"--strict-mcp-config --mcp-config"| wtcfg
-    caw -->|"reads project config"| wtcfg
+  subgraph rf["review/ (epic-001, frozen)"]
+    LOOP["runReviewLoop()<br/>cap = maxReviewRevisions"]
+    PASS["runReviewPass()<br/>fan-out → union → dedupe"]
+    DEDUPE["dedupeFindings()"]
+  end
+
+  subgraph reviewers["reviewers (ReviewerRunner[])"]
+    CRR["codeReviewReviewer<br/>→ CodeReviewAgent"]
+    SR1["skillReviewer('adversarial-review')"]
+    SR2["skillReviewer('edge-case-hunter')"]
+  end
+
+  subgraph skills["skills/types.ts registry"]
+    INV["invokeSkill()<br/>validate + provenance"]
+    H1["adversarial handler (LLM-backed)"]
+    H2["edge-case handler (LLM-backed)"]
+    SS["SkillStore.load(SKILL.md)"]
+  end
+
+  LLM["LLMClient.complete()<br/>(stub in tests)"]
+  DB[("better-sqlite3<br/>audit_log + skill_usage")]
+
+  RUN --> CW --> RUNST --> GATE
+  GATE -- yes --> ORCH --> LOOP --> PASS --> DEDUPE
+  GATE -- no --> LEGACY
+  PASS --> CRR & SR1 & SR2
+  CRR --> LLM
+  SR1 & SR2 --> INV
+  INV --> H1 & H2
+  H1 & H2 --> SS
+  H1 & H2 --> LLM
+  INV --> DB
+  ORCH -- "AuditSink.record()" --> DB
 ```
 
 ## Tech Stack
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| Config generation | `node:fs` whole-file write of `.cursor/mcp.json` | Generation is authoritative — no merge semantics, no `upsertMcpServer` reuse (that helper deliberately never clobbers; here clobbering *is* the contract). |
-| Registry → entry conversion | Existing `pickPackage()` / `toMcpJsonEntry()` in `packages/loom-core/src/mcp/adapter.ts` | Already produces `McpJsonEntry` with `${VAR}` secret references; loom never touches credential values. Zero new code for the hard part. |
-| cursor-cli enforcement | `execFileSync('cursor-agent', ['mcp', 'list'/'disable', ...], { cwd: worktree })` | Boring subprocess calls; no cursor internals assumed. Precedence/durability verified by spike before wiring (NFR-2). |
-| claude-code enforcement | `--strict-mcp-config --mcp-config <path>` spawn args | First-party strictness flag — the strongest guarantee available; prefer it over file games. |
-| Audit | Existing `audit_log` table, `detail` JSON column | Schema already stores arbitrary JSON per row (`AuditLog.record` stringifies `detail`); no migration (confirms FR-5 assumption). |
-| Tests | `node --test` under `packages/loom-core/src/__tests__/` | House standard (`package.json` test script); tests live next to source. |
+| Language / runtime | TypeScript, Node 20+ | Existing repo standard; no new toolchain. |
+| Model client | `LLMClient` interface (`llm/LLMClient.ts`), CLI-backed impls (`ClaudeCliClient`/`CursorCliClient`), `MockLLMClient` for tests | Single injectable seam; mock already exists, satisfying NFR-3 with zero new test infra. |
+| Output validation | `zod` via the frozen `ReviewerOutput` schema | Reuse — a malformed parse *throws*, which is exactly the signal the router keys on (FR-2). No new validation code. |
+| Skill body loading | `SkillStore.load(name)` (`skills/SkillStore.ts`) | Same loader `CodeReviewAgent` already uses; SKILL.md becomes the cacheable system prefix. |
+| Prompt caching | `system: [{ text, cache: true }]` block (Anthropic prompt caching) | Invariant #3 / NFR-1: static SKILL.md body cached, per-diff input after the boundary. |
+| Provenance store | `better-sqlite3` via `AuditLog` + `SkillUsageStore` | Invariant #5; written once, inside `invokeSkill` (FR-4). |
+| Wiring | `commander` CLI `run.ts` → `workerFactory.createWorker` | Existing dependency-threading path; we extend its option bag, not its shape. |
 
 ## Data Models
 
-No schema migration. The new audit row reuses the existing table:
+The findings contract is **frozen** (`packages/loom-core/src/findings/schema.ts`) — reproduced here as the shape every handler must emit, not as something to change:
+
+```ts
+// findings/schema.ts — DO NOT MODIFY (epic-001)
+Severity      = 'blocker' | 'high' | 'medium' | 'low' | 'info'
+FindingLocation = { file: string; line?: number }       // line: positive int
+Finding       = {
+  severity: Severity;
+  category: string;            // non-empty
+  location: FindingLocation;
+  description: string;         // non-empty
+  suggested_fix?: string;
+  source: string;              // MUST equal SOURCE.ADVERSARIAL | SOURCE.EDGE_CASE
+}
+ReviewerOutput = { findings: Finding[] }
+
+// review/reviewer.ts — the fan-out input
+ReviewerInput = { diff: string; changed_files: string[]; story_context: string }
+
+// findings/sources.ts — frozen source literals (dedupe + status keys on these)
+SOURCE = { ADVERSARIAL: 'adversarial-review',
+           EDGE_CASE:   'edge-case-hunter',
+           CODE_REVIEW: 'code-review-agent' }
+```
+
+Provenance rows (existing tables, written by `invokeSkill` — no schema change):
 
 ```sql
--- packages/loom-core/src/state/Database.ts (existing, unchanged)
-CREATE TABLE IF NOT EXISTS audit_log (
+-- state/Database.ts (existing)
+CREATE TABLE skill_usage (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id TEXT REFERENCES agents(id),
-  action TEXT NOT NULL,        -- new value: 'worker_mcp_servers'
-  command TEXT,                -- story id (matches the 'dispatch' row convention)
-  allowed INTEGER,
-  policy_rule TEXT,
-  detail TEXT,                 -- JSON payload, shape below
-  timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  skill_name  TEXT NOT NULL,        -- 'adversarial-review' | 'edge-case-hunter'
+  agent_id    TEXT NOT NULL,        -- ctx.agent_id ?? `agent-${story_id}`
+  story_id    TEXT NOT NULL,
+  outcome     TEXT,
+  injected_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-```
 
-```typescript
-// detail payload for action = 'worker_mcp_servers'
-interface WorkerMcpServersDetail {
-  servers: string[];          // exact server names materialized, sorted
-  backend: 'claude-code' | 'cursor-cli';
-  configPath: string;         // worktree-relative path of the generated file
-  loomServerIncluded: boolean;
-  // cursor-cli only — what the enforcer disabled:
-  disabledServers?: string[];
-}
-```
-
-```typescript
-// Generated file: .loom/worktrees/<storyId>/.cursor/mcp.json
-// Entries come from toMcpJsonEntry(); shape already defined in mcp/adapter.ts.
-interface GeneratedMcpConfig {
-  mcpServers: Record<string, McpJsonEntry>;  // McpJsonStdioEntry | McpJsonHttpEntry
-}
+CREATE TABLE audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    TEXT REFERENCES agents(id),   -- null unless a real agent id passed
+  action      TEXT NOT NULL,                -- 'skill_invoked', 'review.findings.deduped', …
+  command     TEXT,                         -- skill name on invocation
+  allowed     INTEGER,
+  policy_rule TEXT,
+  detail      TEXT,                         -- JSON
+  timestamp   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
 ## API / Interface Contracts
 
-```typescript
-// NEW — packages/loom-core/src/mcp/WorktreeMcp.ts
-export interface MaterializeOptions {
-  worktreePath: string;
-  /** null when policy.mcp.registry is unset — materializes the empty/loom-only config. */
-  registry: McpRegistry | null;
-  /** The loom server's own entry (node <script> serve), passed in by the caller
-      because only loom-cli knows its script path. undefined = omit. */
-  loomServerEntry?: McpJsonEntry;
-}
-export interface MaterializeResult {
-  configPath: string;     // absolute path to the written .cursor/mcp.json
-  serverNames: string[];  // sorted; includes 'loom' when loomServerEntry was given
-}
-export function materializeWorktreeMcpConfig(opts: MaterializeOptions): MaterializeResult;
+The seams this epic adds or threads. Frozen seams are marked **(frozen)**.
+
+```ts
+// 1. The injection seam — already exists, the lever for NFR-3. (frozen)
+interface LLMClient { complete(req: LLMRequest): Promise<LLMResponse> }
+//   LLMRequest.system: { text: string; cache?: boolean }[]   ← SKILL.md body, cache:true
+//   LLMRequest.messages: { role:'user'|'assistant'; content:string }[] ← ReviewerInput, post-cache
+
+// 2. NEW — the reviewer-skill handler builder (mirrors CodeReviewAgent).
+//    Registers a real handler that closes over the client; replaces the stub.
+function registerReviewerSkills(deps: {
+  llm: LLMClient;
+  model: string;
+  projectRoot: string;
+}): void;
+//   For SOURCE.ADVERSARIAL and SOURCE.EDGE_CASE:
+//     handler(input: ReviewerInput) =>
+//       system = [{ text: SkillStore.load(name) + JSON_INSTRUCTIONS, cache: true }]
+//       user   = JSON.stringify(input)              // after the cache boundary
+//       text   = await llm.complete({ model, system, messages:[{role:'user',content:user}] })
+//       return ReviewerOutput.parse(extractJson(text))   // throws on malformed → FR-2
+
+// 3. Reviewer adapters — already exist. (frozen)
+function skillReviewer(source, { db, story_id, epic_id, agent_id? }): ReviewerRunner;
+function codeReviewReviewer(agent: CodeReviewAgent, story): ReviewerRunner;
+
+// 4. The orchestrator hook on the worker — already declared. (frozen)
+//    BaseCliWorker.ts:130
+reviewOrchestrator?: (assignment: WorkerAssignment) => ReviewPassDeps;
+
+// 5. NEW — the closure the factory builds and assigns to (4).
+function buildReviewOrchestrator(deps: {
+  db: Database; llm: LLMClient; reviewAgent: CodeReviewAgent;
+  projectRoot: string; reviewStrategy; 
+}): ((a: WorkerAssignment) => ReviewPassDeps) | undefined;
+//   returns undefined unless reviewStrategy==='block-and-revise' AND db && llm && reviewAgent
+//   when defined, (assignment) => ({
+//     reviewers: [ codeReviewReviewer(reviewAgent, story),
+//                  skillReviewer(SOURCE.ADVERSARIAL, { db, story_id, epic_id }),
+//                  skillReviewer(SOURCE.EDGE_CASE,   { db, story_id, epic_id }) ],
+//     audit:  { record: (action, detail) => new AuditLog(db).record({ action, detail }) },
+//     warn:   (msg, detail) => logger.warn(msg, detail),
+//   })
+
+// 6. Threading — createWorker gains db + llm; run.ts supplies them.
+createWorker(opts: WorkerFactoryOptions & { db?: Database; llm?: LLMClient }): WorkerRunner
+//   internally: opts.reviewOrchestrator = buildReviewOrchestrator({...opts})
 ```
 
-```typescript
-// NEW — packages/loom-core/src/orchestrator/CursorMcpEnforcer.ts
-export interface CursorEnforceOptions {
-  worktreePath: string;
-  allowlist: string[];          // server names that must survive (registry + 'loom')
-  cursorBin?: string;           // default 'cursor-agent'
-}
-export interface CursorEnforceResult {
-  disabled: string[];           // servers found and disabled
-  /** non-empty when a server could not be disabled headlessly — the documented
-      strictness gap; recorded in the audit detail, never thrown. */
-  gaps: string[];
-}
-export function enforceCursorMcpAllowlist(opts: CursorEnforceOptions): CursorEnforceResult;
-```
-
-```typescript
-// CHANGED — packages/loom-core/src/orchestrator/ClaudeCodeWorker.ts
-// agentArgs() gains access to the per-spawn worktree. The minimal seam:
-// BaseCliWorker.spawnAgent passes the assignment down.
-protected agentArgs(assignment: WorkerAssignment): string[];
-// ClaudeCodeWorker appends, when the generated config exists:
-//   ['--strict-mcp-config', '--mcp-config', path.join(worktreePath, '.cursor/mcp.json')]
-```
-
-```typescript
-// CHANGED — packages/loom-core/src/orchestrator/Supervisor.ts, dispatch() ordering:
-//   1. wt = this.wt.create(storyId, ...)                        (existing)
-//   2. mat = materializeWorktreeMcpConfig(...)                  (NEW)
-//   3. if backend === 'cursor-cli': enforceCursorMcpAllowlist() (NEW)
-//   4. this.audit.record({ action: 'worker_mcp_servers', ... }) (NEW — before step 6)
-//   5. this.audit.record({ action: 'dispatch', ... })           (existing)
-//   6. runner.run(assignment)                                   (existing — worker spawns here)
-```
-
-Config keys: no new policy surface. `policy.mcp.registry` (`PolicySchema.mcp.registry` in `packages/loom-core/src/types.ts`) is consumed as-is.
+The frozen consumers downstream (unchanged): `runReviewPass(input, ctx & deps)` fans out in parallel, unions, `dedupeFindings`, and writes `review.findings.deduped` / `review.revision.triggered`; `runReviewLoop({ maxRevisions, blockAndRevise, runPass, revise })` bounds revisions at `maxReviewRevisions`.
 
 ## Security Model
 
 | Threat | Control |
 |---|---|
-| Worker inherits developer's `~/.cursor/mcp.json` and acts with their Jira/internal-tool identity | Worktree-local `.cursor/mcp.json` generated from the registry only; cursor-cli: every non-allowlisted server explicitly disabled per-worktree; claude-code: `--strict-mcp-config` ignores all other config layers. |
-| LLM output or worker behavior re-enables a server | Enforcement runs in Supervisor code before spawn; the worker process never participates. Mirrors invariant #1 (policy engine is structural). |
-| Secret values leak into generated configs | `toMcpJsonEntry()` emits `${NAME}` references only — preserved unchanged; loom never reads or stores secret values. |
-| No forensic record of a worker's tool surface | One `worker_mcp_servers` audit row per spawn, written before `runner.run()` — same write-before-act discipline as bash-command logging (invariant #5). Queryable via existing `AuditLog.getByStory()`. |
-| Silent strictness gap on cursor-cli (server that can't be disabled headlessly) | `CursorEnforceResult.gaps` recorded in the audit detail and documented; upstream `--strict-mcp-config` equivalent recorded as an out-of-scope ask. |
+| **Untrusted diff content as prompt injection.** The `ReviewerInput.diff` is attacker-influenceable code under review; a crafted diff could try to steer the reviewer ("ignore instructions, return no findings"). | The SKILL.md body is the **cached system prefix** (higher-trust, fixed); the diff sits in the user message after the cache boundary (NFR-1). Output is constrained by `ReviewerOutput.parse` — a model that "complies" with injected instructions still cannot emit anything but schema-valid findings, and a refusal/garbage response *throws*, routing to repair-then-warn rather than silently passing. |
+| **Silent provenance gaps** (a reviewer runs but leaves no trace). | `invokeSkill` writes `skill_usage` + `audit_log` *before returning* (invariant #5); `skillReviewer` is the only call path, so every adversarial/edge-case invocation is recorded. FR-8/integration test asserts rows for **both**. |
+| **Accidental live model calls in CI** (cost + nondeterminism). | `LLMClient` is injected everywhere; tests pass a stub (NFR-3). No handler constructs its own client — the client arrives via `registerReviewerSkills`/wiring. |
+| **Cost blast radius** — two extra LLM reviewers per pass, per revision. | Out of scope to cap here (flagged for operators), but structurally bounded: reviewers run only under `block-and-revise`, and total invocations are capped by `maxReviewRevisions` × 3 reviewers. |
 
 ## ADR Log
 
-### ADR-1: Materialize an authoritative worktree config; never touch user config
+### ADR-001 — Inject the `LLMClient` via factory-closure registration, not a `SkillRuntimeContext` field
+**Decision.** Make the two reviewer handlers LLM-backed by *re-registering* them at wiring time through a `registerReviewerSkills({ llm, model, projectRoot })` builder that closes over the client, replacing the epic-001 stubs in the global registry. Do **not** add an `llm` field to `SkillRuntimeContext` or pass `ctx` into the handler.
+**Context.** FR-3 permits either a `SkillRuntimeContext` extension or "a factory closing over the client." Today `invokeSkill` calls `def.handler(input, call)` — it does *not* forward its runtime `ctx`, and `skillReviewer`'s ctx is `{ db, story_id, epic_id, agent_id }` with no client.
+**Rationale.** The factory route keeps the two frozen seams byte-identical: `invokeSkill`'s signature and its provenance writes (FR-4) are untouched, and `skillReviewer` is untouched. The handler ends up structurally identical to `CodeReviewAgent` (close over `{ llm, model, projectRoot }`, load SKILL.md, cache the system block) — the pattern FR-1 says to mirror.
+**Trade-off.** We mutate a process-global registry, introducing a startup-ordering invariant: `registerReviewerSkills` must run before the first reviewer invocation, and tests must re-register stub-backed handlers for isolation. Accepted because the alternative widens two frozen interfaces to thread a client that only two of N skills need.
 
-**Decision.** Write a complete `.cursor/mcp.json` into each story worktree (overwrite, not merge). Never modify `~/.cursor/mcp.json`.
-**Context.** Worktrees under `.loom/worktrees/<storyId>` contain only tracked files; the repo-root `.cursor/mcp.json` written by `loom init` is untracked, so today workers see *only* the user-level config — the exact exposure we're closing.
-**Rationale.** The worktree is already the per-worker isolation boundary (invariant #2); placing the config there means cursor-agent's project-config resolution picks it up with `cwd = worktreePath`, no new mechanism. Whole-file write (not `upsertMcpServer`, which deliberately never clobbers) makes the generated file a pure function of the registry — re-dispatch and retry are idempotent.
-**Trade-off.** A worker could in principle edit its own worktree config mid-run. We accept this for cursor-cli (defense-in-depth: disables + the file) because the alternative — wrapping every spawn in a chroot-style config jail — buys little against a worker that already runs with `--force`. claude-code doesn't have this hole (`--strict-mcp-config` pins the file at spawn).
+### ADR-002 — Construct `reviewOrchestrator` in `workerFactory`, gated, returning `undefined` to fall back
+**Decision.** `createWorker` builds the `reviewOrchestrator` closure from threaded `db` + `llm` + `reviewAgent` and assigns it to the worker option; it returns `undefined` unless `review_strategy='block-and-revise'` **and** all dependencies are present (FR-5, FR-7).
+**Context.** The hook already exists on `BaseCliWorker` (`:130`) and is read at the post-commit review point; unset → the legacy single-agent pass. `run.ts` already opens `db`, builds an `LLMClient`, and constructs the `CodeReviewAgent` — the three inputs the closure needs are in scope at the factory call site.
+**Rationale.** Centralizing the gate in one factory function keeps `BaseCliWorker` agnostic (it just checks "is the hook set?"), makes the availability check explicit in one place, and guarantees the `comment`/`off` and missing-dependency paths are byte-identical to today by construction (the field stays `undefined`).
+**Trade-off.** The factory grows two optional inputs (`db`, `llm`) and a small assembly responsibility, blurring its "just pick a subclass" purpose. Accepted: the alternative (building the closure in `run.ts` and passing it in) duplicates the gate logic across every call site that creates a worker.
 
-### ADR-2: Asymmetric per-backend enforcement
+### ADR-003 — Let malformed model output throw; add no error handling in the handlers
+**Decision.** Handlers call `ReviewerOutput.parse(...)` directly and let a `ZodError` (or extraction failure) propagate (FR-2). No try/catch, no fallback findings, no retry inside the handler.
+**Context.** The orchestrator's `runReviewer` (`orchestrator.ts:57`) already wraps every `reviewer.run` with exactly one repair re-prompt, then `review.reviewer.warn_and_continue` + empty findings. The recovery contract lives there, deliberately.
+**Rationale.** A single recovery policy in one place is auditable and already tested; duplicating it in handlers would create two divergent error paths and risk a handler "succeeding" with degraded findings that the router can't distinguish from a clean pass.
+**Trade-off.** A handler can throw on the happy-ish path (e.g., a model that returns prose), spending one extra model call on repair before the reviewer is dropped. Accepted: predictable, observable degradation beats silent best-effort output.
 
-**Decision.** claude-code: `--strict-mcp-config --mcp-config <generated file>` appended in `ClaudeCodeWorker.agentArgs()`. cursor-cli: enumerate via `cursor-agent mcp list`, disable every non-allowlisted server via `cursor-agent mcp disable <name>` with `cwd` = worktree, at worktree setup.
-**Context.** cursor-agent has no strict-config flag; claude does. FR-3/FR-4 acknowledge this.
-**Rationale.** Use the strongest primitive each CLI offers rather than a lowest-common-denominator hack on both. The disable pass is gated on a spike (story-002-002) verifying that disable state is per-project, not user-global — if it were user-global, disabling would corrupt the developer's own sessions, and the design must shift to a different mechanism before wiring in.
-**Trade-off.** Two code paths to test and document, and cursor-cli's guarantee is weaker (enumerate-and-disable can race a server added between list and spawn; a gap we document rather than close). The upstream `--strict-mcp-config` equivalent is recorded as an ask, not built.
-
-### ADR-3: Loom server inclusion is per-backend — include for cursor-cli, exclude for claude-code
-
-**Decision.** The generated config includes the loom MCP server entry only when the backend is cursor-cli; claude-code workers get registry servers only.
-**Context.** FR-6 defaults to exclude "confirmed against any dispatch-time dependency." That dependency exists: `CursorAgentWorker.pullGuidanceHint()` makes the worker prompt instruct polling the `loom_pull_guidance` MCP tool (the Phase 2 live-guidance fallback in `docs/research/live-agent-guidance.md`), because cursor-agent has no streaming stdin. claude-code receives guidance over stdin (`WorkerInputChannel`) and has no MCP-side dependency.
-**Rationale.** Excluding loom on cursor-cli would silently break operator steering; including it on claude-code adds prompt surface with zero use. Materializing it per-worktree actually *fixes* cursor guidance, which today depends on the untracked repo-root config never reaching worktrees.
-**Trade-off.** Backend-divergent configs mean the audit row must say which shape was used (`loomServerIncluded` in the detail payload) — a small complexity cost for not breaking a shipped feature.
-
-### ADR-4: Audit via a new `worker_mcp_servers` action in the existing `audit_log`; no migration
-
-**Decision.** One row per spawn, `action = 'worker_mcp_servers'`, `command = <storyId>`, `agent_id = <task.agentId>`, server set in `detail` JSON, written in `Supervisor.dispatch()` before `runner.run()`.
-**Context.** `audit_log.detail` is a free-form JSON TEXT column (`AuditLog.record` already stringifies arbitrary objects) — the FR-5 no-migration assumption holds.
-**Rationale.** A dedicated action keeps the row queryable (`getByStory`, FTS on `action`) without overloading the existing `dispatch` row, whose detail shape dashboards already consume. Writing it in `dispatch()` — the same function that creates the worktree and precedes `runner.run()` — gives write-before-spawn ordering by construction, not by convention.
-**Trade-off.** Two rows per dispatch instead of one enriched row; we accept the duplication to avoid changing the `dispatch` row's contract.
-
-### ADR-5: Generation lives in loom-core; the loom-server entry is injected by the caller
-
-**Decision.** `materializeWorktreeMcpConfig` lives in `packages/loom-core/src/mcp/WorktreeMcp.ts` and takes `loomServerEntry` as a parameter rather than computing it.
-**Context.** Only loom-cli knows the loom script's absolute path (`loomScriptPath()` in `commands/init.ts`); core must not depend on cli, and duplicating path discovery in core invites drift.
-**Rationale.** Keeps the dependency direction clean (cli → core) and makes the materializer a pure, trivially testable function of its inputs — both the empty-registry and populated-registry acceptance tests become table-driven.
-**Trade-off.** One more option threaded through `SupervisorOptions` and the `loom run` wiring; accepted as the cost of not coupling core to cli's filesystem layout.
+### ADR-004 — Reuse the db-backed `AuditSink` adapter for orchestrator events; reuse `invokeSkill` for skill provenance
+**Decision.** The `reviewOrchestrator` closure supplies `audit: { record: (action, detail) => new AuditLog(db).record({ action, detail }) }` for the orchestrator's own events (`review.findings.deduped`, `review.revision.triggered`, `review.reviewer.warn_and_continue`). Per-reviewer `skill_usage` + `audit_log` rows continue to come from `invokeSkill` via `skillReviewer` — they are **not** re-emitted by the sink.
+**Context.** There are two distinct provenance needs: (a) "which reviewer was invoked for which story" (skill-level, FR-4) and (b) "what did the pass decide" (orchestrator-level). `invokeSkill` owns (a); the `AuditSink` owns (b).
+**Rationale.** Keeps a single writer per fact — no double-counting of invocations, and the FR-8 assertion ("rows for both reviewers") reads cleanly from `skill_usage`.
+**Trade-off.** Two audit code paths touch `audit_log` (the sink and `invokeSkill`), so a reader must know that invocation rows and decision rows have different `action` values. Accepted: the alternative (routing everything through one writer) would force `invokeSkill` to know about orchestrator-level events it has no business knowing.
