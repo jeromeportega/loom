@@ -15,7 +15,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/server.js",
-    "test": "bash -O globstar -c 'node --test dist/__tests__/**/*.test.js'"
+    "test": "node --test $(find dist -path '*__tests__*' -name '*.test.js')"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",

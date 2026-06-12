@@ -12,7 +12,7 @@
     "build": "tsc && npm run copy:public",
     "copy:public": "mkdir -p dist/public && cp -R public/. dist/public/",
     "dev": "tsc --watch",
-    "test": "bash -O globstar -c 'node --test dist/__tests__/**/*.test.js'"
+    "test": "node --test $(find dist -path '*__tests__*' -name '*.test.js')"
   },
   "files": ["dist", "public"],
   "dependencies": {
