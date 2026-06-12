@@ -45,6 +45,7 @@ import { gitSafe } from './git.js';
 import type { WorkerInputChannel } from './WorkerInputChannel.js';
 import { SpawnStagger } from './resilience/SpawnStagger.js';
 import { SystemRetryClock, Mulberry32 } from './resilience/RetryClock.js';
+import { investigateAndRoute } from '../failure/investigateAndRoute.js';
 
 export interface SupervisorOptions {
   projectRoot: string;
@@ -1123,17 +1124,34 @@ export class Supervisor {
             return true;
           }
           // Merge is committed (no MERGE_HEAD) — roll it off the branch here,
-          // then record + retry. The in-progress-merge cleanup below is for the
-          // other paths only, so skip it.
+          // then record. The in-progress-merge cleanup below is for the other
+          // paths only, so skip it.
           this.integration.reset(epicId, tipBefore);
-          previousFailure = `the integrated build/tests failed: ${gate.summary}`;
           this.recordIntegratorAttempt(task, {
             epicId,
             attempt,
             allowed: false,
-            rejected: previousFailure,
+            rejected: `the integrated build/tests failed: ${gate.summary}`,
           });
-          continue;
+          // Deterministic failure router (story-001-004): grade the red gate and
+          // route. `strong` feeds the investigator's hint into the next attempt
+          // (bounded by integratorMaxAttempts — no new ceiling); `weak` /
+          // `contradictory` stop retrying and fall through to the loud-block
+          // path. Each routing decision writes its own distinguishable audit row.
+          const decision = await investigateAndRoute(
+            {
+              failing_test_or_gate: this.effectiveIntegratorTestCommand ?? 'integration-gate',
+              stderr_tail: gate.summary,
+              diff: '',
+              story_id: storyId,
+            },
+            { db: this.opts.db, epic_id: epicId, agent_id: task.agentId }
+          );
+          if (decision.kind === 'retry-with-hint') {
+            previousFailure = decision.hint;
+            continue;
+          }
+          return false;
         }
       }
 
