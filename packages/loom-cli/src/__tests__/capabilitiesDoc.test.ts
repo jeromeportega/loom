@@ -21,6 +21,46 @@ function row(doc: string, label: string): string {
   return line as string;
 }
 
+/**
+ * Returns the full table row line whose first cell contains `skillName`
+ * (backtick-quoted). Throws if the row is missing.
+ */
+function skillRow(doc: string, skillName: string): string {
+  const line = doc
+    .split('\n')
+    .find((l) => l.includes(`\`${skillName}\``) && l.trimStart().startsWith('|'));
+  assert.ok(line, `capabilities.md should contain a row for skill "${skillName}"`);
+  return line as string;
+}
+
+describe('capabilities.md — story-002-004: reviewer skill rows', () => {
+  const doc = fs.readFileSync(CAPABILITIES, 'utf8');
+
+  it('adversarial-review row is active under block-and-revise', () => {
+    const r = skillRow(doc, 'adversarial-review');
+    assert.match(r, /block-and-revise/, 'row should reference block-and-revise');
+    assert.match(r, /LLM-backed|llm.backed/i, 'row should describe LLM-backed behavior');
+    assert.match(r, /FR-10/, 'row should reference FR-10');
+  });
+
+  it('edge-case-hunter row is active under block-and-revise', () => {
+    const r = skillRow(doc, 'edge-case-hunter');
+    assert.match(r, /block-and-revise/, 'row should reference block-and-revise');
+    assert.match(r, /LLM-backed|llm.backed/i, 'row should describe LLM-backed behavior');
+    assert.match(r, /FR-10/, 'row should reference FR-10');
+  });
+
+  it('neither reviewer row still contains stale stub language', () => {
+    const adversarial = skillRow(doc, 'adversarial-review');
+    const edgeCase = skillRow(doc, 'edge-case-hunter');
+    for (const [name, r] of [['adversarial-review', adversarial], ['edge-case-hunter', edgeCase]] as const) {
+      assert.doesNotMatch(r, /scaffolded/i, `${name} row must not say "scaffolded"`);
+      assert.doesNotMatch(r, /stub handler/i, `${name} row must not say "stub handler"`);
+      assert.doesNotMatch(r, /not wired/i, `${name} row must not say "not wired"`);
+    }
+  });
+});
+
 // The four surfaces this epic changed, documented as public API. Single-owner
 // story for docs/capabilities.md — these assertions are the verification bar.
 describe('capabilities.md — epic-007 changed surfaces (story-007-010)', () => {
