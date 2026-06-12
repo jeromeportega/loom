@@ -119,21 +119,26 @@ implementation without being commands a developer has to invoke.
 | `loom-pr-description` | Used by the EpicFinalizer's PR body writer |
 | `loom-skill-curator` | Read by the chat client when shaping a brief |
 
-### Review Forge skills (orchestrator-invoked)
+### Review Forge skills (scaffolded — activation in a follow-up epic)
 
-Five headless, self-contained skills the orchestrator invokes at fixed
-lifecycle points (not auto-injected into the worker prompt like the
-curated library above). Every invocation writes a `skill_usage` row and an
-audit_log row before returning, so each surfaces through
-`loom_get_audit_log` even though none is a standalone command.
+Five headless skills for the autonomous review/investigation loop. As of this
+epic the **contract and scaffolding are in place and unit-tested** — a shared
+`zod` findings schema, lexical (file, line, normalized-description) dedupe, the
+deterministic failure router, the bounded review/revise orchestrator, and the
+`skill_usage` + audit_log provenance seam (every `invokeSkill` writes both rows
+before returning). **The skills do not yet perform live analysis:** their
+runtime handlers are stubs (empty/placeholder output) and the three-reviewer
+orchestrator is not yet wired into the worker review path. Implementing the
+LLM-backed handlers and activating the wiring is a tracked follow-up epic; until
+then the legacy single `CodeReviewAgent` remains the active reviewer.
 
-| Skill | When it runs | Surface |
+| Skill | Intended role (on activation) | Status today |
 |---|---|---|
-| `adversarial-review` | In the block-and-revise review loop, fanned out alongside `edge-case-hunter` and the code-review adapter on every story diff. | Automatic when `policy.agents.review_strategy=block-and-revise`; findings roll into the verdict from `loom_get_review <story-id>`. |
-| `edge-case-hunter` | Same review fan-out — hunts boundary, concurrency, and failure-state findings the code-review pass misses. | Automatic when `policy.agents.review_strategy=block-and-revise`; findings roll into `loom_get_review <story-id>`. |
-| `failure-investigator` | On a red story test/integration gate — grades the evidence so the deterministic router decides retry-with-hint / surface-to-operator / stop-epic. | Automatic on a failed gate; the grade + routed decision land as `failure.investigation.graded` / `failure.routed.*` rows in `loom_get_audit_log`. |
-| `doc-distiller` | Once per story at worker-context assembly — compresses the planning artifacts while preserving every acceptance criterion verbatim. | Automatic at dispatch; emits a `context.distilled` audit row. No standalone CLI/MCP command. |
-| `lesson-extractor` | Callable-only (provisional) — synthesizes worked-well / did-not-work / surprise lessons from a story transcript. | No automatic invocation or CLI/MCP command yet; invoked programmatically, provenance still audit-logged. |
+| `adversarial-review` | Fan out alongside `edge-case-hunter` + the code-review adapter on every story diff in the block-and-revise loop. | Scaffolded + schema; stub handler, orchestrator not yet wired into the worker path. |
+| `edge-case-hunter` | Same fan-out — boundary, concurrency, and failure-state findings the code-review pass misses. | Scaffolded + schema; stub handler, not yet wired. |
+| `failure-investigator` | On a red gate, grade evidence so the deterministic router picks retry-with-hint / surface-to-operator / stop-epic. | Router wired + tested; grading handler is a stub (always grades `weak`) pending live analysis. |
+| `doc-distiller` | Once per story at worker-context assembly — compress planning artifacts, preserving every acceptance criterion verbatim. | Seam invokes it + records provenance; stub output, not yet injected into the worker prompt. |
+| `lesson-extractor` | Callable-only (provisional) — synthesize worked-well / did-not-work / surprise lessons from a story transcript for Epic D. | Callable + registered; stub handler. |
 
 ### Self-learning loop
 
