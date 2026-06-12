@@ -1,0 +1,12 @@
+> @loom-ai/core@1.0.1 test
+> node --test
+
+✖ math > divide throws on a zero divisor (6.2ms)
+  AssertionError [ERR_ASSERTION]: expected divide(1, 0) to throw, but it returned Infinity
+      at TestContext.<anonymous> (test/math.test.js:14:10)
+      at async Test.run (node:internal/test_runner/test:631:9)
+
+# tests 7
+# pass 6
+# fail 1
+# duration_ms 118.4
