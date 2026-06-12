@@ -134,8 +134,8 @@ then the legacy single `CodeReviewAgent` remains the active reviewer.
 
 | Skill | Intended role (on activation) | Status today |
 |---|---|---|
-| `adversarial-review` | Fan out alongside `edge-case-hunter` + the code-review adapter on every story diff in the block-and-revise loop. | Scaffolded + schema; stub handler, orchestrator not yet wired into the worker path. |
-| `edge-case-hunter` | Same fan-out — boundary, concurrency, and failure-state findings the code-review pass misses. | Scaffolded + schema; stub handler, not yet wired. |
+| `adversarial-review` | Fan out alongside `edge-case-hunter` + the code-review adapter on every story diff in the block-and-revise loop. | Active under `review_strategy='block-and-revise'`; LLM-backed handler (FR-10), wired into the three-reviewer orchestrator via `workerFactory`. |
+| `edge-case-hunter` | Same fan-out — boundary, concurrency, and failure-state findings the code-review pass misses. | Active under `review_strategy='block-and-revise'`; LLM-backed handler (FR-10), wired into the three-reviewer orchestrator via `workerFactory`. |
 | `failure-investigator` | On a red gate, grade evidence so the deterministic router picks retry-with-hint / surface-to-operator / stop-epic. | Router wired + tested; grading handler is a stub (always grades `weak`) pending live analysis. |
 | `doc-distiller` | Once per story at worker-context assembly — compress planning artifacts, preserving every acceptance criterion verbatim. | Seam invokes it + records provenance; stub output, not yet injected into the worker prompt. |
 | `lesson-extractor` | Callable-only (provisional) — synthesize worked-well / did-not-work / surprise lessons from a story transcript for Epic D. | Callable + registered; stub handler. |
