@@ -15,6 +15,9 @@ import {
   registeredSkillNames,
   getSkillDefinition,
 } from '../../src/skills/types.js';
+import { registerReviewerSkills } from '../../src/skills/reviewerSkills.js';
+import { MockLLMClient } from '../../src/llm/MockLLMClient.js';
+import { SOURCE } from '../../src/findings/sources.js';
 
 const EXPECTED_SKILLS = [
   'adversarial-review',
@@ -37,9 +40,30 @@ function repoSkillsDir(): string {
   throw new Error('could not locate repo-root skills/ directory');
 }
 
+// A valid ReviewerOutput response for the MockLLMClient used in tests that
+// invoke the LLM-backed reviewer skill handlers (story-002-001).
+function reviewerCannedResponse(): string {
+  return (
+    '```json\n' +
+    JSON.stringify({
+      findings: [
+        {
+          severity: 'high',
+          category: 'logic',
+          location: { file: 'src/x.ts', line: 12 },
+          description: 'found an issue',
+          source: 'adversarial-review',
+        },
+      ],
+    }) +
+    '\n```'
+  );
+}
+
 let tmp: string;
 let db: Database.Database;
 let agentId: string;
+let projectRoot: string;
 
 function isolatedStore(bundledDir: string): SkillStore {
   return new SkillStore({
@@ -60,10 +84,19 @@ function countRows(table: string, where: string, ...params: unknown[]): number {
 
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-registration-'));
-  fs.mkdirSync(path.join(tmp, 'project'), { recursive: true });
+  projectRoot = path.join(tmp, 'project');
+  fs.mkdirSync(projectRoot, { recursive: true });
   db = createDatabase(':memory:');
   new EpicStore(db).create('epic-001', 'Review Forge');
   agentId = new AgentStore(db).create('epic-001', 'story-001-001').id;
+  // Reviewer skills (adversarial-review, edge-case-hunter) are no longer
+  // auto-registered as stubs; story-002-001 requires registerReviewerSkills().
+  // Use a responder-based MockLLMClient so tests can invoke any number of times.
+  registerReviewerSkills({
+    llm: new MockLLMClient(() => reviewerCannedResponse()),
+    model: 'm',
+    projectRoot,
+  });
 });
 
 afterEach(() => {
@@ -132,13 +165,21 @@ describe('Review Forge skill registration', () => {
     }
   });
 
-  it('the reviewer stubs emit a schema-valid (empty) findings array', async () => {
-    for (const name of ['adversarial-review', 'edge-case-hunter']) {
+  it('the reviewer handlers emit a schema-valid findings array with the correct source', async () => {
+    for (const [name, expectedSource] of [
+      [SOURCE.ADVERSARIAL, SOURCE.ADVERSARIAL],
+      [SOURCE.EDGE_CASE, SOURCE.EDGE_CASE],
+    ] as const) {
       const result = await invokeSkill(
         { name, input: {}, story_id: 'story-001-001', epic_id: 'epic-001' },
         { db, agent_id: agentId },
       );
-      assert.deepEqual(result.output, { findings: [] });
+      const output = result.output as { findings: Array<{ source: string }> };
+      assert.ok(Array.isArray(output.findings), `${name} must return a findings array`);
+      assert.ok(
+        output.findings.every((f) => f.source === expectedSource),
+        `${name} findings must carry source = ${expectedSource}`,
+      );
     }
   });
 
