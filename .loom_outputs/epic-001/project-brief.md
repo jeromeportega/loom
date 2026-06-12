@@ -1,62 +1,58 @@
-# Brief-Quality Gate Overhaul: Judgment-Based Pass Signal, Forced Override, and Model Routing Fix
+# Review Forge — Headless BMAD Skill Harvest for Loom
 
 ## The Problem
 
-The brief-quality gate in loom structurally refuses good briefs. `computeQualityScore` in `packages/loom-core/src/brief/BriefRefiner.ts` derives the score arithmetically — `10 − min(ambiguities,3) − min(missing_scope,3) − min(untestable_claims,3) − min(hidden_complexity,3)` — from the lengths of critique arrays the refiner model emits. A thorough critic populates ~3 items per category on *any* input, including a brief that incorporated the refiner's own previous `refined_brief` nearly verbatim. The score therefore floors at 0/10 regardless of actual quality.
-
-Three concrete failure modes, all observed in an earlier epic-011 end-to-end run:
-
-1. **Structural refusal** — good briefs score 0; the repo had to set `min_brief_quality_score: 0` to disable the gate entirely.
-2. **Consequential nondeterminism** — an identical brief passed on one call and scored 0/10 on the next.
-3. **Non-converging rejection loop** — answering every question in a rejection yields a fresh batch of lower-importance questions and another 0. There is no exit.
-
-A fourth, independent defect compounds this: the gate and the planner run on different models. `packages/loom-mcp/src/tools/handlers.ts` (~line 488) constructs `BriefRefiner` with `model: policy.agents.model`, while the Planner two calls later resolves via `modelFor(policy, 'planning')`. On the cursor-cli backend the gate ignores `cursor_model` and passes a Claude-namespaced id to cursor-agent — silently.
-
-**Who is harmed:** operators running `loom epic` / `loom_start_epic`, who hit an unbypassable, advertised-as-"non-negotiable" gate that rejects work it should pass; and downstream planning agents, which never receive briefs the gate wrongly blocks.
+Loom workers run unattended, but the only automated quality net standing between a worker's output and a merge is `CodeReviewAgent` plus an integration gate. The repo already ships ~44 `bmad-*` skills containing strong review, edge-case, and investigation logic — but every one of them was written for an operator at the keyboard (`WAIT-FOR-USER` halts, menu prompts) and assumes a `_bmad/scripts/` + `_bmad/bmm/config.yaml` overlay that loom does not ship. Result: that capability exists in the codebase but is invisible to the autonomous delivery loop. Stories ship with one reviewer's opinion instead of three, failures get retried without forensic analysis, and lessons evaporate.
 
 ## Target Users
 
-- **Primary:** loom operators starting epics via the CLI (`loom epic`) or MCP (`loom_start_epic`).
-- **Secondary:** repo administrators tuning `min_brief_quality_score` in `.loom/policy.yaml`; the PM/planner agents consuming gated briefs.
-- **Anti-persona:** an operator seeking to permanently silence quality feedback. The override is per-invocation and audit-logged, not a standing config switch — the critique still exists for human review.
+- **Primary — Loom workers (autonomous story agents).** They are the consumers of the ported skills; the skills must run headless inside their execution loop with no human input boundaries.
+- **Primary — Loom operators (Jerome and other dogfooders).** They inherit the resulting review/investigation signal via `audit_log`, `skill_usage`, and decision traces, and they read `docs/capabilities.md` to know what loom can do.
+- **Secondary — Future Epic D consumers** of the `lesson-extractor` JSON output (lesson-consumption pipeline, not built here).
+- **Anti-persona — Interactive BMAD users.** Anyone who wants party-mode, elicitation menus, or operator dialogue is explicitly not served by these ports; the vendored originals under `.agents/skills/` and `.claude/skills/` remain for them, untouched.
 
 ## Proposed Solution
 
-Replace the derived score with the model's own judgment, give the loop a human-controlled exit, and unify model routing. Three parts:
-
-1. **Judgment-based pass signal.** Use the `ready: boolean` field the refiner already emits as the primary gate signal — its schema rule already encodes the right semantics ("ready is true only when every critique array except strong_points is acceptably small AND the brief is something the planner could decompose without inventing requirements"). Have the model emit a holistic 0–10 `quality_score` in the same JSON response for threshold tuning and reporting. Stop deriving the score from critique-array lengths. Preserve the malformed-JSON fallback and truncation-salvage behaviors with sensible `ready`/`score` values.
-2. **Audit-logged escape hatch.** Add `force: true` to the `loom_start_epic` MCP tool and `--force` to `loom epic`, skipping the gate after a human has reviewed the critique. Every forced start writes an audit row (consistent with the loom invariant that all agent actions are logged).
-3. **Model routing fix.** Route the refiner's model through `modelFor(policy, 'planning')` in `packages/loom-mcp/src/tools/handlers.ts`, and audit `packages/loom-cli/src/commands/epic.ts` (~line 47) for the same bug, so gate and planner always run on the same resolved model.
+Port five high-value BMAD skills into loom-native, fully headless verifiers under `skills/` in agentskills.io format, stripping all `WAIT-FOR-USER` boundaries and `_bmad/` overlay references. Where the BMAD original relied on customization overlays, embed loom-sensible defaults inline — extensibility is the dependency we are removing, not preserving. Three of the five (`adversarial-review`, `edge-case-hunter`, `failure-investigator`) wire into the worker execution loop this epic; `doc-distiller` runs at worker-context assembly; `lesson-extractor` is callable-only this epic and feeds Epic D later.
 
 ## Key Capabilities
 
-1. Gate pass/fail determined by the refiner's `ready` boolean, not critique-array arithmetic.
-2. Model-emitted holistic `quality_score` (0–10) in the same response, used for threshold comparison and reporting against the default threshold of 6.
-3. Salvage paths (malformed JSON, truncation) preserved, emitting defensible `ready`/`score` defaults.
-4. `--force` (CLI) and `force: true` (MCP) skip the gate; each use leaves an audit row.
-5. Copy corrected everywhere the gate is described as unbypassable: the `loom_start_epic` description in `packages/loom-mcp/src/tools/registry.ts` ("cannot be bypassed"), the policy comment written by `loom init` (`packages/loom-cli/src/commands/init.ts`), and the gate rows in `docs/capabilities.md` ("non-negotiable").
-6. Refiner model resolved via `modelFor` on both the MCP and CLI entry points.
+1. **`adversarial-review`** (from `bmad-review-adversarial-general`) — joins `CodeReviewAgent` in the execution-phase review loop, emits findings in the shared schema.
+2. **`edge-case-hunter`** (from `bmad-review-edge-case-hunter`) — joins the review loop alongside the above; output normalized to the same shared schema so findings union and dedupe cleanly.
+3. **`failure-investigator`** (from `bmad-investigate`) — invoked on test/gate failures in retry handling, routes deterministically by evidence grade: `strong` → `retry-with-hint`, `weak` → `surface-to-operator`, `contradictory` → `stop-epic`.
+4. **`doc-distiller`** (from `bmad-distillator`) — runs once per story at worker-context assembly, targets ~50% token reduction of combined planning artifacts while preserving acceptance criteria and constraints verbatim.
+5. **`lesson-extractor`** (from `bmad-retrospective`, automated synthesis only) — emits structured lessons JSON for Epic D; not wired into the runtime, no new DB table this epic.
+6. **Shared findings schema + review loop integration** — `zod`-validated schema with `severity`, `category`, `location`, `description`, `suggested_fix?`, `source`; review loop unions findings from both new reviewers + `CodeReviewAgent`, dedupes by `(file, line, normalized-description)`, triggers another worker revision while any `blocker` or `high` remains, capped by existing `maxReviewRevisions`.
+7. **Skill registration + audit logging** — all five register with `SkillSelector` and write `skill_usage` + `audit_log` rows per invocation (CLAUDE.md invariant #5).
 
 ## Constraints
 
-- **Non-goals (explicit):** no planner changes; no new personas; no CLI surface beyond `--force`; no change to the refusal payload shape beyond what the new scoring requires.
-- **Repo invariants:** forced bypass must be audit-logged before returning to the caller; `docs/capabilities.md` must be updated in the same PR (it is the public capability surface).
-- **Compatibility:** the default threshold remains 6; the policy knob `min_brief_quality_score` keeps its name and range.
-- **Test surface:** `packages/loom-core/src/__tests__/BriefRefinement.test.ts` and `BriefRefinerSalvage.test.ts` must be updated to the new score semantics — they currently encode the derived-score behavior.
+- **agentskills.io format**: lowercase-hyphen names, `SKILL.md` with required frontmatter.
+- **Zero `_bmad/` runtime dependency**: verified by a test fixture that runs each skill in a tree with `_bmad/scripts/` and `_bmad/bmm/config.yaml` absent.
+- **Prompt caching preserved**: ported skills reuse loom's existing persona/system-prompt caching pattern; static prefixes must remain cacheable (CLAUDE.md invariant #3).
+- **Audit logging required**: every skill invocation writes to `skill_usage` and `audit_log` before returning (CLAUDE.md invariant #5).
+- **`docs/capabilities.md` updated in the same PR**: five new skill rows (CLAUDE.md capabilities rule).
+- **Vendored originals untouched**: no modifications under `.agents/skills/` or `.claude/skills/`.
+- **`CodeReviewAgent` not replaced**: new skills run alongside it; it is the backstop when a ported reviewer self-fails.
+- **No new operator-facing knobs**: reuse existing `maxReviewRevisions` default; do not introduce a new ceiling.
+- **Ship-order cut line**: if a time/cost ceiling is hit, ship `adversarial-review` → `edge-case-hunter` → `failure-investigator` → `doc-distiller` → `lesson-extractor` and stop. The first three are the must-ship core.
 
 ## Risks and Open Questions
 
-- **Signal precedence is underspecified.** When `ready: false` but `quality_score ≥ 6` (or the inverse), which wins? The brief names `ready` as *primary* and the score as *tuning/reporting*, and acceptance requires passing "at the default threshold of 6" — these need one reconciled rule. `[ASSUMPTION]` Gate passes when `ready === true` AND `quality_score ≥ threshold`; the threshold exists so operators can tighten beyond the model's own judgment.
-- **Salvage defaults are unspecified.** "Sensible" `ready`/`score` values for malformed-JSON and truncation paths must be chosen. `[ASSUMPTION]` Fail closed (`ready: false`, low score) — a response we couldn't parse is not evidence of a good brief, and `--force` now provides the exit.
-- **Nondeterminism is reduced, not eliminated.** `ready` is still a model judgment; an identical brief may still flip across calls. The escape hatch bounds the damage but the acceptance test ("passes without retries") may be flaky without prompt or temperature attention.
-- **CLI bug presence unconfirmed.** The brief says to *check* `epic.ts` for the routing bug — it is suspected, not verified. Scope the fix conditionally.
-- **Repos that disabled the gate.** one repo set `min_brief_quality_score: 0` as a workaround. `[ASSUMPTION]` With threshold 0 the new gate still consults `ready`; affected repos should restore the default after this ships, which may warrant a release note.
-- **Force must not suppress critique.** `[ASSUMPTION]` The refiner still runs and its critique is still recorded on a forced start — the human reviewed *something*, and the audit row should reference it.
+- **Reviewer self-failure cascade.** Spec says a ported skill that errors gets one repair attempt then `warn-and-continue`, with `CodeReviewAgent` as backstop. **[ASSUMPTION]** the existing review loop has a clean seam to skip a single reviewer's findings without aborting the revision pass; if not, the loop needs a small refactor to support per-reviewer isolation.
+- **Dedupe correctness on cross-reviewer findings.** Normalizing description text for `(file, line, normalized-description)` dedupe is fuzzy by nature — two reviewers describing the same bug in different words may both survive. **[ASSUMPTION]** simple normalization (lowercase, whitespace collapse, punctuation strip) is acceptable for v1; semantic dedupe is out of scope.
+- **`failure-investigator` evidence grading is LLM-judged.** The skill picks `strong` / `weak` / `contradictory`; the routing switch is deterministic but the input is not. Risk: a flaky test classified `strong` triggers `retry-with-hint` loops. Mitigation depends on the existing retry cap; **[ASSUMPTION]** loom already has a per-story retry ceiling that bounds this.
+- **`doc-distiller` ~50% token target vs. "preserve acceptance criteria verbatim".** These can conflict on artifact-heavy stories. The spec says never drop testable requirements; in practice the distiller may miss the 50% target on some stories. **[ASSUMPTION]** missing the compression target is acceptable; dropping an acceptance criterion is not.
+- **`lesson-extractor` output schema lock-in.** Epic D will consume it but does not exist yet. **Open question:** is the lesson JSON schema this epic emits frozen, or should Epic D be free to renegotiate? Recommend treating it as provisional and documenting it as such in the skill's `SKILL.md`.
+- **Seed story for end-to-end success criterion.** The success criteria reference "a designated seed story" but the brief does not name one. **Open question:** which story file is the canonical seed for the end-to-end run? Needs designation before the success criterion is checkable.
+- **Prompt-cache hit rate on five new skills.** Adding five cacheable system prefixes increases cache footprint. **[ASSUMPTION]** Anthropic's cache budget accommodates this without eviction churn on existing personas; worth measuring on the first real run.
 
 ## Success Criteria
 
-1. A concrete, well-scoped brief passes the gate at the default threshold of 6 without retries.
-2. Forcing past a rejection works from both `loom epic --force` and `loom_start_epic` with `force: true`, and each forced start leaves an audit row.
-3. The refiner resolves its model through `modelFor` on both the MCP and CLI entry points; on the cursor-cli backend the gate honors `cursor_model`.
-4. `BriefRefinement.test.ts` and `BriefRefinerSalvage.test.ts` pass under the new score semantics; new tests cover the force path and model routing.
-5. No remaining copy describes the gate as unbypassable: `registry.ts` tool description, `loom init` policy comment, and `docs/capabilities.md` gate rows all reflect the `--force` escape hatch.
+- Each of the five skills runs end-to-end in a tree where `_bmad/scripts/` and `_bmad/bmm/config.yaml` are absent (test fixture hides those paths).
+- A shared `zod` findings schema exists; both `adversarial-review` and `edge-case-hunter` emit against it; malformed output is rejected, triggers exactly one repair attempt, then `warn-and-continue` is logged.
+- Running the designated seed story end-to-end produces `audit_log` + `skill_usage` rows for `adversarial-review`, `edge-case-hunter`, and (on an injected failure) `failure-investigator`.
+- Unit tests cover: skill loading for all five; schema validation (valid input passes, malformed input rejected); the revision-trigger rule (blocker/high triggers revise; medium/low/info do not; loop honors `maxReviewRevisions` cap); the `failure-investigator` evidence-grade → route table for all three grades.
+- `docs/capabilities.md` contains five new rows, one per ported skill, noting CLI/MCP surfaces where applicable.
+- `npm run build` and `npm run test` are green across all workspace packages.
+- No file under `.agents/skills/` or `.claude/skills/` is modified by this PR.
