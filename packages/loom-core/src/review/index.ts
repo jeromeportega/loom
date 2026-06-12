@@ -11,3 +11,24 @@ export type {
   PrDescriptionResult,
 } from './PrDescriptionAgent.js';
 export type { ReviewFinding, ReviewReport, ReviewStoryContext } from './types.js';
+
+// Review Forge orchestrator (epic-001 story-003).
+export {
+  runReviewPass,
+  runReviewLoop,
+  dedupeKey,
+  normalize,
+} from './orchestrator.js';
+export type {
+  ReviewPassResult,
+  ReviewPassContext,
+  ReviewPassDeps,
+  ReviewerStatus,
+  AuditSink,
+  ReviewLoopHooks,
+  ReviewLoopResult,
+} from './orchestrator.js';
+export { dedupeFindings } from './dedupe.js';
+export { adaptCodeReviewReport, codeReviewReviewer } from './codeReviewAdapter.js';
+export { skillReviewer } from './reviewer.js';
+export type { ReviewerInput, ReviewerInvocation, ReviewerRunner } from './reviewer.js';
