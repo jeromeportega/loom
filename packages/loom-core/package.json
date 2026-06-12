@@ -1,0 +1,46 @@
+{
+  "name": "@loom-ai/core",
+  "version": "1.0.1",
+  "description": "Loom orchestration engine: planner, supervisor, guardrails, skills, state",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/jeromeportega/loom",
+  "repository": { "type": "git", "url": "git+https://github.com/jeromeportega/loom.git" },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "commonjs",
+  "files": ["dist", "personas", "skills", "eval-cases"],
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./orchestrator/GateDryRun.js": {
+      "require": "./dist/orchestrator/GateDryRun.js",
+      "types": "./dist/orchestrator/GateDryRun.d.ts"
+    },
+    "./orchestrator/CrossEpicGate.js": {
+      "require": "./dist/orchestrator/CrossEpicGate.js",
+      "types": "./dist/orchestrator/CrossEpicGate.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "bash -O globstar -c 'node --test dist/**/__tests__/**/*.test.js'",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0",
+    "better-sqlite3": "^9.4.0",
+    "fast-glob": "^3.3.2",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.1.0",
+    "minimatch": "^9.0.4",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}

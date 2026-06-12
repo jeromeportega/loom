@@ -1,0 +1,315 @@
+import Database from 'better-sqlite3';
+import type {
+  EpicRecord,
+  EpicStatus,
+  FinalizePhase,
+  PlanningPhase,
+} from '../types.js';
+
+export class EpicStore {
+  constructor(private db: Database.Database) {}
+
+  create(id: string, title: string, yamlPath?: string): EpicRecord {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO epics (id, title, status, yaml_path, created_at, updated_at)
+         VALUES (?, ?, 'planned', ?, ?, ?)`
+      )
+      .run(id, title, yamlPath ?? null, now, now);
+    return this.get(id)!;
+  }
+
+  /**
+   * Reserves an epic row at the START of planning so `loom web` can show
+   * "what kicked off this job?" before Analyst → PM → Architect finishes.
+   * Stores the user's original brief and sets status='planning' / phase='analyst'.
+   * The placeholder is updated through the phases and finally flipped to
+   * 'planned' once the architect commits the epic structure.
+   */
+  beginPlanning(id: string, userBrief: string): EpicRecord {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO epics
+           (id, title, status, planning_phase, user_brief, created_at, updated_at)
+         VALUES (?, '(planning…)', 'planning', 'analyst', ?, ?, ?)`
+      )
+      .run(id, userBrief, now, now);
+    return this.get(id)!;
+  }
+
+  /**
+   * Writes a title onto the reserved row WITHOUT touching status or phase.
+   * Used by `runEpic` to replace the `(planning…)` placeholder with a derived
+   * title (first Markdown heading, else the brief's first 60 chars) the instant
+   * the epic is reserved — so `loom status` shows something meaningful before
+   * the planner produces the real title. The real title replaces this later via
+   * `completePlanning`.
+   */
+  setTitle(id: string, title: string): void {
+    this.db
+      .prepare(`UPDATE epics SET title = ?, updated_at = ? WHERE id = ?`)
+      .run(title, new Date().toISOString(), id);
+  }
+
+  /** Advances the planning_phase marker; status stays 'planning'. */
+  updatePlanningPhase(id: string, phase: PlanningPhase): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET planning_phase = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(phase, new Date().toISOString(), id);
+  }
+
+  /** Marks planning complete — clears phase, optionally updates title. */
+  completePlanning(id: string, title?: string): void {
+    const now = new Date().toISOString();
+    if (title !== undefined) {
+      this.db
+        .prepare(
+          `UPDATE epics SET status = 'planned', planning_phase = NULL,
+                            title = ?, updated_at = ? WHERE id = ?`
+        )
+        .run(title, now, id);
+    } else {
+      this.db
+        .prepare(
+          `UPDATE epics SET status = 'planned', planning_phase = NULL,
+                            updated_at = ? WHERE id = ?`
+        )
+        .run(now, id);
+    }
+  }
+
+  get(id: string): EpicRecord | undefined {
+    return this.db
+      .prepare('SELECT * FROM epics WHERE id = ?')
+      .get(id) as EpicRecord | undefined;
+  }
+
+  /**
+   * Lists epics newest-first. Archived epics are EXCLUDED by default so the
+   * status / web / MCP views stay scoped to the runs an operator still cares
+   * about; pass `{ includeArchived: true }` for an unfiltered list (e.g. the
+   * "show archived" toggle or cost roll-ups that must count everything).
+   */
+  list(opts?: { includeArchived?: boolean }): EpicRecord[] {
+    const where = opts?.includeArchived ? '' : 'WHERE archived_at IS NULL';
+    return this.db
+      .prepare(`SELECT * FROM epics ${where} ORDER BY created_at DESC`)
+      .all() as EpicRecord[];
+  }
+
+  /** Only archived epics, newest-first. Powers the dedicated archive view. */
+  listArchived(): EpicRecord[] {
+    return this.db
+      .prepare(
+        'SELECT * FROM epics WHERE archived_at IS NOT NULL ORDER BY created_at DESC'
+      )
+      .all() as EpicRecord[];
+  }
+
+  /**
+   * Epics in a given status, newest-first. Archived epics are excluded by
+   * default — this keeps the supervisor (which selects `approved` /
+   * `in_progress` epics to dispatch) and the approval gate from acting on a
+   * run the operator has archived.
+   */
+  listByStatus(
+    status: EpicStatus,
+    opts?: { includeArchived?: boolean }
+  ): EpicRecord[] {
+    const archivedClause = opts?.includeArchived ? '' : 'AND archived_at IS NULL';
+    return this.db
+      .prepare(
+        `SELECT * FROM epics WHERE status = ? ${archivedClause} ORDER BY created_at DESC`
+      )
+      .all(status) as EpicRecord[];
+  }
+
+  /** Marks an epic archived (idempotent). Returns false if the epic is unknown. */
+  archive(id: string): boolean {
+    // Single timestamp for both columns — archived_at and updated_at name the
+    // same instant, so two `new Date()` calls (submillisecond apart) made the
+    // audit trail confusing for no benefit.
+    const now = new Date().toISOString();
+    const info = this.db
+      .prepare(
+        `UPDATE epics SET archived_at = ?, updated_at = ?
+         WHERE id = ? AND archived_at IS NULL`
+      )
+      .run(now, now, id);
+    if (info.changes > 0) return true;
+    // Already archived (or unknown) — distinguish so callers can report noop
+    // vs not-found.
+    return this.get(id) !== undefined;
+  }
+
+  /** Clears the archived flag (idempotent). Returns false if the epic is unknown. */
+  unarchive(id: string): boolean {
+    this.db
+      .prepare(
+        `UPDATE epics SET archived_at = NULL, updated_at = ? WHERE id = ?`
+      )
+      .run(new Date().toISOString(), id);
+    return this.get(id) !== undefined;
+  }
+
+  updateStatus(id: string, status: EpicStatus, reason?: string): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET status = ?, reason = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(status, reason ?? null, new Date().toISOString(), id);
+  }
+
+  updatePaths(
+    id: string,
+    paths: Partial<Pick<EpicRecord, 'brief_path' | 'prd_path' | 'yaml_path'>>
+  ): void {
+    const fields: string[] = ['updated_at = ?'];
+    const values: unknown[] = [new Date().toISOString()];
+    if (paths.brief_path !== undefined) {
+      fields.push('brief_path = ?');
+      values.push(paths.brief_path);
+    }
+    if (paths.prd_path !== undefined) {
+      fields.push('prd_path = ?');
+      values.push(paths.prd_path);
+    }
+    if (paths.yaml_path !== undefined) {
+      fields.push('yaml_path = ?');
+      values.push(paths.yaml_path);
+    }
+    values.push(id);
+    this.db.prepare(`UPDATE epics SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  }
+
+  /**
+   * Records the SHA the epic's story branches diverged from. Captured by the
+   * Supervisor on the first dispatch for an epic; the EpicFinalizer reads it
+   * to build `epic/<epic-id>` from a stable base.
+   */
+  updateBaseSha(id: string, sha: string): void {
+    this.db
+      .prepare('UPDATE epics SET base_sha = ?, updated_at = ? WHERE id = ?')
+      .run(sha, new Date().toISOString(), id);
+  }
+
+  /**
+   * Records planner token usage and wall-clock time for the run that produced
+   * this epic. When a run produces multiple epics, the same totals are stored
+   * on each — aggregate by run-id later if you need to dedupe.
+   */
+  updateTokens(
+    id: string,
+    usage: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      requestCount?: number;
+    },
+    durationMs: number
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE epics
+         SET planner_tokens_input = ?, planner_tokens_output = ?,
+             planner_tokens_cached = ?, planner_request_count = ?,
+             planner_ms = ?,
+             updated_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        usage.inputTokens,
+        usage.outputTokens,
+        usage.cacheReadTokens,
+        usage.requestCount ?? null,
+        durationMs,
+        new Date().toISOString(),
+        id
+      );
+  }
+
+  /**
+   * Persists the policy snapshot taken at `loom_approve_plan` so the
+   * supervisor can diff it against the live policy.yaml at finalize/
+   * integrate time. Mid-run edits to late-bound fields (allowed_remotes,
+   * test_command, integrator, etc.) actually take effect, and an
+   * `epic_policy_rebound` audit row records exactly what changed.
+   */
+  setPolicySnapshot(id: string, snapshotJson: string): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET policy_snapshot = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(snapshotJson, new Date().toISOString(), id);
+  }
+
+  /**
+   * Enters the finalize overlay: status='finalizing' with the live phase set.
+   * Parallel to beginPlanning — the finalize overlay (ADR-1) mirrors the
+   * planning overlay rather than sharing one generic phase column.
+   */
+  beginFinalizing(id: string, phase: FinalizePhase): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET status = 'finalizing', finalize_phase = ?,
+                          updated_at = ? WHERE id = ?`
+      )
+      .run(phase, new Date().toISOString(), id);
+  }
+
+  /** Advances the finalize_phase marker; status stays 'finalizing'. */
+  updateFinalizePhase(id: string, phase: FinalizePhase): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET finalize_phase = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(phase, new Date().toISOString(), id);
+  }
+
+  /**
+   * Persists the epic PR URL of record. MUST be durable before any
+   * status='done' write — the Supervisor gates `done` on this column.
+   */
+  recordPrUrl(id: string, url: string): void {
+    this.db
+      .prepare(`UPDATE epics SET epic_pr_url = ?, updated_at = ? WHERE id = ?`)
+      .run(url, new Date().toISOString(), id);
+  }
+
+  /**
+   * Terminal infra/runtime failure: status='failed', store the error message,
+   * and clear finalize_phase (the run is no longer in flight). Distinct from a
+   * human 'rejected' verdict.
+   */
+  fail(id: string, error: string): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET status = 'failed', error = ?, finalize_phase = NULL,
+                          updated_at = ? WHERE id = ?`
+      )
+      .run(error, new Date().toISOString(), id);
+  }
+
+  /**
+   * Clean terminal state for a brief-gate rejection: status='rejected' with the
+   * machine verdict written to the `error` column, NOT `reason`. A human reject
+   * (`updateStatus(id, 'rejected', reason)`) sets `reason` and leaves `error`
+   * null; this gate reject inverts that — `error` carries the non-human verdict
+   * and `reason` stays null. Both share the 'rejected' status (no schema
+   * migration during the freeze), so the error-vs-reason split is the ONLY
+   * signal that distinguishes a quality-gate verdict from an operator decision.
+   * Keep them apart — don't collapse the verdict into `reason`.
+   */
+  reject(id: string, verdict: string): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET status = 'rejected', reason = NULL, error = ?,
+                          planning_phase = NULL, updated_at = ? WHERE id = ?`
+      )
+      .run(verdict, new Date().toISOString(), id);
+  }
+}

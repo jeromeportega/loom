@@ -1,0 +1,107 @@
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createDatabase, EpicStore, AgentStore } from '@loom-ai/core';
+import { runStatus } from '../commands/status.js';
+
+let repo: string;
+let prevCwd: string;
+
+beforeEach(() => {
+  repo = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-json-'));
+  fs.mkdirSync(path.join(repo, '.loom'), { recursive: true });
+  prevCwd = process.cwd();
+  process.chdir(repo);
+});
+
+afterEach(() => {
+  process.chdir(prevCwd);
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+/** Captures everything `runStatus` writes to stdout and returns it joined. */
+function captureStatus(options: Parameters<typeof runStatus>[0]): string {
+  const lines: string[] = [];
+  const orig = console.log;
+  console.log = (...args: unknown[]): void => {
+    lines.push(args.map(String).join(' '));
+  };
+  try {
+    runStatus(options);
+  } finally {
+    console.log = orig;
+  }
+  return lines.join('\n');
+}
+
+interface JsonStory {
+  id: string;
+  status: string;
+  history?: { id: string; status: string }[];
+}
+
+describe('loom status --json — retry-row collapse', () => {
+  it('emits exactly ONE row per story with the earlier attempt in history[] (no duplicate blocked+done)', () => {
+    // The classic duplicate: a blocked first attempt then a done retry. A
+    // naive per-row listing would surface BOTH as top-level rows; the
+    // collapsed shape must show one row (the latest) with the old one in
+    // history — closing the CLI duplicate-row leak.
+    const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
+    new EpicStore(db).create('epic-001', 'Epic one');
+    const agents = new AgentStore(db);
+    const older = agents.create('epic-001', 'story-001-001', 'The story');
+    agents.updateStatus(older.id, 'blocked');
+    // Distinct, later timestamp so the done attempt is unambiguously "latest".
+    db.prepare("UPDATE agents SET updated_at = '2026-06-09T11:00:00.000Z' WHERE id = ?").run(
+      older.id
+    );
+    const newer = agents.create('epic-001', 'story-001-001', 'The story');
+    agents.updateStatus(newer.id, 'done');
+    db.prepare("UPDATE agents SET updated_at = '2026-06-09T12:00:00.000Z' WHERE id = ?").run(
+      newer.id
+    );
+    db.close();
+
+    const out = captureStatus({ json: true });
+    const payload = JSON.parse(out) as {
+      epics: { id: string; stories: JsonStory[] }[];
+    };
+
+    assert.equal(payload.epics.length, 1, 'one epic');
+    const stories = payload.epics[0].stories;
+    const rows = stories.filter((s) => s.id === 'story-001-001');
+    assert.equal(rows.length, 1, 'exactly one row for the retried story');
+
+    const row = rows[0];
+    assert.equal(row.status, 'done', 'the surviving row is the latest (done) attempt');
+    assert.ok(row.history, 'history array is present for a retried story');
+    assert.equal(row.history!.length, 1, 'the earlier attempt is in history');
+    assert.equal(row.history![0].id, older.id, 'history holds the blocked first attempt');
+    assert.equal(row.history![0].status, 'blocked');
+
+    // No top-level duplicate anywhere in the payload, by id.
+    const allStatuses = stories.map((s) => `${s.id}:${s.status}`);
+    assert.equal(
+      new Set(allStatuses).size,
+      allStatuses.length,
+      'no two top-level rows for the same story_id'
+    );
+  });
+
+  it('omits history for a story with a single attempt', () => {
+    const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
+    new EpicStore(db).create('epic-001', 'Epic one');
+    new AgentStore(db).create('epic-001', 'story-001-001', 'The story');
+    db.close();
+
+    const out = captureStatus({ json: true });
+    const payload = JSON.parse(out) as {
+      epics: { stories: JsonStory[] }[];
+    };
+    const row = payload.epics[0].stories[0];
+    assert.equal(row.id, 'story-001-001');
+    assert.equal(row.history, undefined, 'no history array when there was no retry');
+  });
+});

@@ -1,0 +1,107 @@
+---
+epic_id: epic-002
+title: "BMAD Planning Pipeline: Analyst → PM → Architect headless workflow"
+status: approved
+priority: must-have
+prd_ref: "../_bmad-output/planning-artifacts/prd/prd.md"
+requirements:
+  - FR-2
+  - FR-3
+stepsCompleted: []
+
+stories:
+  - id: story-002-001
+    title: "Persona loader: load BMAD agent SKILL.md + customize.toml into Claude context"
+    description: |
+      Implement the persona loader that:
+        - Reads the SKILL.md and resolved customize.toml for a given BMAD agent name
+        - Constructs a system prompt merging persona identity, role, principles, and menu
+        - Returns a structured prompt object ready to pass to the Anthropic SDK
+    acceptance_criteria:
+      - PersonaLoader.load('bmad-agent-analyst') returns a prompt object with icon, name, role, communication_style, principles
+      - Resolves customize.toml via the three-layer merge rules (base → team → user)
+      - Persistent facts prefixed with `file:` are loaded from disk and included
+    estimated_complexity: small
+    dependencies: []
+    tech_notes: "Parse TOML with @iarna/toml. Glob file: references with fast-glob."
+
+  - id: story-002-002
+    title: "Analyst persona: brief → project-context.md (headless)"
+    description: |
+      Implement the Analyst (Mary) headless workflow:
+        - Input: raw brief string from `loom epic "<brief>"`
+        - Calls Claude API as Mary, following the bmad-product-brief headless mode
+        - Produces _bmad-output/planning-artifacts/project-brief/brief.md
+        - Produces addendum.md if supplementary content is detected
+        - Outputs JSON status block: {status, intent, brief, addendum}
+    acceptance_criteria:
+      - Given a 1-2 paragraph brief, produces a structured brief.md in <2 min
+      - brief.md has YAML frontmatter (title, status: draft, created, updated)
+      - Output JSON status block has status: "complete"
+      - Runs with no human interaction (headless mode)
+      - Uses prompt caching on the system prompt (cache_control: ephemeral)
+    estimated_complexity: medium
+    dependencies:
+      - story-002-001
+    tech_notes: |
+      Use Anthropic SDK extended thinking off for speed.
+      Apply cache_control: {type: ephemeral} to persona system prompt block.
+      Claude model: claude-sonnet-4-6 (configurable in policy.yaml).
+
+  - id: story-002-003
+    title: "PM persona: project-context → PRD + epic YAML (headless)"
+    description: |
+      Implement the PM (John) headless workflow:
+        - Input: brief.md produced by Analyst
+        - Calls Claude API as John, following bmad-prd (create intent) headless mode
+        - Produces _bmad-output/planning-artifacts/prd/prd.md
+        - Produces epics/epic-{n}.yaml for each epic identified (validated against epic.schema.yaml)
+        - Outputs JSON status block: {status, prd, epics: [paths]}
+    acceptance_criteria:
+      - Given a completed brief.md, produces prd.md and at least 1 epic YAML in <3 min
+      - prd.md includes goals, user stories, functional requirements, epics overview
+      - Each epic YAML validates against epic.schema.yaml (required fields: epic_id, title, stories[])
+      - Each story has: id, title, description, acceptance_criteria[], estimated_complexity, dependencies[]
+      - Outputs JSON status block with status: "complete"
+    estimated_complexity: large
+    dependencies:
+      - story-002-002
+    tech_notes: "Validate epic YAML against schema using ajv or zod. Schema at schemas/epic.schema.yaml."
+
+  - id: story-002-004
+    title: "Architect persona: PRD + epics → architecture.md + enriched epics (headless)"
+    description: |
+      Implement the Architect (Winston) headless workflow:
+        - Input: prd.md + all epic YAMLs
+        - Calls Claude API as Winston, following bmad-create-architecture headless mode
+        - Produces docs/architecture.md with: tech stack, component diagram (Mermaid), data models, API contracts
+        - Appends tech_notes to each story in each epic YAML
+        - Outputs JSON status block: {status, architecture, epics: [updated_paths]}
+    acceptance_criteria:
+      - Given prd.md and epic YAMLs, produces architecture.md in <3 min
+      - architecture.md includes a Mermaid component diagram
+      - Each story in each epic YAML has an updated tech_notes field
+      - Output JSON status block with status: "complete"
+    estimated_complexity: large
+    dependencies:
+      - story-002-003
+    tech_notes: "Use Mermaid flowchart syntax for diagrams. Append tech_notes by updating YAML in place."
+
+  - id: story-002-005
+    title: "Human gate: approve/reject plan commands"
+    description: |
+      Implement the human gate after planning completes:
+        - CLI: `loom approve <epic-id>` advances epic from status: planned → approved
+        - CLI: `loom reject <epic-id> --reason "..."` sets status: rejected, logs reason
+        - MCP: loom_approve_plan(epic_id) and loom_reject_plan(epic_id, reason)
+        - loom status shows planning status clearly before the gate
+    acceptance_criteria:
+      - After planning pipeline runs, all epics have status: planned
+      - `loom approve epic-001` sets status to approved in SQLite
+      - `loom reject epic-001 --reason "..."` sets status to rejected and logs reason
+      - Attempting to dispatch workers on a non-approved epic returns an error
+    estimated_complexity: small
+    dependencies:
+      - story-002-003
+      - story-001-001
+    tech_notes: "Add epic_status table to SQLite (or add status field to agents table)."

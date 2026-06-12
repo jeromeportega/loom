@@ -1,0 +1,80 @@
+# Bundled planning eval suite for `loom eval`.
+# Each case: a brief, and the shape a sound plan for it should have.
+# Validated against EvalCaseSchema (packages/loom-core/src/eval/types.ts).
+
+cases:
+  - id: single-feature-cli
+    description: A small, well-scoped CLI feature — should be one tight epic.
+    brief: >
+      Build a command-line tool that lists a user's GitHub starred repositories
+      sorted by their last commit date, with an option to filter by language.
+    expect:
+      minEpics: 1
+      maxEpics: 1
+      minStories: 2
+      maxStories: 8
+      dependenciesValid: true
+
+  - id: rest-api-endpoint
+    description: A focused API addition — one epic, a handful of stories.
+    brief: >
+      Add a REST endpoint to an existing Express service that returns paginated
+      audit-log entries, with filtering by date range and actor, and tests.
+    expect:
+      minEpics: 1
+      maxEpics: 2
+      minStories: 2
+      maxStories: 10
+      dependenciesValid: true
+
+  - id: bugfix-small
+    description: A narrow bug fix — should not be over-planned into many epics.
+    brief: >
+      Fix a bug where the date picker in the settings page shows the wrong month
+      when the user's timezone is west of UTC. Add a regression test.
+    expect:
+      minEpics: 1
+      maxEpics: 1
+      minStories: 1
+      maxStories: 5
+      dependenciesValid: true
+
+  - id: auth-feature
+    description: A medium feature with natural internal ordering.
+    brief: >
+      Add email-and-password authentication to a web app: signup, login, logout,
+      password reset by email, and session management. Include input validation
+      and tests for each flow.
+    expect:
+      minEpics: 1
+      maxEpics: 2
+      minStories: 4
+      maxStories: 14
+      dependenciesValid: true
+
+  - id: data-pipeline
+    description: A larger brief that may span more than one epic.
+    brief: >
+      Build a data pipeline that ingests CSV files from an S3 bucket, validates
+      and normalizes the rows, writes them to a Postgres table, and exposes a
+      small dashboard showing ingestion stats. Include error handling for
+      malformed files and a retry mechanism.
+    expect:
+      minEpics: 1
+      maxEpics: 3
+      minStories: 4
+      maxStories: 20
+      dependenciesValid: true
+
+  - id: refactor-scoped
+    description: A refactor brief — should stay scoped, not balloon.
+    brief: >
+      Refactor the notification module to replace the ad-hoc callback handlers
+      with a single typed event bus, keeping all existing behavior and updating
+      the affected tests.
+    expect:
+      minEpics: 1
+      maxEpics: 1
+      minStories: 2
+      maxStories: 8
+      dependenciesValid: true

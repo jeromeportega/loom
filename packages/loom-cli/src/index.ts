@@ -1,0 +1,285 @@
+#!/usr/bin/env node
+import { Command } from 'commander';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { runInit } from './commands/init.js';
+import { runGuardCheck, runGuardHook } from './commands/guard.js';
+import { runStatus } from './commands/status.js';
+import { runEpic } from './commands/epic.js';
+import { runApprove, runReject } from './commands/gate.js';
+import { runArchive, runUnarchive } from './commands/archive.js';
+import { runRun } from './commands/run.js';
+import { runRetry } from './commands/retry.js';
+import { runWeb } from './commands/web.js';
+import { runStop } from './commands/stop.js';
+import { runRevert } from './commands/revert.js';
+import { runGuide } from './commands/guide.js';
+import { runMcpList, runMcpAdd } from './commands/mcp.js';
+import { runDoctor } from './commands/doctor.js';
+import { runGateDryRunCommand } from './commands/doctorDryRunGate.js';
+import { runCrossEpicGateCommand } from './commands/doctorCrossEpicGate.js';
+
+// Read the version from this package's package.json at runtime so
+// `loom --version` stays automatically in sync with the published
+// version after each release — no source bump needed.
+const PKG_VERSION = (
+  JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { version: string }
+).version;
+
+const program = new Command();
+
+program
+  .name('loom')
+  .description('Loom — autonomous agentic engineering system')
+  .version(PKG_VERSION);
+
+// ─── loom doctor ────────────────────────────────────────────────────────────
+program
+  .command('doctor')
+  .description('Check prerequisites (Node, git, claude CLI, gh) and report what is missing')
+  .option(
+    '--dry-run-gate',
+    'Execute the integration gate command ONCE in a throwaway worktree and report the outcome (opt-in only)'
+  )
+  .option(
+    '--cross-epic-gate',
+    'Merge every open epic branch into a throwaway union worktree and run the suite once — reports per-pair conflicts or the union suite result (opt-in only)'
+  )
+  .option(
+    '--epics <ids>',
+    'Comma-separated epic ids to restrict --cross-epic-gate to (default: every epic/* branch)'
+  )
+  .action(async (opts: { dryRunGate?: boolean; crossEpicGate?: boolean; epics?: string }) => {
+    if (opts.crossEpicGate) {
+      const epics = opts.epics
+        ? opts.epics
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0)
+        : undefined;
+      await runCrossEpicGateCommand(process.cwd(), epics);
+      return;
+    }
+    if (opts.dryRunGate) {
+      await runGateDryRunCommand(process.cwd());
+      return;
+    }
+    runDoctor();
+  });
+
+// ─── loom init ─────────────────────────────────────────────────────────────
+program
+  .command('init')
+  .description('Initialize loom in the current git repo')
+  .option('--cursor', 'Also write .cursor/mcp.json and .cursor/rules/loom.mdc')
+  .option('-y, --yes', 'Skip confirmation prompts')
+  .action((opts: { cursor?: boolean; yes?: boolean }) => {
+    runInit(opts);
+  });
+
+// ─── loom guard ────────────────────────────────────────────────────────────
+const guard = program
+  .command('guard')
+  .description('Guardrail commands');
+
+guard
+  .command('check')
+  .description('Check whether a command is allowed by policy (CLI / manual use)')
+  .requiredOption('--command <cmd>', 'The command to validate')
+  .action((opts: { command: string }) => {
+    runGuardCheck(opts.command);
+  });
+
+guard
+  .command('hook')
+  .description('Read Claude Code PreToolUse JSON from stdin and enforce policy (used by .claude/settings.json hook)')
+  .action(async () => {
+    await runGuardHook();
+  });
+
+// ─── loom status ────────────────────────────────────────────────────────────
+program
+  .command('status')
+  .description('Show current epic and agent status')
+  .option('--watch', 'Refresh every 10s until all stories reach terminal status')
+  .option('--epic <id>', 'Show only this epic')
+  .option('--all', 'Aggregate status across every registered loom project')
+  .option('--archived', 'Include archived runs (hidden by default)')
+  .option('--json', 'Emit a machine-readable JSON payload (one row per story, retries under history[])')
+  .action(
+    (opts: {
+      watch?: boolean;
+      epic?: string;
+      all?: boolean;
+      archived?: boolean;
+      json?: boolean;
+    }) => {
+      runStatus({
+        watch: opts.watch,
+        epicId: opts.epic,
+        all: opts.all,
+        archived: opts.archived,
+        json: opts.json,
+      });
+    }
+  );
+
+// ─── loom epic ──────────────────────────────────────────────────────────────
+program
+  .command('epic')
+  .description('Plan an epic from a brief (runs the Analyst → PM → Architect pipeline)')
+  .argument('<brief>', 'One paragraph describing what to build')
+  .option(
+    '--force',
+    'Skip the brief-quality gate for this invocation; the critique is still produced and audit-logged'
+  )
+  .action(async (brief: string, opts: { force?: boolean }) => {
+    await runEpic(brief, { force: opts.force });
+  });
+
+// ─── loom approve / reject (human gate) ─────────────────────────────────────
+program
+  .command('approve')
+  .description('Approve planned epic(s) and release them for execution')
+  .argument('[epic-id]', 'Epic to approve; omit to approve all planned epics')
+  .option('--run', 'After approving, chain into `loom run <epic-id>` to dispatch immediately (requires an explicit epic id)')
+  .action(async (epicId: string | undefined, opts: { run?: boolean }) => {
+    await runApprove(epicId, { run: opts.run });
+  });
+
+program
+  .command('reject')
+  .description('Reject a planned epic')
+  .argument('<epic-id>', 'Epic to reject')
+  .option('--reason <reason>', 'Why the epic is being rejected')
+  .action((epicId: string, opts: { reason?: string }) => {
+    runReject(epicId, opts.reason);
+  });
+
+// ─── loom archive / unarchive ───────────────────────────────────────────────
+program
+  .command('archive')
+  .description('Hide a run from status/web/MCP views (non-destructive)')
+  .argument('<epic-id>', 'Epic to archive (e.g. epic-001)')
+  .action((epicId: string) => {
+    runArchive(epicId);
+  });
+
+program
+  .command('unarchive')
+  .description('Restore an archived run to the default views')
+  .argument('<epic-id>', 'Epic to unarchive (e.g. epic-001)')
+  .action((epicId: string) => {
+    runUnarchive(epicId);
+  });
+
+// ─── loom run ───────────────────────────────────────────────────────────────
+program
+  .command('run')
+  .description('Dispatch story agents for approved epics (the supervisor)')
+  .argument('[epic-ids...]', 'Specific epics to run; omit to run all approved epics')
+  .option(
+    '--checkpoint <boundary>',
+    'Pause after the next "story" or "epic" instead of completing everything'
+  )
+  .option('--verbose', 'Stream live worker stdout/stderr to the terminal')
+  .action(async (epicIds: string[], opts: { checkpoint?: string; verbose?: boolean }) => {
+    const checkpoint = opts.checkpoint;
+    if (checkpoint && checkpoint !== 'story' && checkpoint !== 'epic') {
+      console.error('--checkpoint must be "story" or "epic"');
+      process.exit(1);
+    }
+    await runRun(epicIds, {
+      checkpoint: checkpoint as 'story' | 'epic' | undefined,
+      verbose: opts.verbose,
+    });
+  });
+
+// ─── loom retry ───────────────────────────────────────────────────────────────
+program
+  .command('retry')
+  .description(
+    'Reset a failed/blocked story and re-run it. Lease-aware: a live run re-dispatches it; otherwise this command dispatches. Grants a fresh auto-retry budget.'
+  )
+  .argument('<story-id>', 'Story id to retry (e.g. story-001-003)')
+  .option(
+    '--clean',
+    'Tear down the story\'s worktree + branch (and those stacked on it) so it re-runs from scratch instead of resuming'
+  )
+  .action(async (storyId: string, opts: { clean?: boolean }) => {
+    await runRetry(storyId, { clean: opts.clean });
+  });
+
+// ─── loom web ───────────────────────────────────────────────────────────────
+program
+  .command('web')
+  .description('Launch the loom web dashboard (localhost-only, random token)')
+  .option('-p, --port <n>', 'Port to bind (default: 8765, with free-port search)', (v: string) => parseInt(v, 10))
+  .option('--no-open', "Don't auto-open the browser")
+  .action(async (opts: { port?: number; open?: boolean }) => {
+    await runWeb({ port: opts.port, noOpen: opts.open === false });
+  });
+
+// ─── loom stop ──────────────────────────────────────────────────────────────
+program
+  .command('stop')
+  .description('Halt the supervisor (no args), or SIGTERM specific worker(s) by story id')
+  .argument('[story-ids...]', 'Story ids to stop individually; omit to halt the whole run')
+  .action((storyIds: string[]) => {
+    runStop(storyIds);
+  });
+
+// ─── loom guide ─────────────────────────────────────────────────────────────
+program
+  .command('guide')
+  .description('Append a guidance message for one running worker — reads at next dispatch/revision when policy.agents.operator_guidance=on')
+  .argument('<story-id>', 'Story id (e.g. story-001-003)')
+  .argument('[message...]', 'Free-form guidance text (omit when using --clear)')
+  .option('--clear', 'Remove the guidance file for this story')
+  .option('--author <name>', 'Tag the entry with an author label (defaults to "operator")')
+  .action((storyId: string, messageParts: string[], opts: { clear?: boolean; author?: string }) => {
+    runGuide(storyId, messageParts.join(' '), opts);
+  });
+
+// ─── loom revert ────────────────────────────────────────────────────────────
+program
+  .command('revert')
+  .description('Tear down an epic: delete the epic + story branches locally, flip DB status. --remote also deletes the upstream branch and closes the PR.')
+  .argument('<epic-id>', 'Epic id (e.g. epic-001)')
+  .option('--remote', 'Also delete the remote epic branch and close any loom-opened PR. Requires the project remote to match policy.git.allowed_remotes.')
+  .option('--reason <text>', 'Optional explanation recorded with the revert in audit_log')
+  .action((epicId: string, opts: { remote?: boolean; reason?: string }) => {
+    runRevert(epicId, opts);
+  });
+
+// ─── loom mcp ───────────────────────────────────────────────────────────────
+const mcp = program
+  .command('mcp')
+  .description('Provision approved MCP servers from the org registry');
+
+mcp
+  .command('list')
+  .description('List approved MCP servers from the configured registry')
+  .action(() => {
+    runMcpList();
+  });
+
+mcp
+  .command('add')
+  .description('Add an approved MCP server to .mcp.json and .cursor/mcp.json')
+  .argument('<name>', 'Registry server name')
+  .action((name: string) => {
+    runMcpAdd(name);
+  });
+
+// ─── loom serve ─────────────────────────────────────────────────────────────
+program
+  .command('serve')
+  .description('Start the loom MCP server (stdio transport)')
+  .action(async () => {
+    // Dynamically import to keep CLI startup fast when MCP is not needed
+    const { startMcpServer } = await import('@loom-ai/mcp');
+    await startMcpServer();
+  });
+
+program.parse();

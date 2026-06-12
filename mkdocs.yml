@@ -1,0 +1,87 @@
+# mkdocs.yml
+
+# Project information
+site_name: "Loom — Agentic Engineering System"
+site_url: "https://jeromeportega.github.io/loom/"
+repo_url: "https://github.com/jeromeportega/loom/"
+repo_name: "jeromeportega/loom"
+
+docs_dir: docs
+site_dir: site
+
+# Theme Configuration
+theme:
+  name: readthedocs
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - toc.integrate
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.annotation
+    - content.code.copy
+  language: en
+
+# Markdown extensions
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - "Home": index.md
+  - "Getting Started": getting-started/index.md
+  - "What loom can do (current)": capabilities.md
+  - "Strategy":
+    - "Positioning": strategy/positioning.md
+    - "Alpha-readiness pitch": strategy/alpha-pitch.md
+    - "Jira slate (draft)": strategy/jira-slate.md
+    - "Web vs MCP (UX recommendation)": strategy/web-vs-mcp-interaction-split.md
+  - "Use Cases": use-cases/index.md
+  - "Architecture":
+    - "System Overview": architecture/index.md
+    - "Planning Artifacts (Why We Commit Them)": architecture/planning-artifacts.md
+    - "Web UI": architecture/web-ui.md
+    - "Decision Traces": architecture/decision-traces.md
+    - "Brief Refinement": architecture/brief-refinement.md
+    - "Worker Resilience": architecture/worker-resilience.md
+  - "Research":
+    - "Overview": research/index.md
+    - "Live Agent Guidance": research/live-agent-guidance.md
+  - "Testing":
+    - "Overview & Philosophy": testing/index.md
+    - "Unit Tests": testing/unit-tests.md
+    - "Planning Eval": testing/planning-eval.md
+    - "SWE-bench Lite Bench": testing/swe-bench-lite.md
+    - "Bench Methodology": testing/bench-methodology.md
+    - "Testing Runbook": testing/runbook.md
+    - "SWE-bench Operator Runbook": testing/swe-bench-runbook.md
+  - "Operations":
+    - "Session Handoff": operations/session-handoff.md
+    - "Releasing": operations/releasing.md
+    - "Known Limitations": operations/known-limitations.md
+    - "Bootstrap": operations/bootstrap.md
+
+plugins:
+  - search
+
+# Exclude review docs from the build. They are commit-time artifacts, not
+# operator-facing docs.
+exclude_docs: |
+  reviews/

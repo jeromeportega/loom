@@ -1,0 +1,69 @@
+---
+epic_id: epic-006
+title: "IDE Integrations: Cursor MCP + Claude Code slash commands"
+status: approved
+priority: must-have
+prd_ref: "../_bmad-output/planning-artifacts/prd/prd.md"
+requirements:
+  - FR-9 (Cursor MCP config)
+  - FR-1 (init writes IDE configs)
+stepsCompleted: []
+
+stories:
+  - id: story-006-001
+    title: "Cursor integration: .cursor/mcp.json config and .cursor/rules/loom.mdc"
+    description: |
+      When `loom init --cursor` runs:
+        - Writes .cursor/mcp.json connecting to loom-mcp server (stdio transport)
+        - Writes .cursor/rules/loom.mdc with loom context, guardrail reminders, and workflow hints
+        - Writes a symlink or copy script for ~/.loom/skills/ → .cursor/skills/
+    acceptance_criteria:
+      - After `loom init --cursor`, Cursor's MCP panel shows 7 loom tools
+      - Cursor background agents can call loom_start_epic via MCP
+      - .cursor/rules/loom.mdc is loaded into Cursor's context when working in the repo
+      - Cursor agents see loom-generated skills via .cursor/skills/
+    estimated_complexity: small
+    dependencies:
+      - story-004-001
+    tech_notes: |
+      .cursor/mcp.json format: {"mcpServers": {"loom": {"command": "loom", "args": ["serve"]}}}
+      .cursor/rules/loom.mdc: MDC format with frontmatter description and globs.
+
+  - id: story-006-002
+    title: "Claude Code integration: skills, PreToolUse hook, and CLAUDE.md"
+    description: |
+      When `loom init` runs (Claude Code mode):
+        - PreToolUse hook in .claude/settings.json points to `loom guard check`
+        - loom slash commands written to .claude/skills/:
+            /loom-epic, /loom-status, /loom-approve, /loom-skills
+        - CLAUDE.md in repo root explains loom workflow and guardrails
+    acceptance_criteria:
+      - After `loom init`, Claude Code's PreToolUse hook calls `loom guard check` before every Bash
+      - `/loom-epic "brief"` slash command starts the planning pipeline
+      - `/loom-status` renders the current epic/agent status table
+      - `/loom-approve epic-001` approves the plan and starts dispatch
+      - CLAUDE.md describes loom workflow, guardrail policy, and how to use slash commands
+    estimated_complexity: small
+    dependencies:
+      - story-004-001
+      - story-001-002
+    tech_notes: |
+      Slash commands are SKILL.md files in .claude/skills/.
+      CLAUDE.md is templated from a default in packages/loom-cli/templates/.
+
+  - id: story-006-003
+    title: "Status dashboard: `loom status` CLI and loom_get_status formatted output"
+    description: |
+      Implement a readable status output for both CLI and MCP:
+        - `loom status` renders a table in terminal with color-coded status icons
+        - `loom status --watch` refreshes every 10s until all stories are done or failed
+        - MCP loom_get_status returns JSON that loom-pi can render as a dashboard panel
+    acceptance_criteria:
+      - `loom status` shows: epic title, story count, per-story (id, title, status, pr_url)
+      - Status icons: ⏳ pending, 🔄 running, 🚫 blocked, 🔀 pr_open, ✅ done, ❌ failed
+      - `loom status --watch` exits when all stories reach terminal status (done/failed)
+      - loom_get_status JSON matches the schema in docs/architecture.md
+    estimated_complexity: small
+    dependencies:
+      - story-004-003
+    tech_notes: "Use chalk for terminal color. Use table or cli-table3 for tabular output."

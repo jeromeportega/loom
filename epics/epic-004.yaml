@@ -1,0 +1,81 @@
+---
+epic_id: epic-004
+title: "MCP Server: loom-mcp with 7 tools for Cursor + Claude Code"
+status: approved
+priority: must-have
+prd_ref: "../_bmad-output/planning-artifacts/prd/prd.md"
+requirements:
+  - FR-9
+stepsCompleted: []
+
+stories:
+  - id: story-004-001
+    title: "loom-mcp server scaffold: stdio transport + tool registry"
+    description: |
+      Create packages/loom-mcp TypeScript package that:
+        - Starts an MCP server using @modelcontextprotocol/sdk over stdio
+        - Has a tool registry with typed handler signatures
+        - Connects to loom-core's SQLite DB and orchestrator
+        - Can be launched as: `npx loom-mcp` or `loom serve`
+    acceptance_criteria:
+      - `loom serve` starts the MCP server and accepts stdio connections
+      - MCP server responds to list_tools with the loom tool catalog
+      - Connecting Cursor via .cursor/mcp.json shows loom tools in the MCP panel
+      - Connecting Claude Code shows loom tools available to slash commands
+    estimated_complexity: medium
+    dependencies:
+      - story-001-001
+    tech_notes: |
+      Use @modelcontextprotocol/sdk Server class with StdioServerTransport.
+      Package.json bin: {"loom-mcp": "dist/server.js"}.
+
+  - id: story-004-002
+    title: "Implement loom_start_epic and loom_approve_plan MCP tools"
+    description: |
+      Implement the two primary planning-phase MCP tools:
+        - loom_start_epic(brief: string): starts planning pipeline, returns epic_id
+        - loom_approve_plan(epic_id: string): approves plan, starts story dispatch
+        - loom_reject_plan(epic_id: string, reason?: string): rejects plan
+    acceptance_criteria:
+      - Cursor agent calling loom_start_epic("build a REST API") triggers planning pipeline and returns an epic_id
+      - loom_approve_plan(epic_id) transitions epic to approved and triggers supervisor dispatch
+      - loom_reject_plan(epic_id) transitions to rejected, no workers dispatched
+      - All three tools return structured JSON responses
+    estimated_complexity: medium
+    dependencies:
+      - story-004-001
+      - story-002-005
+    tech_notes: "Planning pipeline runs async; loom_start_epic returns immediately with epic_id and status: planning."
+
+  - id: story-004-003
+    title: "Implement loom_get_status and loom_get_audit_log MCP tools"
+    description: |
+      Implement monitoring MCP tools:
+        - loom_get_status(epic_id?: string): returns AgentStatusTree JSON
+        - loom_get_audit_log(agent_id: string, limit?: number): returns LogEntry[]
+    acceptance_criteria:
+      - loom_get_status() returns all active epics with stories and per-story agent status
+      - loom_get_status(epic_id) returns only that epic's status tree
+      - loom_get_audit_log(agent_id) returns the last 50 log entries for that agent
+      - Status fields match schema: epic_id, title, stories[{id, title, status, pr_url, started_at}]
+    estimated_complexity: small
+    dependencies:
+      - story-004-001
+    tech_notes: "Query SQLite agents and audit_log tables. Return as JSON-serializable objects."
+
+  - id: story-004-004
+    title: "Implement loom_policy_check, loom_list_skills MCP tools"
+    description: |
+      Implement utility MCP tools:
+        - loom_policy_check(command: string): returns {allowed: bool, rule?: string, reason?: string}
+        - loom_list_skills(): returns SkillManifest[] from ~/.loom/skills/ + .loom/skills/
+    acceptance_criteria:
+      - loom_policy_check("git push --force") returns {allowed: false, rule: "git.forbidden_flags", reason: "..."}
+      - loom_policy_check("git add .") returns {allowed: true}
+      - loom_list_skills() returns array with name, description, metadata for each skill
+      - Cursor agents can call loom_policy_check before each Bash execution as a guardrail
+    estimated_complexity: small
+    dependencies:
+      - story-004-001
+      - story-001-002
+    tech_notes: "loom_policy_check delegates to same policy engine as CLI guard command."

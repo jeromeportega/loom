@@ -1,0 +1,77 @@
+---
+epic_id: epic-003
+title: "Story Dispatch: supervisor, worktree isolation, subagent runner"
+status: approved
+priority: must-have
+prd_ref: "../_bmad-output/planning-artifacts/prd/prd.md"
+requirements:
+  - FR-4
+  - FR-6
+stepsCompleted: []
+
+stories:
+  - id: story-003-001
+    title: "Worktree manager: create, list, clean up git worktrees per story"
+    description: |
+      Implement WorktreeManager that:
+        - Creates a git worktree at .loom/worktrees/story-{id}/ on branch story/{story-id}
+        - Lists active worktrees and their associated agent
+        - Removes a worktree after PR is merged or closed
+    acceptance_criteria:
+      - WorktreeManager.create(story_id) creates .loom/worktrees/story-{id} and branch story/{story-id}
+      - WorktreeManager.list() returns all active worktrees with their story_ids
+      - WorktreeManager.remove(story_id) removes the worktree and optionally deletes the branch
+      - Creating a worktree for the same story_id twice is idempotent (returns existing)
+      - Worktrees are created from the current HEAD of main/master
+    estimated_complexity: small
+    dependencies:
+      - story-001-001
+    tech_notes: "Use git worktree add --detach then git checkout -b pattern. Use simple-git or direct execa calls."
+
+  - id: story-003-002
+    title: "Supervisor: read approved epic YAML and dispatch story subagents"
+    description: |
+      Implement the Supervisor that:
+        - Reads all approved epic YAMLs and extracts stories with status: pending
+        - Respects dependency ordering (stories with unfulfilled dependencies wait)
+        - Dispatches up to max_concurrent stories as Claude Code subagents (Agent tool)
+        - Tracks dispatched agents in SQLite (status: running)
+        - Polls for completions and dispatches next story when a slot opens
+    acceptance_criteria:
+      - Given epic-001.yaml with 3 stories and max_concurrent=2, dispatches 2 immediately and 1 after first completes
+      - Story with dependency story-001-001 waits until that story's status is done
+      - Each dispatched agent receives: story spec, acceptance_criteria, worktree path, policy constraints
+      - Supervisor logs all dispatch/completion events to audit_log
+    estimated_complexity: large
+    dependencies:
+      - story-003-001
+      - story-002-005
+    tech_notes: |
+      Use Claude Code Agent tool for subagent dispatch.
+      Pass worktree_path as the working directory for each agent.
+      Poll SQLite agents table every 30s for status updates from workers.
+
+  - id: story-003-003
+    title: "Worker agent: implement story in worktree and open PR"
+    description: |
+      Implement the worker agent prompt template that:
+        - Receives story spec, AC, worktree path, relevant skills
+        - Implements the story following AC, writing tests
+        - Runs tests before considering done
+        - Opens a PR: `gh pr create --title "story/{id}: {title}" --body "..."`
+        - Updates SQLite status to pr_open with pr_url
+        - Never pushes to protected branches; always uses its story branch
+    acceptance_criteria:
+      - Worker agent creates at least one commit in the worktree
+      - Worker agent runs tests (if test command is in policy.yaml or package.json)
+      - Worker agent calls `gh pr create` and captures the PR URL
+      - SQLite agents table updated with status=pr_open and pr_url
+      - Worker agent respects guardrails (all Bash calls checked via loom guard check)
+    estimated_complexity: medium
+    dependencies:
+      - story-003-001
+      - story-001-002
+    tech_notes: |
+      Worker prompt template in packages/loom-core/prompts/worker-agent.md.
+      Include relevant BMAD bmad-agent-dev skill for implementation guidance.
+      PR body template auto-includes story AC as a checklist.

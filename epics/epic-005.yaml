@@ -1,0 +1,68 @@
+---
+epic_id: epic-005
+title: "Skill System: discovery, loading, injection, and post-story generation"
+status: approved
+priority: should-have
+prd_ref: "../_bmad-output/planning-artifacts/prd/prd.md"
+requirements:
+  - FR-8
+stepsCompleted: []
+
+stories:
+  - id: story-005-001
+    title: "Skill store: discover and load agentskills.io skills from disk"
+    description: |
+      Implement SkillStore that:
+        - Scans ~/.loom/skills/ and .loom/skills/ for SKILL.md files
+        - Parses frontmatter (name, description, metadata, allowed-tools)
+        - Returns SkillManifest[] at startup (progressive disclosure: metadata only)
+        - Loads full SKILL.md body on demand (when skill is selected for injection)
+    acceptance_criteria:
+      - SkillStore.discover() returns manifests for all valid skills in both paths
+      - Invalid SKILL.md files (missing name or description) are skipped with a warning
+      - SkillStore.load(name) returns the full SKILL.md body
+      - Performance: discovery of 50 skills completes in <100ms
+    estimated_complexity: small
+    dependencies:
+      - story-001-001
+    tech_notes: "Use fast-glob for directory scanning. Parse frontmatter with gray-matter."
+
+  - id: story-005-002
+    title: "Skill selector: pick relevant skills for a story based on description"
+    description: |
+      Implement SkillSelector that:
+        - Takes a story description and the list of SkillManifests
+        - Returns the top-5 most relevant skills using keyword/category matching (V1: no embeddings)
+        - Always includes loom-specific skills (loom-guardrails, loom-worker-protocol) if present
+    acceptance_criteria:
+      - Story about "JWT authentication" returns skills with auth/security in name or description
+      - Story about "Postgres migration" returns database-related skills
+      - Always includes loom-guardrails skill if present in the store
+      - Returns at most 5 skills to keep context window lean
+    estimated_complexity: small
+    dependencies:
+      - story-005-001
+    tech_notes: "V1: simple TF-IDF or keyword overlap scoring. V2: embeddings. Keep it swappable."
+
+  - id: story-005-003
+    title: "Post-story skill generator: detect novel patterns and write SKILL.md"
+    description: |
+      Implement SkillGenerator that runs after story completion:
+        - Reads the agent's audit log (last N tool calls)
+        - Calls Claude API with: "Given this tool call sequence, is there a novel, reusable pattern not covered by existing skills? If yes, return a SKILL.md in agentskills.io format."
+        - If Claude returns a skill, writes to ~/.loom/skills/generated/{name}/SKILL.md
+        - Uses prompt caching on the existing skill manifests (expensive lookup amortized)
+    acceptance_criteria:
+      - After a story involving a novel DB migration pattern, a skill is generated
+      - Generated SKILL.md has valid frontmatter (name, description, valid agentskills.io format)
+      - Skill is immediately discoverable by SkillStore.discover() after generation
+      - Uses cached_control on skill manifests to reduce API cost
+      - Runs asynchronously (does not block story completion status update)
+    estimated_complexity: medium
+    dependencies:
+      - story-005-001
+      - story-003-003
+    tech_notes: |
+      Model: claude-haiku-4-5 for cost efficiency on skill generation.
+      Include existing skill names+descriptions in the prompt (with cache_control) so Claude knows what's already covered.
+      Validate generated SKILL.md name against agentskills.io naming rules before writing.

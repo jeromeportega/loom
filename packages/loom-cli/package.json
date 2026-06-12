@@ -1,0 +1,34 @@
+{
+  "name": "loom-ai",
+  "version": "1.0.1",
+  "description": "Loom — a self-learning, autonomous agentic engineering system. Write a brief, approve the plan, agents deliver the epic.",
+  "keywords": ["ai", "agents", "autonomous", "claude", "code-generation", "cli", "mcp"],
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/jeromeportega/loom",
+  "repository": { "type": "git", "url": "git+https://github.com/jeromeportega/loom.git" },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "commonjs",
+  "bin": {
+    "loom": "dist/index.js",
+    "loom-bench": "dist/loom-bench.js"
+  },
+  "files": ["dist"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc",
+    "test": "bash -O globstar -c 'node --test dist/__tests__/**/*.test.js'",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@loom-ai/core": "^1.0.1",
+    "@loom-ai/web": "^1.0.1",
+    "chalk": "^5.3.0",
+    "cli-table3": "^0.6.3",
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}

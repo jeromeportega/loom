@@ -1,0 +1,288 @@
+import Database from 'better-sqlite3';
+import path from 'node:path';
+import fs from 'node:fs';
+
+const SCHEMA_VERSION = 15;
+
+const DDL = `
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS epics (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'planned',
+  brief_path TEXT,
+  prd_path TEXT,
+  yaml_path TEXT,
+  reason TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  planner_tokens_input INTEGER,
+  planner_tokens_output INTEGER,
+  planner_tokens_cached INTEGER,
+  planner_ms INTEGER,
+  base_sha TEXT,
+  archived_at DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS agents (
+  id TEXT PRIMARY KEY,
+  epic_id TEXT NOT NULL REFERENCES epics(id),
+  story_id TEXT NOT NULL,
+  story_title TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  worktree_path TEXT,
+  branch_name TEXT,
+  pr_url TEXT,
+  log_tail TEXT,
+  started_at DATETIME,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  worker_pid INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id TEXT REFERENCES agents(id),
+  action TEXT NOT NULL,
+  command TEXT,
+  allowed INTEGER,
+  policy_rule TEXT,
+  detail TEXT,
+  timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- v3: skill provenance — which skill was injected into which story, and the outcome.
+CREATE TABLE IF NOT EXISTS skill_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_name TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  story_id TEXT NOT NULL,
+  outcome TEXT,
+  injected_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- v5: a single-row control table — lets "loom stop" signal a running supervisor.
+CREATE TABLE IF NOT EXISTS loom_control (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  state TEXT NOT NULL DEFAULT 'running'
+);
+
+-- v13: per-epic supervisor lease. Prevents two supervisors (e.g. an MCP
+-- in-process dispatch and a "loom run" subprocess, or a retry racing a live
+-- run) from dispatching the same epic's stories into the idempotent worktrees
+-- concurrently. A lease is "live" while its heartbeat is recent; a stale lease
+-- (crashed supervisor) is reclaimable.
+CREATE TABLE IF NOT EXISTS loom_lease (
+  epic_id TEXT PRIMARY KEY,
+  owner TEXT NOT NULL,
+  pid INTEGER NOT NULL,
+  hostname TEXT,
+  acquired_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  heartbeat_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- v4: eval runs — one row per "loom eval" invocation, for drift detection.
+CREATE TABLE IF NOT EXISTS eval_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  suite TEXT NOT NULL,
+  score REAL NOT NULL,
+  passed INTEGER NOT NULL,
+  total INTEGER NOT NULL,
+  ran_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS audit_log_fts USING fts5(
+  command,
+  action,
+  content=audit_log,
+  content_rowid=id
+);
+
+CREATE TRIGGER IF NOT EXISTS audit_log_ai AFTER INSERT ON audit_log BEGIN
+  INSERT INTO audit_log_fts(rowid, command, action)
+  VALUES (new.id, new.command, new.action);
+END;
+
+-- v11: decision_traces — first-class capture of agent reasoning. The
+-- audit_log records WHAT an agent did; this table records WHY. Populated
+-- by the worker's stream-json parser when claude emits thinking blocks.
+-- See docs/architecture/decision-traces.md.
+CREATE TABLE IF NOT EXISTS decision_traces (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id TEXT,
+  epic_id TEXT,
+  story_id TEXT,
+  kind TEXT NOT NULL,
+  subject TEXT,
+  rationale TEXT NOT NULL,
+  metadata TEXT,
+  timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_traces_agent ON decision_traces(agent_id);
+CREATE INDEX IF NOT EXISTS idx_decision_traces_story ON decision_traces(story_id);
+`;
+
+let _db: Database.Database | null = null;
+
+/**
+ * Creates a fresh, migrated, NON-singleton database. Use for isolation —
+ * eval runs and tests that need a database separate from the app's. Pass
+ * ':memory:' for an in-memory database.
+ */
+export function createDatabase(dbPath: string): Database.Database {
+  if (dbPath !== ':memory:') {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  }
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  runMigrations(db);
+  return db;
+}
+
+/** Opens the app's shared (singleton) database under a `.loom` directory. */
+export function openDatabase(loomdir: string): Database.Database {
+  if (_db) return _db;
+  _db = createDatabase(path.join(loomdir, 'loom.db'));
+  return _db;
+}
+
+export function runMigrations(db: Database.Database): void {
+  db.exec(DDL);
+
+  // Per-column migrations for DBs created before these columns existed.
+  const agentCols = db.prepare('PRAGMA table_info(agents)').all() as {
+    name: string;
+  }[];
+  if (!agentCols.some((c) => c.name === 'story_title')) {
+    db.exec('ALTER TABLE agents ADD COLUMN story_title TEXT');
+  }
+  // v6: worker_pid — the OS pid of the running worker subprocess, for
+  // per-agent cancellation (loom_stop_agent).
+  if (!agentCols.some((c) => c.name === 'worker_pid')) {
+    db.exec('ALTER TABLE agents ADD COLUMN worker_pid INTEGER');
+  }
+  // v9: review_status — outcome of the CodeReviewAgent pass for this story
+  // (Epic 18 story-018-002). NULL = no review configured / not yet run.
+  // Values: 'pending' | 'passed' | 'commented' | 'blocked' | 'skipped'.
+  if (!agentCols.some((c) => c.name === 'review_status')) {
+    db.exec('ALTER TABLE agents ADD COLUMN review_status TEXT');
+  }
+  if (!agentCols.some((c) => c.name === 'review_summary')) {
+    db.exec('ALTER TABLE agents ADD COLUMN review_summary TEXT');
+  }
+  // v10: per-worker token usage from stream-json output parsing (Epic 16).
+  if (!agentCols.some((c) => c.name === 'tokens_input')) {
+    db.exec('ALTER TABLE agents ADD COLUMN tokens_input INTEGER');
+  }
+  if (!agentCols.some((c) => c.name === 'tokens_output')) {
+    db.exec('ALTER TABLE agents ADD COLUMN tokens_output INTEGER');
+  }
+  if (!agentCols.some((c) => c.name === 'tokens_cached')) {
+    db.exec('ALTER TABLE agents ADD COLUMN tokens_cached INTEGER');
+  }
+  if (!agentCols.some((c) => c.name === 'tokens_cache_creation')) {
+    db.exec('ALTER TABLE agents ADD COLUMN tokens_cache_creation INTEGER');
+  }
+  if (!agentCols.some((c) => c.name === 'cost_usd')) {
+    db.exec('ALTER TABLE agents ADD COLUMN cost_usd REAL');
+  }
+  // v14: per-attempt LLM request count. The cursor-cli backend's org pricing
+  // is per-request, not per-token; cost_usd carries the dollar figure for
+  // claude-cli (actual from Anthropic metering) but is meaningless under
+  // cursor. request_count is the cursor-side spend signal.
+  if (!agentCols.some((c) => c.name === 'request_count')) {
+    db.exec('ALTER TABLE agents ADD COLUMN request_count INTEGER');
+  }
+  // v15: attempt_class — how the worker's last attempt ended, on an axis
+  // orthogonal to `status` (ADR-1, epic-006). 'infra_failure' = a transient
+  // environmental fault worth an auto-retry; 'work_failure' = the agent ran
+  // and produced a real, non-retryable outcome; NULL = unclassified / not a
+  // failure. Deliberately NOT a status enum value — the sibling lifecycle
+  // epic owns `status`, so this stays a separate column.
+  if (!agentCols.some((c) => c.name === 'attempt_class')) {
+    db.exec('ALTER TABLE agents ADD COLUMN attempt_class TEXT');
+  }
+
+  // v7: planner token usage + wall time, per epic — for cost visibility.
+  const epicCols = db.prepare('PRAGMA table_info(epics)').all() as {
+    name: string;
+  }[];
+  if (!epicCols.some((c) => c.name === 'planner_tokens_input')) {
+    db.exec('ALTER TABLE epics ADD COLUMN planner_tokens_input INTEGER');
+  }
+  if (!epicCols.some((c) => c.name === 'planner_tokens_output')) {
+    db.exec('ALTER TABLE epics ADD COLUMN planner_tokens_output INTEGER');
+  }
+  if (!epicCols.some((c) => c.name === 'planner_tokens_cached')) {
+    db.exec('ALTER TABLE epics ADD COLUMN planner_tokens_cached INTEGER');
+  }
+  if (!epicCols.some((c) => c.name === 'planner_ms')) {
+    db.exec('ALTER TABLE epics ADD COLUMN planner_ms INTEGER');
+  }
+  // v8: base_sha — the SHA story branches diverged from, used by the
+  // EpicFinalizer to build epic/<id> for per-epic PR strategy.
+  if (!epicCols.some((c) => c.name === 'base_sha')) {
+    db.exec('ALTER TABLE epics ADD COLUMN base_sha TEXT');
+  }
+  // v12: track the user's original brief verbatim + the live planning
+  // phase, so an operator watching `loom web` can see what kicked off
+  // a job before the planner finishes writing the epic structure.
+  if (!epicCols.some((c) => c.name === 'user_brief')) {
+    db.exec('ALTER TABLE epics ADD COLUMN user_brief TEXT');
+  }
+  if (!epicCols.some((c) => c.name === 'planning_phase')) {
+    db.exec('ALTER TABLE epics ADD COLUMN planning_phase TEXT');
+  }
+  // v14: planner-side LLM request count + the policy snapshot captured at
+  // approve time. The snapshot lets the supervisor diff against the live
+  // policy.yaml at finalize/integrate so mid-run edits to late-bound fields
+  // (allowed_remotes, test_command, integrator) actually take effect — and
+  // so an `epic_policy_rebound` audit row records exactly what changed.
+  if (!epicCols.some((c) => c.name === 'planner_request_count')) {
+    db.exec('ALTER TABLE epics ADD COLUMN planner_request_count INTEGER');
+  }
+  if (!epicCols.some((c) => c.name === 'policy_snapshot')) {
+    db.exec('ALTER TABLE epics ADD COLUMN policy_snapshot TEXT');
+  }
+  // v14 (archive runs): archived_at — operator-set timestamp that hides a
+  // run from the default status / web / MCP views (and from supervisor
+  // selection) without deleting it. NULL = active; timestamp = archived.
+  if (!epicCols.some((c) => c.name === 'archived_at')) {
+    db.exec('ALTER TABLE epics ADD COLUMN archived_at DATETIME');
+  }
+  // v15: the finalize overlay — a second per-epic phase marker parallel to
+  // planning_phase (deliberately NOT generalized into one column; see
+  // ADR-1). finalize_phase tracks the live step while status='finalizing'
+  // (NULL otherwise). epic_pr_url is the epic PR of record (distinct from
+  // agents.pr_url) and MUST be durable before any status='done' write. error
+  // carries the runtime failure message, set iff status='failed' (an infra
+  // failure, distinct from a human 'rejected').
+  if (!epicCols.some((c) => c.name === 'finalize_phase')) {
+    db.exec('ALTER TABLE epics ADD COLUMN finalize_phase TEXT');
+  }
+  if (!epicCols.some((c) => c.name === 'epic_pr_url')) {
+    db.exec('ALTER TABLE epics ADD COLUMN epic_pr_url TEXT');
+  }
+  if (!epicCols.some((c) => c.name === 'error')) {
+    db.exec('ALTER TABLE epics ADD COLUMN error TEXT');
+  }
+
+  const row = db
+    .prepare('SELECT version FROM schema_version LIMIT 1')
+    .get() as { version: number } | undefined;
+  if (!row) {
+    db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
+      SCHEMA_VERSION
+    );
+  } else if (row.version !== SCHEMA_VERSION) {
+    db.prepare('UPDATE schema_version SET version = ?').run(SCHEMA_VERSION);
+  }
+}
+
+export function resetDatabaseForTest(): void {
+  _db = null;
+}

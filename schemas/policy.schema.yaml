@@ -1,0 +1,338 @@
+# Loom Policy YAML Schema
+# Written to .loom/policy.yaml on loom init
+# All fields have safe defaults — projects override only what they need.
+
+$schema: "http://json-schema.org/draft-07/schema#"
+type: object
+properties:
+  git:
+    type: object
+    properties:
+      allowed_remotes:
+        type: array
+        items:
+          type: string
+        default: []
+        description: |
+          Glob patterns for allowed git remote URLs.
+          Empty list = all pushes blocked by default.
+          Example: ["git@github.com:myorg/*", "https://github.com/myorg/*"]
+      protected_branches:
+        type: array
+        items:
+          type: string
+        default: [main, master]
+        description: "Branches agents cannot push to directly (must use PR)"
+      forbidden_flags:
+        type: array
+        items:
+          type: string
+        default: ["--force", "--force-with-lease", "--hard"]
+        description: "git flags that are always blocked regardless of other settings"
+      agents_must_use_pr:
+        type: boolean
+        default: true
+        description: "If true, agents cannot push directly; must open a PR"
+
+  filesystem:
+    type: object
+    properties:
+      protected_paths:
+        type: array
+        items:
+          type: string
+        default:
+          - "~/.ssh"
+          - "~/.aws"
+          - "~/.gnupg"
+          - "/etc"
+          - "/usr"
+          - "/bin"
+          - "/sbin"
+          - ".git"
+        description: "Paths agents cannot write to or delete"
+      allowed_write_root:
+        type: string
+        default: "."
+        description: |
+          Root directory agents are allowed to write within.
+          '.' means the project directory (resolved to absolute path on init).
+
+  agents:
+    type: object
+    properties:
+      max_concurrent:
+        type: integer
+        minimum: 1
+        maximum: 10
+        default: 5
+        description: |
+          Max number of story agents running simultaneously for THIS
+          supervisor. The machine-wide cap is set via
+          `~/.loom/config.json` `max_global_workers`; when unset (the
+          common case) loom uses this value as the global fallback so
+          parallel `loom run`s on one machine don't collectively run
+          N × max_concurrent workers.
+      worktree_isolation:
+        type: boolean
+        default: true
+        description: "Each story agent runs in its own git worktree"
+      require_human_pr_merge:
+        type: boolean
+        default: true
+        description: "Agents open PRs but cannot merge them"
+      llm_backend:
+        type: string
+        enum: [claude-cli, cursor-cli]
+        default: claude-cli
+        description: |
+          LLM backend for planning. Both 'claude-cli' and 'cursor-cli' are
+          session-based — they use the developer's existing Claude / Cursor
+          login (no API key, no API billing). The 'anthropic-api' backend
+          was removed in v0.4 to align with the session-only auth policy.
+      worker_backend:
+        type: string
+        enum: [claude-code, cursor-cli]
+        default: claude-code
+        description: "Which agent CLI implements stories — the claude CLI or cursor-agent"
+      pr_strategy:
+        type: string
+        enum: [per-epic]
+        default: per-epic
+        description: |
+          One PR per epic. Workers commit locally on story branches;
+          EpicFinalizer merges them in dependency order into epic/<id>
+          and opens a single PR.
+      model:
+        type: string
+        default: "claude-sonnet-4-6"
+        description: "Claude model used for story execution agents"
+      planning_model:
+        type: string
+        default: "claude-opus-4-7"
+        description: "Claude model used for the planning personas — Analyst, PM, Architect (Opus 4.7 by default — planning benefits most from deeper reasoning)"
+      cursor_model:
+        type: string
+        default: "sonnet-4"
+        description: "Model id for the cursor-cli backend; loom never uses Cursor MAX mode"
+      skill_gen_model:
+        type: string
+        default: "claude-haiku-4-5-20251001"
+        description: "Claude model used for post-story skill generation (cost-optimized)"
+      budget_tokens_per_story:
+        type: integer
+        description: "Optional token budget per story agent (for cost control)"
+      skill_promote_after:
+        type: integer
+        default: 3
+        description: "Successful canary injections before a candidate skill is promoted to active"
+      skill_demote_failure_ratio:
+        type: number
+        default: 0.5
+        description: "Failure ratio at which an active skill is demoted to disabled"
+      skill_demote_min_samples:
+        type: integer
+        default: 3
+        description: "Minimum injections before demotion can trigger (avoids tiny-sample noise)"
+      skill_judge_min_score:
+        type: number
+        default: 6
+        description: "A generated skill scoring below this (0-10) is rejected by the judge"
+      min_brief_quality_score:
+        type: integer
+        minimum: 1
+        maximum: 10
+        default: 6
+        description: |
+          Brief-quality threshold (1-10). Every `loom epic` and
+          `loom_start_epic` runs the BriefRefiner before the planner;
+          briefs scoring below this are refused with the structured
+          critique so the operator can tighten the prompt. The gate
+          itself cannot be turned off — only the threshold is tunable.
+      review_timeout_minutes:
+        type: integer
+        minimum: 1
+        maximum: 60
+        default: 10
+        description: |
+          Wall-clock bound (in minutes) for the CodeReviewAgent's claude /
+          cursor-cli subprocess. The legacy hardcoded 10-minute timeout
+          silently shipped large story diffs unreviewed; raise this for
+          repos with sizable diffs.
+      story_stall_minutes:
+        type: integer
+        minimum: 1
+        default: 12
+        description: |
+          Kill a worker after this many minutes with ZERO output activity
+          (genuinely stuck). The clock resets on any stdout/stderr, so a
+          long-but-streaming run (e.g. a multi-minute test suite) is never
+          killed by the stall path. Scaled per story by
+          story_timeout_multipliers.
+      story_absolute_cap_minutes:
+        type: integer
+        minimum: 1
+        default: 60
+        description: |
+          Absolute wall-clock ceiling per story regardless of activity — the
+          backstop against a worker that streams forever in a useless loop.
+          Scaled per story by story_timeout_multipliers.
+      story_timeout_multipliers:
+        type: object
+        description: |
+          Per-complexity multiplier applied to BOTH story_stall_minutes and
+          story_absolute_cap_minutes, keyed by the story's estimated_complexity.
+          A large 4-service story gets more budget than a trivial doc edit.
+        properties:
+          trivial: { type: number, default: 0.5 }
+          small: { type: number, default: 0.75 }
+          medium: { type: number, default: 1 }
+          large: { type: number, default: 2 }
+      handoff:
+        type: string
+        enum: [off, telemetry, summarized]
+        default: telemetry
+        description: |
+          Per-story handoff documents for crash-resilient resume. On a failed or
+          blocked story loom writes .loom/handoff/<story-id>.md from durable
+          telemetry (git log + decision traces + audit); a non-clean retry feeds
+          it back so the resumed worker continues instead of starting over.
+            off        — no handoff doc / no resume injection (legacy behavior)
+            telemetry  — zero extra tokens; assembled from persisted state (default)
+            summarized — adds an LLM compaction pass (more tokens; opt-in)
+      phases:
+        type: string
+        enum: [off, on]
+        default: off
+        description: |
+          Phased worker pipeline. When 'on', a story runs as discrete agent
+          spawns — implement, then verify (full build/test suite) — each with
+          its OWN fresh stall/cap timer plus a checkpoint commit and handoff
+          refresh at the boundary. A long-but-productive story survives because
+          each phase gets a clean budget instead of one shared wall-clock, and a
+          crash mid-verify resumes from the committed implement work.
+            off — single agent spawn does implement+verify together (default)
+            on  — separate implement and verify spawns, each freshly timed
+      prune_orphan_worktrees:
+        type: string
+        enum: [off, on]
+        default: on
+        description: |
+          Auto-prune orphaned worktrees when a run finishes. When 'on' (default),
+          .loom/worktrees/<story-id> dirs whose story is 'done' (merged) or has no
+          agent record are removed. Failed/blocked worktrees are ALWAYS kept so a
+          resume retry can continue from their checkpoint commit.
+            off — never auto-prune; leave every worktree on disk
+            on  — remove done/agent-less worktrees at end of run (default)
+      integration_gate:
+        type: string
+        enum: [off, warn, block]
+        default: warn
+        description: |
+          Integration gate. After the EpicFinalizer merges every story branch
+          onto epic/<id>, run the repo's build/test suite on the INTEGRATED tree
+          before opening the PR — the objective check that the feature isn't
+          broken once all stories live together. Also fails when a story was
+          dropped by a merge conflict (amputation), regardless of tests.
+            off   — never run the gate
+            warn  — run it; annotate the PR + audit on failure, still open the PR (default)
+            block — run it; on failure withhold the PR, leave epic/<id> local,
+                    and flip the epic back to in_progress for a fix-up run
+      test_command:
+        type: string
+        description: |
+          Explicit command for the integration gate. When unset the gate
+          auto-detects (npm test / make test / pytest). loom never auto-installs
+          dependencies, so if the suite needs a fresh install encode it here,
+          e.g. "npm ci && npm test".
+      # NOTE: integration_gate_timeout_minutes was removed from the public
+      # surface in v0.4 (engine-tuning knob, no operator calibration data);
+      # it's hardcoded internally. Set test_command if you need to bound the
+      # command — anything taking >15 min should be wrapped in a `timeout` call.
+      shared_contract:
+        type: string
+        enum: [off, on]
+        default: on
+        description: |
+          Architect shared-contract injection. When 'on' (the v0.5.0 default),
+          the Architect (Winston) emits an epic-wide implementation contract at
+          plan time — the shared interfaces/types parallel stories must agree on
+          plus a per-story file-ownership map — written to
+          .loom/contract/<epic-id>.md, and every worker prompt for the epic is
+          prefixed with it so isolated parallel agents stop inventing conflicting
+          seams and editing each other's files. Default flipped to 'on' after
+          the multi-epic shared-client run, where sibling stories appending to
+          one client file caused rolling-merge conflicts on every multi-story
+          epic.
+            on  — emit + inject the contract (one extra planning call per run; default)
+            off — no contract pass; worker prompt is byte-identical to baseline
+      context_notes:
+        type: string
+        enum: [off, on]
+        default: off
+        description: |
+          Cross-story context notes. When 'on', a short "what I built" note is
+          written to .loom/context/<story-id>.md when a story succeeds (and, under
+          the rolling branch, integrates), and each dependent worker's prompt is
+          appended with its dependencies' notes — the upstream decisions and files
+          touched, in narrative form. Complements the rolling branch (which carries
+          the code) and the shared contract (the plan-time interfaces); zero extra
+          LLM tokens (a pure telemetry render).
+            off — no notes written or injected; prompt byte-identical to baseline (default)
+            on  — write a note on success, inject dependency notes into dependents
+      qa_planning:
+        type: string
+        enum: [off, advisory]
+        default: off
+        description: |
+          QA test planning. When 'advisory', a QA persona (Tessa) runs after the
+          Architect at plan time and writes a concrete, risk-based test_plan onto
+          every story — the test levels, the happy/error/edge cases to cover, and
+          the verification bar. Each worker prompt then carries its story's plan
+          so agents build tests-first against an explicit definition of "verified".
+            off      — no QA pass; worker prompt is byte-identical to baseline (default)
+            advisory — emit + inject per-story test plans (one extra planning call per run)
+      integration_branch:
+        type: string
+        enum: [off, rolling]
+        default: off
+        description: |
+          Rolling integration branch. When 'rolling', loom creates a live
+          epic/<id> branch up front, branches every worker from its tip, and
+          merges each story back the moment it completes — so parallel agents
+          build on real prior code instead of colliding at finalize. A story
+          whose merge conflicts is blocked (work kept on story/<id>) rather than
+          silently dropped. Only meaningful with pr_strategy='per-epic'; ignored
+          (with a warning) under 'per-story'.
+            off     — workers branch from their first dependency; the finalizer
+                      big-bang-merges every story branch at the end (default)
+            rolling — live epic branch with incremental merge-back as stories land
+      integrator:
+        type: string
+        enum: [off, on]
+        default: off
+        description: |
+          Bounded integrator. When 'on' (and integration_branch='rolling'), a
+          story whose merge-back conflicts is handed to a bounded agent that
+          resolves the conflict markers in the integration worktree; loom then
+          commits the merge and re-runs the integration gate. The story is only
+          integrated on a GREEN gate — otherwise the merge is rolled back and the
+          story falls through to the loud-block path. The conflict is never
+          silently dropped. Requires integration_branch='rolling'; ignored (with
+          a warning) otherwise.
+            off — a merge conflict blocks the story immediately (default)
+            on  — try to auto-resolve the conflict, gate-verified, before blocking
+      # NOTE: integrator_max_attempts was removed from the public surface in
+      # v0.4 (engine-tuning knob). It's hardcoded internally; the default
+      # bumped from 1 to 2 in v0.5.0 so a transient gate failure (often a
+      # too-broad auto-detected command before the v0.5.0 monorepo scoping
+      # fix) doesn't single-shot the integrator.
+
+  mcp:
+    type: object
+    properties:
+      registry:
+        type: string
+        description: |
+          Path to a checkout of the org's approved-MCP registry (a directory of
+          servers/<name>/server.json files). Unset = `loom mcp` is disabled.

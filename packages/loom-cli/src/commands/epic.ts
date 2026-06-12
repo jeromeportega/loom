@@ -1,0 +1,274 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  openDatabase,
+  PolicyEngine,
+  createLLMClient,
+  modelFor,
+  Planner,
+  BriefRefiner,
+  AuditLog,
+  EpicStore,
+  derivePlaceholderTitle,
+  evaluateBriefGate,
+  validateCursorModels,
+} from '@loom-ai/core';
+import type { LLMClient } from '@loom-ai/core';
+import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
+
+/**
+ * @param opts.force  Skip the brief-quality gate for this invocation only. The
+ *   refiner still runs and its critique is recorded; a `brief_gate_forced`
+ *   audit row referencing the critique is written before the planner runs.
+ * @param opts.llm    Test seam — inject a stub LLMClient. Production callers
+ *   omit this and the client is built from policy.agents.llm_backend.
+ * @param opts.cursorBin  Test seam — point the cursor_model probe at a stub
+ *   `cursor-agent`. Production callers omit this; the real CLI is used.
+ */
+export async function runEpic(
+  brief: string,
+  opts: { force?: boolean; llm?: LLMClient; cursorBin?: string } = {}
+): Promise<void> {
+  const force = opts.force === true;
+  const projectRoot = process.cwd();
+  const loomDir = path.join(projectRoot, '.loom');
+
+  if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
+    console.error('loom is not initialized in this directory. Run `loom init` first.');
+    process.exit(1);
+  }
+  if (!brief || brief.trim().length < 10) {
+    console.error('Please provide a brief of at least a sentence: loom epic "<brief>"');
+    process.exit(1);
+  }
+
+  const policy = PolicyEngine.load(loomDir).policyData;
+
+  // Fail fast on a bad cursor_model before spending any LLM tokens. Exit only
+  // on a confirmed-invalid id; an 'unavailable' probe (FR-8) or a boundary-
+  // prefix alias (FR-1(b), `advisory`) is a warning that proceeds. The branch
+  // shape is identical at all three call sites — the pass/fail behavior is
+  // inherited from validateCursorModels, never re-derived here.
+  const modelCheck = validateCursorModels(policy, opts.cursorBin);
+  if (modelCheck?.status === 'invalid') {
+    console.error(modelCheck.message);
+    process.exit(1);
+  } else if (modelCheck?.status === 'unavailable' || modelCheck?.advisory) {
+    console.warn(modelCheck.message);
+  }
+
+  maybeWarnGatePreflight(projectRoot, policy);
+  const db = openDatabase(loomDir);
+
+  let llm: LLMClient;
+  if (opts.llm) {
+    llm = opts.llm;
+  } else {
+    try {
+      llm = createLLMClient(policy.agents.llm_backend);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+      return;
+    }
+  }
+
+  // Reserve the epic row at submission, BEFORE the refiner runs. The
+  // synchronous better-sqlite3 insert makes the row durable ahead of the
+  // first `await`, so `loom status` shows the new epic the instant `loom
+  // epic` is invoked — and reservation order under concurrent submissions
+  // follows submission order. This is the SINGLE allocation site for the
+  // CLI path: `Planner.nextEpicId` runs here exactly once, and the planner
+  // adopts this id (it skips its own self-allocation when given a
+  // reservedId). The title starts as a derived placeholder (first Markdown
+  // heading, else the brief's first 60 chars) and is replaced by the
+  // planner's real title at completion via the existing seam.
+  const reservedId = Planner.nextEpicId(db);
+  const store = new EpicStore(db);
+  store.beginPlanning(reservedId, brief);
+  store.setTitle(reservedId, derivePlaceholderTitle(brief));
+
+  // Brief-quality gate. Always runs — refuses briefs scoring below
+  // policy.agents.min_brief_quality_score so the planner never spends
+  // tokens on something underspecified. The critique is printed so the
+  // operator can tighten the prompt and re-run. With --force the gate
+  // decision is overridden for this invocation only: the refiner still
+  // runs, its critique is recorded, and an audit row is written before
+  // the planner starts.
+  console.log('\n  Refining brief — quick clarification pass before planning.');
+  const refiner = new BriefRefiner({
+    projectRoot,
+    llm,
+    model: modelFor(policy, 'planning'),
+  });
+  let refinement;
+  try {
+    refinement = await refiner.refine(brief);
+  } catch (err) {
+    console.error('\n  Brief refinement failed:', (err as Error).message);
+    process.exit(1);
+    return;
+  }
+  const minScore = policy.agents.min_brief_quality_score;
+  const verdict = evaluateBriefGate(refinement, minScore);
+  if (!verdict.pass && !force) {
+    console.error('');
+    console.error(`  Brief scored ${refinement.quality_score}/10 (need >= ${minScore}).`);
+    console.error('');
+    if (refinement.questions.length > 0) {
+      console.error('  Open questions to address:');
+      for (const q of refinement.questions) console.error(`    • ${q}`);
+      console.error('');
+    }
+    const c = refinement.critique;
+    const issues = [
+      ['Ambiguities', c.ambiguities],
+      ['Missing scope', c.missing_scope],
+      ['Untestable claims', c.untestable_claims],
+      ['Hidden complexity', c.hidden_complexity],
+    ] as const;
+    for (const [label, items] of issues) {
+      if (items.length === 0) continue;
+      console.error(`  ${label}:`);
+      for (const item of items) console.error(`    • ${item}`);
+      console.error('');
+    }
+    if (refinement.refined_brief) {
+      console.error('  Suggested refined brief:');
+      console.error('');
+      console.error(refinement.refined_brief.split('\n').map((l) => `    ${l}`).join('\n'));
+      console.error('');
+    }
+    console.error('  Tighten the brief above and re-run `loom epic "<brief>"`.');
+    // Clean terminal state for the gate-rejected run: flip the reserved row
+    // (from reservation, before the refiner) to 'rejected' with the machine
+    // verdict in `error` — NOT `reason`. A human reject writes `reason`; this
+    // gate reject writes `error`, so provenance (operator vs quality gate)
+    // stays distinguishable on the shared 'rejected' status. This replaces the
+    // bare exit so no orphaned '(planning…)' row is left behind.
+    store.reject(
+      reservedId,
+      `brief gate: ${refinement.quality_score}/10 — ${firstCritiqueLine(refinement)}`
+    );
+    process.exit(1);
+    return;
+  }
+
+  if (!verdict.pass && force) {
+    // Forced past a gate rejection. Record the override — with the full
+    // critique embedded — BEFORE the planner runs (ordering invariant /
+    // NFR-2). The synchronous better-sqlite3 insert guarantees durability
+    // ahead of any planner work.
+    new AuditLog(db).record({
+      action: 'brief_gate_forced',
+      command: brief.slice(0, 120),
+      allowed: true,
+      detail: {
+        entry_point: 'cli',
+        ready: verdict.ready,
+        quality_score: verdict.quality_score,
+        threshold: verdict.threshold,
+        critique: refinement.critique,
+        questions: refinement.questions,
+      },
+    });
+    console.log(
+      `  Brief scored ${refinement.quality_score}/10 (need >= ${minScore}) — ` +
+        '--force override; gate bypassed and audit-logged. Proceeding.'
+    );
+  } else {
+    console.log(`  Brief scored ${refinement.quality_score}/10 (>= ${minScore}). Proceeding.`);
+  }
+
+  console.log('\n  Planning your epic — Analyst → PM → Architect.');
+  console.log(`  Backend: ${policy.agents.llm_backend}. Runs headless, takes a few minutes.\n`);
+
+  // Planner skill injection is DELIBERATELY OFF. The eval showed it caused
+  // over-planning (small briefs inflating into 4-6 epics, 17-26 stories) —
+  // injecting loom-brainstorm / loom-edge-case-review / loom-plan-review
+  // bodies into the Analyst pushed the brief toward thorough state inventory,
+  // which the PM expanded into more stories. Worker-time skill injection in
+  // the Supervisor is unchanged — that is where skills add real value,
+  // against actual code work.
+  const planner = new Planner({
+    projectRoot,
+    llm,
+    model: modelFor(policy, 'planning'),
+    db,
+    sharedContract: policy.agents.shared_contract === 'on',
+    qaPlanning: policy.agents.qa_planning === 'advisory',
+  });
+
+  let result;
+  try {
+    result = await planner.run(brief, reservedId);
+  } catch (err) {
+    console.error('\n  Planning failed:', (err as Error).message);
+    process.exit(1);
+  }
+
+  console.log('  Planning complete.\n');
+  console.log(`  Run:           ${result.runId}`);
+  console.log(`  Brief:         ${rel(projectRoot, result.briefPath)}`);
+  console.log(`  PRD:           ${rel(projectRoot, result.prdPath)}`);
+  console.log(`  Architecture:  ${rel(projectRoot, result.architecturePath)}`);
+  console.log('');
+  for (const epicId of result.epicIds) {
+    console.log(`  ${epicId}`);
+  }
+  console.log('');
+  console.log(
+    `  ${result.epicIds.length} epic(s), ${result.storyCount} stories ` +
+      `(${result.storiesEnriched} enriched with tech notes).`
+  );
+  const billed = result.usage.inputTokens + result.usage.outputTokens;
+  console.log(
+    `  Tokens: ${result.usage.inputTokens} in / ${result.usage.outputTokens} out ` +
+      `(${result.usage.cacheReadTokens} cached). Billed: ${billed.toLocaleString()}.`
+  );
+  const budget = policy.agents.planning_token_budget;
+  if (typeof budget === 'number' && billed > budget) {
+    console.log(
+      `  WARNING: planning ran over the configured budget — ` +
+        `${billed.toLocaleString()} > ${budget.toLocaleString()}. ` +
+        'See policy.agents.planning_token_budget.'
+    );
+  }
+  console.log('');
+
+  console.log('  Review the plan above, then:');
+  console.log('    loom approve            approve all planned epics');
+  console.log('    loom approve <epic-id>  approve one epic');
+  console.log('    loom reject <epic-id> --reason "..."  reject an epic');
+  console.log('');
+}
+
+function rel(root: string, abs: string): string {
+  return path.relative(root, abs) || abs;
+}
+
+/**
+ * The single most salient line of the gate critique, for the one-line verdict
+ * stored on a rejected row's `error` column. Walks the critique categories in
+ * the order an operator reads them, falls back to the first open question, and
+ * finally to a generic note so the verdict is never an empty tail after the em
+ * dash.
+ */
+function firstCritiqueLine(refinement: {
+  critique: {
+    ambiguities: string[];
+    missing_scope: string[];
+    untestable_claims: string[];
+    hidden_complexity: string[];
+  };
+  questions: string[];
+}): string {
+  const c = refinement.critique;
+  const first =
+    c.ambiguities[0] ??
+    c.missing_scope[0] ??
+    c.untestable_claims[0] ??
+    c.hidden_complexity[0] ??
+    refinement.questions[0];
+  return first ?? 'brief scored below the quality threshold';
+}

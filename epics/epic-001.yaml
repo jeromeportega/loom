@@ -1,0 +1,71 @@
+---
+epic_id: epic-001
+title: "Core Engine: loom init, policy engine, SQLite state"
+status: approved
+priority: must-have
+prd_ref: "../_bmad-output/planning-artifacts/prd/prd.md"
+requirements:
+  - FR-1
+  - FR-5 (partial — policy engine structure)
+stepsCompleted: []
+
+stories:
+  - id: story-001-001
+    title: "loom CLI scaffold and init command"
+    description: |
+      Create the TypeScript monorepo (packages/loom-core, packages/loom-cli)
+      with a working `loom init` command that scaffolds:
+        - `.loom/policy.yaml` with safe defaults
+        - `.loom/loom.db` (SQLite)
+        - `.claude/settings.json` PreToolUse hook pointing to `loom guard check`
+    acceptance_criteria:
+      - Running `loom init` in any git repo creates `.loom/policy.yaml` with required fields
+      - Running `loom init` again is idempotent (no duplicate writes)
+      - `.loom/loom.db` is created with agents and audit_log tables
+      - The PreToolUse hook JSON is written to `.claude/settings.json`
+      - Running `loom init --cursor` additionally writes `.cursor/mcp.json`
+    estimated_complexity: medium
+    dependencies: []
+    tech_notes: "Use TypeScript + commander for CLI. Use better-sqlite3 for DB. Write package as loom-ai on npm."
+
+  - id: story-001-002
+    title: "Policy engine: schema, parser, and guard command"
+    description: |
+      Implement the policy engine:
+        - `policy.schema.yaml` defines the schema for `.loom/policy.yaml`
+        - `loom guard check --command "<cmd>"` parses the command and validates against policy
+        - Exits 0 if allowed, non-zero + JSON log line if blocked
+        - Default policy blocks: git push --force, git push --force-with-lease,
+          git reset --hard, rm -rf to paths outside allowed_write_root,
+          writes to protected_paths (~/. ssh, ~/.aws, ~/.gnupg, /etc, /usr, .git)
+    acceptance_criteria:
+      - `loom guard check --command "git push --force"` exits 1 and writes JSON to stderr
+      - `loom guard check --command "rm -rf ~/.ssh"` exits 1
+      - `loom guard check --command "git add ."` exits 0
+      - `loom guard check --command "git push origin story/001"` exits 0 when origin matches allowed_remotes pattern
+      - All blocked commands are logged to audit_log table in loom.db
+    estimated_complexity: medium
+    dependencies:
+      - story-001-001
+    tech_notes: |
+      Parse bash commands via shell-quote or custom tokenizer.
+      Match git remote URLs via glob (minimatch).
+      Protected paths use path.startsWith after resolving ~ via os.homedir().
+
+  - id: story-001-003
+    title: "SQLite state schema, migrations, and CRUD helpers"
+    description: |
+      Finalize the SQLite schema and write typed TS helpers for:
+        - agents table (id, story_id, status, worktree_path, pr_url, log_tail, started_at, updated_at)
+        - audit_log table (id, agent_id, action, command, allowed, policy_rule, timestamp)
+        - status enum: pending | running | blocked | pr_open | done | failed
+    acceptance_criteria:
+      - Schema migrations run automatically on loom init (idempotent)
+      - AgentStore.create(story_id) returns an agent record with status=pending
+      - AgentStore.updateStatus(id, status) updates the record and sets updated_at
+      - AuditLog.record({agent_id, command, allowed, policy_rule}) inserts a row
+      - AuditLog.search(query) uses FTS5 to return matching rows
+    estimated_complexity: small
+    dependencies:
+      - story-001-001
+    tech_notes: "Use better-sqlite3 synchronous API. FTS5 virtual table on audit_log(command, action)."
