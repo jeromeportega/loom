@@ -89,6 +89,53 @@ matters, suggested fix, severity (S1 blocker / S2 friction / S3 polish).
   command (allow AND deny) to the central `audit_log` keyed by the worker's
   agent_id, not just the per-worktree stdout stream.
 
+### Phase: Verify / ship (the big one — multi-agent integration-seam gap)
+
+- **[S1 — correctness/process] Stories satisfied their ACs against static
+  examples and left the real capability unimplemented; nothing caught it until
+  manual review.** Epic A shipped a 7-story epic where every story passed its
+  unit tests and the integration gate went green — yet the headline feature
+  (adversarial-review + edge-case-hunter actually reviewing worker diffs) does
+  NOT run. Concretely: the skill registry handlers in
+  `packages/loom-core/src/skills/types.ts` are STUBS (`() => ({ findings: [] })`);
+  the SKILL.md bodies (prompts) were filled but no story implemented the
+  LLM-backed handler that loads a body and calls the model; and
+  `reviewOrchestrator` is never wired into `workerFactory`/`run.ts`, so the
+  three-reviewer pass can't fire. story-002 even tested against the
+  "schema-valid worked example embedded in each prompt… not a live model call."
+  capabilities.md was written (by story-007) to claim the skills run
+  automatically — an overclaim, since they're dark.
+  *Root cause (operator-confirmed):* the plan was generated under an
+  untuned/invalid policy — `qa_planning` was the invalid value `"on"` at plan
+  time, so the QA persona (Tessa) never ran and no story carried a "prove it
+  executes live, with real skill_usage rows" verification bar. The architect's
+  shared-contract carved clean per-story lanes; the cross-cutting "implement the
+  executable handler + wire it in + thread the db" work belonged to no lane, and
+  each worker honestly reported "seam in place, ready for wiring" and stayed put.
+  *Why it matters:* a green epic that doesn't do the thing is the most dangerous
+  failure mode — it passes every automated gate and only a human reading the
+  runtime catches it. For build day this could ship a "working" demo that's
+  hollow.
+  *Suggested fixes:* (1) **tune policy BEFORE planning** — qa_planning/
+  integration_branch/etc. shape the decomposition and the verification bar, and
+  changing them post-plan only affects execution. (2) Give the architect/QA pass
+  an explicit "integration owner" rule: any capability whose activation spans
+  >1 story must have a final wiring+live-proof story that no other story's
+  ownership boundary can disown. (3) The skill registry should warn/fail loudly
+  when a non-stub skill is invoked but its handler is still the registered stub
+  (e.g. a `stub: true` marker that integration tests assert is absent for
+  shipped skills). (4) Acceptance phrasing like "emits findings on a sample
+  input" must mean a live invocation, not parsing a static example — the QA bar
+  should forbid the static-example shortcut.
+
+- **[S3] Operator/status: `finalizing` is a real active phase but easy to
+  mis-treat as terminal.** My own status watcher stopped early because
+  `finalizing` (the EpicFinalizer running the gate + opening the PR) isn't in
+  the obvious active set {in_progress, dispatching, planning}. loom does model it
+  correctly (with a live `finalize_phase`), but a `finalize_phase`/`done`
+  distinction in the one-line status string would make the active-vs-terminal
+  boundary unambiguous for tooling.
+
 ### Phase: Execution (dispatch)
 
 - **[S1 — cost] `policy.agents.model` is a dead knob for the claude-code worker
