@@ -12,6 +12,8 @@ export interface WorkerFactoryOptions {
   allowedRemotes: string[];
   /** Cursor model id, used only by the cursor-cli backend. */
   cursorModel?: string;
+  /** policy.agents.model — Claude model id for the claude-code worker (`--model`). */
+  model?: string;
   /** policy.agents.pr_strategy — workers suppress per-story PRs in 'per-epic' mode. */
   prStrategy?: PrStrategy;
   /** Optional CodeReviewAgent for the post-commit review pass (Epic 18). */
@@ -71,6 +73,7 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
   }
   return new ClaudeCodeWorker({
     allowedRemotes: opts.allowedRemotes,
+    model: opts.model,
     prStrategy: opts.prStrategy,
     reviewAgent: opts.reviewAgent,
     reviewStrategy: opts.reviewStrategy,
