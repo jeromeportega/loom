@@ -1,8 +1,16 @@
-import type { WorkerRunner } from './WorkerRunner.js';
+import type Database from 'better-sqlite3';
+import type { WorkerRunner, WorkerAssignment } from './WorkerRunner.js';
 import { ClaudeCodeWorker } from './ClaudeCodeWorker.js';
 import { CursorAgentWorker } from './CursorAgentWorker.js';
 import type { PrStrategy } from './BaseCliWorker.js';
 import type { CodeReviewAgent } from '../review/CodeReviewAgent.js';
+import type { ReviewPassDeps } from '../review/orchestrator.js';
+import { codeReviewReviewer } from '../review/codeReviewAdapter.js';
+import { skillReviewer } from '../review/reviewer.js';
+import { SOURCE } from '../findings/sources.js';
+import { AuditLog } from '../state/AuditLog.js';
+import type { LLMClient } from '../llm/LLMClient.js';
+import type { ReviewStoryContext } from '../review/types.js';
 
 export type WorkerBackend = 'claude-code' | 'cursor-cli';
 
@@ -42,6 +50,65 @@ export interface WorkerFactoryOptions {
   handoff?: 'off' | 'telemetry' | 'summarized';
   /** policy.agents.phases — when 'on', run stories as implement+verify spawns. */
   phases?: 'off' | 'on';
+  /** loom state database — required for the Review Forge orchestrated path (FR-6). */
+  db?: Database.Database;
+  /** LLM client — presence gates the Review Forge orchestrated path (FR-7). */
+  llm?: LLMClient;
+}
+
+/**
+ * Gate + closure for the Review Forge orchestrated path (ADR-002).
+ *
+ * Returns undefined unless ALL three runtime deps are present AND
+ * reviewStrategy==='block-and-revise' (FR-5/FR-7). This single gate is the
+ * only availability check — no call site duplicates it.
+ *
+ * When defined, the returned closure assembles ReviewPassDeps on each
+ * assignment: the three-reviewer array, a db-backed AuditSink (ADR-004 —
+ * only orchestrator-level rows, not per-reviewer rows), and a warn logger.
+ * The `llm` parameter is a presence gate only; the actual reviewer brain is
+ * baked into the handlers by registerReviewerSkills() at the call site.
+ */
+export function buildReviewOrchestrator(deps: {
+  db?: Database.Database;
+  llm?: LLMClient;
+  reviewAgent?: CodeReviewAgent;
+  reviewStrategy?: 'off' | 'comment' | 'block-and-revise';
+}): ((assignment: WorkerAssignment) => ReviewPassDeps) | undefined {
+  if (deps.reviewStrategy !== 'block-and-revise') return undefined;
+  if (!deps.db || !deps.llm || !deps.reviewAgent) return undefined;
+
+  const { db, reviewAgent } = deps;
+
+  return (assignment: WorkerAssignment): ReviewPassDeps => {
+    const story = assignment.story;
+    const storyCtx: ReviewStoryContext = {
+      storyId: story.id,
+      title: story.title,
+      description: story.description,
+      acceptanceCriteria: story.acceptance_criteria,
+    };
+    return {
+      reviewers: [
+        codeReviewReviewer(reviewAgent, storyCtx),
+        skillReviewer(SOURCE.ADVERSARIAL, {
+          db,
+          story_id: assignment.storyId,
+          epic_id: assignment.epicId,
+        }),
+        skillReviewer(SOURCE.EDGE_CASE, {
+          db,
+          story_id: assignment.storyId,
+          epic_id: assignment.epicId,
+        }),
+      ],
+      audit: {
+        record: (action, detail) => new AuditLog(db).record({ action, detail }),
+      },
+      warn: (msg, detail?) =>
+        console.warn(`[review] ${msg}`, ...(detail ? [detail] : [])),
+    };
+  };
 }
 
 /**
@@ -51,6 +118,13 @@ export interface WorkerFactoryOptions {
  * Both are session-based.
  */
 export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
+  const reviewOrchestrator = buildReviewOrchestrator({
+    db: opts.db,
+    llm: opts.llm,
+    reviewAgent: opts.reviewAgent,
+    reviewStrategy: opts.reviewStrategy,
+  });
+
   if (opts.backend === 'cursor-cli') {
     return new CursorAgentWorker({
       allowedRemotes: opts.allowedRemotes,
@@ -69,6 +143,7 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
       complexityMultipliers: opts.complexityMultipliers,
       handoff: opts.handoff,
       phases: opts.phases,
+      reviewOrchestrator,
     });
   }
   return new ClaudeCodeWorker({
@@ -87,5 +162,6 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
     complexityMultipliers: opts.complexityMultipliers,
     handoff: opts.handoff,
     phases: opts.phases,
+    reviewOrchestrator,
   });
 }

@@ -1,4 +1,5 @@
 export { SkillStore, bundledSkillsDir } from './SkillStore.js';
+export { registerReviewerSkills } from './reviewerSkills.js';
 export type {
   SkillManifest,
   SkillSource,

@@ -112,29 +112,16 @@ export async function invokeSkill<TInput, TOutput>(
 
 // ─── Built-in Review Forge skills (stub bodies) ─────────────────────────────
 //
-// story-001 registers all five skills with schema-valid stub handlers so the
+// story-001 registers three skills with schema-valid stub handlers so the
 // invocation seam, provenance writes, and headless loading are exercised from
-// day one. Stories 002/004/005/006 fill the real SKILL.md bodies; the registry
-// glue here stays the invocation contract. Inputs are validated permissively
-// (`z.unknown()`) because the concrete input types are owned by later stories
-// (ReviewerInput, FailurePayload); outputs are validated strictly against the
-// frozen findings schemas.
+// day one. The two reviewer skills (SOURCE.ADVERSARIAL / SOURCE.EDGE_CASE) are
+// registered by registerReviewerSkills() in reviewerSkills.ts (story-002-001);
+// stories 004/005/006 fill the real SKILL.md bodies for the remaining three.
+// Inputs are validated permissively (`z.unknown()`) because the concrete input
+// types are owned by later stories (FailurePayload etc.); outputs are validated
+// strictly against the frozen findings schemas.
 
 const anyInput = z.unknown();
-
-registerSkill({
-  name: SOURCE.ADVERSARIAL,
-  inputSchema: anyInput,
-  outputSchema: ReviewerOutput,
-  handler: () => ({ findings: [] }),
-});
-
-registerSkill({
-  name: SOURCE.EDGE_CASE,
-  inputSchema: anyInput,
-  outputSchema: ReviewerOutput,
-  handler: () => ({ findings: [] }),
-});
 
 registerSkill({
   name: 'failure-investigator',
