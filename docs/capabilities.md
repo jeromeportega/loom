@@ -119,6 +119,22 @@ implementation without being commands a developer has to invoke.
 | `loom-pr-description` | Used by the EpicFinalizer's PR body writer |
 | `loom-skill-curator` | Read by the chat client when shaping a brief |
 
+### Review Forge skills (orchestrator-invoked)
+
+Five headless, self-contained skills the orchestrator invokes at fixed
+lifecycle points (not auto-injected into the worker prompt like the
+curated library above). Every invocation writes a `skill_usage` row and an
+audit_log row before returning, so each surfaces through
+`loom_get_audit_log` even though none is a standalone command.
+
+| Skill | When it runs | Surface |
+|---|---|---|
+| `adversarial-review` | In the block-and-revise review loop, fanned out alongside `edge-case-hunter` and the code-review adapter on every story diff. | Automatic when `policy.agents.review_strategy=block-and-revise`; findings roll into the verdict from `loom_get_review <story-id>`. |
+| `edge-case-hunter` | Same review fan-out — hunts boundary, concurrency, and failure-state findings the code-review pass misses. | Automatic when `policy.agents.review_strategy=block-and-revise`; findings roll into `loom_get_review <story-id>`. |
+| `failure-investigator` | On a red story test/integration gate — grades the evidence so the deterministic router decides retry-with-hint / surface-to-operator / stop-epic. | Automatic on a failed gate; the grade + routed decision land as `failure.investigation.graded` / `failure.routed.*` rows in `loom_get_audit_log`. |
+| `doc-distiller` | Once per story at worker-context assembly — compresses the planning artifacts while preserving every acceptance criterion verbatim. | Automatic at dispatch; emits a `context.distilled` audit row. No standalone CLI/MCP command. |
+| `lesson-extractor` | Callable-only (provisional) — synthesizes worked-well / did-not-work / surprise lessons from a story transcript. | No automatic invocation or CLI/MCP command yet; invoked programmatically, provenance still audit-logged. |
+
 ### Self-learning loop
 
 | Capability | How to use | Notes |
