@@ -1,0 +1,14 @@
+diff --git a/src/api/client.ts b/src/api/client.ts
+index 1111111..2222222 100644
+--- a/src/api/client.ts
++++ b/src/api/client.ts
+@@ -38,7 +38,9 @@ export class ApiClient {
+   async getUser(id: string): Promise<User> {
+-    const res = await fetch(`${this.base}/users/${id}`);
+-    return res.json() as Promise<User>;
++    const res = await fetch(`${this.base}/users/${id}`, {
++      headers: { authorization: this.token },
++    });
++    return res.json() as Promise<User>;
+   }
+ }

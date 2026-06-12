@@ -119,6 +119,27 @@ implementation without being commands a developer has to invoke.
 | `loom-pr-description` | Used by the EpicFinalizer's PR body writer |
 | `loom-skill-curator` | Read by the chat client when shaping a brief |
 
+### Review Forge skills (scaffolded — activation in a follow-up epic)
+
+Five headless skills for the autonomous review/investigation loop. As of this
+epic the **contract and scaffolding are in place and unit-tested** — a shared
+`zod` findings schema, lexical (file, line, normalized-description) dedupe, the
+deterministic failure router, the bounded review/revise orchestrator, and the
+`skill_usage` + audit_log provenance seam (every `invokeSkill` writes both rows
+before returning). **The skills do not yet perform live analysis:** their
+runtime handlers are stubs (empty/placeholder output) and the three-reviewer
+orchestrator is not yet wired into the worker review path. Implementing the
+LLM-backed handlers and activating the wiring is a tracked follow-up epic; until
+then the legacy single `CodeReviewAgent` remains the active reviewer.
+
+| Skill | Intended role (on activation) | Status today |
+|---|---|---|
+| `adversarial-review` | Fan out alongside `edge-case-hunter` + the code-review adapter on every story diff in the block-and-revise loop. | Scaffolded + schema; stub handler, orchestrator not yet wired into the worker path. |
+| `edge-case-hunter` | Same fan-out — boundary, concurrency, and failure-state findings the code-review pass misses. | Scaffolded + schema; stub handler, not yet wired. |
+| `failure-investigator` | On a red gate, grade evidence so the deterministic router picks retry-with-hint / surface-to-operator / stop-epic. | Router wired + tested; grading handler is a stub (always grades `weak`) pending live analysis. |
+| `doc-distiller` | Once per story at worker-context assembly — compress planning artifacts, preserving every acceptance criterion verbatim. | Seam invokes it + records provenance; stub output, not yet injected into the worker prompt. |
+| `lesson-extractor` | Callable-only (provisional) — synthesize worked-well / did-not-work / surprise lessons from a story transcript for Epic D. | Callable + registered; stub handler. |
+
 ### Self-learning loop
 
 | Capability | How to use | Notes |

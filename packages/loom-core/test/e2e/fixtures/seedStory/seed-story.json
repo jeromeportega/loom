@@ -1,0 +1,12 @@
+{
+  "story_id": "story-seed-001",
+  "epic_id": "epic-seed",
+  "title": "Add a divide() helper to the math utils",
+  "description": "Add a divide(a, b) helper alongside the existing add() utility so callers stop hand-rolling division.",
+  "acceptance_criteria": [
+    "divide(a, b) returns the quotient of a and b",
+    "the helper is exported from src/math.ts"
+  ],
+  "changed_files": ["src/math.ts"],
+  "story_context": "Seed story for the Review Forge end-to-end harness: a tiny math helper whose happy path works but whose zero-divisor and non-numeric edges are unguarded, so the reviewers and the failure router all have something real to chew on."
+}

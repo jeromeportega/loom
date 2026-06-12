@@ -45,6 +45,11 @@ import { gitSafe } from './git.js';
 import type { WorkerInputChannel } from './WorkerInputChannel.js';
 import { SpawnStagger } from './resilience/SpawnStagger.js';
 import { SystemRetryClock, Mulberry32 } from './resilience/RetryClock.js';
+import {
+  assembleWorkerContext,
+  type PlanningArtifacts,
+} from '../worker/contextAssembler.js';
+import { investigateAndRoute } from '../failure/investigateAndRoute.js';
 
 export interface SupervisorOptions {
   projectRoot: string;
@@ -141,6 +146,16 @@ export interface SupervisorOptions {
    * byte-identical to the bench baseline.
    */
   contextNotes?: 'off' | 'on';
+  /**
+   * policy.agents.distill_context. When 'on', the supervisor runs the
+   * doc-distiller over each story's planning artifacts (PRD, epic, architecture,
+   * story) once at dispatch — recording the standard skill_usage row and a
+   * `context.distilled` audit row, and warning when the ~55% compression target
+   * is missed. 'off' (default) skips it entirely, so a run that does not opt in
+   * is byte-identical to the bench baseline. Best-effort: a distillation error
+   * never blocks the worker spawn.
+   */
+  distillWorkerContext?: 'off' | 'on';
   /**
    * Checkpoint mode — stop cleanly at a boundary instead of completing everything:
    *  'story' — run one story, then stop;  'epic' — run one epic, then stop.
@@ -1123,17 +1138,34 @@ export class Supervisor {
             return true;
           }
           // Merge is committed (no MERGE_HEAD) — roll it off the branch here,
-          // then record + retry. The in-progress-merge cleanup below is for the
-          // other paths only, so skip it.
+          // then record. The in-progress-merge cleanup below is for the other
+          // paths only, so skip it.
           this.integration.reset(epicId, tipBefore);
-          previousFailure = `the integrated build/tests failed: ${gate.summary}`;
           this.recordIntegratorAttempt(task, {
             epicId,
             attempt,
             allowed: false,
-            rejected: previousFailure,
+            rejected: `the integrated build/tests failed: ${gate.summary}`,
           });
-          continue;
+          // Deterministic failure router (story-001-004): grade the red gate and
+          // route. `strong` feeds the investigator's hint into the next attempt
+          // (bounded by integratorMaxAttempts — no new ceiling); `weak` /
+          // `contradictory` stop retrying and fall through to the loud-block
+          // path. Each routing decision writes its own distinguishable audit row.
+          const decision = await investigateAndRoute(
+            {
+              failing_test_or_gate: this.effectiveIntegratorTestCommand ?? 'integration-gate',
+              stderr_tail: gate.summary,
+              diff: '',
+              story_id: storyId,
+            },
+            { db: this.opts.db, epic_id: epicId, agent_id: task.agentId }
+          );
+          if (decision.kind === 'retry-with-hint') {
+            previousFailure = decision.hint;
+            continue;
+          }
+          return false;
         }
       }
 
@@ -1482,6 +1514,7 @@ export class Supervisor {
     // jittered 1–2s delay that spaces concurrent cursor-agent spawns apart
     // (story-006-004). All bookkeeping above ran eagerly; only the spawn waits.
     return staggerSlot
+      .then(() => this.maybeAssembleContext(task))
       .then(() => this.opts.worker.run(assignment))
       .then((result) => ({ storyId: task.story.id, result }))
       .catch((err: unknown) => ({
@@ -1494,6 +1527,68 @@ export class Supervisor {
         },
       }))
       .finally(() => watchdog?.stop());
+  }
+
+  /**
+   * Distill the worker's planning context once at dispatch (policy.agents.
+   * distill_context='on'). Best-effort: any failure — missing artifacts, a
+   * dropped acceptance criterion, a write error — is swallowed so a distillation
+   * problem never blocks the worker spawn. When the flag is off this is a no-op
+   * and the dispatch path stays byte-identical to the bench baseline.
+   */
+  private async maybeAssembleContext(task: StoryTask): Promise<void> {
+    if (this.opts.distillWorkerContext !== 'on') return;
+    try {
+      const artifacts = this.readPlanningArtifacts(task);
+      // Nothing to distill when every artifact came back empty.
+      if (Object.values(artifacts).every((a) => a.trim().length === 0)) return;
+      await assembleWorkerContext(task.story.id, artifacts, {
+        db: this.opts.db,
+        agent_id: task.agentId,
+        epic_id: task.epicId,
+      });
+    } catch {
+      // Best-effort: a distillation error never blocks the worker spawn.
+    }
+  }
+
+  /** Read the four planning artifacts for a story (best-effort; missing = ''). */
+  private readPlanningArtifacts(task: StoryTask): PlanningArtifacts {
+    const planDir = path.join(
+      this.opts.projectRoot,
+      '.loom',
+      'planning',
+      task.epicId,
+    );
+    const read = (file: string): string => {
+      try {
+        return fs.readFileSync(path.join(planDir, file), 'utf8');
+      } catch {
+        return '';
+      }
+    };
+    return {
+      prd: read('prd.md'),
+      epic: read('epic.md') || (this.epics.get(task.epicId)?.title ?? ''),
+      architecture: read('architecture.md'),
+      story: this.renderStoryArtifact(task.story),
+    };
+  }
+
+  /** Render a story as the markdown artifact the distiller consumes. */
+  private renderStoryArtifact(story: Story): string {
+    const lines: string[] = [
+      `# Story ${story.id} — ${story.title}`,
+      '',
+      story.description,
+      '',
+      '## Acceptance criteria',
+      ...story.acceptance_criteria.map((ac) => `- [ ] ${ac}`),
+    ];
+    if (story.tech_notes && story.tech_notes.trim().length > 0) {
+      lines.push('', '## Technical guidance', story.tech_notes);
+    }
+    return lines.join('\n');
   }
 
   // ─── Story handoff (crash-resilient resume) ────────────────────────────────

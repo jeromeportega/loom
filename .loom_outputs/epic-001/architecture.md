@@ -1,217 +1,368 @@
-# Architecture: Brief-Quality Gate Overhaul
+# Review Forge — System Architecture
 
 ## Architecture Philosophy
 
 Four constraints drive every decision below:
 
-1. **One verdict function, two entry points.** `loom epic` (CLI) and `loom_start_epic` (MCP) currently duplicate the gate's threshold comparison inline. The new pass rule is compound (`ready && quality_score >= threshold`) and gains a force branch — duplicating that logic twice guarantees drift. The verdict moves into `loom-core` as a pure function; the entry points stay thin.
-2. **Fail closed, because the exit now exists.** The old salvage path returned `ready: true` / 9-of-10 on truncated output because there was no other way out of a rejection. With `--force` as the bounded human exit, every parse-failure path can default to refusal without trapping anyone.
-3. **The audit invariant is load-bearing.** A per-invocation bypass is only safe if it cannot become a silent standing bypass. The audit row — written before control returns, with the critique embedded — is the control that makes the feature shippable. It uses the existing `audit_log` table and `AuditLog.record()` seam; no new persistence.
-4. **No new technology.** Everything here is a re-plumbing of existing components: `BriefRefiner`, `modelFor`, `AuditLog`, `commander`, the MCP registry. The riskiest change is semantic (what "pass" means), not structural — so the structure stays boring.
+1. **Headless purity is load-bearing.** The five ported skills must run in environments where `_bmad/` does not exist. Any defaults the BMAD originals pulled from `_bmad/scripts/` or `_bmad/bmm/config.yaml` must move *into* the skill body or into a loom-owned config constant. This rules out lazy-loading overlays at runtime.
+2. **The shared findings schema is the contract.** Three reviewers run in parallel and must produce comparable output. A single `zod` schema in `loom-core` is the only seam wide enough to support dedupe, severity gating, and audit logging — every reviewer (ported *and* the existing `CodeReviewAgent`) emits against it.
+3. **Determinism beats cleverness in routing.** Failure routing reads the grade field and dispatches. No LLM in the router path. This makes `audit_log` traces reproducible and the unit tests trivial.
+4. **Independent agents implement independent stories.** Story-to-file ownership must be clean. The shared schema is owned by story-001 and read by everyone; the loop wiring is owned by story-003 and depends only on schema + skill registration. Parallel branches must not touch the same files.
+
+We accept the trade-off that **lexical dedupe will let some near-duplicate findings through** (different wording for the same issue). Semantic dedupe is explicitly out of scope per the PRD; the reviewer pass cost is the tax we pay to avoid an embeddings dependency in v1.
 
 ## Component Diagram
 
 ```mermaid
-flowchart TD
-    OP[Operator] -->|loom epic brief --force| CLI[loom-cli<br/>commands/epic.ts]
-    OP -->|loom_start_epic force:true| MCP[loom-mcp<br/>tools/handlers.ts startEpic]
+flowchart TB
+    subgraph Planning["Planning Phase"]
+        PA[Planning Artifacts<br/>PRD, epic, architecture]
+        DD[doc-distiller skill]
+        WCA[WorkerContextAssembler]
+        PA --> DD --> WCA
+    end
 
-    CLI --> RF[BriefRefiner<br/>loom-core/src/brief/BriefRefiner.ts]
-    MCP --> RF
+    subgraph Execution["Execution Phase — per revision pass"]
+        Worker[Worker Agent<br/>Amelia]
+        WCA --> Worker
+        Worker --> Diff[Worker Diff]
 
-    CLI -->|modelFor policy, 'planning'| MF[modelFor<br/>loom-core/src/llm/factory.ts]
-    MCP -->|modelFor policy, 'planning'| MF
-    MF --> RF
-    MF --> PL[Planner]
+        subgraph Reviewers["ReviewOrchestrator (parallel)"]
+            CRA[CodeReviewAgent<br/>existing]
+            AR[adversarial-review<br/>skill]
+            ECH[edge-case-hunter<br/>skill]
+        end
 
-    RF -->|BriefRefinement<br/>ready + model-emitted quality_score| GATE[evaluateBriefGate<br/>loom-core/src/brief/gate.ts NEW]
+        Diff --> CRA
+        Diff --> AR
+        Diff --> ECH
 
-    GATE -->|pass| PL
-    GATE -->|fail, no force| REJ[Structured refusal<br/>critique + questions]
-    GATE -->|fail, force=true| AUD[AuditLog.record<br/>action: brief_gate_forced]
-    AUD -->|row committed BEFORE planner runs| PL
+        CRA --> Union[Findings Union]
+        AR --> Union
+        ECH --> Union
+        Union --> Dedupe[Dedupe by<br/>file,line,norm-desc]
+        Dedupe --> Gate{blocker or high<br/>remain?}
+        Gate -->|yes, under cap| Worker
+        Gate -->|no, or at cap| TestGate[Test/Gate Run]
+    end
 
-    RF -.->|one LLM call| LLM[LLMClient<br/>claude-cli / cursor-cli]
-    AUD --> DB[(.loom/loom.db<br/>audit_log)]
+    subgraph Retry["Failure handling"]
+        TestGate -->|fail| FI[failure-investigator<br/>skill]
+        FI --> Router{evidence grade}
+        Router -->|strong| RetryHint[retry-with-hint<br/>→ Worker]
+        Router -->|weak| Operator[surface-to-operator]
+        Router -->|contradictory| Stop[stop-epic]
+        RetryHint --> Worker
+    end
+
+    subgraph Persistence["Cross-cutting"]
+        SS[SkillSelector]
+        SU[(skill_usage)]
+        AL[(audit_log)]
+        LE[lesson-extractor<br/>callable, unwired]
+    end
+
+    AR -.registers.-> SS
+    ECH -.registers.-> SS
+    FI -.registers.-> SS
+    DD -.registers.-> SS
+    LE -.registers.-> SS
+    SS -.writes.-> SU
+    SS -.writes.-> AL
+    TestGate -->|pass| Done([story complete])
 ```
 
 ## Tech Stack
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| Gate verdict | New pure function in `packages/loom-core/src/brief/gate.ts` | Compound rule + force branch must live in exactly one place; pure function is trivially unit-testable without an LLM or DB |
-| Refiner | Existing `BriefRefiner` class, prompt schema extended | The JSON-block protocol, salvage, and fallback machinery already work; we change what the model emits and how `normalize()` treats it, nothing structural |
-| Model routing | Existing `modelFor(policy, 'planning')` in `packages/loom-core/src/llm/factory.ts` | Already the planner's resolution path and already cursor-aware (`cursor_model` short-circuit); reusing it *is* the fix |
-| Force audit | Existing `AuditLog.record()` over `better-sqlite3` (`packages/loom-core/src/state/AuditLog.ts`) | Synchronous insert satisfies the written-before-return invariant for free; FTS search makes forced starts greppable |
-| CLI flag | `commander` `.option('--force', ...)` in `packages/loom-cli/src/index.ts` | House standard; one boolean threaded into `runEpic` |
-| MCP param | `force` boolean in the `loom_start_epic` inputSchema, `packages/loom-mcp/src/tools/registry.ts` | Mirrors the CLI flag 1:1; same handler-side semantics |
-| Tests | `node:test` + `MockLLMClient` (`packages/loom-core/src/llm/MockLLMClient.ts`) | Existing pattern in `BriefRefinement.test.ts`; deterministic shaped-JSON injection covers every gate branch without a live model |
+| Skill format | agentskills.io (SKILL.md + frontmatter under `skills/`) | CLAUDE.md invariant #4; loom already loads this format via `SkillSelector`. |
+| Schema validation | `zod` | Already a project dependency; lets us validate finding shape, severity enum, and run repair-then-fallback in one place. |
+| Skill orchestration | Existing `SkillSelector` in `packages/loom-core/` | Centralizes `skill_usage` + `audit_log` writes — keeps invariant #5 enforceable. |
+| Parallelism | `Promise.all` over the three reviewer invocations | Reviewers are stateless w.r.t. each other; parallel is the simplest path. No worker pool needed. |
+| Token counting (distiller) | Anthropic SDK tokenizer (or `tiktoken` if already vendored) | Already in use for prompt caching telemetry; reusing avoids a new dep. |
+| Persistence | `better-sqlite3` (`skill_usage`, `audit_log`) | Existing tables; no new migrations this epic (FR-9, story-006 explicit). |
+| Prompt caching | Anthropic SDK `cache_control` on system prefixes | Invariant #3; each new skill carries a static prefix block to remain cacheable. |
+| Dedupe | Lexical normalize: `lowercase + collapse whitespace + strip punctuation` | PRD §FR-4; v1 is intentionally non-semantic. |
+| Router | Plain TypeScript `switch` over grade | Determinism beats cleverness — no LLM in the routing path. |
 
 ## Data Models
 
-### `BriefRefinement` — `packages/loom-core/src/brief/types.ts` (changed semantics, same shape)
+### Shared findings schema (`packages/loom-core/src/findings/schema.ts`)
 
 ```ts
-interface BriefRefinement {
-  ready: boolean;            // model judgment; missing/non-boolean → false (unchanged)
-  original: string;
-  refined_brief?: string;
-  critique: {
-    strong_points: string[];
-    ambiguities: string[];
-    missing_scope: string[];
-    untestable_claims: string[];
-    hidden_complexity: string[];
-  };
-  questions: string[];
-  // CHANGED: now MODEL-EMITTED holistic 0–10, parsed from the same JSON
-  // response as `ready`. No longer derived from critique-array lengths.
-  // normalize(): clamp to [0,10]; non-number → 0 (fail closed).
-  quality_score: number;
-  delta: { added_sections: string[]; clarifications: Array<{from: string; to: string}>; flagged_assumptions: string[] };
-}
-```
+import { z } from "zod";
 
-The refiner's `JSON_SCHEMA_INSTRUCTIONS` block in `BriefRefiner.ts` gains one field:
+export const SeverityEnum = z.enum(["blocker", "high", "medium", "low", "info"]);
+export type Severity = z.infer<typeof SeverityEnum>;
 
-```text
-"quality_score": number   // holistic 0-10: how ready this brief is for autonomous
-                          // planning, judged as a whole — NOT a count of critique items
-```
-
-`computeQualityScore()` (BriefRefiner.ts ~lines 228–236) is **deleted**, along with its call in `normalize()`.
-
-### Defensive defaults (FR-3, fail closed)
-
-| Path | `ready` | `quality_score` | Notes |
-|---|---|---|---|
-| Transport failure / unparseable JSON — `fallback()` | `false` | `0` | Unchanged except score is now an explicit constant, not "derived from one synthetic ambiguity" |
-| Truncation salvage — `salvagePartialRefinedBrief()` succeeds | `false` (was `true`) | `3` | Partial `refined_brief` still returned so the operator keeps the recovered draft; the verdict no longer vouches for content we couldn't verify. `3` < default threshold 6 ⇒ fails closed, distinguishable from total failure (`0`) in logs |
-
-Both constants live in `BriefRefiner.ts` as named exports (`FALLBACK_QUALITY_SCORE = 0`, `SALVAGE_QUALITY_SCORE = 3`) so tests pin them by name.
-
-### `GateVerdict` — new, `packages/loom-core/src/brief/gate.ts`
-
-```ts
-interface GateVerdict {
-  pass: boolean;          // ready === true && quality_score >= threshold
-  ready: boolean;         // echoed for reporting
-  quality_score: number;  // echoed for reporting
-  threshold: number;      // the min_brief_quality_score that was applied
-}
-```
-
-### Forced-start audit row — existing `audit_log` table, new `action` value
-
-```ts
-audit.record({
-  action: 'brief_gate_forced',
-  command: brief.slice(0, 120),       // FTS-searchable handle on what was forced
-  allowed: true,                       // the force is policy-legal; it is logged, not blocked
-  detail: {
-    entry_point: 'cli' | 'mcp',
-    ready: boolean,
-    quality_score: number,
-    threshold: number,
-    critique: BriefRefinement['critique'],   // FR-5: critique recorded IN the row
-    questions: string[],
-  },
+export const FindingLocation = z.object({
+  file: z.string().min(1),
+  line: z.number().int().positive().optional(),
 });
+
+export const Finding = z.object({
+  severity: SeverityEnum,
+  category: z.string().min(1),         // e.g. "correctness", "edge-case", "security"
+  location: FindingLocation,
+  description: z.string().min(1),
+  suggested_fix: z.string().optional(),
+  source: z.string().min(1),           // skill name: "adversarial-review" | "edge-case-hunter" | "code-review-agent" | ...
+});
+export type Finding = z.infer<typeof Finding>;
+
+export const ReviewerOutput = z.object({
+  findings: z.array(Finding),
+});
+export type ReviewerOutput = z.infer<typeof ReviewerOutput>;
 ```
 
-No schema migration: `detail` is already a JSON column.
+### Failure-investigator output (`packages/loom-core/src/findings/investigation.ts`)
+
+```ts
+export const EvidenceGrade = z.enum(["strong", "weak", "contradictory"]);
+export type EvidenceGrade = z.infer<typeof EvidenceGrade>;
+
+export const Investigation = z.object({
+  grade: EvidenceGrade,
+  hypothesis: z.string().min(1),
+  hint: z.string().optional(),          // required when grade === "strong"; consumed by retry-with-hint
+  evidence_refs: z.array(z.string()),   // file:line, test name, log line markers
+}).refine(
+  (v) => v.grade !== "strong" || (v.hint && v.hint.length > 0),
+  { message: "strong grade requires a non-empty hint" },
+);
+export type Investigation = z.infer<typeof Investigation>;
+```
+
+### Distillation output (`packages/loom-core/src/findings/distillation.ts`)
+
+```ts
+export const Distillation = z.object({
+  distilled: z.string().min(1),
+  source_token_count: z.number().int().nonneg(),
+  distilled_token_count: z.number().int().nonneg(),
+  acceptance_criteria_preserved: z.array(z.string()),  // verbatim copies from input
+});
+export type Distillation = z.infer<typeof Distillation>;
+```
+
+### Lesson-extractor output (provisional, story-006)
+
+```ts
+// Marked PROVISIONAL in SKILL.md per FR-9. Not consumed this epic.
+export const Lesson = z.object({
+  kind: z.enum(["worked-well", "did-not-work", "surprise"]),
+  summary: z.string().min(1),
+  context: z.string().min(1),           // story id, epic id, file refs
+  recommended_action: z.string().optional(),
+});
+export type Lesson = z.infer<typeof Lesson>;
+```
+
+### Persistence (no schema changes)
+
+```sql
+-- skill_usage: existing table, no migration
+-- columns relied on: id, skill_name, story_id, started_at, finished_at, status, repair_attempts
+
+-- audit_log: existing table, no migration
+-- columns relied on: id, story_id, actor, action, payload_json, created_at
+-- new `action` values used by this epic:
+--   'review.findings.deduped'
+--   'review.revision.triggered'
+--   'review.reviewer.warn_and_continue'
+--   'failure.investigation.graded'
+--   'failure.routed.retry_with_hint'
+--   'failure.routed.surface_to_operator'
+--   'failure.routed.stop_epic'
+--   'context.distilled'
+```
 
 ## API / Interface Contracts
 
+### Skill invocation (uniform shape via `SkillSelector`)
+
 ```ts
-// packages/loom-core/src/brief/gate.ts  (NEW — story seam)
-export function evaluateBriefGate(
-  refinement: Pick<BriefRefinement, 'ready' | 'quality_score'>,
-  minScore: number
-): GateVerdict;
-// Invariant: pass === (refinement.ready === true && refinement.quality_score >= minScore)
-// Note: at minScore = 0, `ready: false` still fails — ready is always consulted.
-
-// packages/loom-core/src/brief/BriefRefiner.ts  (signature unchanged)
-class BriefRefiner {
-  constructor(opts: { projectRoot: string; llm: LLMClient; model: string });
-  refine(rough: string): Promise<BriefRefinement>;
+// packages/loom-core/src/skills/types.ts
+export interface SkillInvocation<TInput, TOutput> {
+  name: string;
+  input: TInput;
+  story_id: string;
+  epic_id: string;
 }
-// Construction contract at BOTH call sites:
-//   new BriefRefiner({ projectRoot, llm, model: modelFor(policy, 'planning') })
-// Today both pass policy.agents.model — the defect IS present in both
-// handlers.ts (~line 488) and epic.ts (~line 38); the epic.ts audit mandated
-// by FR-6 will find it and apply the identical fix.
 
-// packages/loom-cli/src/commands/epic.ts
-export async function runEpic(brief: string, opts?: { force?: boolean }): Promise<void>;
-// packages/loom-cli/src/index.ts — commander wiring:
-//   .command('epic').argument('<brief>').option('--force', 'Skip the brief-quality
-//   gate for this invocation; the critique is still produced and audit-logged')
+export interface SkillResult<TOutput> {
+  output: TOutput;          // already zod-validated by SkillSelector
+  cache_hit: boolean;
+  duration_ms: number;
+}
 
-// packages/loom-mcp — loom_start_epic
-// inputSchema gains: force?: boolean (default false)
-// Handler flow: refine → evaluateBriefGate →
-//   pass            → plan (unchanged response)
-//   !pass && !force → { status: 'rejected', reason: 'brief_quality_below_threshold',
-//                       ready, quality_score, min_quality_score, critique,
-//                       questions, refined_brief, message }   // adds `ready`; rest unchanged
-//   !pass && force  → AuditLog.record(brief_gate_forced)  // BEFORE planner (NFR-2)
-//                     → plan → { status: 'planned', forced: true, ...usual fields }
+// SkillSelector.invoke writes skill_usage + audit_log BEFORE returning (invariant #5)
+declare function invokeSkill<I, O>(call: SkillInvocation<I, O>): Promise<SkillResult<O>>;
 ```
 
-The ordering invariant in both entry points: **refine → verdict → (if forced) audit row → planner**. The synchronous `better-sqlite3` insert means the row is durable before the planner consumes a single token, which satisfies NFR-2 without any new transaction machinery.
+### Reviewer contract (all three reviewers honor this)
+
+```ts
+// packages/loom-core/src/review/reviewer.ts
+export interface ReviewerInput {
+  diff: string;                    // unified diff from worker
+  changed_files: string[];
+  story_context: string;           // distilled story brief
+}
+export type ReviewerInvocation = SkillInvocation<ReviewerInput, ReviewerOutput>;
+```
+
+### Review orchestrator
+
+```ts
+// packages/loom-core/src/review/orchestrator.ts
+export interface ReviewPassResult {
+  findings: Finding[];             // post-dedupe
+  triggers_revision: boolean;      // true iff any blocker | high present
+  per_reviewer_status: Array<{
+    source: string;
+    status: "ok" | "repaired" | "warn_and_continue";
+  }>;
+}
+
+export async function runReviewPass(
+  input: ReviewerInput,
+  ctx: { story_id: string; epic_id: string; revision_index: number },
+): Promise<ReviewPassResult>;
+
+// Dedupe key — exported for unit-test reuse:
+export function dedupeKey(f: Finding): string;
+// => `${f.location.file}|${f.location.line ?? ""}|${normalize(f.description)}`
+export function normalize(s: string): string;
+// => lowercase, collapse runs of \s+ to single space, strip /[^\p{L}\p{N}\s]/u
+```
+
+### Failure investigator + router
+
+```ts
+// packages/loom-core/src/failure/router.ts
+export interface FailurePayload {
+  failing_test_or_gate: string;
+  stderr_tail: string;
+  diff: string;
+  story_id: string;
+}
+
+export type RouteDecision =
+  | { kind: "retry-with-hint"; hint: string }
+  | { kind: "surface-to-operator"; reason: string }
+  | { kind: "stop-epic"; reason: string };
+
+export async function investigateAndRoute(
+  payload: FailurePayload,
+): Promise<RouteDecision>;
+
+// Pure router — no LLM, no I/O. Trivially unit-testable.
+export function routeByGrade(inv: Investigation): RouteDecision;
+```
+
+### Distiller hook into worker-context assembly
+
+```ts
+// packages/loom-core/src/worker/contextAssembler.ts
+export interface AssembledContext {
+  raw: string;
+  distilled: string;
+  acceptance_criteria_preserved: string[];
+}
+
+export async function assembleWorkerContext(
+  story_id: string,
+  planning_artifacts: { prd: string; epic: string; architecture: string; story: string },
+): Promise<AssembledContext>;
+// Invokes doc-distiller exactly once per story (FR-8); throws if any AC is dropped.
+```
 
 ## Security Model
 
+The threat surface this epic introduces is small but real:
+
 | Threat | Control |
 |---|---|
-| Force becomes a silent standing bypass | Per-invocation only — no policy key, no env var. Every use writes a `brief_gate_forced` row before control returns (NFR-2); rows are FTS-searchable via the existing `loom_audit` surface |
-| Forced start hides what the gate would have said | The refiner still runs on a forced start; the full critique is embedded in the audit row's `detail`, so the admin sees exactly what was overridden |
-| Malformed/truncated model output sneaks a bad brief past the gate | All parse-failure paths fail closed: `ready: false`, score 0 or 3, below the default threshold. An unparseable response can only proceed via an explicit, logged `--force` |
-| Gate and planner judge with different models (cursor backend silently ignoring `cursor_model`) | Single routing function — `modelFor(policy, 'planning')` — at both construction sites; a regression test asserts refiner and planner resolve identically on both backends |
-| Documentation overstates the guarantee (operators rely on an unbypassable gate that isn't) | FR-7 copy sweep, verified by repo-wide search. Beyond the three named sites (`registry.ts` description, `init.ts` policy comment ~lines 557–562, `docs/capabilities.md` rows ~36 and ~145), the search also catches `README.md` ~line 94 and `docs/architecture/brief-refinement.md` ~lines 60–65, both of which say "non-negotiable" today and must be corrected to mention the audited `--force` escape hatch |
+| Malformed reviewer output crashes the loop | One repair attempt, then `warn-and-continue` log + skip that reviewer for the pass; `CodeReviewAgent` is the backstop (FR-6). |
+| Untrusted skill output mutating loom state | Findings are data only; written to `audit_log`/`skill_usage`; never `eval`'d or used as code. |
+| Routing decision spoofed by hostile reviewer | The router runs on `failure-investigator` output only, validated by `Investigation` zod schema. Other reviewers cannot reach the router. |
+| Prompt-cache poisoning across stories | Static prefixes are skill-owned constants; per-story input is appended after the cache boundary. No story can mutate another's prefix. |
+| `_bmad/` path traversal at runtime | Headless-purity fixture (FR §NFR-1) hides those paths; any runtime read fails the test. |
+| Lesson-extractor output consumed prematurely | Schema is marked PROVISIONAL in SKILL.md; no runtime caller wired (FR-9). Down-stream guards in Epic D, not here. |
+
+No new authentication or authorization surfaces are introduced. The epic adds no new operator knobs (PRD §Out of Scope).
 
 ## ADR Log
 
-### ADR-001 — Pass rule is `ready === true AND quality_score >= threshold`
+### ADR-001 — Single shared `zod` findings schema in `loom-core`
 
-- **Decision:** The gate passes only when both the model's boolean judgment and the threshold comparison agree.
-- **Context:** FR-1's reconciled precedence. Two signals can disagree: `ready: true` with a low score, or `ready: false` with a high score.
-- **Rationale:** AND-composition gives the policy knob a real meaning — operators can *tighten* beyond the model's judgment — while `ready` retains veto power, which is what makes threshold-0 repos (the current workaround) safe: they still get judgment, not a disabled gate.
-- **Trade-off:** Strictly more rejections than either signal alone; a model that says "ready" but scores 5 fails at the default threshold. Acceptable because `--force` now bounds the cost of a wrong refusal.
+**Decision:** Define one `Finding` schema exported from `packages/loom-core/src/findings/schema.ts`. Every reviewer (ported and existing `CodeReviewAgent`) emits against it.
 
-### ADR-002 — `quality_score` becomes model-emitted; `computeQualityScore` is deleted, not deprecated
+**Context:** Three independent reviewers run in parallel and their outputs must be unionable and dedup-able. A per-reviewer schema would force adapter code at every seam.
 
-- **Decision:** The 0–10 score is parsed from the model's JSON response. The critique-array-length arithmetic is removed entirely.
-- **Context:** The derived score floors at 0 for any brief the refiner critiques thoroughly — punishing diligence — and the `types.ts` comment's claim that derivation made it "stable across refinements" was false in practice (array lengths flip between identical calls).
-- **Rationale:** A holistic judgment is what the number always claimed to be. Keeping the old function around "just in case" would invite someone to re-wire it.
-- **Trade-off:** We accept model nondeterminism in the score itself (acknowledged out-of-scope risk in the PRD). The same-field/same-response design at least guarantees `ready` and `quality_score` come from one coherent judgment, not two calls that could disagree.
+**Rationale:** One schema means one validator, one repair path, one dedupe function, and one audit-log shape. It also makes story-001 the natural blocking dependency for stories 002–006, which mirrors the PRD dependency graph.
 
-### ADR-003 — All parse-failure paths fail closed; the truncation salvage flips from `ready: true`/9 to `ready: false`/3
+**Trade-off:** `CodeReviewAgent` may need a thin output-adapter if its current shape diverges. We accept that small change as part of story-003 wiring rather than introducing per-reviewer schemas. The wider trade is that adding a sixth finding field later forces a coordinated change across all reviewers.
 
-- **Decision:** `fallback()` → `ready: false`, score 0. Salvage → partial `refined_brief` preserved, `ready: false`, score 3.
-- **Context:** The salvage path's current optimism (`ready: true`, 9/10) existed because rejection was a dead end. FR-3's assumption resolves this: fail closed now that `--force` exists.
-- **Rationale:** An unparseable response is zero evidence of a good brief. Distinct constants (0 vs 3) keep total failure and partial salvage distinguishable in logs and tests without inventing a status enum.
-- **Trade-off:** An operator hit by backend truncation on a genuinely good brief now sees a refusal instead of a pass — one extra re-run or a deliberate `--force`. We trade their convenience for never vouching for content we couldn't parse.
+### ADR-002 — Reviewers run in parallel via `Promise.all`, not a worker pool
 
-### ADR-004 — Gate verdict lives in one pure function in loom-core (`brief/gate.ts`)
+**Decision:** `runReviewPass` invokes the three reviewers concurrently with `Promise.all` and a per-reviewer try/catch that downgrades a thrown reviewer to `warn_and_continue`.
 
-- **Decision:** `evaluateBriefGate(refinement, minScore)` is the only place the pass rule exists; `epic.ts` and `handlers.ts` call it instead of comparing inline.
-- **Context:** The threshold comparison is currently duplicated at both entry points, and the routing bug this epic fixes is itself a duplication-drift defect — the two call sites already disagreed once.
-- **Rationale:** A compound rule plus a force branch duplicated twice will drift again. A pure function is also the cheapest possible test target: every acceptance criterion about pass/fail semantics tests it directly, no LLM mock required.
-- **Trade-off:** One new file and an export through `@loom-ai/core`'s index for what is arithmetically three lines. Worth it; the alternative already burned us.
+**Context:** The reviewers are pure functions of (diff, story context). They share no mutable state and each makes its own Anthropic API call.
 
-### ADR-005 — The forced-start critique is recorded by embedding it in the audit row's `detail`
+**Rationale:** Three concurrent calls fit comfortably under any sensible API rate limit; a worker pool is over-engineering. Wall-clock is gated by the slowest reviewer, which is the same as a pool.
 
-- **Decision:** No new table, no `.loom/planning` artifact file for forced critiques; the `brief_gate_forced` row's JSON `detail` carries the full critique, questions, scores, and entry point.
-- **Context:** FR-5 requires the critique recorded and "referenced by" the audit row.
-- **Rationale:** Embedding makes record-and-reference one atomic synchronous insert — the NFR-2 ordering invariant holds trivially, and there is no second artifact that can go missing or get out of sync. `detail` is already a free-form JSON column used this way across the Supervisor.
-- **Trade-off:** Critiques are reachable only through audit queries, not as standalone files, and a verbose critique fattens one DB row. Both acceptable for an override expected to be rare.
+**Trade-off:** If we later scale to ten reviewers per pass we may need to add concurrency limiting. We accept that as a future change — the orchestrator function signature is the natural place to add it.
 
-### ADR-006 — The refiner routes through `modelFor(policy, 'planning')`, accepting planning-tier cost
+### ADR-003 — Lexical dedupe, not semantic
 
-- **Decision:** Both `BriefRefiner` construction sites pass `modelFor(policy, 'planning')`, replacing `policy.agents.model`.
-- **Context:** `BriefRefinerOptions` explicitly documents the worker-tier choice ("Sonnet by default; refinement is one call, deep reasoning isn't needed") — the current wiring is intentional on the claude backend and only *broken* on cursor-cli, where `policy.agents.model` holds a Claude-namespaced id that `cursor-agent` can't use.
-- **Rationale:** G3 is the requirement: the gate's verdict must reflect the model that will actually consume the brief, and `modelFor` is the one function that already gets the cursor short-circuit right. A bespoke "worker-tier but cursor-aware" resolution would be a third routing path — exactly the class of drift this epic exists to kill.
-- **Trade-off:** On the claude-cli backend the gate call moves from Sonnet to the planning model (Opus 4.7 by default) — a real per-invocation cost increase for a single-call critique. We pay it for verdict fidelity and routing uniformity; the `BriefRefinerOptions.model` doc comment must be updated so the old rationale doesn't mislead the next reader.
+**Decision:** Dedupe key is `(file, line, normalize(description))` with `normalize` = lowercase + collapse whitespace + strip punctuation.
+
+**Context:** PRD §FR-4 mandates lexical-only for v1; §Out of Scope explicitly excludes embeddings.
+
+**Rationale:** Lexical normalization is deterministic, free, and unit-testable. Two reviewers describing the same line problem in identical-after-normalization words collapse to one finding.
+
+**Trade-off:** Two reviewers phrasing the same finding differently both reach the operator/worker. The worker pays the revision cost for what is really one issue. We accept this; a future epic can swap in semantic dedupe behind the same `dedupeKey` interface.
+
+### ADR-004 — Router is a pure function over `Investigation.grade`
+
+**Decision:** `routeByGrade(inv)` is a plain `switch` returning a tagged union. No LLM, no I/O, no async.
+
+**Context:** PRD §G2 demands deterministic routing covered by unit tests for all three grades.
+
+**Rationale:** A pure function is trivially unit-testable, makes `audit_log` traces reproducible, and prevents the model from ever deciding to "stop the epic" off-script. The investigator's *judgment* (grading) is LLM-driven; the *action* on that judgment is not.
+
+**Trade-off:** A misgraded `weak` failure that is actually `strong` won't auto-retry — the operator has to intervene. We accept that; the alternative (LLM in the routing path) collapses the determinism property the PRD calls out as G2.
+
+### ADR-005 — Distiller fails the run if any acceptance criterion is dropped, logs only on missed compression target
+
+**Decision:** `assembleWorkerContext` throws if any acceptance-criterion string from input is absent verbatim from distilled output. Missing the ≤55% compression target writes a warn-level log entry and proceeds.
+
+**Context:** PRD §G3 and §FR-8 are asymmetric: AC preservation is a hard guarantee; compression is a soft target.
+
+**Rationale:** A dropped AC silently miscalibrates the worker; it is the worst failure mode and worth a hard stop. Missed compression is a cost issue, not a correctness one.
+
+**Trade-off:** A reviewer that paraphrases an AC (even harmlessly) will fail the verbatim check and abort. We accept the false-positive risk because the alternative — fuzzy match — reintroduces the ambiguity we are explicitly designing against.
+
+### ADR-006 — Inline BMAD `_bmad/`-overlay defaults into skill bodies, do not fall back at runtime
+
+**Decision:** Where a BMAD source skill referenced `_bmad/scripts/` or `_bmad/bmm/config.yaml`, the ported skill body embeds the resolved default as a constant. No runtime probe of `_bmad/`.
+
+**Context:** PRD §NFR-1 requires headless purity; a test fixture hides those paths and asserts skills still run.
+
+**Rationale:** Any runtime check ("if `_bmad/` exists, use it; otherwise default") fails the fixture and risks production behavior diverging from test behavior. Inlining the default removes the branch entirely.
+
+**Trade-off:** Future BMAD upstream changes to those defaults won't flow through automatically. We accept that; the vendored interactive originals under `.agents/skills/` and `.claude/skills/` remain the upstream tracking surface and are untouched (FR-13).
+
+### ADR-007 — `lesson-extractor` ships callable-only with a PROVISIONAL schema
+
+**Decision:** Register `lesson-extractor` with `SkillSelector` and emit lessons JSON against a schema documented in its SKILL.md. The SKILL.md states the schema is PROVISIONAL pending Epic D. No runtime caller is added.
+
+**Context:** PRD §US-5 wants Epic D consumers to be able to call this; FR-9 forbids wiring it into the runtime this epic.
+
+**Rationale:** Shipping the skill now lets Epic D start consuming immediately. The PROVISIONAL marker buys us the right to change the schema once a real consumer exists, without breaking a backward-compat promise we never made.
+
+**Trade-off:** If an external consumer ignores the PROVISIONAL marker and locks in early, breaking changes in Epic D could surprise them. We accept that; the marker is the contract.

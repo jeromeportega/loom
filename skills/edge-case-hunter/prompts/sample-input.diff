@@ -1,0 +1,17 @@
+diff --git a/src/batch/import.ts b/src/batch/import.ts
+index 3333333..4444444 100644
+--- a/src/batch/import.ts
++++ b/src/batch/import.ts
+@@ -10,8 +10,12 @@ export function importRows(rows: Row[]): ImportSummary {
+-  const summary: ImportSummary = { total: rows.length };
+-  for (const row of rows) {
+-    writeRow(row);
+-    summary.total += 1;
+-  }
++  const summary = {} as ImportSummary;
++  for (const row of rows) {
++    writeRow(row);
++    summary.total += 1;
++  }
+   return summary;
+ }
