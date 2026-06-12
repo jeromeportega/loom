@@ -405,6 +405,7 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
       backend: policy.agents.worker_backend,
       allowedRemotes: policy.git.allowed_remotes,
       cursorModel: policy.agents.cursor_model,
+      model: policy.agents.model,
       prStrategy: policy.agents.pr_strategy,
       reviewAgent,
       reviewStrategy: policy.agents.review_strategy,

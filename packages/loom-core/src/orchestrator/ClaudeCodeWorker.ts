@@ -13,6 +13,13 @@ export interface ClaudeCodeWorkerOptions extends CliWorkerOptions {
   claudeBin?: string;
   /** Args passed to the binary. The prompt is supplied on stdin. */
   claudeArgs?: string[];
+  /**
+   * policy.agents.model — appended as `--model <id>` to the default args so the
+   * worker runs on the configured model. Without it the `claude` CLI falls back
+   * to the operator's ambient default (e.g. Opus), silently ignoring the policy.
+   * Ignored when `claudeArgs` is supplied explicitly (the caller owns the args).
+   */
+  model?: string;
 }
 
 /**
@@ -49,7 +56,9 @@ export class ClaudeCodeWorker extends BaseCliWorker {
   constructor(opts: ClaudeCodeWorkerOptions = {}) {
     super(opts);
     this.bin = opts.claudeBin ?? 'claude';
-    this.args = opts.claudeArgs ?? DEFAULT_ARGS;
+    this.args =
+      opts.claudeArgs ??
+      (opts.model ? [...DEFAULT_ARGS, '--model', opts.model] : DEFAULT_ARGS);
   }
 
   protected binary(): string {

@@ -28,6 +28,9 @@ class TestableClaude extends ClaudeCodeWorker {
   exposeStreamingInput() {
     return (this as any).streamingInput();
   }
+  exposeAgentArgs(assignment: any) {
+    return (this as any).agentArgs(assignment);
+  }
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -133,6 +136,31 @@ describe('ClaudeCodeWorker — buildInputChannel', () => {
 
     const ok = await push;
     assert.equal(ok, true);
+  });
+});
+
+describe('ClaudeCodeWorker — model flag (regression: policy.agents.model was a dead knob)', () => {
+  // A worktree path with no .cursor/mcp.json, so agentArgs returns the base args.
+  const noMcpAssignment = { worktreePath: '/nonexistent-loom-worktree-xyz' } as any;
+
+  it('appends --model <id> when a model is configured', () => {
+    const w = new TestableClaude({ model: 'claude-sonnet-4-6' });
+    const args = w.exposeAgentArgs(noMcpAssignment);
+    const i = args.indexOf('--model');
+    assert.ok(i >= 0, 'expected --model in the claude args');
+    assert.equal(args[i + 1], 'claude-sonnet-4-6');
+  });
+
+  it('omits --model when no model is configured (baseline byte-identical)', () => {
+    const w = new TestableClaude();
+    const args = w.exposeAgentArgs(noMcpAssignment);
+    assert.ok(!args.includes('--model'), 'baseline args must not carry --model');
+  });
+
+  it('an explicit claudeArgs override suppresses the injected --model', () => {
+    const w = new TestableClaude({ model: 'claude-sonnet-4-6', claudeArgs: ['-p'] });
+    const args = w.exposeAgentArgs(noMcpAssignment);
+    assert.deepEqual(args, ['-p']);
   });
 });
 
