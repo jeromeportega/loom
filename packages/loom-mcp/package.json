@@ -1,6 +1,6 @@
 {
   "name": "@loom-ai/mcp",
-  "version": "1.0.1",
+  "version": "4.2.1",
   "description": "Loom MCP server — the primary loom surface for Claude Code, Cursor, and any MCP-aware client",
   "license": "UNLICENSED",
   "homepage": "https://github.com/jeromeportega/loom",
@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
-    "@loom-ai/core": "^1.0.1",
+    "@loom-ai/core": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {

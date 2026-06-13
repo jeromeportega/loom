@@ -1,6 +1,6 @@
 {
   "name": "@loom-ai/core",
-  "version": "1.0.1",
+  "version": "4.2.1",
   "description": "Loom orchestration engine: planner, supervisor, guardrails, skills, state",
   "license": "UNLICENSED",
   "homepage": "https://github.com/jeromeportega/loom",
