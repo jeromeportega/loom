@@ -44,7 +44,7 @@ describe('v15 attempt_class migration', () => {
         version: number;
       }
     ).version;
-    assert.equal(version, 15, 'schema_version is at v15');
+    assert.equal(version, 16, 'schema_version is at v16');
   });
 
   it('is idempotent — re-running migrations on a DB that already has the column is a no-op', () => {
@@ -118,8 +118,8 @@ describe('v15 attempt_class migration', () => {
           version: number;
         }
       ).version,
-      15,
-      'schema_version upgraded 14 → 15'
+      16,
+      'schema_version upgraded 14 → 16'
     );
     // The legacy row is preserved and reads back with a NULL classification.
     const legacy = new AgentStore(db).get('agent-legacy');

@@ -28,8 +28,10 @@ import type {
   AuditEntry,
   PlanningArtifacts,
 } from '../shared/types.js';
-import { requireToken, newToken } from './auth.js';
+import { accessGuard, newToken } from './auth.js';
 import { eventStreamHandler } from './events.js';
+import { registerAutonomyRoutes } from './routes/autonomy.js';
+import { registerFleetRoutes } from './routes/fleet.js';
 
 export interface CreateAppOptions {
   db: Database.Database;
@@ -48,6 +50,13 @@ export interface CreateAppOptions {
    * approve works without `npm link`.
    */
   loomBin?: readonly string[];
+  /**
+   * When true, GET/HEAD requests are served without a token; any mutation
+   * (non-GET/HEAD) still requires the write token (returns 403 without it).
+   * Enabled by LOOM_WEB_READONLY=1 or `loom web --read-only`.
+   * Default: false (token required for all /api/* requests).
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -67,8 +76,11 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json({ ok: true });
   });
 
-  // Every other /api/* route requires the token.
-  app.use('/api', requireToken({ token: opts.token }));
+  // Single centralized access guard for all /api/* routes.
+  // readOnly=false (default): token required on every request (byte-identical
+  // to the old requireToken behavior).
+  // readOnly=true: GET/HEAD pass tokenless; non-GET/HEAD → 403 without token.
+  app.use('/api', accessGuard({ token: opts.token, readOnly: opts.readOnly ?? false }));
 
   const epicStore = new EpicStore(opts.db);
   const agentStore = new AgentStore(opts.db);
@@ -79,6 +91,10 @@ export function createApp(opts: CreateAppOptions): Express {
   const decisionTraces = new DecisionTraceStore(opts.db);
 
   const currentProjectRoot = opts.projectRoot ?? process.cwd();
+
+  // ─── Route modules (owned by sibling stories; mounted here) ─────────────
+  registerAutonomyRoutes(app, { epicStore, auditLog });
+  registerFleetRoutes(app, { epicStore, agentStore, db: opts.db, projectRoot: currentProjectRoot });
 
   // ─── GET /api/status — federated list of EpicStatus across all repos ─────
   // Aggregates every loom-init'ed repo on this machine, not just the one the

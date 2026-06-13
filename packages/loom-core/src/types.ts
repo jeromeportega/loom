@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import type { AttemptClass } from './orchestrator/resilience/types.js';
 
+// ─── Autonomy ────────────────────────────────────────────────────────────────
+
+export const AutonomyLevelSchema = z.enum(['full-auto', 'checkpoint', 'manual']);
+export type AutonomyLevel = z.infer<typeof AutonomyLevelSchema>;
+
 // ─── Agent / Epic Status ────────────────────────────────────────────────────
 
 export const AgentStatusSchema = z.enum([
@@ -172,6 +177,12 @@ export interface EpicRecord {
    * its agents, and its audit trail are all preserved.
    */
   archived_at: string | null;
+  /** Autonomy level for this epic. DEFAULT 'manual' for all pre-v16 rows. */
+  autonomy_level: AutonomyLevel;
+  /** ISO8601 timestamp set when the epic is checkpoint-paused; null otherwise. */
+  paused_at: string | null;
+  /** The story_id after which the epic paused in checkpoint mode. */
+  paused_after_story: string | null;
 }
 
 export interface AuditLogEntry {
