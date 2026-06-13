@@ -10,6 +10,11 @@ export interface WebOptions {
   port?: number;
   /** Don't auto-open the browser. */
   noOpen?: boolean;
+  /**
+   * Serve GET routes without authentication; mutations still require the write
+   * token. Also enabled by LOOM_WEB_READONLY=1 environment variable.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -28,14 +33,18 @@ export async function runWeb(opts: WebOptions = {}): Promise<void> {
   const token = newToken();
   const staticDir = resolveStaticDir();
   const loomBin = resolveLoomBin();
+  const readOnly = opts.readOnly ?? process.env.LOOM_WEB_READONLY === '1';
 
-  const app = createApp({ db, token, staticDir, projectRoot, loomBin });
+  const app = createApp({ db, token, staticDir, projectRoot, loomBin, readOnly });
   const startPort = opts.port ?? 8765;
   const port = await listen(app, startPort);
   const url = `http://127.0.0.1:${port}/#token=${token}`;
 
   console.log('');
   console.log(`  🌐 loom web — http://127.0.0.1:${port}/`);
+  if (readOnly) {
+    console.log('  Read-only mode: GET routes are public; mutations require the write token.');
+  }
   console.log(`  Token (also embedded in the URL fragment below):`);
   console.log(`    ${token}`);
   console.log('');
