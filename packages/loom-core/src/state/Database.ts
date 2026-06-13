@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -269,6 +269,19 @@ export function runMigrations(db: Database.Database): void {
   }
   if (!epicCols.some((c) => c.name === 'error')) {
     db.exec('ALTER TABLE epics ADD COLUMN error TEXT');
+  }
+  // v16: per-epic autonomy mode and checkpoint-pause indicator (epic-003 story-003-001).
+  // autonomy_level defaults to 'manual' so all pre-v16 rows read as manual with no backfill.
+  // paused_at and paused_after_story are nullable — non-null paused_at means the epic is
+  // checkpoint-paused after the named story.
+  if (!epicCols.some((c) => c.name === 'autonomy_level')) {
+    db.exec("ALTER TABLE epics ADD COLUMN autonomy_level TEXT NOT NULL DEFAULT 'manual'");
+  }
+  if (!epicCols.some((c) => c.name === 'paused_at')) {
+    db.exec('ALTER TABLE epics ADD COLUMN paused_at DATETIME');
+  }
+  if (!epicCols.some((c) => c.name === 'paused_after_story')) {
+    db.exec('ALTER TABLE epics ADD COLUMN paused_after_story TEXT');
   }
 
   const row = db
