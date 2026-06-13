@@ -51,7 +51,7 @@ export interface AssembleOptions {
   epic_id?: string;
   /**
    * Override the distiller. Defaults to the deterministic, dependency-free
-   * compressor below — the graceful-degradation path bmad-distillator
+   * compressor below — the graceful-degradation path doc-distiller
    * documents, and the one loom uses headless so a worker context never costs
    * an extra LLM round-trip. Tests inject their own to exercise the verifier.
    */
