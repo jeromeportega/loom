@@ -13,6 +13,7 @@ import {
 } from '../state/index.js';
 import type { GlobalLimiter, LimiterSlot } from '../state/index.js';
 import { EpicYamlSchema, type Story, type AgentStatus } from '../types.js';
+import { approveAndDispatch } from './actions/approveAndDispatch.js';
 import {
   SkillStore,
   SkillSelector,
@@ -398,6 +399,29 @@ export class Supervisor {
     this.successCount = 0;
     // Clear any stale stop signal from a previous run.
     this.control.setState('running');
+
+    // Seam 1: auto-approve planned epics with non-manual autonomy so they
+    // flow straight into dispatch without waiting for a human approval call.
+    // manual → leave 'planned' (current behavior, unchanged).
+    // checkpoint | full-auto → approveAndDispatch({actor:'full-auto'}) then
+    // fall through into the normal dispatch loop below.
+    const loomDir = path.join(this.opts.projectRoot, '.loom');
+    const planningCandidates = epicIds
+      ? epicIds.map((id) => this.epics.get(id)).filter((e) => e?.status === 'planned')
+      : this.epics.listByStatus('planned');
+    for (const epic of planningCandidates) {
+      if (!epic) continue;
+      const autonomy = this.epics.getAutonomy(epic.id);
+      if (autonomy !== 'manual') {
+        const policy = PolicyEngine.load(loomDir).policyData;
+        await approveAndDispatch(
+          { epicStore: this.epics, auditLog: this.audit, policy },
+          epic.id,
+          { actor: 'full-auto' }
+        );
+      }
+    }
+
     const { selected, skipped } = this.selectEpics(epicIds);
 
     // Per-epic dispatch lease. Acquire each selected epic; an epic another
@@ -750,7 +774,7 @@ export class Supervisor {
       const stopRequested = this.control.getState() === 'stopping';
       if (stopRequested) stopped = true;
       const storyCheckpointHit = checkpoint === 'story' && completedThisRun >= 1;
-      const haltDispatch = stopRequested || storyCheckpointHit;
+      const haltDispatch = stopRequested || storyCheckpointHit || stopped;
 
       // Fill the worker pool with ready stories — each gated by the local cap
       // and, when configured, a machine-level concurrency slot.
@@ -804,6 +828,19 @@ export class Supervisor {
       // completion is processed per loop turn.
       if (this.rolling && SUCCESS.has(task.status)) {
         await this.integrateStory(task, result);
+      }
+      // Seam 2: checkpoint-autonomy pause. After each successful story, if the
+      // epic is in checkpoint mode and more stories remain, pause so the
+      // operator can review before continuing. resumeEpic() clears the pause
+      // and the next supervisor.run() dispatches remaining stories.
+      if (SUCCESS.has(task.status) && this.epics.getAutonomy(task.epicId) === 'checkpoint') {
+        const anyPending = [...tasks.values()].some(
+          (t) => t.epicId === task.epicId && t.status === 'pending'
+        );
+        if (anyPending) {
+          this.epics.pauseAfterStory(task.epicId, task.story.id);
+          stopped = true;
+        }
       }
       completedThisRun++;
     }
