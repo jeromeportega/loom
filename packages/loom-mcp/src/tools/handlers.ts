@@ -28,6 +28,9 @@ import {
   BriefRefiner,
   evaluateBriefGate,
   StoryRetryService,
+  AutonomyLevelSchema,
+  setEpicAutonomy,
+  EpicNotFoundError,
 } from '@loom-ai/core';
 import type { ToolContext, ToolHandler } from './context.js';
 
@@ -1230,6 +1233,34 @@ const getProject: ToolHandler = async (_ctx, args) => {
   };
 };
 
+/**
+ * loom_set_autonomy — set the autonomy level for an epic. Delegates to the
+ * shared setEpicAutonomy core action so the persisted value and audit row are
+ * identical to the web route path (FR-3).
+ */
+const setAutonomy: ToolHandler = async (ctx, args) => {
+  const epicId = String(args.epic_id ?? '');
+  if (!epicId) return { status: 'error', message: 'epic_id is required' };
+
+  const parse = AutonomyLevelSchema.safeParse(args.level);
+  if (!parse.success) {
+    return { status: 'error', message: 'invalid level; must be one of: full-auto, checkpoint, manual' };
+  }
+
+  const db = openDatabase(ctx.loomDir);
+  const epicStore = new EpicStore(db);
+  const auditLog = new AuditLog(db);
+
+  try {
+    return setEpicAutonomy({ epicStore, auditLog }, epicId, parse.data, 'mcp');
+  } catch (err) {
+    if (err instanceof EpicNotFoundError) {
+      return { status: 'error', message: err.message };
+    }
+    throw err;
+  }
+};
+
 export const HANDLERS: Record<string, ToolHandler> = {
   loom_policy_check: policyCheck,
   loom_get_status: getStatus,
@@ -1250,6 +1281,7 @@ export const HANDLERS: Record<string, ToolHandler> = {
   loom_get_review: getReview,
   loom_list_projects: listProjects,
   loom_get_project: getProject,
+  loom_set_autonomy: setAutonomy,
 };
 
 export type { ToolContext };

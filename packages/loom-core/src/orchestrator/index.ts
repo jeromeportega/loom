@@ -99,3 +99,4 @@ export { InfraRetryController } from './InfraRetryController.js';
 export type { InfraRetryControllerOptions } from './InfraRetryController.js';
 export { SpawnStagger } from './resilience/SpawnStagger.js';
 export type { SpawnStaggerOptions } from './resilience/SpawnStagger.js';
+export { setEpicAutonomy, EpicNotFoundError } from './actions/setEpicAutonomy.js';
