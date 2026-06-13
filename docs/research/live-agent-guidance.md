@@ -489,12 +489,12 @@ future re-run.
 
 ## Methodology
 
-This research used the `bmad-technical-research` skill's discipline: explicit
+This research followed a structured technical-research discipline: explicit
 sub-questions, exhaustive candidate enumeration, comparison axes shared
 across candidates, and a recommendation that ties the smallest viable change
-to a longer-term arc. The collaboration model in the skill is interactive
+to a longer-term arc. The collaboration model is interactive
 (`[C] Continue` gates between steps); this session ran under Auto Mode and
-collapsed the gates while preserving the discipline. The skill's six-step
+collapsed the gates while preserving the discipline. The six-step
 template (scope → tech overview → integration patterns → architecture →
 implementation → synthesis) was used as a structuring checklist rather than
 a literal section-per-step layout, because the question is concrete and
