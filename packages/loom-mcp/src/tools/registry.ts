@@ -291,6 +291,31 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'loom_reconcile_epic',
+    description:
+      'Reconcile a stranded-but-merged epic to done. Verifies that the ' +
+      "epic's PR was merged (via `gh pr view` when pr_url is supplied, " +
+      'otherwise via git ancestry against the base branch), then records ' +
+      'the PR URL, clears the finalize phase, audit-logs the reconcile, ' +
+      "and flips the epic status to done. Returns a ReconcileResult with " +
+      'status (reconciled/noop/refused/failed), the reason on refusal, and ' +
+      'a human-readable note. Squash-merged epics REQUIRE pr_url — ancestry ' +
+      'fails for squash merges.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        epic_id: { type: 'string', description: 'Epic id (e.g. epic-001)' },
+        pr_url: {
+          type: 'string',
+          description:
+            'PR URL to verify via gh. Required for squash-merged epics; ' +
+            'omit to use git ancestry.',
+        },
+      },
+      required: ['epic_id'],
+    },
+  },
+  {
     name: 'loom_archive_epic',
     description:
       'Archive a run so it stops cluttering loom_get_status, the web ' +
