@@ -1,10 +1,12 @@
 import Database from 'better-sqlite3';
 import type {
+  AutonomyLevel,
   EpicRecord,
   EpicStatus,
   FinalizePhase,
   PlanningPhase,
 } from '../types.js';
+import { AutonomyLevelSchema } from '../types.js';
 
 export class EpicStore {
   constructor(private db: Database.Database) {}
@@ -311,5 +313,47 @@ export class EpicStore {
                           planning_phase = NULL, updated_at = ? WHERE id = ?`
       )
       .run(verdict, new Date().toISOString(), id);
+  }
+
+  // ─── Autonomy / checkpoint-pause (v16, epic-003 story-003-001) ────────────
+
+  getAutonomy(id: string): AutonomyLevel {
+    const row = this.db
+      .prepare('SELECT autonomy_level FROM epics WHERE id = ?')
+      .get(id) as { autonomy_level: string } | undefined;
+    return AutonomyLevelSchema.parse(row?.autonomy_level ?? 'manual');
+  }
+
+  setAutonomy(id: string, level: AutonomyLevel): void {
+    this.db
+      .prepare('UPDATE epics SET autonomy_level = ?, updated_at = ? WHERE id = ?')
+      .run(level, new Date().toISOString(), id);
+  }
+
+  /** Sets paused_at to the current timestamp and records which story triggered the pause. */
+  pauseAfterStory(id: string, storyId: string): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET paused_at = CURRENT_TIMESTAMP, paused_after_story = ?,
+                          updated_at = ? WHERE id = ?`
+      )
+      .run(storyId, new Date().toISOString(), id);
+  }
+
+  /** Clears both paused_at and paused_after_story so the epic can continue dispatching. */
+  resume(id: string): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET paused_at = NULL, paused_after_story = NULL,
+                          updated_at = ? WHERE id = ?`
+      )
+      .run(new Date().toISOString(), id);
+  }
+
+  isPaused(id: string): boolean {
+    const row = this.db
+      .prepare('SELECT paused_at FROM epics WHERE id = ?')
+      .get(id) as { paused_at: string | null } | undefined;
+    return row?.paused_at != null;
   }
 }

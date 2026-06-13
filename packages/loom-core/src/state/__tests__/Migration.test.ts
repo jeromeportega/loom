@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { createDatabase, runMigrations } from '../Database.js';
 import { EpicStore } from '../EpicStore.js';
 import {
+  AutonomyLevelSchema,
   EpicStatusSchema,
   EpicYamlSchema,
   type FinalizePhase,
@@ -77,16 +78,20 @@ describe('v14 → v15 migration', () => {
 
     runMigrations(db);
 
-    // Version bumped.
-    assert.equal(schemaVersion(db), 15);
+    // Version bumped to current (v16 includes both v15 and v16 columns).
+    assert.equal(schemaVersion(db), 16);
 
-    // The three new columns now exist.
+    // The three v15 columns now exist.
     const after = epicColumns(db);
     assert.ok(after.includes('finalize_phase'));
     assert.ok(after.includes('epic_pr_url'));
     assert.ok(after.includes('error'));
+    // The three v16 columns also added in the same run.
+    assert.ok(after.includes('autonomy_level'));
+    assert.ok(after.includes('paused_at'));
+    assert.ok(after.includes('paused_after_story'));
 
-    // Pre-existing row survived intact, with the new columns defaulting to NULL.
+    // Pre-existing row survived intact, with the new columns defaulting sensibly.
     const row = db
       .prepare('SELECT * FROM epics WHERE id = ?')
       .get('epic-100') as Record<string, unknown>;
@@ -97,6 +102,9 @@ describe('v14 → v15 migration', () => {
     assert.equal(row.finalize_phase, null);
     assert.equal(row.epic_pr_url, null);
     assert.equal(row.error, null);
+    assert.equal(row.autonomy_level, 'manual', 'v16 default: manual');
+    assert.equal(row.paused_at, null);
+    assert.equal(row.paused_after_story, null);
 
     db.close();
   });
@@ -106,9 +114,9 @@ describe('v14 → v15 migration', () => {
     const db = seedV14Db(dbPath);
 
     runMigrations(db);
-    // Second run against an already-v15 DB must be a no-op, not an error.
+    // Second run against the current schema must be a no-op, not an error.
     assert.doesNotThrow(() => runMigrations(db));
-    assert.equal(schemaVersion(db), 15);
+    assert.equal(schemaVersion(db), 16);
 
     // The guarded blocks must not have added duplicate columns.
     const cols = epicColumns(db);
@@ -116,19 +124,25 @@ describe('v14 → v15 migration', () => {
     assert.equal(count('finalize_phase'), 1);
     assert.equal(count('epic_pr_url'), 1);
     assert.equal(count('error'), 1);
+    assert.equal(count('autonomy_level'), 1);
+    assert.equal(count('paused_at'), 1);
+    assert.equal(count('paused_after_story'), 1);
 
     db.close();
   });
 
-  it('initializes a brand-new DB directly at v15 with all columns present', () => {
+  it('initializes a brand-new DB directly at the current version with all columns present', () => {
     const dbPath = path.join(tmpDir, 'fresh.db');
     const db = createDatabase(dbPath);
 
-    assert.equal(schemaVersion(db), 15);
+    assert.equal(schemaVersion(db), 16);
     const cols = epicColumns(db);
     assert.ok(cols.includes('finalize_phase'));
     assert.ok(cols.includes('epic_pr_url'));
     assert.ok(cols.includes('error'));
+    assert.ok(cols.includes('autonomy_level'));
+    assert.ok(cols.includes('paused_at'));
+    assert.ok(cols.includes('paused_after_story'));
 
     db.close();
   });
@@ -236,5 +250,124 @@ describe('FinalizePhase + EpicRecord type shape', () => {
     assert.ok(_typecheck);
 
     db.close();
+  });
+});
+
+// ─── v15 → v16 migration (autonomy + checkpoint-pause) ───────────────────────
+
+/**
+ * Seeds a minimal v15 DB: epics table without the three v16 autonomy columns,
+ * one pre-existing epic row, schema_version=15.
+ */
+function seedV15Db(dbPath: string): Database.Database {
+  const db = new Database(dbPath);
+  db.exec(`
+    CREATE TABLE schema_version (version INTEGER NOT NULL);
+    CREATE TABLE epics (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'planned',
+      reason TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      planning_phase TEXT,
+      archived_at DATETIME,
+      finalize_phase TEXT,
+      epic_pr_url TEXT,
+      error TEXT
+    );
+  `);
+  db.prepare('INSERT INTO schema_version (version) VALUES (15)').run();
+  db.prepare(
+    `INSERT INTO epics (id, title, status) VALUES (?, ?, ?)`
+  ).run('epic-100', 'Pre-existing v15 epic', 'in_progress');
+  return db;
+}
+
+describe('v15 → v16 migration (autonomy / checkpoint-pause)', () => {
+  it('applies additively and loss-free on a seeded v15 DB', () => {
+    const dbPath = path.join(tmpDir, 'v15.db');
+    const db = seedV15Db(dbPath);
+
+    assert.equal(schemaVersion(db), 15);
+    const before = epicColumns(db);
+    assert.ok(!before.includes('autonomy_level'));
+    assert.ok(!before.includes('paused_at'));
+    assert.ok(!before.includes('paused_after_story'));
+
+    runMigrations(db);
+
+    assert.equal(schemaVersion(db), 16);
+    const after = epicColumns(db);
+    assert.ok(after.includes('autonomy_level'));
+    assert.ok(after.includes('paused_at'));
+    assert.ok(after.includes('paused_after_story'));
+
+    // Pre-existing row reads as 'manual' with no backfill error (backward-compat AC).
+    const row = db
+      .prepare('SELECT * FROM epics WHERE id = ?')
+      .get('epic-100') as Record<string, unknown>;
+    assert.ok(row, 'pre-existing v15 row must survive the migration');
+    assert.equal(row.title, 'Pre-existing v15 epic');
+    assert.equal(row.autonomy_level, 'manual', 'defaults to manual — no backfill needed');
+    assert.equal(row.paused_at, null);
+    assert.equal(row.paused_after_story, null);
+
+    db.close();
+  });
+
+  it('is idempotent — running migrations twice does not throw or duplicate columns', () => {
+    const dbPath = path.join(tmpDir, 'v15-idempotent.db');
+    const db = seedV15Db(dbPath);
+
+    runMigrations(db);
+    assert.doesNotThrow(() => runMigrations(db));
+    assert.equal(schemaVersion(db), 16);
+
+    const cols = epicColumns(db);
+    const count = (name: string) => cols.filter((c) => c === name).length;
+    assert.equal(count('autonomy_level'), 1);
+    assert.equal(count('paused_at'), 1);
+    assert.equal(count('paused_after_story'), 1);
+
+    db.close();
+  });
+
+  it('initializes a brand-new DB directly at v16 with all three columns present', () => {
+    const dbPath = path.join(tmpDir, 'fresh-v16.db');
+    const db = createDatabase(dbPath);
+
+    assert.equal(schemaVersion(db), 16);
+    const cols = epicColumns(db);
+    assert.ok(cols.includes('autonomy_level'));
+    assert.ok(cols.includes('paused_at'));
+    assert.ok(cols.includes('paused_after_story'));
+
+    db.close();
+  });
+
+  it('pre-existing epic read via EpicStore returns autonomy_level === manual (backward-compat)', () => {
+    const dbPath = path.join(tmpDir, 'v15-compat.db');
+    const db = seedV15Db(dbPath);
+    runMigrations(db);
+
+    const store = new EpicStore(db);
+    assert.equal(store.getAutonomy('epic-100'), 'manual');
+
+    db.close();
+  });
+});
+
+describe('AutonomyLevelSchema', () => {
+  it('accepts each valid level', () => {
+    assert.equal(AutonomyLevelSchema.parse('manual'), 'manual');
+    assert.equal(AutonomyLevelSchema.parse('checkpoint'), 'checkpoint');
+    assert.equal(AutonomyLevelSchema.parse('full-auto'), 'full-auto');
+  });
+
+  it('rejects invalid values', () => {
+    assert.throws(() => AutonomyLevelSchema.parse('auto'));
+    assert.throws(() => AutonomyLevelSchema.parse(''));
+    assert.throws(() => AutonomyLevelSchema.parse('MANUAL'));
   });
 });
