@@ -273,6 +273,17 @@ export class EpicStore {
   }
 
   /**
+   * Sets finalize_phase = NULL without touching status. Needed for the ordered
+   * reconcile write — updateFinalizePhase() only sets a non-null phase; fail()/reject()
+   * clear it but also change status.
+   */
+  clearFinalizePhase(id: string): void {
+    this.db
+      .prepare(`UPDATE epics SET finalize_phase = NULL, updated_at = ? WHERE id = ?`)
+      .run(new Date().toISOString(), id);
+  }
+
+  /**
    * Persists the epic PR URL of record. MUST be durable before any
    * status='done' write — the Supervisor gates `done` on this column.
    */

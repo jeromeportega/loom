@@ -104,3 +104,10 @@ export { AutoRetrospective, gatherEpicTelemetry } from './AutoRetrospective.js';
 export type { AutoRetrospectiveOptions } from './AutoRetrospective.js';
 export { deriveBlocked } from './blockedIndicator.js';
 export type { BlockedSignal } from './blockedIndicator.js';
+export { EpicReconciler } from './EpicReconciler.js';
+export type {
+  EpicReconcilerOptions,
+  ReconcileResult,
+  ReconcileStatus,
+  ReconcileRefusalReason,
+} from './EpicReconciler.js';
