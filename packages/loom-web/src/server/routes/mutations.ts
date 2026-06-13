@@ -19,7 +19,7 @@
 import { spawn } from 'node:child_process';
 import type { Express } from 'express';
 import type Database from 'better-sqlite3';
-import { ControlStore, StoryRetryService, PolicyEngine } from '@loom-ai/core';
+import { ControlStore, StoryRetryService, PolicyEngine, reopenOpportunityForRejectedEpic } from '@loom-ai/core';
 import type { ResolveProjectDb } from '../resolveProjectDb.js';
 
 export interface MutationDeps {
@@ -127,6 +127,7 @@ export function registerMutationRoutes(app: Express, deps: MutationDeps): void {
         command: epic.id,
         detail: reason ? { reason } : undefined,
       });
+      reopenOpportunityForRejectedEpic(resolved.db, epic.id);
       res.json({ status: 'rejected', epic_id: epic.id });
     } finally {
       resolved.cleanup();

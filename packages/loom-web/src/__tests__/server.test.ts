@@ -619,9 +619,10 @@ describe('loom-web — write endpoints', () => {
     });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { status: string; epic_id: string; dispatch_pid?: number };
-    assert.equal(body.status, 'approved');
+    // mutations router returns 'dispatching' (first-registered-wins, ADR-003)
+    assert.equal(body.status, 'dispatching');
     assert.equal(body.epic_id, 'epic-001');
-    // Approve now also spawns the supervisor; tests use loomBin: ['true'],
+    // Approve spawns the supervisor; tests use loomBin: ['true'],
     // so a dispatch_pid should be returned but the child does nothing.
     assert.equal(typeof body.dispatch_pid, 'number');
 
@@ -759,6 +760,77 @@ describe('loom-web — write endpoints', () => {
       method: 'POST',
       headers,
     });
+    assert.equal(res.status, 409);
+  });
+});
+
+describe('loom-web — route mounting (story-004-001)', () => {
+  const headers = { 'x-loom-token': 'test-token-123', 'Content-Type': 'application/json' };
+
+  it('GET /api/inbox returns 200 — NOT 404 (regression guard: inbox router mounted in createApp)', async () => {
+    const res = await fetch(`${baseUrl}/api/inbox`, { headers });
+    assert.notEqual(res.status, 404, 'inbox router must be mounted in createApp');
+    assert.equal(res.status, 200);
+    // Empty inbox — no epics in the fresh DB.
+    const body = (await res.json()) as unknown[];
+    assert.ok(Array.isArray(body));
+  });
+
+  it('POST /api/epics/:id/approve returns {status:"dispatching"} — mutations router is authoritative (ADR-003)', async () => {
+    new EpicStore(db).create('epic-mount-001', 'Router ordering check');
+    const res = await fetch(`${baseUrl}/api/epics/epic-mount-001/approve`, {
+      method: 'POST', headers,
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { status: string };
+    assert.equal(body.status, 'dispatching', 'mutations router (first-registered) wins over any inline duplicate');
+  });
+
+  it('POST /api/epics/:id/resume is served — NOT 404 (new route, previously unserved)', async () => {
+    new EpicStore(db).create('epic-resume-001', 'Resume route check');
+    const res = await fetch(`${baseUrl}/api/epics/epic-resume-001/resume`, {
+      method: 'POST', headers,
+    });
+    // Epic is 'planned' and not paused → 409. The key assertion is NOT 404.
+    assert.notEqual(res.status, 404, 'resume route is now mounted in createApp');
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string };
+    assert.match(body.error, /not paused/);
+  });
+
+  it('POST /api/epics/:id/archive (inline handler retained) still archives an epic', async () => {
+    new EpicStore(db).create('epic-arch-001', 'Archive me');
+    const res = await fetch(`${baseUrl}/api/epics/epic-arch-001/archive`, {
+      method: 'POST', headers,
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { status: string; archived: boolean };
+    assert.equal(body.status, 'archived');
+    assert.equal(body.archived, true);
+    assert.ok(new EpicStore(db).get('epic-arch-001')?.archived_at != null, 'epic.archived_at set');
+  });
+
+  it('POST /api/epics/:id/reject returns {status:"rejected"} — mutations router behavior', async () => {
+    new EpicStore(db).create('epic-rej-001', 'Reject this');
+    const res = await fetch(`${baseUrl}/api/epics/epic-rej-001/reject`, {
+      method: 'POST', headers, body: JSON.stringify({ reason: 'too big' }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { status: string };
+    assert.equal(body.status, 'rejected');
+  });
+
+  it('POST /api/stop returns {status:"stopping"} — mutations router behavior', async () => {
+    const res = await fetch(`${baseUrl}/api/stop`, { method: 'POST', headers });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { status: string };
+    assert.equal(body.status, 'stopping');
+  });
+
+  it('POST /api/agents/:id/kill returns 409 for null worker_pid — mutations router behavior', async () => {
+    new EpicStore(db).create('epic-kill-001', 'Kill test');
+    const a = new AgentStore(db).create('epic-kill-001', 'story-001-001', 'story');
+    const res = await fetch(`${baseUrl}/api/agents/${a.id}/kill`, { method: 'POST', headers });
     assert.equal(res.status, 409);
   });
 });

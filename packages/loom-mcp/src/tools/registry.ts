@@ -446,6 +446,27 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'loom_scan_signals',
+    description:
+      'Run signal scanners and produce a ranked opportunity board (operator-invoked). ' +
+      'Scans audit logs, code debt, and GitHub issues; clusters them into opportunities ' +
+      'with one LLM call; persists and returns the ranked board. Dismissed and scoped ' +
+      'opportunities are never resurfaced. Returns { signalsObserved, signalsStaled, ' +
+      'opportunities: [{ id, title, rationale, score, rank, signal_count, status, evidence, ' +
+      'scoped_epic_id }] }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: {
+          type: 'string',
+          description:
+            'Optional: absolute project_root to scope the scan to one project. ' +
+            'Must match an entry in ~/.loom/projects.json.',
+        },
+      },
+    },
+  },
+  {
     name: 'loom_set_autonomy',
     description:
       'Set the autonomy level for an epic. Accepts full-auto (supervisor dispatches ' +

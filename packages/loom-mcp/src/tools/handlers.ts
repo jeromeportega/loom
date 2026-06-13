@@ -31,6 +31,8 @@ import {
   AutonomyLevelSchema,
   setEpicAutonomy,
   EpicNotFoundError,
+  runScan,
+  createLLMClient,
 } from '@loom-ai/core';
 import type { ToolContext, ToolHandler } from './context.js';
 
@@ -1261,6 +1263,65 @@ const setAutonomy: ToolHandler = async (ctx, args) => {
   }
 };
 
+/**
+ * loom_scan_signals — run signal scanners and return the ranked opportunity
+ * board. Mirrors loom_get_status in structure: open the project DB, build an
+ * LLM client from policy, run the full scan pipeline (scanners → signals →
+ * one LLM clustering call → persist → return). Operator-invoked only (ADR-006).
+ */
+const scanSignals: ToolHandler = async (ctx, args) => {
+  const projectFilter = args.project ? String(args.project) : null;
+
+  let effectiveProjectRoot = ctx.projectRoot;
+  let effectiveLoomDir = ctx.loomDir;
+
+  if (projectFilter) {
+    const known = new ProjectRegistry().list().map(e => e.root);
+    if (!known.includes(projectFilter)) {
+      return { status: 'error', message: `Unknown project root: ${projectFilter}` };
+    }
+    effectiveProjectRoot = projectFilter;
+    effectiveLoomDir = path.join(projectFilter, '.loom');
+  }
+
+  const db = openDatabase(effectiveLoomDir);
+  const policy = PolicyEngine.load(effectiveLoomDir).policyData;
+  const auditLog = new AuditLog(db);
+
+  let llm;
+  try {
+    llm = ctx.createLLM(policy.agents.llm_backend);
+  } catch (err) {
+    return { status: 'error', message: `Failed to create LLM client: ${(err as Error).message}` };
+  }
+
+  const model = modelFor(policy, 'planning');
+
+  const result = await runScan({
+    db,
+    projectRoot: effectiveProjectRoot,
+    llm,
+    model,
+    auditLog,
+  });
+
+  return {
+    signalsObserved: result.signalsObserved,
+    signalsStaled: result.signalsStaled,
+    opportunities: result.opportunities.map(o => ({
+      id: o.id,
+      title: o.title,
+      rationale: o.rationale,
+      score: o.score,
+      rank: o.rank,
+      signal_count: o.signal_count,
+      status: o.status,
+      evidence: o.evidence,
+      scoped_epic_id: o.scoped_epic_id,
+    })),
+  };
+};
+
 export const HANDLERS: Record<string, ToolHandler> = {
   loom_policy_check: policyCheck,
   loom_get_status: getStatus,
@@ -1282,6 +1343,7 @@ export const HANDLERS: Record<string, ToolHandler> = {
   loom_list_projects: listProjects,
   loom_get_project: getProject,
   loom_set_autonomy: setAutonomy,
+  loom_scan_signals: scanSignals,
 };
 
 export type { ToolContext };

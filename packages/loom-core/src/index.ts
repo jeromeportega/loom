@@ -1,4 +1,5 @@
 export * from './types.js';
+export * from './signals/index.js';
 export * from './findings/index.js';
 export * from './state/index.js';
 export * from './guardrails/index.js';

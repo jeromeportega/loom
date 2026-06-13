@@ -16,6 +16,7 @@ import { runRevert } from './commands/revert.js';
 import { runGuide } from './commands/guide.js';
 import { runMcpList, runMcpAdd } from './commands/mcp.js';
 import { runDoctor } from './commands/doctor.js';
+import { runScanCommand, runOpportunitiesCommand } from './commands/scan.js';
 import { runGateDryRunCommand } from './commands/doctorDryRunGate.js';
 import { runCrossEpicGateCommand } from './commands/doctorCrossEpicGate.js';
 
@@ -271,6 +272,24 @@ mcp
   .argument('<name>', 'Registry server name')
   .action((name: string) => {
     runMcpAdd(name);
+  });
+
+// ─── loom scan ──────────────────────────────────────────────────────────────
+program
+  .command('scan')
+  .description('Run signal scanners and produce a ranked opportunity board (one LLM call)')
+  .option('--json', 'Emit structured JSON output')
+  .action(async (opts: { json?: boolean }) => {
+    await runScanCommand({ json: opts.json });
+  });
+
+// ─── loom opportunities ─────────────────────────────────────────────────────
+program
+  .command('opportunities')
+  .description('Show the current opportunity board (reads existing store, no scan)')
+  .option('--json', 'Emit structured JSON output')
+  .action((opts: { json?: boolean }) => {
+    runOpportunitiesCommand({ json: opts.json });
   });
 
 // ─── loom serve ─────────────────────────────────────────────────────────────
