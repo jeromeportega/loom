@@ -8,11 +8,18 @@ product repo (loom already initialized).
 ## Mission
 
 Build, from this empty repo, the first module of a home management platform:
-an **item-level finance reconciliation engine**. It ingests bank statement
-exports (Excel primary; PDF via the vision pipeline), Amazon order-history
-exports (`Retail.OrderHistory.csv`), and receipt photos from big-box stores; disambiguates abbreviated receipt SKUs into real products;
-reconciles all three sources so every dollar is counted once; classifies
-spending at the item level; and presents a review queue + true-spend view.
+an **intelligent parsing loop for ambiguous bank-statement entries**. Each
+cryptic bank line ("COSTCO WHSE #0420 $234.17", "AMZN Mktp US*RT4K9") is the
+subject; the loop resolves it into item-level truth. It ingests bank
+statement exports (Excel primary; PDF via the vision pipeline), Amazon
+order-history exports (`Retail.OrderHistory.csv`), and receipt photos from
+big-box stores; disambiguates abbreviated receipt SKUs into real products;
+reconciles all sources so every dollar is counted once; classifies spending
+at the item level; flags what it's unsure of for human review; and learns
+from corrections. The UI centerpiece is a **review queue** (interactive
+triage), with a secondary true-spend view — never a chart-led dashboard, and
+vision is only ever evidence the loop pulls in, never a standalone "image
+reader."
 
 You are the fleet supervisor. ALL implementation ships through loom's
 pipeline: `loom epic <brief>` → plan → approval gate → parallel workers →
@@ -20,6 +27,12 @@ review → integration gate → PR. Briefs are in `buildday/briefs/` (H1–H4).
 The rubric is `buildday/RUBRIC.md`. The runbook is `buildday/RUNBOOK.md`.
 Read all of them first. Test data lives in the local data kit (operator
 provides path) — fixtures for tests must be sanitized copies.
+
+**Test-driven by default.** Each story's worker derives tests from the
+story's acceptance criteria, commits them failing (red), then implements to
+green. The passing suite is the stop signal — it lets workers self-correct to
+"done" without asking you, which is the whole point. Treat the acceptance
+criteria in each brief as the test spec.
 
 ## Definition of done (verifiable without a human)
 

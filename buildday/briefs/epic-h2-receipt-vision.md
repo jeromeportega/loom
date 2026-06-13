@@ -39,6 +39,7 @@ $234.17 actually was.
   accuracy harness with expected outputs; verifier hand-checks a sample).
 - Arithmetic validation works (test with a deliberately corrupted fixture).
 - Tests green; only publishable receipts in fixtures.
+- Tests written first from the acceptance criteria above (red → green).
 
 ## Non-goals
 

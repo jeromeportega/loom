@@ -103,6 +103,7 @@ NOT in scope).
   or script.
 - Schema supports H2/H3 needs (shared contract with those epics).
 - Tests: importer normalization, parser extraction, idempotency. Suite green.
+- Tests written first from the acceptance criteria above (red → green).
 - No real data in git; `.gitignore` proves it from commit #1.
 
 ## Non-goals

@@ -16,6 +16,7 @@ this week's loom work is preparation, not demo material.
 | 2 — non-negotiable | Epic B: Fleet Commander | `briefs/epic-b-fleet-commander.md` | **v2.0**: decision inbox, autonomy dial, fleet board, deployable read-only mission control |
 | 3 — strongly wanted | Epic C: Signal Scout | `briefs/epic-c-signal-scout.md` | **v3.0**: signal scanners → opportunity board → auto-scoped epics at the approval gate. Powers the build-day "Module 2" demo beat |
 | 4 — optional | Epic D: Flywheel | `briefs/epic-d-flywheel.md` | **v4.0**: auto-retrospectives + lessons. Only if the week goes fast |
+| 5 — cleanup | Epic E: BMAD removal | `briefs/epic-e-bmad-removal.md` | Prune vendored `bmad-*` skills now that loom relies on its own. Run AFTER Review Forge reviewers are confirmed wired (epic-002 / PR #4) |
 
 Acceptance for each release: `RUBRIC.md` in this directory (85/100 + all
 global gates, graded by a fresh verifier subagent). Tag releases
@@ -30,11 +31,29 @@ stalls. Keep CLAUDE.md invariants (structural policy engine, capabilities.md
 updated in the same PR, audit logging, prompt caching, agentskills.io
 format). The loom guard hook blocks `&&` chaining — run commands separately.
 
+## Autonomy / TDD config (so the day needs few clarification stops)
+
+Goal: the model self-corrects to "done" without asking. Two levers —
+configure both pre-week and prove them in practice runs:
+
+- **Day policy** (already-supported knobs): `phases=on` (worker splits
+  implement→verify), `qa_planning` on (Tessa emits risk-based test specs per
+  story), `integration_gate=block`, review `block-and-revise`. The passing
+  test suite is the verifier that lets a worker stop on its own.
+- **Test-FIRST worker** (small loom tweak): bias the Amelia worker persona /
+  worker-prompt to derive tests from the story's acceptance criteria, commit
+  them red, then implement to green — not test-after. Land + verify this in
+  pre-week so it's battle-tested before the day.
+- **Briefs as the test spec**: every story carries *executable* acceptance
+  criteria ("done = these assertions pass"). This kills *verification* stops;
+  brief completeness (no `ready:false` open questions at the gate) kills
+  *input* stops. Both matter.
+
 ## Suggested cadence (relative days; event date = D-0)
 
 - **D-7 → D-5**: Epic A, then Epic B (can overlap once A's plan is approved).
-  Ship + deploy v2.0. Sort out the deploy target (Fly.io / Railway / Render,
-  or cloudflared tunnel fallback).
+  Ship + deploy v2.0. Deploy target = Vercel (CLI + optional operator MCP);
+  cloudflared tunnel fallback.
 - **D-4 → D-2**: Epic C. Ship v3.0. Verify Signal Scout end-to-end on the
   loom repo itself (signal → opportunity → scoped epic → approval gate).
 - **D-1 (freeze day)**: NO new loom features. Full dry run: `loom init` in a
@@ -68,8 +87,18 @@ Real data, zero API approvals needed on the day:
       (publishable receipts + synthetic-but-realistic bank lines) for the
       public URL, vs. real data shown only in the recorded video. Real
       personal financial data is NEVER committed to any repo.
-- [ ] `gh` authenticated; deploy-platform account ready; product name chosen
-      (working placeholder in briefs: "the home platform").
+- [ ] `gh` authenticated; product name chosen (working placeholder in briefs:
+      "the home platform").
+- [ ] **Vercel ready**: account + **Vercel CLI** logged in (required — this is
+      the deploy path). **Vercel MCP** is an optional operator diagnostic
+      (logs/status/env); it's available because the *agent running loom* does
+      the deploy from your interactive session, not a headless worker. Add it
+      in the submission repo at kickoff with:
+      `claude mcp add -s project --transport http vercel https://mcp.vercel.com`
+      (`-s project` writes a committable `.mcp.json` → reproducible; OAuth on
+      first use, no secret in config). Deploy is an orchestration step the
+      loom-driving agent runs (scripted `vercel --prod`), NOT a worker story —
+      keep the Vercel token out of worker worktrees.
 
 ## Handoff notes for whoever (whatever) runs this week
 

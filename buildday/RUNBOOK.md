@@ -6,18 +6,24 @@ standing start: the **finance/reconciliation module** of a subscription home
 management platform. Mission control governs the fleet; Signal Scout
 proposes "Module 2" in the afternoon as the roadmap beat.
 
-**The product pitch (use these words):** "Your bank says Costco, $234.17.
-What did you actually buy? We reconcile receipts, order emails, and bank
-lines into item-level true spend." It is a **reconciliation engine** — never
-say "budgeting app," never lead with charts.
+**The product pitch (use these words):** "Your bank says Costco, $234.17 —
+what did you actually buy?" It is an **intelligent parsing loop for ambiguous
+bank-statement entries**: it resolves each cryptic line into item-level truth
+by reconciling receipts and order data against it, classifying, flagging what
+it's unsure of, and learning from your corrections. Never "budgeting app,"
+never lead with charts; the subject of every sentence is the ambiguous bank
+line, not the image or the dashboard.
 
 ## Competition framing — non-negotiable
 
 - **Banned-list adjacency**: "Image Analyzers" and "dashboard as main
-  feature" are prohibited categories. Receipt vision is a *feature inside*
-  reconciliation; the UI centerpiece is a **review queue** (inbox metaphor),
-  not a dashboard. Every demo beat leads with reconciliation or the
-  autonomous fleet.
+  feature" are prohibited. Hold these four demo disciplines: (1) the subject
+  of every sentence is the **ambiguous bank entry** and how the loop resolves
+  it; (2) receipt/PDF vision appears ONLY as *evidence the loop pulls in*,
+  never demoed standalone as "AI reads an image"; (3) open the UI on the
+  **review queue** (interactive triage), never on a chart; (4) the true-spend
+  view stays secondary. The main feature is the governed parse→reconcile→
+  verify→learn loop — not a visualization, not an image reader.
 - **Attribution / Greenfield**: loom = prior tooling, the harness (allowed:
   "bring your product"). The finance product is a BRAND-NEW standalone repo
   created at kickoff — 100% greenfield, 100% build-day work. It imports NO
@@ -27,6 +33,11 @@ say "budgeting app," never lead with charts.
   Keeping the build cleanly greenfield (no prior-work entanglement) is what
   makes "everything you see was built today" trivially true and demoable.
   Both repos (loom harness + finance product) public at submission.
+  **Pre-week practice happens in THROWAWAY scratch repos, never the
+  submission repo** — let loom build a practice finance app, learn where it
+  breaks, then throw the code away. Learnings carry forward through briefs +
+  loom improvements + memory, NOT code. The submission repo stays empty until
+  kickoff.
 - **Privacy**: real personal financial data is NEVER committed to any repo.
   Public deploy serves the curated demo household; real data appears only in
   the recorded video, run locally. `.gitignore` for data dirs ships in the

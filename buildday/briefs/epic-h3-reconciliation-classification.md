@@ -66,6 +66,8 @@ product from transaction-level budgeting apps.
 - ≥1 return handled: a card refund matched to a bank credit, AND a
   store-credit refund that posts to the ledger without a bank line; net spend
   correct in both (test).
+- The dedup invariant + matcher tests are written FIRST (red → green) — this
+  is the headline invariant, so lead with its failing test.
 - ≥2 insight flags compute correctly on the demo household (test).
 
 ## Non-goals

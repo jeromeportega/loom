@@ -36,9 +36,14 @@ no installable official Geist component library — see H1. Use shadcn/ui, not
    results appear (live demo moment).
 4. **Demo household + deploy**: seed script builds the curated demo
    household (publishable receipts, synthetic bank lines that match them).
-   Deploy to **Vercel** (public URL). Public mode is read-only + demo data;
-   mutations need a token. Cloudflared/ngrok tunnel to a local instance is
-   the only fallback if Vercel deploy fights back.
+   Public mode is read-only + demo data; mutations need a token.
+   **Deployment is an orchestration step performed by the agent running loom
+   (from the authenticated interactive session), NOT a worker story** — keep
+   the Vercel token out of worker worktrees. Action = scripted CLI
+   (`vercel --prod` / `vercel.json`), the deterministic reproducible
+   artifact. Verify = a `curl` 200 smoke test; diagnose failures via the
+   Vercel MCP (build logs / status / env). Cloudflared/ngrok tunnel to a
+   local instance is the only fallback if Vercel deploy fights back.
 
 ## Done means
 
@@ -47,7 +52,8 @@ no installable official Geist component library — see H1. Use shadcn/ui, not
 - Queue actions persist and propagate (test).
 - Public URL returns 200, serves ONLY demo-household data, no mutation
   routes without token.
-- Smoke test script for the deployed instance.
+- Smoke test script for the deployed instance (curl → 200, asserts demo data).
+- Tests written first from the acceptance criteria above (red → green).
 
 ## Non-goals
 
