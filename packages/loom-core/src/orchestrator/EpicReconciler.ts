@@ -4,10 +4,10 @@ import { EpicStore, AuditLog } from '../state/index.js';
 
 export interface EpicReconcilerOptions {
   projectRoot: string;
-  db: Database.Database;
-  baseBranch?: string;
-  gitBin?: string;
-  ghBin?: string;
+  db: Database.Database;          // better-sqlite3 handle
+  baseBranch?: string;            // default 'main'
+  gitBin?: string;                // default 'git'
+  ghBin?: string;                 // default 'gh'
 }
 
 export type ReconcileStatus = 'reconciled' | 'noop' | 'refused' | 'failed';
@@ -24,7 +24,7 @@ export interface ReconcileResult {
   status: ReconcileStatus;
   epicId: string;
   prUrl?: string;
-  reason?: ReconcileRefusalReason;
+  reason?: ReconcileRefusalReason;   // set only when status === 'refused'
   /** Human-readable outcome; carries the --pr squash hint on ancestry false-negatives. */
   note: string;
 }
@@ -59,17 +59,39 @@ function tryExec(bin: string, args: string[], cwd: string): ExecOutcome {
  * constructor-options shape.
  */
 export class EpicReconciler {
-  constructor(private opts: EpicReconcilerOptions) {}
+  private readonly epicStore: EpicStore;
+  private readonly audit: AuditLog;
+
+  constructor(private opts: EpicReconcilerOptions) {
+    this.epicStore = new EpicStore(opts.db);
+    this.audit = new AuditLog(opts.db);
+  }
 
   reconcile(epicId: string, opts?: { prUrl?: string }): ReconcileResult {
-    const epicStore = new EpicStore(this.opts.db);
-    const audit = new AuditLog(this.opts.db);
+    try {
+      return this._reconcile(epicId, opts);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { status: 'failed', epicId, note: `Unexpected error during reconcile: ${msg}` };
+    }
+  }
+
+  private _reconcile(epicId: string, opts?: { prUrl?: string }): ReconcileResult {
+    if (!epicId?.trim()) {
+      return {
+        status: 'refused',
+        epicId,
+        reason: 'epic_not_found',
+        note: 'epicId must be a non-empty string.',
+      };
+    }
+
     const baseBranch = this.opts.baseBranch ?? 'main';
     const gitBin = this.opts.gitBin ?? 'git';
     const ghBin = this.opts.ghBin ?? 'gh';
     const epicBranch = `epic/${epicId}`;
 
-    const epic = epicStore.get(epicId);
+    const epic = this.epicStore.get(epicId);
     if (!epic) {
       return {
         status: 'refused',
@@ -80,18 +102,25 @@ export class EpicReconciler {
     }
 
     // ADR-5: idempotent noop — already done or PR URL already recorded
-    if (epic.status === 'done' || epic.epic_pr_url != null) {
+    if (epic.status === 'done') {
       return {
         status: 'noop',
         epicId,
-        note: `Epic "${epicId}" is already reconciled (status=${epic.status}).`,
+        note: `Epic "${epicId}" is already done (status=${epic.status}); skipping.`,
+      };
+    }
+    if (epic.epic_pr_url != null) {
+      return {
+        status: 'noop',
+        epicId,
+        note: `Epic "${epicId}" already has epic_pr_url set (${epic.epic_pr_url}); skipping re-record.`,
       };
     }
 
     if (opts?.prUrl) {
-      return this.viaUrl(epicId, opts.prUrl, epicBranch, baseBranch, ghBin, epicStore, audit);
+      return this.viaUrl(epicId, opts.prUrl, epicBranch, baseBranch, ghBin);
     }
-    return this.viaAncestry(epicId, epicBranch, baseBranch, gitBin, epicStore, audit);
+    return this.viaAncestry(epicId, epicBranch, baseBranch, gitBin);
   }
 
   private viaUrl(
@@ -99,9 +128,7 @@ export class EpicReconciler {
     prUrl: string,
     epicBranch: string,
     baseBranch: string,
-    ghBin: string,
-    epicStore: EpicStore,
-    audit: AuditLog
+    ghBin: string
   ): ReconcileResult {
     const res = tryExec(
       ghBin,
@@ -157,7 +184,7 @@ export class EpicReconciler {
       };
     }
 
-    this.commit(epicId, prUrl, 'pr-url', 'gh pr view', prData.headRefName, prData.baseRefName, epicStore, audit);
+    this.commit(epicId, prUrl, 'pr-url', 'gh pr view', prData.headRefName, prData.baseRefName);
     return {
       status: 'reconciled',
       epicId,
@@ -170,9 +197,7 @@ export class EpicReconciler {
     epicId: string,
     epicBranch: string,
     baseBranch: string,
-    gitBin: string,
-    epicStore: EpicStore,
-    audit: AuditLog
+    gitBin: string
   ): ReconcileResult {
     const verifyBranch = tryExec(
       gitBin,
@@ -237,7 +262,7 @@ export class EpicReconciler {
       };
     }
 
-    this.commit(epicId, undefined, 'ancestry', 'git merge-base', epicBranch, baseBranch, epicStore, audit);
+    this.commit(epicId, undefined, 'ancestry', 'git merge-base', epicBranch, baseBranch);
     return {
       status: 'reconciled',
       epicId,
@@ -246,8 +271,9 @@ export class EpicReconciler {
   }
 
   /**
-   * Ordered write on a verified merge (FR-9):
-   * recordPrUrl → clearFinalizePhase → audit(epic_reconciled) → updateStatus(done)
+   * Ordered write on a verified merge (FR-9), wrapped in a SQLite transaction
+   * so a mid-sequence crash leaves the DB in a clean pre-reconcile state:
+   *   recordPrUrl → clearFinalizePhase → audit(epic_reconciled) → updateStatus(done)
    */
   private commit(
     epicId: string,
@@ -255,24 +281,24 @@ export class EpicReconciler {
     path: 'pr-url' | 'ancestry',
     verifiedVia: string,
     headRef: string,
-    baseRef: string,
-    epicStore: EpicStore,
-    audit: AuditLog
+    baseRef: string
   ): void {
-    if (prUrl) epicStore.recordPrUrl(epicId, prUrl);
-    epicStore.clearFinalizePhase(epicId);
-    audit.record({
-      action: 'epic_reconciled',
-      command: epicId,
-      allowed: true,
-      detail: {
-        path,
-        pr_url: prUrl ?? null,
-        verified_via: verifiedVia,
-        head_ref: headRef,
-        base_ref: baseRef,
-      },
-    });
-    epicStore.updateStatus(epicId, 'done');
+    this.opts.db.transaction(() => {
+      if (prUrl) this.epicStore.recordPrUrl(epicId, prUrl);
+      this.epicStore.clearFinalizePhase(epicId);
+      this.audit.record({
+        action: 'epic_reconciled',
+        command: epicId,
+        allowed: true,
+        detail: {
+          path,
+          pr_url: prUrl ?? null,
+          verified_via: verifiedVia,
+          head_ref: headRef,
+          base_ref: baseRef,
+        },
+      });
+      this.epicStore.updateStatus(epicId, 'done');
+    })();
   }
 }

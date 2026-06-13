@@ -42,11 +42,13 @@ function stub(body: string): string {
   return p;
 }
 
-/** gh stub: emits JSON on stdout then exits. */
+/** gh stub: emits JSON on stdout then exits.
+ *  JSON is written to a temp file to avoid shell quoting of arbitrary data. */
 function ghOk(state: string, head: string, base: string): string {
-  // Use printf to avoid any shell echo interpretation issues
   const json = JSON.stringify({ state, headRefName: head, baseRefName: base });
-  return stub(`printf '%s\\n' '${json}'`);
+  const jsonFile = path.join(tmpDir, `gh-response-${Math.random().toString(36).slice(2)}.json`);
+  fs.writeFileSync(jsonFile, json);
+  return stub(`cat "${jsonFile}"`);
 }
 
 /** gh stub that exits non-zero (simulates offline / API error). */
