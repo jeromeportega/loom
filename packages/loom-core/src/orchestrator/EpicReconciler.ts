@@ -42,7 +42,7 @@ function tryExec(bin: string, args: string[], cwd: string): ExecOutcome {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    return { kind: 'ok', output: (output as string).trim() };
+    return { kind: 'ok', output: output.trim() };
   } catch (err) {
     const e = err as Error & { code?: string; status?: number; stderr?: string; stdout?: string };
     if (e.code === 'ENOENT') return { kind: 'enoent' };
@@ -113,6 +113,7 @@ export class EpicReconciler {
       return {
         status: 'noop',
         epicId,
+        prUrl: epic.epic_pr_url,
         note: `Epic "${epicId}" already has epic_pr_url set (${epic.epic_pr_url}); skipping re-record.`,
       };
     }
@@ -227,6 +228,26 @@ export class EpicReconciler {
         epicId,
         reason: 'no_epic_branch',
         note: `Epic branch "${epicBranch}" does not exist locally.`,
+      };
+    }
+
+    // Verify the base branch exists locally before running merge-base; a missing
+    // base branch causes merge-base to exit 128 which tryExec maps to nok, and
+    // the caller would misleadingly get refused/not_merged with a squash hint.
+    const verifyBase = tryExec(
+      gitBin,
+      ['rev-parse', '--verify', `refs/heads/${baseBranch}`],
+      this.opts.projectRoot
+    );
+    if (verifyBase.kind === 'enoent') {
+      return { status: 'refused', epicId, reason: 'tool_unavailable', note: 'git binary not found.' };
+    }
+    if (verifyBase.kind !== 'ok') {
+      return {
+        status: 'refused',
+        epicId,
+        reason: 'unverifiable_offline',
+        note: `Base branch "${baseBranch}" does not exist locally; run git fetch first.`,
       };
     }
 

@@ -48,7 +48,8 @@ function ghOk(state: string, head: string, base: string): string {
   const json = JSON.stringify({ state, headRefName: head, baseRefName: base });
   const jsonFile = path.join(tmpDir, `gh-response-${Math.random().toString(36).slice(2)}.json`);
   fs.writeFileSync(jsonFile, json);
-  return stub(`cat "${jsonFile}"`);
+  // Single-quoted to avoid shell interpretation of $, backticks, etc. in the path.
+  return stub(`cat '${jsonFile}'`);
 }
 
 /** gh stub that exits non-zero (simulates offline / API error). */
@@ -74,6 +75,17 @@ function gitNoBranch(): string {
 /** A path that does not exist — execFileSync throws ENOENT. */
 function missingBin(): string {
   return path.join(tmpDir, 'does-not-exist-binary');
+}
+
+/**
+ * git stub: epic branch rev-parse exits 0 (exists), base branch rev-parse exits 1
+ * (not present locally), merge-base never reached.
+ * Checks $3 (the ref arg after --verify) for "refs/heads/main".
+ */
+function gitBaseMissing(): string {
+  return stub(
+    'if [ "$1" = "rev-parse" ] && [ "$3" = "refs/heads/main" ]; then exit 1; fi\nexit 0'
+  );
 }
 
 function reconciler(db: ReturnType<typeof createDatabase>, overrides: { gitBin?: string; ghBin?: string } = {}) {
@@ -222,6 +234,18 @@ describe('ancestry path (no prUrl)', () => {
     assert.equal(result.reason, 'tool_unavailable' satisfies ReconcileRefusalReason);
     assert.equal(store.get('epic-003')!.status, 'in_progress');
   });
+
+  it('[Fail-closed] base branch missing locally → refused/unverifiable_offline, not misleading not_merged', () => {
+    const { db, store } = freshDb();
+
+    const result = reconciler(db, { gitBin: gitBaseMissing() }).reconcile('epic-003');
+
+    assert.equal(result.status, 'refused');
+    assert.equal(result.reason, 'unverifiable_offline' satisfies ReconcileRefusalReason);
+    assert.notEqual(result.reason, 'not_merged', 'missing base branch must not produce not_merged');
+    assert.ok(result.note.includes('git fetch'), `note should mention git fetch, got: ${result.note}`);
+    assert.equal(store.get('epic-003')!.status, 'in_progress');
+  });
 });
 
 // ─── Idempotency ─────────────────────────────────────────────────────────────
@@ -253,6 +277,7 @@ describe('idempotency', () => {
     });
 
     assert.equal(result.status, 'noop');
+    assert.equal(result.prUrl, existingUrl, 'noop result must expose existing prUrl');
     assert.equal(store.get('epic-003')!.epic_pr_url, existingUrl, 'existing URL must not be overwritten');
     assert.equal(
       audit.getByCommand('epic-003', ['epic_reconciled']).length,
@@ -377,6 +402,42 @@ describe('ordered write', () => {
     const epic = store.get('epic-003')!;
     assert.equal(epic.status, 'done');
     assert.equal(epic.finalize_phase, null);
+  });
+
+  it('mid-transaction failure rolls back: all prior writes undone, epic stays pre-reconcile', () => {
+    const { db, store } = freshDb();
+    const prUrl = 'https://github.com/org/repo/pull/6';
+
+    const epicBefore = store.get('epic-003')!;
+    assert.equal(epicBefore.status, 'in_progress');
+    assert.equal(epicBefore.epic_pr_url, null);
+
+    const origUpdateStatus = EpicStore.prototype.updateStatus;
+    EpicStore.prototype.updateStatus = function () {
+      throw new Error('simulated updateStatus failure');
+    };
+
+    let threw = false;
+    try {
+      reconciler(db, {
+        ghBin: ghOk('MERGED', 'epic/epic-003', 'main'),
+      }).reconcile('epic-003', { prUrl });
+    } catch {
+      threw = true;
+    } finally {
+      EpicStore.prototype.updateStatus = origUpdateStatus;
+    }
+
+    // reconcile() wraps _reconcile in a try/catch and returns {status:'failed'} — it never throws.
+    // The important assertion is that the DB is in the pre-reconcile state.
+    assert.equal(threw, false, 'reconcile() should not throw — it returns failed status');
+
+    const epicAfter = store.get('epic-003')!;
+    assert.equal(epicAfter.status, 'in_progress', 'status must not be done after rollback');
+    assert.equal(epicAfter.epic_pr_url, null, 'epic_pr_url must be null after rollback');
+
+    const rows = new AuditLog(db).getByCommand('epic-003', ['epic_reconciled']);
+    assert.equal(rows.length, 0, 'no epic_reconciled audit row should persist after rollback');
   });
 });
 
