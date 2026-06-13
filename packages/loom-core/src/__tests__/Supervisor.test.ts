@@ -1491,6 +1491,32 @@ describe('Supervisor + EpicFinalizer + IntegrationGate', () => {
     assert.equal(JSON.parse(row!.detail ?? '{}').ok, false);
   });
 
+  it('gate-blocked epic (in_progress + finalize_phase=gate) is still a resume candidate — blocked does not change selection (story-008-006 NFR-3)', async () => {
+    // Simulate the DB state left by a prior EpicFinalizer block-mode run:
+    // status=in_progress, finalize_phase='gate'. The `blocked` signal is DERIVED
+    // (not stored); selectEpics must select this epic on the next `loom run` because
+    // RUNNABLE = {approved, in_progress} and `blocked` is read-only / display-only.
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+    const epicStore = new EpicStore(db);
+
+    epicStore.updateStatus('epic-001', 'in_progress');
+    epicStore.updateFinalizePhase('epic-001', 'gate');
+
+    const result = await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: new MockWorkerRunner({ status: 'done' }),
+      maxConcurrent: 1,
+      // No epicFinalizer: stories-done path goes directly to done, no git ops.
+    }).run();
+
+    // The key invariant: gate-blocked in_progress epic must appear in epicsProcessed.
+    assert.ok(result.epicsProcessed.includes('epic-001'), 'gate-blocked epic must be a resume candidate');
+    // All stories done + no finalizer → epic reaches done (verifies the run completed, not skipped).
+    assert.equal(epicStore.get('epic-001')?.status, 'done');
+  });
+
   it('off mode (default for tests): no gate runs and no gate audit row appears', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
     const db = openDatabase(path.join(repo, '.loom'));
