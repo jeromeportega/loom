@@ -33,6 +33,7 @@ import { registerInboxRoutes } from './routes/inbox.js';
 import { registerMutationRoutes } from './routes/mutations.js';
 import { registerOpportunityRoutes } from './routes/opportunities.js';
 import { registerProposeRoutes } from './routes/propose.js';
+import { registerLessonRoutes } from './routes/lessons.js';
 import { makeResolveProjectDb } from './resolveProjectDb.js';
 
 export interface CreateAppOptions {
@@ -498,6 +499,9 @@ export function createApp(opts: CreateAppOptions): Express {
     _refiner: opts._proposeBriefRefiner as Parameters<typeof registerProposeRoutes>[1]['_refiner'],
     _planner: opts._proposePlanner,
   });
+
+  // ─── lesson routes (story-005-007) — GET /api/lessons ──────────────────────
+  registerLessonRoutes(app, { db: opts.db });
 
   // ─── opportunity routes (story-004-006) mount below ───
   registerOpportunityRoutes(app, {
