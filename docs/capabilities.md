@@ -37,6 +37,7 @@ Two interfaces over the same engine:
 | **Read the produced artifacts** | `loom_get_planning_artifacts` | Returns brief / PRD / architecture / epic YAML bodies. Web UI renders them inline above the Approve button for `planned` epics. |
 | **Approve a plan** | `loom approve <epic-id> [--run]` / `loom_approve_plan` | Releases the epic for execution. Approve on its own does **not** dispatch workers — it flips the epic to `approved` and prints `Next: run loom run <epic-id> to dispatch`. Pass the opt-in `--run` flag (explicit epic id required) to chain straight into the same `loom run` dispatch path after approving; bare `loom approve --run` with no id is a usage error. |
 | **Reject a plan** | `loom reject <epic-id> --reason "..."` / `loom_reject_plan` | Optional reason is audit-logged. |
+| **Self-propose next epic** | `loom propose` / `loom_propose` / POST /api/propose (mission-control button) | Combines top-ranked lessons (recency + category frequency, ADR-006) with top open opportunities into a brief, runs it through the brief-quality gate and Planner, and lands a `planned`+`manual` epic stamped `proposed_by='loom'`. The epic stays `planned` until explicit operator approval — no auto-approve or auto-dispatch path exists. Surfaces as a `plan_approval` entry in `GET /api/inbox`. Exactly one batched BriefRefiner LLM call per invocation; explicit trigger only. |
 
 ## Execution
 

@@ -356,4 +356,16 @@ export class EpicStore {
       .get(id) as { paused_at: string | null } | undefined;
     return row?.paused_at != null;
   }
+
+  /**
+   * Stamps `proposed_by='loom'` on the epic row. Called by proposeNextEpic
+   * after the planner produces a planned epic so the inbox + dashboard can
+   * distinguish loom-initiated proposals from human-submitted plans.
+   * NULL = human-initiated (the default, no backfill needed).
+   */
+  setProposedBy(epicId: string, proposedBy: 'loom'): void {
+    this.db
+      .prepare('UPDATE epics SET proposed_by = ?, updated_at = ? WHERE id = ?')
+      .run(proposedBy, new Date().toISOString(), epicId);
+  }
 }

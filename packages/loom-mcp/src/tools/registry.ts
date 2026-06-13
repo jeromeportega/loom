@@ -6,6 +6,7 @@ export interface ToolDefinition {
     type: 'object';
     properties: Record<string, unknown>;
     required?: string[];
+    additionalProperties?: boolean;
   };
 }
 
@@ -464,6 +465,31 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             'Must match an entry in ~/.loom/projects.json.',
         },
       },
+    },
+  },
+  {
+    name: 'loom_propose',
+    description:
+      'Propose the next epic by combining top-ranked lessons with top open opportunities. ' +
+      'Runs ONLY on explicit operator action — no auto-trigger, no scheduler (NFR-3). ' +
+      'Makes exactly one BriefRefiner LLM call. On gate pass, returns { ok: true, epicId } ' +
+      'for a planned + manual epic stamped proposed_by=\'loom\' that stays planned until ' +
+      'explicit human approval (call loom_approve_plan to dispatch). On gate fail, returns ' +
+      '{ ok: false, critique } with the quality critique. The proposed epic also surfaces in ' +
+      'GET /api/inbox as a plan_approval entry.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        top_lessons: {
+          type: 'number',
+          description: 'Max lessons to include in the brief (default: 5)',
+        },
+        top_opps: {
+          type: 'number',
+          description: 'Max open opportunities to include (default: 3)',
+        },
+      },
+      additionalProperties: false,
     },
   },
   {

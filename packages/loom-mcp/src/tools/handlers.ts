@@ -32,7 +32,9 @@ import {
   setEpicAutonomy,
   EpicNotFoundError,
   runScan,
-  createLLMClient,
+  LessonStore,
+  OpportunityStore,
+  proposeNextEpic,
 } from '@loom-ai/core';
 import type { ToolContext, ToolHandler } from './context.js';
 
@@ -1322,6 +1324,49 @@ const scanSignals: ToolHandler = async (ctx, args) => {
   };
 };
 
+/**
+ * loom_propose — propose the next epic by combining top-ranked lessons with
+ * top open opportunities. EXPLICIT TRIGGER ONLY (NFR-3): no scheduler path.
+ * Exactly one BriefRefiner LLM call. Returns { ok, epicId? } or { ok, critique }.
+ */
+const proposeEpic: ToolHandler = async (ctx, args) => {
+  const db = openDatabase(ctx.loomDir);
+  try {
+    const policy = PolicyEngine.load(ctx.loomDir).policyData;
+
+    let llm;
+    try {
+      llm = ctx.createLLM(policy.agents.llm_backend);
+    } catch (err) {
+      return { status: 'error', message: (err as Error).message };
+    }
+
+    const model = modelFor(policy, 'planning');
+    const topLessons = typeof args.top_lessons === 'number' ? args.top_lessons : undefined;
+    const topOpps = typeof args.top_opps === 'number' ? args.top_opps : undefined;
+
+    const result = await proposeNextEpic(
+      {
+        lessonStore: new LessonStore(db),
+        opportunityStore: new OpportunityStore(db),
+        refiner: new BriefRefiner({ projectRoot: ctx.projectRoot, llm, model }),
+        planner: new Planner({ projectRoot: ctx.projectRoot, llm, model, db }),
+        epicStore: new EpicStore(db),
+        audit: new AuditLog(db),
+        minBriefQualityScore: policy.agents.min_brief_quality_score,
+      },
+      { topLessons, topOpps }
+    );
+
+    if (result.ok) {
+      return { ok: true, epicId: result.epicId };
+    }
+    return { ok: false, critique: result.critique };
+  } finally {
+    db.close();
+  }
+};
+
 export const HANDLERS: Record<string, ToolHandler> = {
   loom_policy_check: policyCheck,
   loom_get_status: getStatus,
@@ -1344,6 +1389,7 @@ export const HANDLERS: Record<string, ToolHandler> = {
   loom_get_project: getProject,
   loom_set_autonomy: setAutonomy,
   loom_scan_signals: scanSignals,
+  loom_propose: proposeEpic,
 };
 
 export type { ToolContext };

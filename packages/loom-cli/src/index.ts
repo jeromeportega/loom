@@ -19,6 +19,7 @@ import { runDoctor } from './commands/doctor.js';
 import { runScanCommand, runOpportunitiesCommand } from './commands/scan.js';
 import { runGateDryRunCommand } from './commands/doctorDryRunGate.js';
 import { runCrossEpicGateCommand } from './commands/doctorCrossEpicGate.js';
+import { runPropose } from './commands/propose.js';
 
 // Read the version from this package's package.json at runtime so
 // `loom --version` stays automatically in sync with the published
@@ -290,6 +291,14 @@ program
   .option('--json', 'Emit structured JSON output')
   .action((opts: { json?: boolean }) => {
     runOpportunitiesCommand({ json: opts.json });
+  });
+
+// ─── loom propose ───────────────────────────────────────────────────────────
+program
+  .command('propose')
+  .description('Propose the next epic from top-ranked lessons + open opportunities (one LLM call)')
+  .action(async () => {
+    await runPropose();
   });
 
 // ─── loom serve ─────────────────────────────────────────────────────────────

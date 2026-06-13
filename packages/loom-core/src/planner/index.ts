@@ -19,3 +19,5 @@ export {
 } from './paths.js';
 export { extractJsonBlock, trimToFirstHeading } from './util.js';
 export { derivePlaceholderTitle } from './placeholderTitle.js';
+export { proposeNextEpic } from './proposeNextEpic.js';
+export type { ProposeDeps, EpicProposeResult } from './proposeNextEpic.js';
