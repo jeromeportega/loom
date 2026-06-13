@@ -287,20 +287,12 @@ describe('lessonMatch — selectLessonsForStory — determinism', () => {
 
 describe('lessonMatch — no semantic machinery', () => {
   it('lessonMatch.ts imports no LLM, embedding, or network dependency', () => {
-    // Walk up from the compiled file to find the source.
-    let dir = path.dirname(__dirname);
-    let srcPath: string | null = null;
-    for (let i = 0; i < 6; i++) {
-      const candidate = path.join(dir, 'src', 'findings', 'lessonMatch.ts');
-      if (fs.existsSync(candidate)) {
-        srcPath = candidate;
-        break;
-      }
-      dir = path.dirname(dir);
-    }
-    assert.ok(srcPath !== null, 'could not locate lessonMatch.ts source file');
+    // Resolve source path relative to this compiled test file.
+    // Compiled location: dist/findings/__tests__/  → go up 3 to pkg root → src/findings/
+    const srcPath = path.resolve(__dirname, '../../..', 'src', 'findings', 'lessonMatch.ts');
+    assert.ok(fs.existsSync(srcPath), `could not locate lessonMatch.ts at ${srcPath}`);
 
-    const source = fs.readFileSync(srcPath!, 'utf8');
+    const source = fs.readFileSync(srcPath, 'utf8');
     // Check only import statements, not comments or docstrings.
     const importLines = source
       .split('\n')

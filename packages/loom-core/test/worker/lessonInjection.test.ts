@@ -29,7 +29,10 @@ function minimalArtifacts(overrides: Partial<PlanningArtifacts> = {}): PlanningA
   };
 }
 
-function makeLesson(store: LessonStore, overrides: Partial<LessonRow> = {}): LessonRow {
+function makeLesson(
+  store: LessonStore,
+  overrides: { category?: string; general_rule?: string } = {},
+): LessonRow {
   const lessons = store.insert([
     {
       epic_id: 'epic-001',

@@ -118,7 +118,38 @@ export async function assembleWorkerContext(
   }
 
   const source_token_count = countTokens(raw);
-  const distilled_token_count = countTokens(distilled);
+
+  // Inject relevant lessons as a clearly-delimited advisory block (FR-7, T-1).
+  // Injection happens before token counting so the final count reflects the
+  // actual output size (including the lesson block). The block is appended AFTER
+  // the AC check so lesson content never interferes with verbatim-AC verification.
+  // This is advisory only — never system instructions.
+  let finalDistilled = distilled;
+  if (opts.storyTitle !== undefined) {
+    const selected = selectLessonsForStory(
+      {
+        id: story_id,
+        title: opts.storyTitle,
+        description: opts.storyDescription ?? '',
+      },
+      opts.epicTitle ?? '',
+      opts.lessons ?? [],
+    );
+    if (selected.length > 0) {
+      finalDistilled = `${distilled}\n\n${renderLessonsBlock(selected)}`;
+      if (opts.lessonStore) {
+        for (const lesson of selected) {
+          // Idempotency guard: skip if already recorded for this story (e.g. on retry).
+          if (lesson.applied_ref !== story_id) {
+            opts.lessonStore.markApplied(lesson.id, 'worker_guidance', story_id);
+          }
+        }
+      }
+    }
+  }
+
+  // Token counts reflect the final assembled output (including any lesson block).
+  const distilled_token_count = countTokens(finalDistilled);
   const ratio =
     source_token_count === 0 ? 0 : distilled_token_count / source_token_count;
 
@@ -130,30 +161,6 @@ export async function assembleWorkerContext(
         `${distilled_token_count}/${source_token_count} tokens ` +
         `(${(ratio * 100).toFixed(1)}% > ${(COMPRESSION_TARGET_RATIO * 100).toFixed(0)}%)`,
     );
-  }
-
-  // Inject relevant lessons as a clearly-delimited advisory block (FR-7, T-1).
-  // The block is appended AFTER the AC check so lesson content never interferes
-  // with verbatim-AC verification. This is advisory only — never system instructions.
-  let finalDistilled = distilled;
-  if (opts.lessons && opts.lessons.length > 0 && opts.storyTitle !== undefined) {
-    const selected = selectLessonsForStory(
-      {
-        id: story_id,
-        title: opts.storyTitle,
-        description: opts.storyDescription ?? '',
-      },
-      opts.epicTitle ?? '',
-      opts.lessons,
-    );
-    if (selected.length > 0) {
-      finalDistilled = `${distilled}\n\n${renderLessonsBlock(selected)}`;
-      if (opts.lessonStore) {
-        for (const lesson of selected) {
-          opts.lessonStore.markApplied(lesson.id, 'worker_guidance', story_id);
-        }
-      }
-    }
   }
 
   const distillation: Distillation = Distillation.parse({
