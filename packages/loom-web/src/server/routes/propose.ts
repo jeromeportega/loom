@@ -47,38 +47,44 @@ export function registerProposeRoutes(app: Express, deps: ProposeDeps): void {
     let refiner = deps._refiner;
     let planner = deps._planner;
 
-    if (!refiner || !planner) {
+    // Test seams must be injected together: either both stubs or neither.
+    // Injecting one without the other would leave the other undefined after
+    // skipping the real initialization block.
+    if ((refiner !== undefined) !== (planner !== undefined)) {
+      res.status(500).json({ error: '_refiner and _planner test seams must be provided together' });
+      return;
+    }
+
+    if (!refiner && !planner) {
       let policy;
       try {
         policy = PolicyEngine.load(loomDir).policyData;
-      } catch {
-        res.status(503).json({ error: 'LLM not configured — run loom init first' });
+      } catch (err) {
+        res.status(503).json({ error: (err as Error).message });
         return;
       }
       let llm;
       try {
         llm = createLLMClient(policy.agents.llm_backend);
-      } catch {
-        res.status(503).json({ error: 'LLM not configured — run loom init first' });
+      } catch (err) {
+        res.status(503).json({ error: (err as Error).message });
         return;
       }
       minBriefQualityScore = policy.agents.min_brief_quality_score;
       const model = modelFor(policy, 'planning');
-      if (!refiner) {
-        refiner = new BriefRefiner({ projectRoot: currentProjectRoot, llm, model });
-      }
-      if (!planner) {
-        planner = new Planner({ projectRoot: currentProjectRoot, llm, model, db: deps.db });
-      }
+      refiner = new BriefRefiner({ projectRoot: currentProjectRoot, llm, model });
+      planner = new Planner({ projectRoot: currentProjectRoot, llm, model, db: deps.db });
     }
 
     try {
+      // Both refiner and planner are guaranteed non-undefined here:
+      // either both were injected as test seams, or both were created above.
       const result = await proposeNextEpic(
         {
           lessonStore: new LessonStore(deps.db),
           opportunityStore: new OpportunityStore(deps.db),
-          refiner,
-          planner,
+          refiner: refiner!,
+          planner: planner!,
           epicStore: new EpicStore(deps.db),
           audit: new AuditLog(deps.db),
           minBriefQualityScore,

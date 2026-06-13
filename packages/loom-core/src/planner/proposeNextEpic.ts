@@ -81,6 +81,8 @@ export async function proposeNextEpic(
   const planResult = await deps.planner.run(brief);
   const epicId = planResult.epicIds[0];
   if (!epicId) throw new Error('Planner returned no epic IDs — cannot complete proposal');
+  // proposeNextEpic stamps exactly one epic; extras are intentionally ignored here.
+  // A planner returning multiple IDs is unexpected — surface it so it can be investigated.
 
   // 7. Stamp proposed_by='loom'; epic stays planned + manual until human approves
   deps.epicStore.setProposedBy(epicId, 'loom');
@@ -113,15 +115,19 @@ function rankLessons(lessons: LessonRow[], topN: number): LessonRow[] {
     catFreq.set(l.category, (catFreq.get(l.category) ?? 0) + 1);
   }
 
-  // Sort by created_at DESC to assign recency rank (0 = most recent)
+  // Sort by created_at DESC to assign recency rank (0 = most recent).
+  // Key on a composite string to avoid id-collision if id is ever undefined.
   const byRecency = [...lessons].sort((a, b) => b.created_at.localeCompare(a.created_at));
-  const recencyRank = new Map<number, number>();
-  byRecency.forEach((l, i) => recencyRank.set(l.id, i));
+  const recencyRank = new Map<string, number>();
+  byRecency.forEach((l, i) => recencyRank.set(`${l.id ?? l.epic_id}-${l.created_at}`, i));
 
-  const scored = lessons.map((l) => ({
-    lesson: l,
-    score: (catFreq.get(l.category) ?? 1) + 1 / ((recencyRank.get(l.id) ?? 0) + 1),
-  }));
+  const scored = lessons.map((l) => {
+    const key = `${l.id ?? l.epic_id}-${l.created_at}`;
+    return {
+      lesson: l,
+      score: (catFreq.get(l.category) ?? 1) + 1 / ((recencyRank.get(key) ?? 0) + 1),
+    };
+  });
 
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topN).map((s) => s.lesson);

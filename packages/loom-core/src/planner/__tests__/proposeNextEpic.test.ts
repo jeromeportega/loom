@@ -473,22 +473,26 @@ describe('proposeNextEpic — migration', () => {
 // ─── MCP registration check ────────────────────────────────────────────────────
 
 describe('proposeNextEpic — MCP tool registration', () => {
-  it('loom_propose is in TOOL_DEFINITIONS and HANDLERS', async () => {
-    const { TOOL_DEFINITIONS } = await import(
-      resolve(__dirname, join('..', '..', '..', '..', '..', 'packages', 'loom-mcp', 'dist', 'tools', 'registry.js'))
-    ).catch(() => ({ TOOL_DEFINITIONS: [] as Array<{ name: string }> }));
+  it('loom_propose is in TOOL_DEFINITIONS and HANDLERS', async (t) => {
+    const registryPath = resolve(
+      __dirname,
+      join('..', '..', '..', '..', '..', 'packages', 'loom-mcp', 'dist', 'tools', 'registry.js')
+    );
+    const handlersPath = resolve(
+      __dirname,
+      join('..', '..', '..', '..', '..', 'packages', 'loom-mcp', 'dist', 'tools', 'handlers.js')
+    );
 
-    const { HANDLERS } = await import(
-      resolve(__dirname, join('..', '..', '..', '..', '..', 'packages', 'loom-mcp', 'dist', 'tools', 'handlers.js'))
-    ).catch(() => ({ HANDLERS: {} as Record<string, unknown> }));
+    if (!existsSync(registryPath) || !existsSync(handlersPath)) {
+      t.skip('MCP build output not present — run npm run build in loom-mcp first');
+      return;
+    }
 
-    // If the files loaded, verify registration. If they didn't (pre-build), skip.
-    if (Array.isArray(TOOL_DEFINITIONS) && TOOL_DEFINITIONS.length > 0) {
-      const def = TOOL_DEFINITIONS.find((t: { name: string }) => t.name === 'loom_propose');
-      assert.ok(def, 'loom_propose must be in TOOL_DEFINITIONS');
-    }
-    if (HANDLERS && typeof HANDLERS === 'object' && Object.keys(HANDLERS).length > 0) {
-      assert.ok('loom_propose' in HANDLERS, 'loom_propose must be in HANDLERS');
-    }
+    const { TOOL_DEFINITIONS } = await import(registryPath) as { TOOL_DEFINITIONS: Array<{ name: string }> };
+    const { HANDLERS } = await import(handlersPath) as { HANDLERS: Record<string, unknown> };
+
+    const def = TOOL_DEFINITIONS.find((entry) => entry.name === 'loom_propose');
+    assert.ok(def, 'loom_propose must be in TOOL_DEFINITIONS');
+    assert.ok('loom_propose' in HANDLERS, 'loom_propose must be in HANDLERS');
   });
 });

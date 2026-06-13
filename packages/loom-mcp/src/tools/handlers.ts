@@ -1331,36 +1331,40 @@ const scanSignals: ToolHandler = async (ctx, args) => {
  */
 const proposeEpic: ToolHandler = async (ctx, args) => {
   const db = openDatabase(ctx.loomDir);
-  const policy = PolicyEngine.load(ctx.loomDir).policyData;
-
-  let llm;
   try {
-    llm = ctx.createLLM(policy.agents.llm_backend);
-  } catch (err) {
-    return { status: 'error', message: (err as Error).message };
+    const policy = PolicyEngine.load(ctx.loomDir).policyData;
+
+    let llm;
+    try {
+      llm = ctx.createLLM(policy.agents.llm_backend);
+    } catch (err) {
+      return { status: 'error', message: (err as Error).message };
+    }
+
+    const model = modelFor(policy, 'planning');
+    const topLessons = typeof args.top_lessons === 'number' ? args.top_lessons : undefined;
+    const topOpps = typeof args.top_opps === 'number' ? args.top_opps : undefined;
+
+    const result = await proposeNextEpic(
+      {
+        lessonStore: new LessonStore(db),
+        opportunityStore: new OpportunityStore(db),
+        refiner: new BriefRefiner({ projectRoot: ctx.projectRoot, llm, model }),
+        planner: new Planner({ projectRoot: ctx.projectRoot, llm, model, db }),
+        epicStore: new EpicStore(db),
+        audit: new AuditLog(db),
+        minBriefQualityScore: policy.agents.min_brief_quality_score,
+      },
+      { topLessons, topOpps }
+    );
+
+    if (result.ok) {
+      return { ok: true, epicId: result.epicId };
+    }
+    return { ok: false, critique: result.critique };
+  } finally {
+    db.close();
   }
-
-  const model = modelFor(policy, 'planning');
-  const topLessons = typeof args.top_lessons === 'number' ? args.top_lessons : undefined;
-  const topOpps = typeof args.top_opps === 'number' ? args.top_opps : undefined;
-
-  const result = await proposeNextEpic(
-    {
-      lessonStore: new LessonStore(db),
-      opportunityStore: new OpportunityStore(db),
-      refiner: new BriefRefiner({ projectRoot: ctx.projectRoot, llm, model }),
-      planner: new Planner({ projectRoot: ctx.projectRoot, llm, model, db }),
-      epicStore: new EpicStore(db),
-      audit: new AuditLog(db),
-      minBriefQualityScore: policy.agents.min_brief_quality_score,
-    },
-    { topLessons, topOpps }
-  );
-
-  if (result.ok) {
-    return { ok: true, epicId: result.epicId };
-  }
-  return { ok: false, critique: result.critique };
 };
 
 export const HANDLERS: Record<string, ToolHandler> = {

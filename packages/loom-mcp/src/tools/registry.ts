@@ -6,6 +6,7 @@ export interface ToolDefinition {
     type: 'object';
     properties: Record<string, unknown>;
     required?: string[];
+    additionalProperties?: boolean;
   };
 }
 
@@ -488,6 +489,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description: 'Max open opportunities to include (default: 3)',
         },
       },
+      additionalProperties: false,
     },
   },
   {
