@@ -1,18 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import express, { type Express } from 'express';
 import type Database from 'better-sqlite3';
 import {
   EpicStore,
   AgentStore,
   AuditLog,
-  ControlStore,
   DecisionTraceStore,
   SkillStore,
   SkillUsageStore,
   ProjectRegistry,
-  StoryRetryService,
   openDatabase,
   createDatabase,
 } from '@loom-ai/core';
@@ -32,6 +29,9 @@ import { accessGuard, newToken } from './auth.js';
 import { eventStreamHandler } from './events.js';
 import { registerAutonomyRoutes } from './routes/autonomy.js';
 import { registerFleetRoutes } from './routes/fleet.js';
+import { registerInboxRoutes } from './routes/inbox.js';
+import { registerMutationRoutes } from './routes/mutations.js';
+import { makeResolveProjectDb } from './resolveProjectDb.js';
 
 export interface CreateAppOptions {
   db: Database.Database;
@@ -87,14 +87,21 @@ export function createApp(opts: CreateAppOptions): Express {
   const auditLog = new AuditLog(opts.db);
   const skillUsage = new SkillUsageStore(opts.db);
   const skillStore = new SkillStore({ projectRoot: opts.projectRoot ?? process.cwd() });
-  const control = new ControlStore(opts.db);
   const decisionTraces = new DecisionTraceStore(opts.db);
 
   const currentProjectRoot = opts.projectRoot ?? process.cwd();
+  const resolveProjectDb = makeResolveProjectDb(opts.db, currentProjectRoot);
 
   // ─── Route modules (owned by sibling stories; mounted here) ─────────────
   registerAutonomyRoutes(app, { epicStore, auditLog });
   registerFleetRoutes(app, { epicStore, agentStore, db: opts.db, projectRoot: currentProjectRoot });
+  registerInboxRoutes(app, { epicStore, agentStore, projectRoot: currentProjectRoot });
+  registerMutationRoutes(app, {
+    db: opts.db,
+    resolveProjectDb,
+    projectRoot: currentProjectRoot,
+    loomBin: opts.loomBin,
+  });
 
   // ─── GET /api/status — federated list of EpicStatus across all repos ─────
   // Aggregates every loom-init'ed repo on this machine, not just the one the
@@ -434,58 +441,6 @@ export function createApp(opts: CreateAppOptions): Express {
     res.json({ traces: decisionTraces.getByEpic(epic.id) });
   });
 
-  // ─── POST /api/epics/:id/approve — release + DISPATCH the supervisor ─────
-  // Flips status to 'approved' AND spawns `loom run <epic-id>` as a detached
-  // child so workers actually start. The supervisor writes to the same SQLite
-  // DB; live updates flow back via SSE. The web server doesn't track or own
-  // the supervisor — it can be killed independently via `loom stop` /
-  // `/api/stop` (graceful) or `/api/agents/:id/kill` (per-worker).
-  app.post('/api/epics/:id/approve', (req, res) => {
-    const epic = epicStore.get(req.params.id);
-    if (!epic) {
-      res.status(404).json({ error: 'epic not found' });
-      return;
-    }
-    if (epic.status !== 'planned') {
-      res.status(409).json({ error: `epic is ${epic.status}; only planned epics can be approved` });
-      return;
-    }
-    epicStore.updateStatus(epic.id, 'approved');
-    auditLog.record({ action: 'epic_approved', command: epic.id });
-
-    const dispatch = dispatchSupervisor(epic.id, opts);
-    if (dispatch.pid != null) {
-      auditLog.record({
-        action: 'loom_run_via_web',
-        command: epic.id,
-        detail: { pid: dispatch.pid },
-      });
-    }
-    res.json({
-      status: 'approved',
-      epic_id: epic.id,
-      ...(dispatch.pid != null ? { dispatch_pid: dispatch.pid } : {}),
-      ...(dispatch.error ? { dispatch_warning: dispatch.error } : {}),
-    });
-  });
-
-  // ─── POST /api/epics/:id/reject — reject a planned epic ─────────────────
-  app.post('/api/epics/:id/reject', (req, res) => {
-    const epic = epicStore.get(req.params.id);
-    if (!epic) {
-      res.status(404).json({ error: 'epic not found' });
-      return;
-    }
-    if (epic.status !== 'planned') {
-      res.status(409).json({ error: `epic is ${epic.status}; only planned epics can be rejected` });
-      return;
-    }
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
-    epicStore.updateStatus(epic.id, 'rejected', reason);
-    auditLog.record({ action: 'epic_rejected', command: epic.id, detail: reason ? { reason } : undefined });
-    res.json({ status: 'rejected', epic_id: epic.id });
-  });
-
   // ─── POST /api/epics/:id/archive — hide a run from the default views ─────
   // Non-destructive: flips epics.archived_at, audit-logs, and (because
   // list() excludes archived by default) the epic drops out of /api/status
@@ -523,104 +478,7 @@ export function createApp(opts: CreateAppOptions): Express {
     }
   });
 
-  // ─── POST /api/stories/:storyId/retry — retry a failed story + re-dispatch ─
-  // Mirrors the loom_retry_story MCP tool. Delegates the guards + (optional)
-  // clean teardown + dependent cascade to StoryRetryService, then re-dispatches
-  // the epic the same way approve does (spawned `loom run <epic-id>`). Scoped to
-  // the current project (the one this web server was launched in), matching
-  // approve/kill which also act on opts.db.
-  app.post('/api/stories/:storyId/retry', (req, res) => {
-    const storyId = req.params.storyId;
-    const clean = req.body?.clean === true;
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
-
-    const retry = new StoryRetryService({
-      projectRoot: currentProjectRoot,
-      db: opts.db,
-      clean,
-      reason,
-    });
-    const prep = retry.prepare(storyId);
-    if (prep.status === 'error') {
-      res.status(404).json({ error: prep.message });
-      return;
-    }
-    if (prep.status === 'rejected') {
-      // Running story, or a live run already holds the epic's dispatch lease.
-      res.status(409).json({ error: prep.message });
-      return;
-    }
-
-    auditLog.record({
-      action: 'story_retry_via_web',
-      command: storyId,
-      detail: { epic_id: prep.epicId, clean, reset_stories: prep.resetStories },
-    });
-    const dispatch = dispatchSupervisor(prep.epicId!, opts);
-    if (dispatch.pid != null) {
-      auditLog.record({
-        action: 'loom_run_via_web',
-        command: prep.epicId!,
-        detail: { pid: dispatch.pid, retry_of: storyId },
-      });
-    }
-    res.json({
-      status: 'dispatching',
-      story_id: storyId,
-      epic_id: prep.epicId,
-      clean,
-      will_resume: prep.willResume,
-      reset_stories: prep.resetStories,
-      ...(dispatch.pid != null ? { dispatch_pid: dispatch.pid } : {}),
-      ...(dispatch.error ? { dispatch_warning: dispatch.error } : {}),
-    });
-  });
-
-  // ─── POST /api/stop — signal a running supervisor to halt gracefully ────
-  // Mirrors `loom stop` (the no-args form). The supervisor polls ControlStore
-  // every loop iteration and stops dispatching when it sees 'stopping'.
-  app.post('/api/stop', (_req, res) => {
-    control.setState('stopping');
-    auditLog.record({ action: 'loom_stop_via_web' });
-    res.json({ status: 'stopping' });
-  });
-
-  // ─── POST /api/agents/:id/kill — SIGTERM a specific worker immediately ──
-  // Mirrors `loom stop <story-id>` (the per-worker form). Reads the
-  // worker_pid the Supervisor persisted at spawn and signals it directly.
-  // The agent's status flips to 'failed' once the worker process exits;
-  // the supervisor's normal completion path handles cleanup.
-  app.post('/api/agents/:id/kill', (req, res) => {
-    const agent = agentStore.get(req.params.id);
-    if (!agent) {
-      res.status(404).json({ error: 'agent not found' });
-      return;
-    }
-    const pid = agent.worker_pid;
-    if (pid == null) {
-      res.status(409).json({ error: 'agent has no running worker (worker_pid is null)' });
-      return;
-    }
-    try {
-      process.kill(pid, 'SIGTERM');
-      auditLog.record({
-        agent_id: agent.id,
-        action: 'loom_kill_via_web',
-        command: agent.story_id,
-        detail: { pid },
-      });
-      res.json({ status: 'killed', pid, story_id: agent.story_id });
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ESRCH') {
-        // Process already exited — agent's worker_pid is stale. Not an error
-        // from the operator's perspective; tell them.
-        res.status(409).json({ error: 'worker process already exited', pid });
-        return;
-      }
-      res.status(500).json({ error: (err as Error).message });
-    }
-  });
+  // ─── opportunity routes (story-004-006) mount below ───
 
   // ─── GET /api/events — Server-Sent Events stream of live state diffs ────
   // Epic / agent status changes + appended log_tail bytes flow here. The
@@ -865,31 +723,6 @@ function parseDetail(raw: string | null): Record<string, unknown> {
     return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
   } catch {
     return {};
-  }
-}
-
-/**
- * Spawns `loom run <epic-id>` as a detached child so the supervisor outlives
- * the HTTP response. Failures here are non-fatal — the DB status is already
- * 'approved', the operator can re-dispatch by running `loom run` manually.
- */
-function dispatchSupervisor(
-  epicId: string,
-  opts: CreateAppOptions
-): { pid?: number; error?: string } {
-  const argv: readonly string[] = opts.loomBin ?? ['loom'];
-  const [cmd, ...prefixArgs] = argv;
-  if (!cmd) return { error: 'loomBin was empty' };
-  try {
-    const child = spawn(cmd, [...prefixArgs, 'run', epicId], {
-      cwd: opts.projectRoot ?? process.cwd(),
-      detached: true,
-      stdio: 'ignore',
-    });
-    child.unref();
-    return { pid: child.pid };
-  } catch (err) {
-    return { error: (err as Error).message };
   }
 }
 
