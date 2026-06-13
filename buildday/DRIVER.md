@@ -1,6 +1,6 @@
 # Build-Day Driver — persistent supervisor loop
 
-Paste this into the agent (Fable 5, in the **submission repo**, loom already
+Paste this into the agent (Opus 4.8, in the **submission repo**, loom already
 `init`ed) at kickoff. It is the OUTER LOOP: you keep driving loom until the
 finance product is built, deployed, and verified. **Do not stop before the
 exit condition is met.**

@@ -194,6 +194,7 @@ function buildDispatchSupervisor(
       stallMs: policy.agents.story_stall_minutes * 60_000,
       absoluteCapMs: policy.agents.story_absolute_cap_minutes * 60_000,
       phases: policy.agents.phases,
+      workerAuth: policy.agents.worker_auth,
     }),
     maxConcurrent: policy.agents.max_concurrent,
     skillStore,

@@ -1,4 +1,4 @@
-# Fable 5 Build Day — Runbook (Hybrid Plan)
+# Opus 4.8 Build Day — Runbook (Hybrid Plan)
 
 **The play:** loom (pre-built to v2/v3 this week — see `preweek/PLAN.md`) is
 the harness. On build day, a loom agent fleet builds a NEW product from a

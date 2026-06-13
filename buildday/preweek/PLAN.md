@@ -1,6 +1,6 @@
 # Pre-Week Plan — Build loom to v2/v3 before Build Day
 
-**Context (read this cold):** Jerome is entering the Claude Fable 5 Build Day
+**Context (read this cold):** Jerome is entering the Claude Opus 4.8 Build Day
 hackathon. Strategy is the HYBRID plan: this week, loom builds loom up to
 v2.0 (Fleet Commander) and ideally v3.0 (Signal Scout), dogfooding its own
 pipeline. On build day, loom is the *harness* (allowed prior work) and the

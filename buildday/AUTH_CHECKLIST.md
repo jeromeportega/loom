@@ -56,7 +56,7 @@ permissions for package + deploy commands" is safe — the guard still stops
 - [ ] Permission mode set for unattended operation (allowlisted commands run
       without prompts; destructive ops still gated). The allowlist in (B) is
       what makes this safe rather than a blanket bypass.
-- [ ] **Fable 5** selected as the model; the event's **$500 API credits** /
+- [ ] **Opus 4.8** selected as the model; the event's **$500 API credits** /
       API key configured and active (24h expiry — claim day-of).
 - [ ] `buildday/DRIVER.md` ready to paste; `GOAL.md`, `RUNBOOK.md`,
       `RUBRIC.md`, `briefs/` copied into the submission repo.
