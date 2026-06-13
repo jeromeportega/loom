@@ -457,3 +457,28 @@ describe('docs/capabilities.md lists every ported skill (story-001-007)', () => 
     }
   });
 });
+
+// ─── Capabilities-page invariant (epic-003) ─────────────────────────────────
+
+describe('docs/capabilities.md documents all epic-003 surfaces (story-003-007)', () => {
+  let body: string;
+  before(() => {
+    body = fs.readFileSync(path.join(repoRoot(), 'docs', 'capabilities.md'), 'utf8');
+  });
+
+  const requiredStrings: Array<[string, string]> = [
+    ['/api/inbox', 'cross-epic inbox route'],
+    ['/api/fleet', 'fleet board route'],
+    ['POST /api/epics/:id/autonomy', 'autonomy-setting web route'],
+    ['loom_set_autonomy', 'loom_set_autonomy MCP tool'],
+    ['loom web --read-only', 'read-only CLI flag'],
+    ['LOOM_WEB_READONLY', 'LOOM_WEB_READONLY env var'],
+    ['log_tail', 'operator sensitivity note about SSE log_tail data'],
+  ];
+
+  for (const [needle, label] of requiredStrings) {
+    it(`contains ${label}`, () => {
+      assert.ok(body.includes(needle), `capabilities.md must contain "${needle}" (${label})`);
+    });
+  }
+});
