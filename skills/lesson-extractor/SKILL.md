@@ -3,11 +3,13 @@ name: lesson-extractor
 description: Extract reusable lessons from a completed epic's telemetry — decision traces, agent summaries, and audit events — each with the context that makes it actionable on future stories.
 ---
 
-> **PROVISIONAL SCHEMA — ratified by epic-005 (Loom Flywheel).** The `lessons`
-> output shape below is the FR-6 column set finalised in this epic. The
-> `kind`/`summary`/`context` shape from the earlier PROVISIONAL marker (Epic D)
-> is removed; `category`/`observation`/`general_rule` are the stable axes going
-> forward.
+> **PROVISIONAL SCHEMA — ratified by epic-005 (Loom Flywheel), schema v18 (story-005-001).**
+> The `lessons` output shape below is the FR-6 column set finalised in epic-005.
+> LLM-owned fields (`category`, `observation`, `root_cause`, `general_rule`, `evidence`)
+> are the stable contract; handler-owned fields (`epic_id`, `applied_as`, `applied_ref`,
+> `created_at`) are stamped by the caller before persisting and must NOT appear in the
+> model's output. The `kind`/`summary`/`context` shape from earlier PROVISIONAL drafts
+> is removed; `category`/`observation`/`general_rule` are the stable axes going forward.
 
 # Lesson Extractor
 
@@ -38,8 +40,9 @@ or any repository path — operate solely on the data you were handed.
 ## Output schema (FR-6 — ratified by epic-005)
 
 Return a single JSON object with one key, `lessons`: an array of zero or more
-lesson objects. Do NOT include `epic_id`, `created_at`, `applied_as`, or
-`applied_ref` — those are stamped by the handler before schema validation.
+lesson objects. The model must return **only** the LLM-owned fields; do NOT
+include `epic_id`, `created_at`, `applied_as`, or `applied_ref` — those are
+stamped by the handler before schema validation.
 
 ```json
 {
@@ -59,8 +62,8 @@ Field rules (mirror the `LessonContent` contract in
 `packages/loom-core/src/findings/lesson.ts`):
 
 - `category` — required, non-empty, lowercase-hyphen tag (e.g. `schema-migration`,
-  `test-coverage`, `auth`, `api-contract`). Used for retrieval matching; prefer
-  specificity over generality.
+  `test-coverage`, `test-isolation`, `auth`, `api-contract`). Used for retrieval
+  matching; prefer specificity over generality.
 - `observation` — required, non-empty. What was actually observed in the
   telemetry — concrete, specific, past-tense.
 - `general_rule` — required, non-empty. A forward-looking rule that a future
@@ -80,13 +83,17 @@ Field rules (mirror the `LessonContent` contract in
 Scan the payload for signal in these areas and convert each durable finding
 into one lesson:
 
-- **Struggles and rework** → observation about what failed and why.
-- **Review feedback themes** → recurring issues or quality patterns.
+- **Struggles and rework** — where work stalled, was redone, or took an unexpected
+  path; technical decisions that were reversed; complexity underestimated.
+- **Review feedback themes** → recurring issues or quality patterns explicitly flagged.
+- **Explicit takeaways** — "aha" moments, breakthroughs, and things the agent
+  logs suggest would be done differently.
 - **Agent decisions that pivoted** → reasoning shifts visible in decision traces.
 - **Audit patterns** → repeated actions, unexpected denials, infra retries.
+- **Technical debt incurred** — shortcuts taken and why; debt that affects later work.
 - **Testing and quality signals** → patterns in review_summary or log_tail.
 - **Surprises** → anything that violated an expectation: a tool behaving
-  differently than documented, an assumption proven wrong.
+  differently than documented, a dependency interaction, an assumption proven wrong.
 
 Each lesson must be **durable and reusable** — true beyond this one epic. Drop
 anything purely incidental that carries no forward-looking value.
@@ -97,10 +104,13 @@ the lesson applies to their situation. Prefer specifics over generalities.
 ## Operating constraints
 
 - **Non-interactive.** Never ask a question, never pause, never block on input.
-- **Self-contained.** The payload is the whole input; read nothing else.
+- **Self-contained.** The telemetry is the whole input. Do not read any repository
+  path or runtime state.
 - **JSON only.** Your entire output is the JSON object described above, with no
   surrounding prose.
 - **No blame.** Lessons are about systems and decisions, not individuals.
+- **LLM-owned fields only.** Do not include `epic_id`, `applied_as`, `applied_ref`,
+  or `created_at` in your output — these are stamped by the caller.
 
 ## Example
 

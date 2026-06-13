@@ -2,10 +2,10 @@ import { z } from 'zod';
 
 /** LLM-owned fields only — the lesson-extractor SKILL.md instructs the model to return exactly these. */
 export const LessonContent = z.object({
-  category:     z.string().min(1),
+  category:     z.string().min(1),   // area tag, lowercase-hyphen (e.g. 'schema-migration') — match key (FR-8)
   observation:  z.string().min(1),
   root_cause:   z.string().optional(),
-  general_rule: z.string().min(1),
+  general_rule: z.string().min(1),   // reusable, area-keyword-bearing rule
   evidence:     z.string().optional(),
 });
 

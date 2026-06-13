@@ -160,16 +160,17 @@ describe('lesson-extractor registration & invocation', () => {
 });
 
 describe('Lesson schema (FR-6 — ratified by epic-005)', () => {
-  function validLesson(): Record<string, unknown> {
+  function validLesson() {
     return {
-      category: 'test-coverage',
-      observation: 'Targeted test runs kept iteration fast.',
-      general_rule: 'Scope the test command to the package under change while iterating.',
-      root_cause: 'Full suite recompiles every package.',
       epic_id: 'epic-001',
-      created_at: new Date().toISOString(),
-      applied_as: null,
-      applied_ref: null,
+      category: 'schema-migration',
+      observation: 'Running migrations idempotently prevented flaky upgrades.',
+      root_cause: 'Migrations lacked IF NOT EXISTS guards.',
+      general_rule: 'Always use CREATE TABLE IF NOT EXISTS for additive migrations.',
+      evidence: 'Pre-v18 upgrade test passed on first run.',
+      applied_as: null as null,
+      applied_ref: null as null,
+      created_at: '2024-01-01T00:00:00.000Z',
     };
   }
 
@@ -177,21 +178,22 @@ describe('Lesson schema (FR-6 — ratified by epic-005)', () => {
     assert.equal(Lesson.safeParse(validLesson()).success, true);
   });
 
-  it('accepts a lesson without optional fields (root_cause, evidence)', () => {
-    const { root_cause, ...rest } = validLesson();
-    void root_cause;
+  it('accepts a lesson without optional fields root_cause and evidence', () => {
+    const { root_cause, evidence, ...rest } = validLesson();
+    void root_cause; void evidence;
     assert.equal(Lesson.safeParse(rest).success, true);
   });
 
-  it('rejects a lesson missing a required LessonContent field', () => {
+  it('rejects a lesson missing required general_rule', () => {
     const { general_rule, ...rest } = validLesson();
     void general_rule;
     assert.equal(Lesson.safeParse(rest).success, false);
   });
 
-  it('rejects an empty category or observation', () => {
+  it('rejects an empty category, observation, or general_rule', () => {
     assert.equal(Lesson.safeParse({ ...validLesson(), category: '' }).success, false);
     assert.equal(Lesson.safeParse({ ...validLesson(), observation: '' }).success, false);
+    assert.equal(Lesson.safeParse({ ...validLesson(), general_rule: '' }).success, false);
   });
 
   it('rejects the old kind/summary/context shape (FR-6 schema evolution)', () => {
@@ -208,7 +210,7 @@ describe('Lesson schema (FR-6 — ratified by epic-005)', () => {
     );
   });
 
-  it('applied_as only accepts the two allowed enum values or null', () => {
+  it('applied_as is limited to worker_guidance or policy_suggestion (or null)', () => {
     assert.equal(
       Lesson.safeParse({ ...validLesson(), applied_as: 'worker_guidance' }).success,
       true,
@@ -218,7 +220,7 @@ describe('Lesson schema (FR-6 — ratified by epic-005)', () => {
       true,
     );
     assert.equal(
-      Lesson.safeParse({ ...validLesson(), applied_as: 'unknown_value' }).success,
+      Lesson.safeParse({ ...validLesson(), applied_as: 'invalid_value' }).success,
       false,
     );
   });

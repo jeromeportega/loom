@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -165,6 +165,24 @@ CREATE TABLE IF NOT EXISTS opportunities (
   created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- v18: lessons — extracted learnings from epic retrospectives, persisted for
+-- reuse as worker guidance and policy suggestions (ADR-005).
+CREATE TABLE IF NOT EXISTS lessons (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  epic_id      TEXT NOT NULL,
+  category     TEXT NOT NULL,
+  observation  TEXT NOT NULL,
+  root_cause   TEXT,
+  general_rule TEXT NOT NULL,
+  evidence     TEXT,
+  applied_as   TEXT,
+  applied_ref  TEXT,
+  created_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lessons_epic     ON lessons(epic_id);
+CREATE INDEX IF NOT EXISTS idx_lessons_category ON lessons(category);
 `;
 
 let _db: Database.Database | null = null;
@@ -324,6 +342,10 @@ export function runMigrations(db: Database.Database): void {
   }
   if (!epicCols.some((c) => c.name === 'paused_after_story')) {
     db.exec('ALTER TABLE epics ADD COLUMN paused_after_story TEXT');
+  }
+  // v18: proposed_by — NULL = human-initiated, 'loom' = self-proposed (FR-10)
+  if (!epicCols.some((c) => c.name === 'proposed_by')) {
+    db.exec('ALTER TABLE epics ADD COLUMN proposed_by TEXT');
   }
 
   const row = db
