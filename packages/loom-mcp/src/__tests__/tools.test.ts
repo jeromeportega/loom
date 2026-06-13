@@ -442,6 +442,38 @@ describe('loom_approve_plan', () => {
     };
     assert.equal(r.status, 'error');
   });
+
+  it('threads policy.agents.model into the dispatched worker', async () => {
+    // Regression: the MCP dispatch path once omitted `model` from its
+    // createWorker call (the CLI `loom run` path always had it), so workers
+    // silently ran on the operator's ambient Claude default instead of the
+    // configured policy.agents.model — ignoring the knob no matter what was set.
+    const SENTINEL = 'claude-sentinel-worker-model';
+    fs.writeFileSync(
+      path.join(repo, '.loom', 'policy.yaml'),
+      `agents:\n  model: ${SENTINEL}\n`
+    );
+
+    let capturedModel: string | undefined = 'UNSET';
+    const c: ToolContext = {
+      ...ctx(),
+      createWorker: (opts) => {
+        capturedModel = opts.model;
+        return new MockWorkerRunner({ status: 'done' });
+      },
+    };
+
+    await HANDLERS.loom_start_epic(c, {
+      brief: 'Build a small demo feature for verifying worker model threading.',
+    });
+    await Promise.all(background);
+    background.length = 0;
+
+    await HANDLERS.loom_approve_plan(c, { epic_id: 'epic-001' });
+    await Promise.all(background);
+
+    assert.equal(capturedModel, SENTINEL, 'worker received policy.agents.model');
+  });
 });
 
 // ─── loom_reject_plan ──────────────────────────────────────────────────────
