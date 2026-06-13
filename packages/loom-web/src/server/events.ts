@@ -43,7 +43,14 @@ export function eventStreamHandler(opts: EventStreamOptions) {
     emit(res, 'hello', { epoch });
 
     // Per-connection snapshots. Diff against these on every poll.
-    const epicSnapshots = new Map<string, { status: string; phase: string | null; updated_at: string; title: string }>();
+    const epicSnapshots = new Map<string, {
+      status: string;
+      phase: string | null;
+      updated_at: string;
+      title: string;
+      autonomy_level: string;
+      paused_at: string | null;
+    }>();
     const agentSnapshots = new Map<string, { status: string; pr_url: string | null; updated_at: string }>();
     const tailSnapshots = new Map<string, string>();
 
@@ -62,12 +69,22 @@ export function eventStreamHandler(opts: EventStreamOptions) {
         const epics = epicStore.list();
         for (const epic of epics) {
           const prev = epicSnapshots.get(epic.id);
+          // autonomy_level and paused_at are added by story-003-001 (schema v16).
+          // Guard against pre-v16 rows that don't have these columns yet.
+          const epicRow = epic as typeof epic & {
+            autonomy_level?: string | null;
+            paused_at?: string | null;
+          };
+          const autonomy_level = (epicRow.autonomy_level ?? 'manual') as string;
+          const paused_at = epicRow.paused_at ?? null;
           if (
             !prev ||
             prev.status !== epic.status ||
             prev.phase !== (epic.planning_phase ?? null) ||
             prev.title !== epic.title ||
-            prev.updated_at !== epic.updated_at
+            prev.updated_at !== epic.updated_at ||
+            prev.autonomy_level !== autonomy_level ||
+            prev.paused_at !== paused_at
           ) {
             // Per-story dedup so the SSE epic-card counts match the REST
             // list endpoint and MCP get_status — a retried story counts once.
@@ -91,12 +108,18 @@ export function eventStreamHandler(opts: EventStreamOptions) {
               stories: counts,
               updated_at: epic.updated_at,
               archived: epic.archived_at != null,
+              // Additive fields per ADR-6 / epic-003 contract §11.
+              // Consumers ignore unknown keys; pre-v16 rows default to 'manual'/false.
+              autonomy_level,
+              paused: paused_at != null,
             });
             epicSnapshots.set(epic.id, {
               status: epic.status,
               phase: epic.planning_phase ?? null,
               updated_at: epic.updated_at,
               title: epic.title,
+              autonomy_level,
+              paused_at,
             });
           }
         }
