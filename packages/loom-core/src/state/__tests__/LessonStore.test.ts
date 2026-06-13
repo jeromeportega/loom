@@ -336,11 +336,12 @@ describe('LessonStore — created_at is caller-supplied', () => {
     assert.equal(fetched.created_at, fixedTime);
   });
 
-  it('LessonStore compiled source contains no Date.now() or new Date() call', () => {
+  it('LessonStore source contains no Date.now() or new Date() call', () => {
     // The store must never generate timestamps; created_at is always caller-supplied.
-    // __dirname in CJS resolves to dist/state/__tests__; LessonStore.js is at dist/state/.
-    const storeJs = path.resolve(__dirname, '..', 'LessonStore.js');
-    const src = fs.readFileSync(storeJs, 'utf-8');
+    // Read the TypeScript source (always present, no build dependency).
+    // __dirname at runtime = dist/state/__tests__; src lives at ../../../src/state/.
+    const storeTs = path.resolve(__dirname, '..', '..', '..', 'src', 'state', 'LessonStore.ts');
+    const src = fs.readFileSync(storeTs, 'utf-8');
     assert.ok(!src.includes('Date.now()'), 'LessonStore must not call Date.now()');
     assert.ok(!/new Date\(\)/.test(src), 'LessonStore must not call new Date()');
   });

@@ -29,7 +29,7 @@ export class LessonStore {
           parsed.applied_ref,
           parsed.created_at,
         );
-        results.push({ ...parsed, id: info.lastInsertRowid as number });
+        results.push({ ...parsed, id: Number(info.lastInsertRowid) });
       }
     });
     run();
@@ -82,8 +82,12 @@ export class LessonStore {
   }
 
   private mapRow(row: Record<string, unknown>): LessonRow {
+    const VALID_APPLIED_AS = [null, 'worker_guidance', 'policy_suggestion'] as const;
+    if (!VALID_APPLIED_AS.includes(row.applied_as as typeof VALID_APPLIED_AS[number] | null)) {
+      throw new Error(`Unexpected applied_as value in DB: ${String(row.applied_as)}`);
+    }
     return {
-      id: row.id as number,
+      id: Number(row.id),
       epic_id: row.epic_id as string,
       category: row.category as string,
       observation: row.observation as string,
