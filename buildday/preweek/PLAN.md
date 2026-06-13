@@ -17,6 +17,8 @@ this week's loom work is preparation, not demo material.
 | 3 — strongly wanted | Epic C: Signal Scout | `briefs/epic-c-signal-scout.md` | **v3.0**: signal scanners → opportunity board → auto-scoped epics at the approval gate. Powers the build-day "Module 2" demo beat |
 | 4 — optional | Epic D: Flywheel | `briefs/epic-d-flywheel.md` | **v4.0**: auto-retrospectives + lessons. Only if the week goes fast |
 | 5 — cleanup | Epic E: BMAD removal | `briefs/epic-e-bmad-removal.md` | Prune vendored `bmad-*` skills now that loom relies on its own. Run AFTER Review Forge reviewers are confirmed wired (epic-002 / PR #4) |
+| — backlog | Epic F: Adaptive review depth | `briefs/epic-f-adaptive-review.md` | Future: loom sizes review cycles per story from complexity × confidence. NOT build-day; a Signal-Scout/Flywheel demo candidate |
+| — backlog | Epic G: Intake triage | `briefs/epic-g-intake-triage.md` | Future: classifier at the front of planner mode right-sizes a request (bug/story/epic/initiative) → lighter pathways. NOT build-day |
 
 Acceptance for each release: `RUBRIC.md` in this directory (85/100 + all
 global gates, graded by a fresh verifier subagent). Tag releases

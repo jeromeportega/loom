@@ -39,6 +39,10 @@ $234.17 actually was.
   accuracy harness with expected outputs; verifier hand-checks a sample).
 - Arithmetic validation works (test with a deliberately corrupted fixture).
 - Tests green; only publishable receipts in fixtures.
+- Vision validated by a **Vitest accuracy harness**: fixture receipts with
+  expected line items, asserting a ≥80% threshold (never exact output, since
+  vision is non-deterministic) + unit tests for arithmetic-to-total and the
+  SKU dictionary.
 - Tests written first from the acceptance criteria above (red → green).
 
 ## Non-goals

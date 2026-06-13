@@ -34,6 +34,29 @@ green. The passing suite is the stop signal — it lets workers self-correct to
 "done" without asking you, which is the whole point. Treat the acceptance
 criteria in each brief as the test spec.
 
+## Testing stack (the verifier — keep it fast and deterministic)
+
+Next.js bundles no test runner; install these. Tests are the verifier that
+lets workers stop without a human, so weight the pyramid toward fast,
+deterministic layers:
+
+- **Vitest** — the workhorse: unit (reconciliation, dedup invariant, returns
+  math, classifier, SKU logic), integration (import the REAL App Router
+  `route.ts` against a fresh libSQL/in-memory DB — the "built AND wired"
+  guard, not a fixture app), and component (+ React Testing Library + jsdom).
+- **Vision accuracy harness** (Vitest-driven, fixture receipts, **threshold**
+  assertion ≥80%) — vision output is non-deterministic; assert a threshold,
+  never exact. Keep vision OUT of E2E.
+- **Playwright** — 1–2 golden-path E2E only (receipt → items → confirm →
+  rollup) + the deployed-URL render check. NOT a sprawling suite.
+- **curl/fetch smoke** — deployed URL returns 200 + demo data present.
+
+**Hard rule:** `npm test` = **Vitest only** — this is what loom's integration
+gate runs on every finalize, so it must be fast and never flaky. Playwright
+lives behind a separate `npm run e2e` and is NEVER in the gate. A slow/flaky
+E2E suite in the gate recreates the gate-false-fail → stranded-epic failure
+mode; do not self-inflict it.
+
 ## Definition of done (verifiable without a human)
 
 1. All four epics (H1–H4) merged; build + tests green on main.
