@@ -1,50 +1,81 @@
-# PRD: Observable cursor-cli Worker Backend
+# Signal Scout — On-Demand Work Discovery and Gated Scoping (Epic C, v3.0)
 
 ## Overview
 
-The cursor-cli worker backend is opaque to loom's supervision machinery, producing two operator-facing failures observed in an earlier epic-011 run: (a) `WorkerTimeoutGuard` kills healthy workers because `cursor-agent -p --output-format json` emits output only on completion, so any story outlasting `story_stall_minutes` is killed mid-work and its dependents cascade to blocked; (b) an invalid `cursor_model` fails only after a full multi-minute LLM pass, with the valid-model list truncated by a 500-char stderr slice. This PRD makes the backend observable — streamed events that feed the stall timer — and makes broken configuration fail before money is spent.
+loom can already execute engineering work autonomously (v1) and govern it through an autonomy dial, decision inbox, and fleet board (v2.0, Fleet Commander). What it cannot do is *find* work: every epic still originates from a human writing a brief, leaving the operator as both the source of direction and the sole bottleneck. Signal Scout adds an **on-demand discovery layer** that reads loom's own real signals (audit history, code debt, GitHub issues), clusters and scores them into ranked opportunities via a single batched LLM call per scan, and routes a selected opportunity — *only on explicit operator action* — through the existing `BriefRefiner` → `Planner` path into a `planned` + `manual` epic that flows through the same `plan_approval` inbox gate that already governs execution. The hard line is preserved: loom may **propose**, but never self-scope or self-execute. A blocking prerequisite — epic-003's orphaned web routes (`inbox.ts` / `mutations.ts` never mounted, so `GET /api/inbox` 404s) — is fixed first, because Signal Scout's surfaces depend on a healthy web layer.
 
 ## Goals
 
-| # | Goal | Success Metric |
-|---|------|----------------|
-| G-1 | Eliminate false stall kills on cursor-cli | A worker emitting incremental output survives a story running 3x the stall window (test-verified); zero stall kills of actively-working agents |
-| G-2 | Preserve genuine-stall detection | A worker with zero output for `story_stall_minutes` is killed at the window, identical to today |
-| G-3 | Fail-fast on invalid model ids | Invalid `cursor_model` rejected before the brief refiner or any worker spawns; detection cost drops from minutes of LLM time to seconds |
-| G-4 | Legible failure output | On rejection, the operator sees the complete valid-model list; non-zero cursor-agent exits surface full (or near-full) stderr |
+1. **Shift the operator from authoring briefs to approving direction.** Success metric: a single `loom scan` produces a ranked opportunity board sourced from ≥3 real scanners reading this repo's actual state, with zero hand-authored brief required to reach a `planned` epic.
+2. **Preserve the governance invariant under discovery.** Success metric: 100% of scoped epics enter as `planned` + `autonomy_level='manual'` and appear as pending `plan_approval` in `GET /api/inbox`; there exists no code path that auto-approves, auto-scopes on a score threshold, or runs discovery on a schedule — proven by test.
+3. **Deliver high-signal, low-noise proposals.** Success metric: every opportunity carries a written `rationale` plus evidence links and signal counts; a re-scan UPSERT-dedupes signals (marking unobserved ones `stale`) and never duplicates or resurfaces `scoped`/`dismissed` opportunities — proven by a test keyed on the opportunity `key`.
+4. **Restore a healthy web layer.** Success metric: `inbox.ts` and `mutations.ts` are mounted in the real `createApp`, `GET /api/inbox` returns 200 (not 404), duplicate inline handlers are removed while the inline archive handler is kept, and `POST /api/epics/:id/resume` is served — all covered by real-`createApp` route tests.
 
 ## User Stories
 
-- **US-1 (Must):** As a loom operator running epics on cursor-cli, I want workers to stream incremental output that resets the stall timer, so that long-running healthy stories are not killed by the watchdog.
-- **US-2 (Must):** As a loom operator, I want `cursor_model` (and the cursor-cli planning model) validated against `cursor-agent --list-models` at `loom doctor` and at the start of `loom epic` / `loom run`, so that a typo costs seconds, not minutes.
-- **US-3 (Must):** As a dashboard watcher, I want live output and usage/request-count reporting to behave exactly as before the format switch, so that observability does not regress.
-- **US-4 (Should):** As a loom operator, I want a loud startup warning when my stall configuration guarantees killing healthy cursor-cli workers, so that I never silently run a self-defeating config.
+- **Must** — As the loom operator, I want to run `loom scan` on demand and see a ranked board of opportunities with rationale and evidence, so that I can decide where attention is warranted without first writing a brief.
+- **Must** — As the loom operator, I want to "Scope this" on a chosen opportunity and have it become a real `planned` epic that I still must approve, so that I retain final say at the gate.
+- **Must** — As the loom operator, I want to "Dismiss" an opportunity permanently, so that noise I've rejected does not resurface on the next scan.
+- **Should** — As a downstream planning agent (John/Winston), I want a scoped opportunity to arrive as a well-formed brief that passes the brief gate, so that it flows cleanly into the existing planning pipeline.
+- **Should** — As a future integrator, I want scanners to implement a stable `SignalScanner` interface, so that later connectors (Slack, Jira, telemetry) can be added without redesign.
 
 ## Functional Requirements
 
-- **FR-1:** `CursorAgentWorker` invokes `cursor-agent` with `--output-format stream-json --stream-partial-output`, and its `parseStreamLine` override parses the streamed event shape (verified against fixture lines).
-- **FR-2:** Each streamed stdout event resets the stall timer; a cursor-cli worker emitting incremental output is not killed by `WorkerTimeoutGuard` even when a story runs 3x the stall window.
-- **FR-3:** Genuine silence remains fatal: a cursor-cli worker with no output for `story_stall_minutes` is terminated at the window, exactly as today.
-- **FR-4:** Usage/request-count harvesting (including the `requestCount: 1` per-session fallback) and human-readable dashboard SSE live output survive the format switch with unchanged behavior.
-- **FR-5:** `BaseCliWorker`'s terminal-event detection and partial-line carry are verified to hold under the stream-json format.
-- **FR-6:** When `worker_backend: cursor-cli` and `story_stall_minutes < story_absolute_cap_minutes`, loom emits a loud startup warning naming both values and the risk. *(Decision: warning chosen over default-to-cap — streaming in this same release restores the stall signal's meaning, and silently raising the window to the cap would weaken genuine-silence protection (G-2). PM sign-off given.)*
-- **FR-7:** `cursor_model` and the cursor-cli `planning_model` are validated against `cursor-agent --list-models` output at `loom doctor` and at the start of `loom epic` / `loom run`, before any LLM pass; rejection shows the complete valid-model list.
-- **FR-8:** When `--list-models` itself fails (offline, unauthenticated), validation degrades to an actionable warning/error rather than crashing or false-failing a valid configuration.
-- **FR-9:** On non-zero cursor-agent exit, stderr is preserved in full or at a much larger bound than the current 500 chars, sufficient to show the complete valid-model list.
+**Web wiring fix (blocking prerequisite)**
 
-## Constraints
+- **FR-1** — `createApp()` mounts the `inbox.ts` and `mutations.ts` routers *before* any leftover inline route for the same path (Express runs first-registered); the now-duplicate inline approve/reject/retry/stop/kill handlers are deleted, located by route path + body (not line number). The inline archive handler is **kept** (mutations.ts has no archive).
+- **FR-2** — `POST /api/epics/:id/resume` is newly served, and the approve endpoint returns `{status:'dispatching'}`.
 
-- Tests live next to source under `__tests__/`; new code paths require coverage: streamed-event parsing fixtures, the backend-aware warning, and the model-validation path (including the degraded `--list-models` case).
-- `docs/capabilities.md` is updated in the same change: backend nuance on the progress-aware timeouts row, and the new `loom doctor` check row.
+**Signal scanners**
+
+- **FR-3** — At least three `SignalScanner` implementations exist under `loom-core/src/signals/`, reading this repo's real state with no fixtures in the live path: **audit-introspection** (recurring `work_failure`, retry clusters, `review_status='errored'`, `epic_integration_gate` failures), **code-debt** (regex `TODO|FIXME|HACK` over tracked source), and **github-issues** (one signal per open `gh issue list` result).
+- **FR-4** — code-debt caps at 200 deterministic matches per scan, with dropped matches logged.
+- **FR-5** — github-issues degrades gracefully on missing `gh`, missing remote, auth failure, rate-limit, and network timeout: it never throws and returns zero signals plus an audit note.
+
+**Signal persistence**
+
+- **FR-6** — `SignalStore` writes to a `signals` table (schema v17) with a UNIQUE constraint on a stable `key`. Re-running a scan UPSERTs `last_seen`; any previously-`open` signal not re-observed is marked `stale`. Each scan writes an audit row.
+
+**Opportunity engine**
+
+- **FR-7** — One batched LLM clustering+scoring call per scan operates over the capped open-signal set; the LLM client is injectable and stubbable in tests. The LLM proposes `impact`/`effort`/`confidence` ∈ [0,1] plus a written `rationale`.
+- **FR-8** — A pure deterministic function computes `score = impact * confidence / max(effort, 0.1)` and assigns descending `rank`.
+- **FR-9** — Each opportunity has a stable `key = sha1(sorted(member signal keys))`. `scoped`/`dismissed` keys are never resurfaced, `open` keys are refreshed, and materially-changed membership yields a new key (exact-set hash).
+- **FR-10** — Cluster output is validated robustly: unknown `signal_id`s are dropped, empty clusters are skipped, and malformed JSON triggers exactly one repair re-prompt; if it still fails, opportunity generation is skipped without failing the whole scan.
+
+**Scoping**
+
+- **FR-11** — `scopeOpportunity(opportunityId)` runs only on explicit operator action. It feeds `description` + `evidence_summary` through `BriefRefiner` (honoring `min_brief_quality_score`); on pass it runs `Planner` to produce a `planned` epic, links `scoped_epic_id`, and sets the opportunity `status='scoped'`. On gate failure it records the critique and leaves the opportunity `open`.
+
+**Governance**
+
+- **FR-12** — Scoped epics are `planned` + `autonomy_level='manual'` and surface in the inbox through the existing `plan_approval` source (no new inbox tagging); the Supervisor never auto-approves them. A later-rejected scoped epic returns its opportunity to `open`.
+
+**Surfaces**
+
+- **FR-13** — `GET /api/opportunities` serves a read-only federated list (like fleet), and an `opportunities.js` board renders opportunities ranked, with rationale, evidence links, signal counts, Scope/Dismiss buttons, and an empty state.
+- **FR-14** — `POST /api/opportunities/:id/scope` and `POST /api/opportunities/:id/dismiss` are token-gated and audit-logged.
+- **FR-15** — A `loom scan` CLI command (and optional `loom opportunities`) plus a `loom_scan_signals` MCP tool expose the pipeline.
+
+## Non-Functional Requirements
+
+- **NFR-1 (Compatibility)** — Schema changes are additive: `Database.ts` `SCHEMA_VERSION` bumps 16 → 17 using idempotent `CREATE TABLE IF NOT EXISTS`; pre-v17 DBs auto-create the new tables; default behavior with no scan run is unchanged.
+- **NFR-2 (Cost/Performance)** — Exactly one batched LLM call per scan over the capped set (never one call per signal); the client is injectable and stubbed in tests. `[ASSUMPTION]` The clustering call targets the cheaper model tier rather than deep-reasoning Opus, given operator cost-sensitivity.
+- **NFR-3 (Security/Auditability)** — Every mutation endpoint is token-gated, and scanners, scoping, and dismiss each write audit rows.
+- **NFR-4 (Testability)** — Every new web route is covered by a test that imports the actual `createApp` (not a hand-built express app), so an unmounted route fails loudly.
+- **NFR-5 (Determinism)** — Scoring and ranking are deterministic *given fixed LLM output*; the determinism claim does not extend to the LLM-produced `impact`/`effort`/`confidence` inputs, which vary run to run.
+- **NFR-6 (Concurrency)** — A single serial operator is assumed; no concurrent-scan locking is in scope.
+- **NFR-7 (Hygiene)** — `docs/capabilities.md` is updated in this PR, and `npm run build` and `npm run test` pass green across all workspaces.
 
 ## Epics
 
-1. **epic-001 — Observable cursor-cli worker backend** (single epic: one cohesive change to one backend's observability and validation path)
+This PRD is delivered as **one epic** (Epic C — Signal Scout). The web-wiring fix is a blocking prerequisite *within* this epic, not a separable shipping unit; discovery, scanners, the opportunity engine, scoping, governance, and surfaces are one cohesive piece of work built on the existing v2.0 governance surface.
 
 ## Out of Scope
 
-- claude-code backend streaming — already works; explicitly excluded.
-- Retry-logic changes of any kind.
-- New policy knobs beyond what the backend-aware warning requires.
-- Retiring the stall safety net post-streaming — the brief's "until/unless" question is deferred; V1 ships warning + streaming as belt-and-braces.
-- `[ASSUMPTION]` Stream event cadence during long model generation is sufficient to reset the stall timer; `--stream-partial-output` is the mitigation. Empirical confirmation is part of implementation, not a separate scope item.
+- Any scheduler, daemon, or cron-driven discovery — scanning is always operator-invoked.
+- Auto-approval or auto-scoping based on a score threshold — every proposal→work transition is an explicit operator action.
+- Concurrent-scan locking or multi-operator coordination.
+- Non-repo scanners (Slack, Jira, telemetry) — the `SignalScanner` interface must accommodate them, but none are built here.
+- A similarity/merge step for near-duplicate opportunities arising from membership drift — current resolution is exact-set hashing; revisit only if churn proves noisy.
+- Any fixtures in the live scan path — scanners read real repository state.
