@@ -115,6 +115,53 @@ describe('edge-case-hunter handler — happy path', () => {
   });
 });
 
+// ─── SOURCE-LESS OUTPUT (regression: handler owns source attribution) ─────────
+//
+// JSON_INSTRUCTIONS tells the model to OMIT `source` (the handler stamps it).
+// Real models comply, so the handler must inject `source` BEFORE validating
+// against ReviewerOutput — otherwise every finding fails on `source: Required`,
+// which is exactly what made both reviewers warn-and-continue on every story
+// even after the body-format fix. The prior tests masked it by feeding
+// source-ful canned JSON.
+
+describe('source-less model output', () => {
+  function cannedResponseNoSource(): string {
+    return (
+      '```json\n' +
+      JSON.stringify({
+        findings: [
+          {
+            severity: 'high',
+            category: 'logic',
+            location: { file: 'src/x.ts', line: 12 },
+            description: 'found an issue',
+          },
+        ],
+      }) +
+      '\n```'
+    );
+  }
+
+  it('injects source before validation so source-less findings parse and are stamped', async () => {
+    const llm = new MockLLMClient([cannedResponseNoSource()]);
+    registerReviewerSkills({ llm, model: 'm', projectRoot });
+
+    const result = await invokeSkill(
+      {
+        name: SOURCE.ADVERSARIAL,
+        input: SAMPLE_INPUT,
+        story_id: 'story-002-001',
+        epic_id: 'epic-002',
+      },
+      { db }
+    );
+
+    const output = result.output as { findings: Array<{ source: string }> };
+    assert.equal(output.findings.length, 1);
+    assert.equal(output.findings[0].source, SOURCE.ADVERSARIAL);
+  });
+});
+
 // ─── PROMPT SHAPE (NFR-1) ─────────────────────────────────────────────────────
 
 describe('prompt shape', () => {
