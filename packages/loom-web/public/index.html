@@ -206,6 +206,7 @@
   <body>
     <h1>loom</h1>
     <div class="tagline">Multi-agent engineering dashboard · localhost</div>
+    <nav id="nav" style="display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap"></nav>
     <div id="root">Loading…</div>
     <div class="footer">
       Polling every 2s ·
@@ -220,6 +221,71 @@
         history.replaceState(null, '', window.location.pathname);
       } else {
         try { token = sessionStorage.getItem(STORAGE_KEY) ?? ''; } catch {}
+      }
+      // Expose token for registered views (e.g. fleet.js SSE EventSource).
+      window.__loomToken = token;
+
+      // ─── View registry ───────────────────────────────────────────────────
+      // External view modules (autonomy.js, fleet.js, inbox.js) call
+      // Loom.registerView({ id, label, render }) on load. render(container, api)
+      // renders content and optionally returns a cleanup function.
+      window.Loom = {
+        views: [],
+        registerView: function (v) {
+          this.views.push(v);
+          const btn = document.createElement('button');
+          btn.id = 'nav-' + v.id;
+          btn.className = 'nav-btn';
+          btn.style.cssText = 'background:#21262d;color:#8b949e;border:1px solid #30363d;border-radius:6px;padding:4px 12px;font-size:13px;cursor:pointer';
+          btn.textContent = v.label;
+          btn.addEventListener('click', () => navTo(v.id));
+          document.getElementById('nav').appendChild(btn);
+        },
+      };
+
+      // ─── Nav ─────────────────────────────────────────────────────────────
+      // Render the Dashboard tab eagerly (before registered views arrive).
+      (function () {
+        const nav = document.getElementById('nav');
+        const btn = document.createElement('button');
+        btn.id = 'nav-dashboard';
+        btn.className = 'nav-btn';
+        btn.style.cssText = 'background:#1f3a26;color:#56d364;border:1px solid #2ea043;border-radius:6px;padding:4px 12px;font-size:13px;cursor:pointer';
+        btn.textContent = 'Dashboard';
+        btn.addEventListener('click', () => navTo('dashboard'));
+        nav.appendChild(btn);
+      })();
+
+      let activeViewId = 'dashboard';
+      let activeViewCleanup = null;
+
+      function navTo(viewId) {
+        if (activeViewId === viewId) return;
+        if (activeViewCleanup) { try { activeViewCleanup(); } catch {} activeViewCleanup = null; }
+        activeViewId = viewId;
+        document.querySelectorAll('.nav-btn').forEach((b) => {
+          const isActive = b.id === 'nav-' + viewId;
+          b.style.background = isActive ? '#1f3a26' : '#21262d';
+          b.style.color      = isActive ? '#56d364' : '#8b949e';
+          b.style.borderColor= isActive ? '#2ea043' : '#30363d';
+        });
+        if (viewId === 'dashboard') {
+          closeEventStream();
+          currentView = 'list';
+          stopListPolling();
+          refreshList();
+          startListPolling();
+          return;
+        }
+        const view = (window.Loom.views || []).find((v) => v.id === viewId);
+        if (!view) return;
+        stopListPolling();
+        closeEventStream();
+        currentView = 'view:' + viewId;
+        const root = document.getElementById('root');
+        root.innerHTML = '';
+        const cleanup = view.render(root, api);
+        if (typeof cleanup === 'function') activeViewCleanup = cleanup;
       }
 
       // ─── State ──────────────────────────────────────────────────────────
@@ -721,5 +787,9 @@
       refreshList();
       startListPolling();
     </script>
+    <!-- View modules — self-register with Loom.registerView on load.
+         inbox.js is added when story-003-004 ships. -->
+    <script src="autonomy.js"></script>
+    <script src="fleet.js"></script>
   </body>
 </html>

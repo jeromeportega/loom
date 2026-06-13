@@ -216,8 +216,9 @@ program
   .description('Launch the loom web dashboard (localhost-only, random token)')
   .option('-p, --port <n>', 'Port to bind (default: 8765, with free-port search)', (v: string) => parseInt(v, 10))
   .option('--no-open', "Don't auto-open the browser")
-  .action(async (opts: { port?: number; open?: boolean }) => {
-    await runWeb({ port: opts.port, noOpen: opts.open === false });
+  .option('--read-only', 'Serve GET routes without authentication; mutations require the write token (also: LOOM_WEB_READONLY=1)')
+  .action(async (opts: { port?: number; open?: boolean; readOnly?: boolean }) => {
+    await runWeb({ port: opts.port, noOpen: opts.open === false, readOnly: opts.readOnly });
   });
 
 // ─── loom stop ──────────────────────────────────────────────────────────────
