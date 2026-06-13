@@ -853,6 +853,40 @@ describe('loom_get_review', () => {
   });
 });
 
+describe('loom_scan_signals', () => {
+  it('is registered in TOOL_DEFINITIONS', () => {
+    const def = TOOL_DEFINITIONS.find(d => d.name === 'loom_scan_signals');
+    assert.ok(def, 'loom_scan_signals must be in TOOL_DEFINITIONS');
+    assert.ok(
+      typeof def.description === 'string' && def.description.length > 10,
+      'has meaningful description'
+    );
+    assert.equal(def.inputSchema.type, 'object');
+    assert.ok('project' in def.inputSchema.properties, 'accepts {project}');
+  });
+
+  it('runs the scan pipeline and returns a ranked opportunity board shape', async () => {
+    // In a fresh git repo with no git history / signal sources, all scanners
+    // return []. OpportunityEngine skips the LLM when there are no signals.
+    const r = (await HANDLERS.loom_scan_signals(ctx(), {})) as {
+      signalsObserved: number;
+      signalsStaled: number;
+      opportunities: unknown[];
+    };
+    assert.equal(typeof r.signalsObserved, 'number');
+    assert.equal(typeof r.signalsStaled, 'number');
+    assert.ok(Array.isArray(r.opportunities), 'opportunities is array');
+  });
+
+  it('rejects an unregistered ?project= with an error status', async () => {
+    const r = (await HANDLERS.loom_scan_signals(ctx(), {
+      project: '/tmp/definitely-not-registered-loom-scan-test',
+    })) as { status: string; message?: string };
+    assert.equal(r.status, 'error');
+    assert.match(r.message ?? '', /unknown project root/i);
+  });
+});
+
 describe('loom_list_projects / loom_get_project', () => {
   it('lists projects from a redirected registry', async () => {
     const registryPath = path.join(repo, 'projects.json');

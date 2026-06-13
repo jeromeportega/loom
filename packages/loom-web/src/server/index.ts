@@ -31,6 +31,7 @@ import { registerAutonomyRoutes } from './routes/autonomy.js';
 import { registerFleetRoutes } from './routes/fleet.js';
 import { registerInboxRoutes } from './routes/inbox.js';
 import { registerMutationRoutes } from './routes/mutations.js';
+import { registerOpportunityRoutes } from './routes/opportunities.js';
 import { makeResolveProjectDb } from './resolveProjectDb.js';
 
 export interface CreateAppOptions {
@@ -57,6 +58,13 @@ export interface CreateAppOptions {
    * Default: false (token required for all /api/* requests).
    */
   readOnly?: boolean;
+  /**
+   * Test injection — bypasses BriefRefiner LLM call in POST /api/opportunities/:id/scope.
+   * Production leaves this undefined; the route loads the LLM from policy.yaml.
+   */
+  _opportunityBriefRefiner?: { refine(rough: string): Promise<unknown> };
+  /** Test injection — bypasses Planner LLM call in POST /api/opportunities/:id/scope. */
+  _opportunityPlanner?: { run(brief: string): Promise<{ epicIds: string[] }> };
 }
 
 /**
@@ -479,6 +487,14 @@ export function createApp(opts: CreateAppOptions): Express {
   });
 
   // ─── opportunity routes (story-004-006) mount below ───
+  registerOpportunityRoutes(app, {
+    db: opts.db,
+    resolveProjectDb,
+    projectRoot: currentProjectRoot,
+    loomBin: opts.loomBin,
+    _briefRefiner: opts._opportunityBriefRefiner,
+    _planner: opts._opportunityPlanner,
+  });
 
   // ─── GET /api/events — Server-Sent Events stream of live state diffs ────
   // Epic / agent status changes + appended log_tail bytes flow here. The
