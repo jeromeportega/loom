@@ -445,4 +445,27 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['root'],
     },
   },
+  {
+    name: 'loom_set_autonomy',
+    description:
+      'Set the autonomy level for an epic. Accepts full-auto (supervisor dispatches ' +
+      'and approves without human input), checkpoint (pauses after each story for ' +
+      'operator review), or manual (default — operator must approve before dispatch). ' +
+      'Writes an autonomy_set audit row on success. Returns { id, autonomy_level }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        epic_id: {
+          type: 'string',
+          description: 'Epic id to update (e.g. epic-001)',
+        },
+        level: {
+          type: 'string',
+          enum: ['full-auto', 'checkpoint', 'manual'],
+          description: 'Autonomy level to set',
+        },
+      },
+      required: ['epic_id', 'level'],
+    },
+  },
 ];
