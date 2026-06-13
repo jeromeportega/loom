@@ -17,7 +17,6 @@ function makeDeps(db: Database.Database) {
   return {
     lessonStore: new LessonStore(db),
     audit: new AuditLog(db),
-    db,
   };
 }
 
@@ -95,15 +94,16 @@ describe('applyAsPolicySuggestion — auditable', () => {
 
 describe('applyAsPolicySuggestion — no policy mutation (T-3/NFR-3)', () => {
   it('deps type excludes PolicyEngine — type-level assertion', () => {
-    // If PolicyEngine were ever added to the deps type this type assignment would
-    // become a compile error, catching the violation before it ships.
+    // Compile-time only — if policyEngine were added to the deps type this
+    // assignment would become a TypeScript error. The runtime assert is always
+    // true (types are erased at runtime); enforcement is in tsc.
     type Deps = Parameters<typeof applyAsPolicySuggestion>[0];
     type _NoPolicyEngine = 'policyEngine' extends keyof Deps ? never : true;
     const _assert: _NoPolicyEngine = true;
-    assert.ok(_assert, 'deps must not include a policyEngine field');
+    assert.ok(_assert, 'compile-time guard: deps must not include a policyEngine field');
   });
 
-  it('call succeeds with only lessonStore, audit, and db in deps — no policy handle needed', () => {
+  it('call succeeds with only lessonStore and audit in deps — no policy handle needed', () => {
     const db = makeDb();
     const deps = makeDeps(db);
     const row = seedLesson(deps.lessonStore);
@@ -131,7 +131,7 @@ describe('applyAsPolicySuggestion — latest-write semantics (ADR-005)', () => {
     assert.equal(updated.applied_ref, auditRef, 'latest applied_ref must win');
 
     // The policy_suggestion audit row is in the audit log (auditable history)
-    const auditRows = deps.audit.recent(10);
+    const auditRows = deps.audit.recent(100);
     const policySuggRow = auditRows.find((r) => r.action === 'policy_suggestion');
     assert.ok(policySuggRow, 'policy_suggestion audit row must exist in the audit log');
 
@@ -139,7 +139,7 @@ describe('applyAsPolicySuggestion — latest-write semantics (ADR-005)', () => {
     const { auditRef: auditRef2 } = applyAsPolicySuggestion(
       deps, row.id, 'Second policy suggestion',
     );
-    const allRows = deps.audit.recent(10);
+    const allRows = deps.audit.recent(100);
     const allSuggRows = allRows.filter((r) => r.action === 'policy_suggestion');
     assert.equal(allSuggRows.length, 2, 'each call must produce a separate audit row');
     assert.notEqual(auditRef, auditRef2, 'each call must produce a distinct auditRef');
