@@ -1,162 +1,63 @@
-# Honest Status Lifecycle and Observability — PRD
+# Loom Flywheel — Self-Learning from Finished Epics (PRD)
 
 ## Overview
 
-Loom's status surfaces (`loom run`, `loom status`, `loom_get_status`, `loom_start_epic`) lie by omission at exactly the moments an operator relies on them. The flagship case: `EpicStatusSchema` has no state between `in_progress` and `done`, so during the multi-minute finalization tail (`EpicFinalizer.finalize()`: merge → gate → cleanup → push → PR body → `gh pr create`) the operator already sees `✅ done` while no PR exists. Five further defects compound this: the epic PR URL is captured but never persisted, the already-stored planning phase is hidden behind an opaque `(planning…)`, the MCP planning entry point blocks instead of returning a handle, infra crashes masquerade as human rejections, and worker completion copy makes unconditional claims about a dependency graph it never inspected. This PRD makes every status surface tell the truth — by mirroring the existing `planning`/`planning_phase` pattern for finalization, recording the epic PR URL where the surfaces read it, and correcting the failure taxonomy and payload shapes — without touching gate or retry mechanics.
+Loom finishes epics but learns nothing from them: decision traces, review summaries, retry/handoff history, and audit logs evaporate the moment an epic reaches terminal state, so every new epic starts as naive as the last. Today, closing that gap requires a human to run retrospectives by hand and feed insights back into worker context — exactly the recurring toil loom exists to eliminate. The Flywheel epic closes the self-improvement loop in three reuse-first stages — auto-retrospective on completion, lesson application into future workers, and explicit human-triggered self-proposal — surfaced through a read-only flywheel view. The unifying principle is non-negotiable: **loom learns and suggests; humans decide and execute.** No scheduler, no auto-trigger, no auto-apply, no self-execution.
 
 ## Goals
 
-1. **No false "done."** During a live finalize, `loom status` shows `finalizing` with its current phase and never renders `done` without a recorded PR URL. *Metric: in a live finalize run, zero observed `done` readings precede a recorded PR URL.*
-2. **PR URL of record everywhere.** `loom run` ends with the epic PR URL; `loom status` and `loom_get_status` render it. *Metric: 100% of successful PR-producing runs surface the epic PR URL on all three surfaces (no "run `loom status` for PR links" fallback).*
-3. **Truthful taxonomy and payloads.** An infra-killed planning run lands as `failed` (not `rejected`) with the error retrievable; `loom_get_status` defaults to current-project scope with one row per story. *Metric: an infra-killed run reports `failed` with a non-empty error; no duplicate `blocked`+`done` rows on any path including CLI `--json`.*
-4. **Accurate progress and completion copy.** Planning shows the current phase; terminal-story completion copy names no nonexistent downstream stories. *Metric: planning status reflects the active phase (`brief`/`prd`/`architecture`/`epic yaml`/`QA`); zero terminal stories emit "downstream stories may proceed" copy.*
+1. **Eliminate manual retrospective toil.** Every epic reaching `done` or `failed` auto-generates lessons with zero human action. *Metric:* 100% of terminal epics with usable telemetry persist ≥1 lesson; 0 finalize failures attributable to the retro.
+2. **Close the learning loop to workers.** Lessons demonstrably reach the agents that consume them. *Metric:* ≥1 persisted lesson is injected into a later worker's assembled prompt and recorded as applied (`applied_as`/`applied_ref` set).
+3. **Keep humans in control.** Every proposal and policy change is a gated suggestion. *Metric:* a structural test proves no auto-trigger, auto-approve, or auto-apply path exists; proposed epics stay `planned` + `manual` until explicit approval.
+4. **Hold cost discipline.** *Metric:* exactly one batched LLM call per retro and per proposal (asserted by test; LLM injectable and stubbed).
 
 ## User Stories
 
-- **(Must)** As the loom operator, I want `loom status` to show a distinct `finalizing` state with its phase, so that I don't conclude a run finished and go hunting for a PR that doesn't exist yet.
-- **(Must)** As the loom operator, I want `loom run` to end with the epic PR URL, so that I can go straight to the review without a second command.
-- **(Must)** As the loom operator, I want an infra-killed planning run to read `failed` with the error retrievable, so that I can tell a crash apart from a human rejection.
-- **(Should)** As the loom operator, I want planning status to show which persona is running, so that a long planning phase isn't an opaque `(planning…)`.
-- **(Should)** As an MCP caller (Claude Code / Cursor), I want `loom_start_epic` to return the epic id within seconds and be re-attachable via the status tools, so that I'm not blocked through planning.
-- **(Should)** As an automation polling `loom_get_status`, I want current-project scope by default with opt-in federation, so that I get one clean row per story and don't accidentally pull fleet-wide state.
-- **(Could)** As the loom operator, I want terminal-story completion copy to reflect the story's real DAG position and whether it changed code, so that the copy never invents downstream work.
+- **(Must)** As the loom operator, I want each completed epic to automatically produce lessons from its own telemetry, so that I stop running retrospectives by hand.
+- **(Must)** As the loom operator, I want lessons fed into future workers automatically, so that the next epic avoids repeating prior mistakes without me hand-wiring context.
+- **(Must)** As the loom operator, I want auto-retro to never block or fail epic finalization, so that learning is strictly additive and safe.
+- **(Should)** As the loom operator, I want loom to draft a next-epic proposal only when I explicitly ask, landing it as a gated, frozen `planned` epic in my inbox, so that I retain a hard approval gate.
+- **(Should)** As the loom operator, I want loom to record policy *suggestions* without ever mutating policy, so that I decide every governance change.
+- **(Should)** As the loom operator, I want a read-only flywheel view of lessons learned (and where applied) plus current self-proposals, so that I can see the loop working at a glance.
+- **(Secondary)** As a future loom worker, I want applicable lessons present in my prompt, so that I act on prior learning.
 
 ## Functional Requirements
 
-- **FR-1 — Finalizing lifecycle (#17).** Add a `finalizing` epic status and a `finalize_phase` field (`merging → gate → review → pushing → opening_pr`), driven from `EpicFinalizer.finalize()` as a thin status overlay around the existing steps. Status flips to `done` only once the epic PR URL is recorded. Non-PR exit paths (`skipped`, `gated`, `partial`, push-gate `confirm`, no-remote, remote-not-allowed) land in defined terminal statuses without stranding a legitimately PR-less successful run.
-- **FR-2 — Epic PR URL of record (#15).** Persist the epic PR URL (dedicated storage, not the story-level `pr_url`). `loom run` prints it at run end; `loom status` and `loom_get_status` render it.
-- **FR-3 — Planning-phase visibility (#8).** Surface the already-stored `planning_phase` (`brief → prd → architecture → epic yaml → QA`) in the `loom status` table and the MCP status payload, replacing the opaque `(planning…)`.
-- **FR-4 — Re-attachable MCP planning entry point (#7).** `loom_start_epic` returns the epic id within seconds while planning continues in-process; the run is re-attachable via the existing status tools. The in-process-continuation behavior is documented explicitly. `[ASSUMPTION]` Per the brief, returning the epic id early is the minimum acceptable bar for V1; full async start is a follow-on.
-- **FR-5 — Truthful failure taxonomy (#9).** Add a `failed` epic status distinct from `rejected` (human declined). A planning run killed by infra (e.g. invalid-model exit) lands as `failed` with the error message recorded and retrievable. Placeholder `(planning…)` titles are backfilled with the real title once known. `[ASSUMPTION]` `failed` is DB-only; the plan-time `EpicYamlSchema.status` enum is not extended (infra failure is a runtime fact, not a plan-time one).
-- **FR-6 — Payload hygiene (#10, #11).** Verify the v0.5.0 retry-row collapse (`listLatestByEpic` + `history` array) holds on every path, including CLI `--json`, closing any remaining duplicate-row leaks. Default `loom_get_status` to the current project; make cross-project federation opt-in via an explicit parameter.
-- **FR-7 — DAG-accurate completion copy (#16).** Worker completion copy reflects the story's real position in the dependency graph (terminal vs. has-dependents) and whether it changed code (via `commitCount`), replacing the unconditional "downstream stories may proceed with handoff context."
-- **FR-8 — Schema migration.** Schema deltas (`finalize_phase`, epic PR URL, and any `failed`/error storage) land as additive `ALTER TABLE` migrations in `packages/loom-core/src/state/` with a `SCHEMA_VERSION` bump (v14 → v15).
-- **FR-9 — Capabilities doc + tests.** `docs/capabilities.md` rows for `loom status`, `loom_get_status`, and the epic-lifecycle description are updated, owned by a single story. Each touched module has a co-located `__tests__/` test.
+- **FR-1** — `lesson-extractor` is a real LLM-backed handler (mirroring the reviewer-skill factory / `SkillGenerator` pattern): it loads `SKILL.md` as a cached system prefix and sends the epic's telemetry as the user message.
+- **FR-2** — Handler-owned fields (e.g. `source`/`epic_id`) MUST be injected **before** the zod parse against the existing `Lesson` schema (`findings/lesson.ts`). A regression test using a field-less model response must prove this. (Reviewer-bug regression guard.)
+- **FR-3** — On an epic reaching `done` *or* `failed`, an auto-retro hooks the EpicFinalizer/Supervisor finalize path, gathers that epic's telemetry (decision traces, review summary, handoff, audit log), makes exactly one batched `lesson-extractor` call, and persists the resulting lessons.
+- **FR-4** — Auto-retro is best-effort and MUST never block or fail finalization. On LLM-unavailable or malformed output: one repair attempt, then skip-with-audit-note.
+- **FR-5** — An epic with zero usable telemetry produces zero lessons cleanly (no error). *[ASSUMPTION] the empty-input contract returns an empty lesson set, not a failure — confirm with architecture.*
+- **FR-6** — A new `LessonStore` persists lessons to a schema v18 `lessons` table with columns: `epic_id, category, observation, root_cause, general_rule, evidence, applied_as, applied_ref, created_at`. Table creation is additive (`CREATE TABLE IF NOT EXISTS`) and backward-compatible; pre-v18 DBs auto-create.
+- **FR-7** — Applicable lessons are injected into a future worker's assembled prompt through the existing operator-guidance / context-notes seam, and the lesson is recorded as applied (`applied_as`, `applied_ref`).
+- **FR-8** — Lesson-to-worker relevance is determined by matching a lesson's `general_rule`/`category` to the target epic/story area. *[ASSUMPTION] a simple area/category keyword match suffices for v4.0; semantic matching is out of scope — architect to pin the mechanism (riskiest under-specified seam).*
+- **FR-9** — Policy-suggestion mode writes a recorded suggestion artifact / audit row (`applied_as = 'policy_suggestion'`) that never mutates policy.
+- **FR-10** — `proposeNextEpic()` runs only on explicit operator action. It combines top-ranked lessons with top open opportunities (`OpportunityStore`) into a brief, runs it through the existing brief gate and Planner/BriefRefiner, and lands a real `planned` + `manual` epic marked `proposed_by = 'loom'`, frozen until human approval. *[ASSUMPTION] ranking = recency + category frequency; no scoring model.*
+- **FR-11** — `proposeNextEpic()` is exposed via CLI (`loom propose`), a mission-control button, and an MCP tool; the produced proposal surfaces in `GET /api/inbox` and stays `planned` until explicitly approved.
+- **FR-12** — `GET /api/lessons` serves federated, read-only flywheel data; a mission-control board renders lessons (with where each was applied) and current self-proposals, including a defined empty state.
+- **FR-13** — `docs/capabilities.md` is updated in the same change: add the flywheel/lessons surfaces and move any now-shipped "what loom does NOT do" entry into the appropriate table.
+
+## Non-Functional Requirements
+
+- **NFR-1 (Safety)** — Finalize is sacred: the retro path is strictly best-effort and may never propagate an error into epic finalization (covered by FR-4).
+- **NFR-2 (Cost)** — Exactly one batched LLM call per retro and per proposal; the LLM dependency is injectable and stubbed in all tests.
+- **NFR-3 (Gating)** — No scheduler, daemon, auto-trigger, auto-apply, or auto-execute anywhere in the feature; a structural test must prove these paths do not exist.
+- **NFR-4 (Schema compatibility)** — Bump `Database.ts` `SCHEMA_VERSION` 17 → 18; migration is idempotent and additive; pre-v18 databases upgrade transparently.
+- **NFR-5 (Web/test invariants)** — Every new web route is covered by a real-`createApp` test (epic-003 orphaned-route lesson); all new mutations are token-gated and audit-logged.
+- **NFR-6 (Build health)** — `npm run build` and `npm run test` are green across all workspaces.
 
 ## Epics
 
-This PRD is **one epic**: a cohesive observability/lifecycle correction across a shared set of status surfaces and one schema migration. It is not separable into independently shippable units — the `finalizing` lifecycle, the PR URL of record, and the payload corrections are mutually reinforcing and share the v15 migration. It deliberately excludes step-ordering and retry/backoff, which the concurrent "resilient story execution" epic owns.
+This PRD is delivered as **one** epic — the v4.0 Flywheel stretch epic. Its stages are priority-ordered, not separable shipping units. If a time/cost ceiling is hit, ship in strict priority and stop: (1) auto-retro + lesson persistence → (2) guidance injection → (3) self-proposal → (4) flywheel view. Stages 1–2 alone satisfy the "loom learns" bar.
 
-- **epic-001 — Honest Status Lifecycle and Observability**
+- **epic-001 — Loom Flywheel: self-learning from finished epics** (Must) — real lesson extraction, auto-retro on terminal state, lesson persistence (schema v18), guidance injection, policy-suggestion mode, explicit self-proposal, and the read-only flywheel view.
 
-## Out of Scope
+## Out of Scope (V1)
 
-- Any `loom web` dashboard work (anti-persona).
-- New notification channels.
-- Changes to integration-gate semantics or retry/backoff mechanics (owned by the sibling "resilient story execution" epic).
-- Renaming existing statuses beyond adding `finalizing` and `failed`.
-- Step-ordering changes in `EpicFinalizer.ts` (`promoteArtifacts` call-site moves) — owned by the sibling epic; this epic's finalizer edits are confined to status transitions + PR URL recording.
-- Full async/handle-based `loom_start_epic` (follow-on; V1 returns the epic id early in-process).
-
----
-
-Now performing Headless task B: the epic/story breakdown. This is a multi-service epic (touches `loom-core` types/state, `loom-cli`, `loom-mcp`, and `docs`), so it gets a final cross-cutting verification story.
-
-```json
-{
-  "epics": [
-    {
-      "epic_id": "epic-001",
-      "title": "Honest Status Lifecycle and Observability",
-      "priority": "must-have",
-      "prd_ref": ".loom/planning/prd.md",
-      "requirements": ["FR-1", "FR-2", "FR-3", "FR-4", "FR-5", "FR-6", "FR-7", "FR-8", "FR-9"],
-      "stories": [
-        {
-          "id": "story-001-001",
-          "title": "Schema migration v15: finalize_phase, epic PR URL, and epic error",
-          "description": "Add additive columns to the epics table for finalize_phase, the epic PR URL of record, and a runtime error message, via an ALTER TABLE migration in packages/loom-core/src/state/ with a SCHEMA_VERSION bump from v14 to v15. Extend EpicStatusSchema with finalizing and failed, and add the finalize_phase value type, in types.ts.",
-          "acceptance_criteria": [
-            "SCHEMA_VERSION is bumped to v15 in Database.ts and the migration runs additively on an existing v14 DB without data loss",
-            "epics table gains columns for finalize_phase, epic PR URL, and a runtime error message",
-            "EpicStatusSchema includes finalizing and failed; a finalize_phase type (merging|gate|review|pushing|opening_pr) is defined in types.ts",
-            "EpicYamlSchema.status is left unchanged (failed is DB-only)",
-            "A co-located __tests__/ test asserts the v14→v15 migration applies and the new zod statuses parse"
-          ],
-          "estimated_complexity": "medium",
-          "dependencies": []
-        },
-        {
-          "id": "story-001-002",
-          "title": "Finalizing lifecycle and PR-URL recording in EpicFinalizer",
-          "description": "Drive the finalizing status and finalize_phase transitions (merging → gate → review → pushing → opening_pr) from EpicFinalizer.finalize() as a thin status overlay around existing steps, and persist the captured prUrl on the epic. Flip to done only once the PR URL is recorded; map each non-PR early-return path (skipped, gated, partial, push-gate confirm, no-remote, remote-not-allowed) to a defined terminal status without stranding a PR-less successful run.",
-          "acceptance_criteria": [
-            "finalize() writes finalizing + the corresponding finalize_phase around each step without moving the existing step logic",
-            "The epic status becomes done only after the epic PR URL is persisted",
-            "The captured prUrl is persisted to the new epic PR-URL storage",
-            "Every early-return path lands in a documented terminal status and no successful PR-less path is left stranded",
-            "A co-located __tests__/ test covers the phase transitions and the done-requires-PR-URL invariant"
-          ],
-          "estimated_complexity": "large",
-          "dependencies": ["story-001-001"]
-        },
-        {
-          "id": "story-001-003",
-          "title": "Surface finalizing, finalize_phase, planning_phase, and PR URL across CLI + MCP",
-          "description": "Render the new finalizing status with its phase, the already-stored planning_phase, and the epic PR URL across loom status and loom_get_status. Make loom run print the epic PR URL at run end instead of the 'run loom status for PR links' fallback.",
-          "acceptance_criteria": [
-            "loom status shows finalizing with the current finalize_phase, and shows the active planning_phase instead of (planning…)",
-            "loom_get_status payload includes finalize_phase, planning_phase, and the epic PR URL",
-            "loom run output ends with the epic PR URL for PR-producing runs",
-            "A co-located __tests__/ test asserts the rendered/serialized fields for finalizing, planning, and PR URL"
-          ],
-          "estimated_complexity": "medium",
-          "dependencies": ["story-001-002"]
-        },
-        {
-          "id": "story-001-004",
-          "title": "Truthful failure taxonomy and re-attachable loom_start_epic",
-          "description": "Record an infra-killed planning run as failed (distinct from human rejected) with the error message retrievable, and backfill placeholder (planning…) titles with the real title once known. Make loom_start_epic return the epic id within seconds while planning continues in-process, re-attachable via the existing status tools, with the behavior documented.",
-          "acceptance_criteria": [
-            "An infra-killed planning run lands as failed with a non-empty, retrievable error message — not rejected",
-            "Placeholder (planning…) titles are replaced with the real title once it is known",
-            "loom_start_epic returns the epic id within seconds and the run is re-attachable via loom_get_status / loom status",
-            "The in-process-continuation behavior of loom_start_epic is documented",
-            "A co-located __tests__/ test covers the failed-vs-rejected distinction and early epic-id return"
-          ],
-          "estimated_complexity": "medium",
-          "dependencies": ["story-001-001"]
-        },
-        {
-          "id": "story-001-005",
-          "title": "Payload hygiene: current-project default, opt-in federation, retry-row collapse, DAG completion copy",
-          "description": "Default loom_get_status to the current project and make cross-project federation opt-in via an explicit parameter. Verify the listLatestByEpic + history retry-row collapse holds on every path including CLI --json and close any duplicate-row leak. Replace BaseCliWorker's unconditional completion copy with DAG-accurate copy reflecting terminal-vs-has-dependents and whether the story changed code (commitCount).",
-          "acceptance_criteria": [
-            "loom_get_status defaults to current-project scope; federation requires an explicit parameter",
-            "No duplicate blocked+done rows appear on any path, including CLI --json (one row per story with a history array)",
-            "Terminal-story completion copy names no nonexistent downstream stories and reflects whether the story changed code",
-            "A co-located __tests__/ test covers default scoping, no-duplicate-rows, and the completion-copy variants"
-          ],
-          "estimated_complexity": "medium",
-          "dependencies": ["story-001-001"]
-        },
-        {
-          "id": "story-001-006",
-          "title": "Update docs/capabilities.md for the lifecycle and status changes",
-          "description": "Revise the existing docs/capabilities.md rows for loom status (line ~90) and loom_get_status (line ~91) and the epic-lifecycle description to reflect finalizing/failed statuses, finalize_phase and planning_phase visibility, the epic PR URL of record, and the current-project-default scoping. Single owner for this file in the epic.",
-          "acceptance_criteria": [
-            "The loom status and loom_get_status rows describe finalizing, failed, finalize_phase, planning_phase, and the epic PR URL",
-            "The epic-lifecycle description reflects the finalizing→done (PR-URL-gated) transition and failed-vs-rejected taxonomy",
-            "The loom_get_status row documents current-project-default scope with opt-in federation",
-            "docs/capabilities.md is the only place this epic edits that file (single-owner)"
-          ],
-          "estimated_complexity": "small",
-          "dependencies": ["story-001-003", "story-001-004", "story-001-005"]
-        },
-        {
-          "id": "story-001-007",
-          "title": "Full build + test suite and fix cross-cutting regressions",
-          "description": "Run the full build and the entire test suite across all workspace packages and fix any cross-service regressions introduced by the lifecycle, schema, CLI, MCP, and worker changes.",
-          "acceptance_criteria": [
-            "The full build passes",
-            "The entire test suite passes",
-            "Any cross-cutting regression surfaced by the whole-suite run is fixed"
-          ],
-          "estimated_complexity": "small",
-          "dependencies": ["story-001-002", "story-001-003", "story-001-004", "story-001-005", "story-001-006"]
-        }
-      ]
-    }
-  ]
-}
-```
+- Auto-applying policy changes.
+- Auto-triggering self-proposal, or any scheduler/daemon/auto-execution of proposed epics.
+- Model-level or fine-tuning learning — this feature is file/DB/skill/prompt-level only.
+- Semantic lesson-relevance matching (keyword/area match only for v4.0).
+- Lesson dedup or retention policy — *[ASSUMPTION] unbounded append is acceptable at v4.0 scale; flag if the flywheel view becomes noisy.*
+- Skill-generation as a lesson-application mode — optional/stretch; policy-suggestion is the required second mode.
+- Perfect lesson quality — closing the loop end-to-end beats lesson polish.

@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 import { Distillation } from '../findings/distillation.js';
+import type { LessonRow } from '../findings/lesson.js';
+import { selectLessonsForStory } from '../findings/lessonMatch.js';
 import { SkillUsageStore } from '../state/SkillUsageStore.js';
 import { AuditLog } from '../state/AuditLog.js';
 import { countTokens } from './tokenCount.js';
@@ -56,6 +58,29 @@ export interface AssembleOptions {
   distill?: Distiller;
   /** Sink for the soft compression-target warning. Defaults to `console.warn`. */
   warn?: (message: string) => void;
+  /**
+   * Story metadata required for lesson matching. When omitted, lesson injection
+   * is skipped even if `lessons` is supplied.
+   */
+  storyTitle?: string;
+  storyDescription?: string;
+  epicTitle?: string;
+  /**
+   * Pre-fetched lesson pool to match against. Requires `storyTitle` /
+   * `storyDescription` to be set; otherwise ignored.
+   */
+  lessons?: LessonRow[];
+  /**
+   * Lesson store used to record each injected lesson as applied. When absent,
+   * lessons are still injected into the distilled text but not marked applied.
+   */
+  lessonStore?: {
+    markApplied: (
+      id: number,
+      applied_as: 'worker_guidance' | 'policy_suggestion',
+      applied_ref: string,
+    ) => void;
+  };
 }
 
 /** Distilled context may be at most this fraction of the source token count. */
@@ -93,7 +118,38 @@ export async function assembleWorkerContext(
   }
 
   const source_token_count = countTokens(raw);
-  const distilled_token_count = countTokens(distilled);
+
+  // Inject relevant lessons as a clearly-delimited advisory block (FR-7, T-1).
+  // Injection happens before token counting so the final count reflects the
+  // actual output size (including the lesson block). The block is appended AFTER
+  // the AC check so lesson content never interferes with verbatim-AC verification.
+  // This is advisory only — never system instructions.
+  let finalDistilled = distilled;
+  if (opts.storyTitle !== undefined) {
+    const selected = selectLessonsForStory(
+      {
+        id: story_id,
+        title: opts.storyTitle,
+        description: opts.storyDescription ?? '',
+      },
+      opts.epicTitle ?? '',
+      opts.lessons ?? [],
+    );
+    if (selected.length > 0) {
+      finalDistilled = `${distilled}\n\n${renderLessonsBlock(selected)}`;
+      if (opts.lessonStore) {
+        for (const lesson of selected) {
+          // Idempotency guard: skip if already recorded for this story (e.g. on retry).
+          if (lesson.applied_ref !== story_id) {
+            opts.lessonStore.markApplied(lesson.id, 'worker_guidance', story_id);
+          }
+        }
+      }
+    }
+  }
+
+  // Token counts reflect the final assembled output (including any lesson block).
+  const distilled_token_count = countTokens(finalDistilled);
   const ratio =
     source_token_count === 0 ? 0 : distilled_token_count / source_token_count;
 
@@ -108,7 +164,7 @@ export async function assembleWorkerContext(
   }
 
   const distillation: Distillation = Distillation.parse({
-    distilled,
+    distilled: finalDistilled,
     source_token_count,
     distilled_token_count,
     acceptance_criteria_preserved: acceptanceCriteria,
@@ -138,9 +194,25 @@ export async function assembleWorkerContext(
 
   return {
     raw,
-    distilled,
+    distilled: finalDistilled,
     acceptance_criteria_preserved: distillation.acceptance_criteria_preserved,
   };
+}
+
+/**
+ * Render selected lessons as a clearly-delimited advisory block.
+ * Advisory only — this block must never appear in the system instructions
+ * position (T-1); it lives in the context-notes / operator-guidance seam.
+ */
+function renderLessonsBlock(lessons: LessonRow[]): string {
+  const items = lessons.map((l) => `- [${l.category}] ${l.general_rule}`);
+  return [
+    '## Lessons from prior epics',
+    '',
+    'Advisory only — past observations that may be relevant to this story. Apply judgment.',
+    '',
+    ...items,
+  ].join('\n');
 }
 
 /** Concatenate the four artifacts into one labelled document (the `raw` context). */

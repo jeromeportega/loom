@@ -1,255 +1,365 @@
-# Honest Status Lifecycle and Observability — System Architecture
+# Loom Flywheel — System Architecture
 
 ## Architecture Philosophy
 
-This epic corrects six observability defects across loom's status surfaces without re-architecting them. Four constraints drive every decision below:
+Four constraints drive every decision in this design. They are listed in priority order; where they conflict, the earlier one wins.
 
-1. **Mirror the proven `planning`/`planning_phase` overlay; don't invent a new mechanism.** The `finalizing`/`finalize_phase` lifecycle is the same shape as the already-shipped planning overlay (`EpicStatusSchema` + a nullable phase column + `EpicStore` transition methods, read by the same surfaces). We are paying the cost of a second status overlay to get an interface the codebase — and the operator — already understands. The trade-off: two near-parallel overlays (`planning_phase`, `finalize_phase`) instead of one generalized "phase" column; we accept the mild duplication because a generic phase column would couple two unrelated lifecycles and break the existing `PlanningPhase` typing.
+1. **Learn-but-never-decide.** The flywheel observes, persists, and suggests. It never schedules, auto-triggers, auto-applies, or self-executes. Every write that changes what loom *does* — policy, epic execution — sits behind an explicit human action (CLI invocation, mission-control button, MCP call). This is not a feature; it is the load-bearing invariant the whole epic exists to honor, enforced by a structural test (NFR-3).
+2. **Finalize is sacred.** Epic finalization already merges, gates, pushes, and audits. The auto-retro is strictly *additive* and *best-effort*: it runs **last**, after all finalize writes complete, inside a wrapper from which no error can escape. A retro that fails leaves a skip-note in the audit log and nothing else. Learning may never cost us a finalize (NFR-1, FR-4).
+3. **Reuse the proven seams.** Every capability this epic needs already has a battle-tested analog in the tree: the `SkillGenerator` pre-parse field-injection pattern (`reviewerSkills.ts`), the `Store`-over-`better-sqlite3` idiom (`OpportunityStore.ts`), the `scopeOpportunity` brief→gate→planner pipeline, and the `OperatorGuidance` context seam. We extend these, we do not invent. Boring, proven machinery is what a self-improvement loop must be built from — the cost of a novel abstraction here is paid on every future epic.
+4. **One batched call, injectable LLM.** Cost discipline is structural, not advisory. The lesson-extractor and the proposer each make exactly one batched Anthropic call on the happy path; the LLM is a constructor dependency, stubbed in every test (NFR-2). A repair retry exists only on malformed output and is the sole exception.
 
-2. **The status surfaces are read models; the writers are `EpicFinalizer` and `Planner`.** `loom status` (CLI), `loom_get_status` (MCP), and `loom run`'s tail are pure readers of the `epics`/`agents` tables. The truth-telling fixes therefore split cleanly: writers (story-002 finalizer, story-004 planner/MCP) record honest state; readers (story-003) render it. This is what lets six defects be fixed by independent agents — the seam between writer and reader is the DB row shape, frozen by story-001.
+A note on a tension this design resolves up front: the existing `Lesson` schema (`findings/lesson.ts`: `kind/summary/context/recommended_action`) does **not** match the persisted columns FR-6 mandates (`category/observation/root_cause/general_rule/evidence/...`). ADR-001 in that file already flagged the schema as provisional, to tighten "when the lesson store lands." This epic is that moment. We evolve `Lesson` to the persisted shape and treat the column set as the contract. See **ADR-002**.
 
-3. **Additive schema only; `done` is gated on a recorded fact, not a status flip.** Every schema change is an additive `ALTER TABLE` in `Database.ts`'s existing per-column migration block (the v7–v14 pattern). The flagship invariant — never render `done` without a PR URL — is enforced by ordering the writes (`epic_pr_url` persisted *before* `status='done'`), not by a trigger or a read-time guard. The trade-off: a writer that crashes between the two writes leaves `finalizing`, not `done` — which is the *correct* honest state, so we accept it.
-
-4. **Don't touch gate or step-ordering mechanics.** FR-1 is explicit: the finalizer edits are confined to status transitions + PR-URL recording wrapped *around* the existing steps in `EpicFinalizer.finalize()`. The `promoteArtifacts` call-site and `IntegrationGate` semantics belong to the sibling "resilient story execution" epic. The trade-off: the `finalize_phase` overlay must thread through a method that already has six early-return paths (lines 244–629) without moving any of them — more careful insertion, but zero blast radius into retry/gate behavior.
+---
 
 ## Component Diagram
 
 ```mermaid
 flowchart TB
-    subgraph writers["Writers (record honest state)"]
-        Planner["Planner.run()\nstory-004"]
-        Finalizer["EpicFinalizer.finalize()\nstory-002"]
-        Worker["BaseCliWorker.run()\nstory-005 (completion copy)"]
-        Supervisor["Supervisor.run()\n(calls finalize, sets done)"]
+    subgraph terminal["Epic reaches terminal state (done | failed)"]
+        EF["EpicFinalizer.finalize()\norchestrator/EpicFinalizer.ts"]
     end
 
-    subgraph state["State — loom-core/src/state (story-001 owns schema)"]
-        EpicStore["EpicStore\n+ updateFinalizePhase\n+ recordPrUrl\n+ fail()"]
-        AgentStore["AgentStore\n(listLatestByEpic — unchanged)"]
-        DB[("epics table\n+finalize_phase\n+epic_pr_url\n+error\nSCHEMA_VERSION 15")]
-        Types["types.ts\nEpicStatusSchema + finalizing/failed\nFinalizePhase type"]
+    subgraph retro["Stage 1 — Auto-retro (best-effort, runs LAST)"]
+        AR["AutoRetrospective.run(epicId, status)"]
+        GT["gatherEpicTelemetry(epicId)"]
+        LE["LessonExtractor\n(SkillGenerator-style, 1 batched LLM call)"]
+        LS[("LessonStore\nlessons table — schema v18")]
+        EF -.best-effort, wrapped.-> AR
+        AR --> GT --> LE --> LS
     end
 
-    subgraph readers["Readers (render the truth) — story-003"]
-        CliStatus["loom status\ncommands/status.ts"]
-        CliRun["loom run\ncommands/run.ts (PR-URL tail)"]
-        McpStatus["loom_get_status\nmcp/tools/handlers.ts\n(+ current-project default — story-005)"]
+    subgraph sources["Telemetry sources (read-only)"]
+        DT["DecisionTraceStore.getByEpic"]
+        AG["AgentStore.listByEpic\n(review_summary, log_tail)"]
+        AU["AuditLog.getByAgent"]
+        GT --> DT & AG & AU
     end
 
-    Operator(["Operator / MCP caller"])
+    subgraph apply["Stage 2 — Lesson application"]
+        MATCH["selectLessonsForStory()\nkeyword/area match"]
+        OG["OperatorGuidance / contextAssembler\nworker prompt seam"]
+        POL["applyAsPolicySuggestion()\naudit-only, never mutates policy"]
+        LS --> MATCH --> OG
+        LS --> POL
+    end
 
-    Planner --> EpicStore
-    Finalizer --> EpicStore
-    Worker --> Supervisor
-    Supervisor --> EpicStore
-    Supervisor --> Finalizer
-    EpicStore --> DB
-    AgentStore --> DB
-    Types -.validates.-> EpicStore
-    DB --> CliStatus
-    DB --> McpStatus
-    Finalizer -.FinalizeResult.url.-> CliRun
-    CliStatus --> Operator
-    CliRun --> Operator
-    McpStatus --> Operator
+    subgraph propose["Stage 3 — Self-proposal (EXPLICIT trigger only)"]
+        PNE["proposeNextEpic()"]
+        OPP[("OpportunityStore.listRanked")]
+        BR["BriefRefiner.refine → evaluateBriefGate"]
+        PL["Planner.run → planned + manual epic\nproposed_by = 'loom'"]
+        LS --> PNE
+        OPP --> PNE
+        PNE --> BR --> PL
+    end
+
+    subgraph surfaces["Stage 4 — Surfaces (read-only view + triggers)"]
+        API["GET /api/lessons (read-only)\nGET /api/inbox (proposal lands here)"]
+        BOARD["mission-control flywheel board"]
+        CLI["loom propose (CLI)"]
+        MCP["loom_propose (MCP tool)"]
+        BTN["mission-control button"]
+        LS --> API --> BOARD
+        PL --> API
+        CLI & MCP & BTN -.explicit.-> PNE
+    end
 ```
+
+---
 
 ## Tech Stack
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| State store | `better-sqlite3` (existing) | Synchronous writes give us the ordering guarantee (`epic_pr_url` durable before `status='done'`) for free — no async race between the two statements. |
-| Schema migration | Additive `ALTER TABLE` in `Database.ts` `runMigrations` (existing per-column idempotent pattern) | v7–v14 already use `PRAGMA table_info` → conditional `ADD COLUMN`. v15 is one more block; no migration framework needed for additive columns. |
-| Status enums | `zod` `EpicStatusSchema` + a `FinalizePhase` string-union type (existing `PlanningPhase` pattern) | The codebase already validates status with zod and types phases as a bare union; we follow both. `failed` is DB-only — `EpicYamlSchema.status` (the plan-time enum) is deliberately *not* extended. |
-| CLI rendering | `commander` command handlers + `console.log` tables (existing `status.ts`) | No new dependency; add icons/columns to the existing `STATUS_ICONS` map and the per-epic render loop. |
-| MCP payload | `@modelcontextprotocol/sdk` tool handlers returning plain objects (existing `handlers.ts`) | The `renderEpic` closure already spreads optional fields conditionally; new fields slot in the same way. |
-| Tests | co-located `__tests__/` per package (house rule) | Each touched module gets a test; migration + zod-parse test for v15, finalizer phase-transition test, reader-field tests. |
+| Persistence | `better-sqlite3`, new `lessons` table at `SCHEMA_VERSION = 18` | Matches every existing store; synchronous prepared statements keep the retro path simple and side-effect-free. Additive `CREATE TABLE IF NOT EXISTS` + per-column `ALTER` is the established migration idiom (`Database.ts`). |
+| Lesson extraction | Anthropic SDK via the `LLMClient` interface, `SkillGenerator`-style handler with `cache_control` on the SKILL.md prefix | Reuses the exact caching + injectable-client pattern from `SkillGenerator.ts`; satisfies prompt-caching invariant and NFR-2 cost discipline. |
+| Schema validation | `zod`, evolved `Lesson` schema in `findings/lesson.ts` | Same validation seam the reviewer uses; pre-parse field stamping is the proven fix for the reviewer source-injection bug (ADR-003). |
+| Retro orchestration | `AutoRetrospective` invoked from the `EpicFinalizer` finalize tail | Single, last, wrapped call-site keeps "finalize is sacred" auditable in one place. |
+| Guidance injection | `OperatorGuidance` (`.loom/guidance/<story-id>.md`) + `contextAssembler.ts` | The context-notes seam already layers timestamped operator entries into worker prompts; lessons ride the same rail — no new prompt plumbing. |
+| Proposal pipeline | `BriefRefiner` → `evaluateBriefGate` → `Planner.run`, mirroring `scopeOpportunity.ts` | The opportunity-scoping path already turns a brief into a `planned` + `manual` epic through the gate; the proposer is that path with lessons folded into the brief. |
+| Web surface | Express `registerLessonRoutes(app, deps)` mounted in `createApp` | New route module + real-`createApp` test, per the epic-003 orphaned-route lesson (NFR-5). |
+| CLI | `commander`, `loom propose` → `runPropose()` | Standard `run<Command>` command pattern in `loom-cli/src/index.ts`. |
+| MCP | `loom_propose` in `TOOL_DEFINITIONS` + `HANDLERS` | Standard tool-registration pattern in `loom-mcp/src/tools/`. |
+| Frontend | vanilla JS mission-control board | Matches existing inbox/fleet/opportunities boards; no framework introduced. |
+
+---
 
 ## Data Models
 
-The single schema change is three additive columns on `epics`. All are nullable so the v14→v15 migration is loss-free on existing rows.
+### v18 `lessons` table (FR-6) — exact column contract
 
 ```sql
--- v15 migration, added to Database.ts runMigrations() epicCols block.
--- Each guarded by:  if (!epicCols.some(c => c.name === '<col>')) db.exec(...)
-
-ALTER TABLE epics ADD COLUMN finalize_phase TEXT;   -- merging|gate|review|pushing|opening_pr, NULL otherwise
-ALTER TABLE epics ADD COLUMN epic_pr_url   TEXT;     -- epic PR URL of record; distinct from agents.pr_url (story-level)
-ALTER TABLE epics ADD COLUMN error         TEXT;     -- runtime failure message; set when status='failed'
-
--- SCHEMA_VERSION constant in Database.ts: 14 -> 15
+-- Added to the DDL block in packages/loom-core/src/state/Database.ts
+CREATE TABLE IF NOT EXISTS lessons (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  epic_id      TEXT    NOT NULL,           -- handler-owned (stamped pre-parse)
+  category     TEXT    NOT NULL,           -- LLM-owned: area tag, lowercase-hyphen (e.g. 'schema-migration')
+  observation  TEXT    NOT NULL,           -- LLM-owned: what happened
+  root_cause   TEXT,                       -- LLM-owned: why
+  general_rule TEXT    NOT NULL,           -- LLM-owned: the reusable, area-keyword-bearing rule
+  evidence     TEXT,                       -- LLM-owned: pointer/excerpt from telemetry
+  applied_as   TEXT,                       -- handler-owned: NULL | 'worker_guidance' | 'policy_suggestion'
+  applied_ref  TEXT,                       -- handler-owned: story_id | audit row id
+  created_at   TEXT    NOT NULL            -- handler-owned (stamped pre-parse)
+);
+CREATE INDEX IF NOT EXISTS idx_lessons_epic     ON lessons(epic_id);
+CREATE INDEX IF NOT EXISTS idx_lessons_category ON lessons(category);
 ```
 
-Types in `packages/loom-core/src/types.ts`:
+### `proposed_by` on `epics` — additive column (FR-10)
+
+```sql
+-- Per-column migration block in runMigrations(), matching the existing ALTER idiom
+-- if (!epicCols.some(c => c.name === 'proposed_by'))
+ALTER TABLE epics ADD COLUMN proposed_by TEXT;   -- NULL = human, 'loom' = self-proposed
+```
+
+### Evolved `Lesson` zod schema (`findings/lesson.ts`) — see ADR-002
 
 ```typescript
-// EpicStatusSchema gains two members. Lifecycle-ordered; finalizing sits
-// between in_progress and done; failed is a terminal sibling of rejected.
-export const EpicStatusSchema = z.enum([
-  'planning', 'planned', 'approved', 'rejected',
-  'in_progress',
-  'finalizing',   // NEW — merge → gate → review → push → open PR tail
-  'failed',       // NEW — infra-killed run, distinct from human-declined 'rejected'
-  'done',
-]);
+// LLM-owned fields: the model returns ONLY these (SKILL.md instructs it to omit the rest).
+const LessonContent = z.object({
+  category:     z.string().min(1),   // area tag for keyword matching (FR-8)
+  observation:  z.string().min(1),
+  root_cause:   z.string().optional(),
+  general_rule: z.string().min(1),
+  evidence:     z.string().optional(),
+});
 
-// Mirror of PlanningPhase. Which step of finalize() is live; null otherwise.
-export type FinalizePhase =
-  | 'merging' | 'gate' | 'review' | 'pushing' | 'opening_pr';
-
-// EpicRecord gains three fields (mirror planning_phase's nullability).
-export interface EpicRecord {
-  // ...existing...
-  finalize_phase: FinalizePhase | null;
-  epic_pr_url: string | null;
-  error: string | null;
-}
-
-// UNCHANGED (FR-5 assumption): EpicYamlSchema.status stays the plan-time enum.
-// 'failed' is a runtime fact, never a planned status.
-status: z.enum(['planned','approved','in_progress','done','rejected']).default('planned');
+// Full persisted shape: handler-owned fields stamped BEFORE parse (FR-2, ADR-003).
+export const Lesson = LessonContent.extend({
+  epic_id:     z.string().min(1),
+  applied_as:  z.enum(['worker_guidance', 'policy_suggestion']).nullable().default(null),
+  applied_ref: z.string().nullable().default(null),
+  created_at:  z.string().min(1),
+});
+export type Lesson = z.infer<typeof Lesson>;
+export type LessonRow = Lesson & { id: number };
 ```
 
-The MCP status payload (`StatusTree`-adjacent, the `renderEpic` return shape) gains:
+### `EpicTelemetry` — the batched retro input (FR-3)
 
 ```typescript
-// Per-epic object returned by loom_get_status (handlers.ts renderEpic)
-{
-  id, title, status,
-  finalize_phase?: FinalizePhase,   // present only when status='finalizing'
-  planning_phase?: PlanningPhase,   // present only when status='planning' (surfaced, not new)
-  epic_pr_url?: string,             // present once recorded
-  error?: string,                   // present when status='failed'
-  // ...existing project attribution, stories[], totals...
+interface EpicTelemetry {
+  epic_id: string;
+  final_status: 'done' | 'failed';
+  decision_traces: DecisionTrace[];          // DecisionTraceStore.getByEpic(epicId)
+  agents: { story_id: string; review_summary: string | null; log_tail: string | null }[]; // AgentStore.listByEpic
+  audit_tail: AuditRow[];                     // AuditLog rows for the epic's agents
 }
+// Empty contract (FR-5): every array empty ⇒ retro returns [] WITHOUT an LLM call.
 ```
+
+---
 
 ## API / Interface Contracts
 
-These are the seams that cross story boundaries. The exact signatures are frozen by story-001 (types + store methods) so the writer stories (002, 004) and reader story (003) cannot diverge.
+These are the seams the eight stories must agree on. Signatures are the contract; a producer and consumer must match them rather than each guessing.
 
-**`EpicStore` (state/EpicStore.ts) — new methods, mirroring `updatePlanningPhase`/`completePlanning`:**
+### LessonStore (story-005-001) — `packages/loom-core/src/state/LessonStore.ts`
 
 ```typescript
-class EpicStore {
-  // story-001 defines; story-002 (finalizer) calls.
-  /** Set status='finalizing' and the live phase. status arg stays implicit. */
-  beginFinalizing(id: string, phase: FinalizePhase): void;
-  /** Advance the phase marker; status stays 'finalizing'. */
-  updateFinalizePhase(id: string, phase: FinalizePhase): void;
-  /** Persist the epic PR URL of record (NOT agents.pr_url). */
-  recordPrUrl(id: string, url: string): void;
-  /** Terminal infra failure: status='failed', store error, clear finalize_phase. */
-  fail(id: string, error: string): void;
-  // completePlanning(id, title?) ALREADY backfills the title — story-004 reuses it.
+class LessonStore {
+  constructor(private db: Database.Database) {}
+
+  insert(lessons: Lesson[]): LessonRow[];            // validates each via Lesson.parse before write
+  getByEpic(epicId: string): LessonRow[];
+  list(opts?: { category?: string; appliedOnly?: boolean; limit?: number }): LessonRow[];
+  markApplied(id: number, applied_as: 'worker_guidance' | 'policy_suggestion', applied_ref: string): void;
 }
 ```
 
-**`EpicFinalizer.finalize()` (orchestrator/EpicFinalizer.ts) — unchanged signature, new side-effects (story-002):**
+`applied_as`/`applied_ref` hold the **latest** application; full application history lives in the audit log (see ADR-005). `created_at` is passed in by the caller, never generated inside the store (the runtime forbids `Date.now()` in some contexts and keeps the store pure/testable).
+
+### LessonExtractor (story-005-002) — `packages/loom-core/src/findings/LessonExtractor.ts`
 
 ```typescript
-// Signature UNCHANGED. finalize() still returns FinalizeResult.
-async finalize(epicId: string): Promise<FinalizeResult>;
-// FinalizeResult.url + FinalizeResult.status ('skipped'|'merged'|'partial'|'failed'|'gated')
-// are the EXISTING outputs story-002 maps to lifecycle writes (see ADR-2 table).
-```
-
-**`Supervisor.run()` (orchestrator/Supervisor.ts ~line 452–464) — the `done` gate (story-002 coordinates):**
-
-```typescript
-// EXISTING:  this.epics.updateStatus(epicId, allSucceeded ? 'done' : 'in_progress');
-//            ...then finalize(epicId).
-// CONTRACT:  the unconditional 'done' write moves to AFTER finalize() and is
-//            gated on a recorded PR URL. finalize() owns 'finalizing' + phase +
-//            recordPrUrl(); the supervisor flips 'done' only when epic_pr_url is set,
-//            else leaves the finalizer's terminal status (merged-no-remote, gated, etc.).
-```
-
-**`WorkerResult` → completion copy (orchestrator/BaseCliWorker.ts ~line 374–389, story-005):**
-
-```typescript
-// WorkerResult.commitCount ALREADY exists (WorkerRunner.ts:174). DAG position
-// (terminal vs has-dependents) is NOT on the worker — only the Supervisor holds
-// the epic's full story set. Contract: BaseCliWorker.run() consumes a DAG flag
-// passed via WorkerAssignment (new optional field) rather than re-deriving it.
-interface WorkerAssignment {
-  // ...existing (story: Story carries this story's own dependencies[])...
-  hasDependents?: boolean; // NEW (story-005): set by Supervisor from the epic DAG.
+interface LessonExtractorOptions {
+  llm: LLMClient;          // injectable, stubbed in tests (NFR-2)
+  model: string;           // policy.agents.* model; default Sonnet/Haiku tier
+  skillMdPath: string;     // lesson-extractor SKILL.md, loaded as cached system prefix
 }
-// Completion summary becomes conditional on { commitCount, hasDependents }.
+
+class LessonExtractor {
+  constructor(private opts: LessonExtractorOptions) {}
+
+  // Exactly one batched call on the happy path; one repair call only on malformed output (FR-4).
+  async extract(telemetry: EpicTelemetry): Promise<Lesson[]>;
+}
 ```
 
-**`loom_get_status` (mcp/tools/handlers.ts) — scope default flip (story-005):**
+Internals mirror `reviewerSkills.ts` precisely:
 
 ```typescript
-// EXISTING: federates across ALL projects by default; `project` narrows.
-// CONTRACT: default scope = current project only. Federation opt-in via a NEW
-//           explicit boolean arg, e.g. `all_projects: true` (registry.ts tool def
-//           gains the param; handler's default branch scans current only).
+const response = await this.opts.llm.complete({
+  model: this.opts.model,
+  system: [{ text: skillMd, cache: true }],            // cache_control on the SKILL.md prefix
+  messages: [{ role: 'user', content: serialize(telemetry) }],
+});
+const raw = extractJsonBlock(response.text) as { lessons?: unknown[] };
+const stamped = (raw?.lessons ?? []).map((l) => Lesson.parse({
+  ...(l as object),                                    // LLM-owned fields
+  epic_id: telemetry.epic_id,                          // handler-owned — stamped BEFORE parse (FR-2)
+  applied_as: null,
+  applied_ref: null,
+  created_at: nowIso,
+}));
 ```
+
+### AutoRetrospective (story-005-003) — `packages/loom-core/src/orchestrator/AutoRetrospective.ts`
+
+```typescript
+class AutoRetrospective {
+  constructor(opts: { extractor: LessonExtractor; lessonStore: LessonStore; audit: AuditLog;
+                      traces: DecisionTraceStore; agents: AgentStore; }) {}
+
+  // Best-effort. MUST NOT throw. Called from the finalize tail for BOTH terminal statuses.
+  async run(epicId: string, finalStatus: 'done' | 'failed'): Promise<void>;
+}
+```
+
+Integration point — `EpicFinalizer.finalize()` tail, **after** the `epic_finalize` audit row:
+
+```typescript
+// ... existing terminal writes (recordPrUrl, epic_finalize audit) ...
+try {
+  await this.autoRetro?.run(epicId, status);
+} catch (err) {
+  this.audit.record({ action: 'auto_retro_skipped', command: epicId, allowed: true,
+                      detail: { reason: String(err) } });   // skip-with-audit-note (FR-4)
+}
+return result;
+```
+
+### Lesson matcher + guidance injection (story-005-004)
+
+```typescript
+// packages/loom-core/src/findings/lessonMatch.ts — deterministic, no LLM, no embeddings (FR-8, ADR-004)
+function selectLessonsForStory(
+  story: { id: string; title: string; description: string },
+  epicTitle: string,
+  lessons: LessonRow[],
+  opts?: { topK?: number },           // default 3
+): LessonRow[];
+// Match = non-empty token overlap between tokenize(lesson.category + ' ' + lesson.general_rule)
+//         and tokenize(story.title + ' ' + story.description + ' ' + epicTitle); rank by overlap count.
+```
+
+Injection rides the existing seam in `contextAssembler.assembleWorkerContext`: selected lessons are rendered as a clearly-delimited **"Lessons from prior epics"** block in the operator-guidance/context-notes section. On injection, the store records application:
+
+```typescript
+lessonStore.markApplied(lesson.id, 'worker_guidance', story.id);   // applied_as / applied_ref (FR-7)
+```
+
+### Policy-suggestion mode (story-005-005)
+
+```typescript
+// Writes an audit row + sets applied_as; NEVER touches policy file or PolicyEngine state (FR-9, NFR-3).
+function applyAsPolicySuggestion(deps: { lessonStore: LessonStore; audit: AuditLog },
+                                 lessonId: number, suggestion: string): { auditRef: string };
+// audit.record({ action: 'policy_suggestion', detail: { lessonId, suggestion } })
+// lessonStore.markApplied(lessonId, 'policy_suggestion', auditRef)
+```
+
+### proposeNextEpic (story-005-006) — `packages/loom-core/src/planner/proposeNextEpic.ts`
+
+```typescript
+interface ProposeDeps {
+  lessonStore: LessonStore;
+  opportunityStore: OpportunityStore;
+  refiner: BriefRefiner;
+  planner: Planner;
+  epicStore: EpicStore;
+  audit: AuditLog;
+  minBriefQualityScore: number;
+}
+
+// EXPLICIT trigger only. Exactly one batched LLM call (BriefRefiner) on the happy path.
+async function proposeNextEpic(deps: ProposeDeps, opts?: { topLessons?: number; topOpps?: number })
+  : Promise<{ ok: true; epicId: string } | { ok: false; critique: BriefRefinement }>;
+```
+
+Pipeline (a generalization of `scopeOpportunity.ts`):
+1. Rank lessons by **recency + category frequency** (ADR-006), take top-N.
+2. Take top-M open opportunities via `opportunityStore.listRanked({ status: 'open', limit })`.
+3. Compose a brief from both → `refiner.refine(rough)` → `evaluateBriefGate(refinement, minBriefQualityScore)`.
+4. On pass: `planner.run(brief)` → set `epicStore.setProposedBy(epicId, 'loom')`; epic stays `planned` + `manual`.
+5. Audit `epic_proposed`. The epic surfaces in `GET /api/inbox` as a `plan_approval` entry, frozen until human approval.
+
+### Surfaces (story-005-006 / story-005-007)
+
+```typescript
+// CLI:  packages/loom-cli/src/commands/propose.ts
+program.command('propose').action(async () => runPropose());
+
+// MCP:  loom_propose in TOOL_DEFINITIONS + HANDLERS (input: {}, returns { ok, epicId })
+
+// Web:  packages/loom-web/src/server/routes/lessons.ts
+//   GET /api/lessons  -> read-only, federated; NO token required when readOnly (accessGuard)
+type LessonsResponse = {
+  lessons: { id: number; epic_id: string; category: string; observation: string;
+             general_rule: string; applied_as: string | null; applied_ref: string | null;
+             created_at: string }[];
+  proposals: { epic_id: string; title: string; created_at: string }[];   // proposed_by = 'loom', status = 'planned'
+  empty: boolean;                                                          // defined empty state (FR-12)
+};
+//   POST /api/propose (if button posts here) -> token-gated + audit-logged (NFR-5)
+```
+
+---
 
 ## Security Model
 
-This epic is observability-only and introduces no new trust boundary, network surface, or command execution. The relevant risk is **information disclosure via the default scope change**, and it cuts the right way:
+The flywheel introduces one genuinely new data-flow risk: **untrusted LLM output and epic telemetry flow into future worker prompts** (FR-7). The threats below are ranked by that flow.
 
-| Threat | Control |
-|---|---|
-| `loom_get_status` leaks fleet-wide state to an MCP caller scoped to one repo | FR-6 / story-005 flips the default to current-project; federation becomes explicit opt-in. This *reduces* default disclosure. |
-| `epic_pr_url` exposes an internal PR link | Same trust level as the existing `agents.pr_url` already surfaced; no new boundary. |
-| `error` column leaks an infra stack trace to status surfaces | Store the `(err as Error).message` (already the planner's convention at `Planner.ts:153`), not the full stack; renderers print it verbatim, so keep it a message string. |
+| # | Threat | Control |
+|---|---|---|
+| T-1 | **Lesson-as-injection.** A malformed or adversarial `general_rule`/`observation` is injected into a future worker's prompt and steers it (e.g. "ignore the policy engine"). | Lessons are injected as a clearly-delimited, *advisory* "Lessons from prior epics" context block — never as system instructions. The policy engine remains structural (`loom guard check` exits non-zero regardless of LLM output) so no lesson text can authorize a forbidden command. Every injected lesson is operator-visible on the flywheel board and stamped `applied_ref`, giving a human audit trail. |
+| T-2 | **Telemetry poisoning of the extractor.** Worker `log_tail`/`review_summary` containing crafted text manipulates the lesson-extractor. | Telemetry is loom's own audit/trace data (lower trust radius than external input), sent as the *user* message while SKILL.md is the cached *system* prefix — the model's role boundary is preserved. Output is zod-validated; malformed output triggers one repair then skip (FR-4). |
+| T-3 | **Auto-execution / silent governance drift.** A proposed epic runs, or a policy suggestion mutates policy, without human consent. | `proposeNextEpic` is reachable **only** from explicit CLI/MCP/button entry points; proposed epics land `planned` + `manual`, frozen. `applyAsPolicySuggestion` writes an audit row and `applied_as='policy_suggestion'` only — it has no handle to the policy file or `PolicyEngine`. A structural test (NFR-3) asserts no `setInterval`/`setTimeout`/cron/auto-approve path references the retro or propose code. |
+| T-4 | **Finalize compromise.** A retro error corrupts or blocks epic finalization. | `AutoRetrospective.run` is the **last** finalize step, wrapped in a catch that records `auto_retro_skipped` and swallows the error (NFR-1). It performs no merge/push/status writes. |
+| T-5 | **Unauthorized mutation via new web routes.** | `GET /api/lessons` is read-only (passes `accessGuard` without a token only in read-only mode). Any new mutating route (`POST /api/propose`) is token-gated by the centralized `accessGuard` middleware and explicitly calls `audit.record()` (NFR-5). |
 
-No changes to the policy engine, git push gating (`allowed_remotes`), or worktree isolation — all explicitly out of scope.
+All new mutations (`epic_proposed`, `policy_suggestion`, `lesson` application, `auto_retro_skipped`) are written to `audit_log` before returning, per the project-wide logging invariant.
+
+---
 
 ## ADR Log
 
-### ADR-1 — `finalize_phase` is a second status overlay, not a generalized phase column
-- **Decision.** Add a dedicated nullable `finalize_phase TEXT` column and a `FinalizePhase` union type, parallel to the existing `planning_phase`/`PlanningPhase`.
-- **Context.** Both `planning` and `finalizing` are "a status with a sub-phase the operator wants to see." A generic `phase` column could serve both.
-- **Rationale.** The planning overlay is already shipped and understood; a second one of identical shape is the lowest-surprise path and lets story-003's renderer treat the two symmetrically (`status==='planning' ? planning_phase : status==='finalizing' ? finalize_phase`). A generic column would force a discriminated union and risk a planning value leaking into a finalize render.
-- **Trade-off.** Two near-duplicate columns + transition method sets. Accepted: the lifecycles are independent and the duplication is shallow.
+### ADR-001 — Auto-retro hooks the finalize *tail*, not the Supervisor done-gate
+- **Decision.** Invoke `AutoRetrospective.run(epicId, status)` from the end of `EpicFinalizer.finalize()`, after the `epic_finalize` audit row, for both `done` and `failed`.
+- **Context.** The terminal transition is written by the Supervisor's done-gate, but `EpicFinalizer` is the single place where all sacred writes (merge, PR, audit) have provably completed. We need one auditable call-site that fires on both terminal statuses.
+- **Rationale.** A single, last, wrapped call-site makes "finalize is sacred" reviewable in one diff and one test. Placing it after the final audit row guarantees nothing the retro does can reorder or block a finalize write.
+- **Trade-off.** The retro sees the epic *as finalized*; it cannot influence finalize behavior (by design). If `failed` epics finalize through a different path than `done`, that path must also call `run()` — accepted as an explicit wiring cost over a hidden global hook.
 
-### ADR-2 — `FinalizeResult.status` maps to lifecycle, but `done` is gated on `epic_pr_url`, not on status alone
-- **Decision.** Keep `finalize()`'s existing `FinalizeResult` return (`skipped|merged|partial|failed|gated`) and map each to a terminal epic status; render `done` only when `epic_pr_url` is non-null.
-- **Context.** `finalize()` has six early-return paths (per-story skip, no succeeded stories, all-conflict, gate-block, push-gate confirm, no-remote, remote-not-allowed) plus the happy PR path. Several are *legitimately PR-less successes* (push-gate confirm, no remote configured, remote not allowed).
-- **Rationale.** Mapping table the implementer must honor:
+### ADR-002 — Evolve the `Lesson` schema to the FR-6 column set
+- **Decision.** Redefine `Lesson` in `findings/lesson.ts` to `{category, observation, root_cause?, general_rule, evidence?, epic_id, applied_as, applied_ref, created_at}`, splitting LLM-owned from handler-owned fields. Drop the provisional `kind/summary/context` shape.
+- **Context.** The existing schema and FR-6's table columns are incompatible. ADR-001 *in that file* already declared the schema provisional "until the lesson store lands." Two schemas for one concept would force a lossy mapping on every read and write.
+- **Rationale.** One shape, validated once, persisted verbatim. The `category` field doubles as the keyword-match axis (FR-8), so the storage shape and the matching mechanism share a field instead of duplicating intent.
+- **Trade-off.** Any code referencing the old `kind` enum breaks and must be updated in this epic. We lose the worked-well/did-not-work/surprise axis as a typed enum; if that axis proves useful it can return as a constrained `category` vocabulary later.
 
-  | FinalizeResult | finalize_phase progression | terminal epic status |
-  |---|---|---|
-  | happy path (PR opened) | merging→gate→review→pushing→opening_pr | `done` (after `recordPrUrl`) |
-  | `merged`/`partial`, push-gate `confirm` | merging→gate→review | `done` *without* PR URL is wrong → land terminal-but-not-done (keep `in_progress` or a defined "merged-local" reason) |
-  | `merged`/`partial`, no remote / remote-not-allowed | merging→gate→review→pushing | terminal non-`done` (PR-less success: do NOT strand) |
-  | `gated` (block mode) | merging→gate | `in_progress` (existing behavior — unchanged) |
-  | `skipped` | none | unchanged (no stories / per-story) |
-  | `failed` (push failed, PR create failed) | up to pushing/opening_pr | `failed` with `error` |
+### ADR-003 — Stamp handler-owned fields *before* the zod parse
+- **Decision.** In `LessonExtractor.extract`, merge `epic_id`, `created_at`, and null `applied_*` into each raw model object *before* calling `Lesson.parse`. The lesson-extractor SKILL.md instructs the model to omit these fields.
+- **Context.** This is the exact reviewer bug fixed in commits #7/#9: validating before injecting `source` rejected every real finding on a `Required` error, silently degrading both reviewers to warn-and-continue.
+- **Rationale.** The handler *owns* provenance fields; the model should not invent them. Stamping pre-parse means a correct, field-less model response always validates. A regression test (FR-2) sends a field-less response and asserts the parse succeeds — a direct guard against re-introducing the reviewer bug.
+- **Trade-off.** The schema must mark handler-owned fields required-after-stamp, so the schema alone can't validate a raw model response — validity is defined only post-stamp. Accepted: the stamping step is a single, tested chokepoint.
 
-- **Trade-off.** The PR-less-but-successful paths don't reach `done`. We accept that `done` now strictly means "PR exists" — the whole point of FR-1 — and surface the PR-less success via the finalizer's `note`/`reason` rather than a misleading `done`.
+### ADR-004 — Keyword/area matching for lesson relevance, no semantic layer
+- **Decision.** `selectLessonsForStory` ranks lessons by token-overlap between `lesson.category + general_rule` and `story.title + description + epicTitle`; take top-K (default 3). No embeddings, no LLM.
+- **Context.** FR-8 is the riskiest under-specified seam and explicitly scopes v4.0 to keyword/area matching; semantic matching is out of scope.
+- **Rationale.** Deterministic matching is testable, free, and adds zero latency to worker assembly. `category` is authored by the extractor specifically to be a clean match key, so overlap quality is controllable via the SKILL.md prompt rather than a model.
+- **Trade-off.** Synonyms and paraphrases miss (a lesson about "migrations" won't match a story phrased as "schema upgrade"). Acceptable at v4.0 scale; the seam is isolated in one function so a semantic ranker can replace it without touching callers.
 
-### ADR-3 — Enforce the no-false-done invariant by write ordering, not a DB trigger
-- **Decision.** Persist `epic_pr_url` *before* writing `status='done'`, both via synchronous `better-sqlite3` statements.
-- **Context.** The invariant is "zero `done` readings precede a recorded PR URL."
-- **Rationale.** Synchronous SQLite writes give a total order for free; a crash between the two leaves `finalizing`/terminal-non-done, which is the honest state. A CHECK constraint or trigger would couple schema to lifecycle and complicate the additive migration.
-- **Trade-off.** The invariant lives in code (story-002), not the schema, so a future writer could violate it. Mitigated by the co-located finalizer test asserting `done ⇒ epic_pr_url != null`.
+### ADR-005 — Single `applied_as`/`applied_ref` columns; audit log is the history
+- **Decision.** The `lessons` row carries only the **latest** application (`applied_as`, `applied_ref`). Every application also writes an audit row, which is the authoritative N-application history.
+- **Context.** FR-6 mandates exactly one `applied_as`/`applied_ref` pair, but a lesson can be injected into many workers and also raised as a policy suggestion.
+- **Rationale.** Keeps the table to the mandated columns while preserving full history where loom already keeps history. The flywheel board reads the latest column for the at-a-glance view and can drill into the audit log for "where applied."
+- **Trade-off.** The row alone understates reuse (shows one application, not all). The board must join the audit log to show complete application history — accepted to honor the FR-6 column contract.
 
-### ADR-4 — `failed` is DB-only; the plan-time `EpicYamlSchema.status` enum is not extended
-- **Decision.** Add `failed` to the runtime `EpicStatusSchema` only; leave `EpicYamlSchema.status` as `planned|approved|in_progress|done|rejected`.
-- **Context.** `Planner.run()` currently records an infra-killed run as `rejected` (Planner.ts:153) — conflating a crash with a human decline (FR-5).
-- **Rationale.** Infra failure is a runtime fact, never something a planner would write into an epic YAML. Keeping the two enums distinct preserves the YAML as a pure plan artifact and matches the existing `[ASSUMPTION]`.
-- **Trade-off.** Two status enums to keep mentally separated. Accepted: they describe different lifecycles (plan-time vs runtime).
-
-### ADR-5 — DAG-accurate completion copy is computed by the Supervisor and passed to the worker, not derived in the worker
-- **Decision.** The Supervisor (which holds the epic's full story set) computes `hasDependents` and passes it on `WorkerAssignment`; `BaseCliWorker.run()` only *consumes* `{ commitCount, hasDependents }` to phrase the summary.
-- **Context.** `BaseCliWorker` sees only its own `assignment.story` (with that story's own `dependencies[]`), not who depends on *it*. "Terminal vs has-dependents" is a property of the DAG, which only the Supervisor has.
-- **Rationale.** Putting the DAG lookup in the worker would force every worker backend (claude-code, cursor-cli, mock) to re-load and topo-analyze the epic YAML — duplicated logic, three places to get wrong. The Supervisor already topo-sorts (`topoSort` in EpicFinalizer; the supervisor builds the task graph).
-- **Trade-off.** One new optional field on the `WorkerAssignment` contract (a cross-cutting interface). Accepted: it's additive and optional, so the mock worker and bench path are unaffected when unset.
-
-### ADR-6 — `loom_get_status` default flips to current-project; federation becomes explicit
-- **Decision.** Change the default scope from federate-all to current-project; add an explicit opt-in arg for federation.
-- **Context.** The handler currently scans the current project *then every registered peer* by default (handlers.ts:430–438), and the tool description advertises fleet-wide federation as the headline behavior.
-- **Rationale.** An automation polling for "this project's status" gets one clean row per story and never accidentally pulls fleet-wide state (FR-6). This is a behavior change to a shipped tool, hence an ADR.
-- **Trade-off.** Breaking change for any caller relying on the federate-by-default behavior. Mitigated: the opt-in arg restores it, and `registry.ts`'s tool description + `docs/capabilities.md` (story-006) must document the new default in the same epic.
-
-### ADR-7 — `loom run` reads the PR URL from `FinalizeResult.url`, not from a re-query
-- **Decision.** `run.ts` prints the epic PR URL from the value the finalizer already returns (`FinalizeResult.url`), replacing the "Run `loom status` for PR links" fallback (run.ts:469).
-- **Context.** `runRun` calls `supervisor.run()`, which calls `finalize()` internally; the URL is captured at `EpicFinalizer.finalize()` (line 593) but not currently threaded back to the CLI tail.
-- **Rationale.** The URL of record is `epics.epic_pr_url` once story-002 persists it; the cleanest reader path for `loom run` is to query the epic row after `supervisor.run()` returns (single source of truth) rather than thread a new field through `SupervisorRunResult`. This keeps the run-result contract stable and makes the CLI a pure reader (Constraint 2).
-- **Trade-off.** One extra `EpicStore.get()` per processed epic at run end. Negligible cost; avoids widening the supervisor↔CLI result contract.
+### ADR-006 — Proposal ranking = recency + category frequency, reusing `scopeOpportunity`
+- **Decision.** `proposeNextEpic` ranks lessons by recency plus category frequency, folds in top open opportunities, and drives them through `BriefRefiner → evaluateBriefGate → Planner.run` — the same pipeline `scopeOpportunity.ts` already uses — then sets `proposed_by = 'loom'`.
+- **Context.** FR-10 needs a brief built from lessons + opportunities that lands a gated `planned` + `manual` epic. The opportunity-scoping path already does the brief→gate→planner half end-to-end.
+- **Rationale.** Reusing the proven pipeline means the gate, the `planned`/`manual` defaults, and the inbox surfacing are inherited, not reimplemented. A frequency+recency heuristic needs no scoring model, honoring the cost and no-ML constraints.
+- **Trade-off.** Frequency-weighted ranking amplifies whatever category is currently noisiest, which may not be the most valuable. Accepted for v4.0; if the flywheel view turns noisy (the flagged dedup/retention risk), ranking and a retention policy are the first follow-ups.

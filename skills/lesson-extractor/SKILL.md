@@ -1,129 +1,137 @@
 ---
 name: lesson-extractor
-description: Extract reusable lessons (worked-well, did-not-work, surprise) from a completed story transcript, each with the context that makes it actionable later.
+description: Extract reusable lessons from a completed epic's telemetry — decision traces, agent summaries, and audit events — each with the context that makes it actionable on future stories.
 ---
 
-> **PROVISIONAL SCHEMA — pending Epic D.** The `lessons` output shape defined
-> below is provisional. It may change once Epic D wires a consumer (a lesson
-> store and retrieval path) and learns what that consumer actually needs. Treat
-> the field set as unstable: only the `kind` axis (`worked-well` /
-> `did-not-work` / `surprise`) is expected to remain. This marker is the sole
-> backward-compatibility promise this skill makes — do not depend on the rest
-> of the shape until Epic D ratifies it.
+> **PROVISIONAL SCHEMA — ratified by epic-005 (Loom Flywheel), schema v18 (story-005-001).**
+> The `lessons` output shape below is the FR-6 column set finalised in epic-005.
+> LLM-owned fields (`category`, `observation`, `root_cause`, `general_rule`, `evidence`)
+> are the stable contract; handler-owned fields (`epic_id`, `applied_as`, `applied_ref`,
+> `created_at`) are stamped by the caller before persisting and must NOT appear in the
+> model's output. The `kind`/`summary`/`context` shape from earlier PROVISIONAL drafts
+> is removed; `category`/`observation`/`general_rule` are the stable axes going forward.
 
 # Lesson Extractor
 
-Read a completed story's transcript and distill the durable lessons: what worked
-well, what did not, and what was surprising. Each lesson carries the context
-that makes it reusable on a future story, and optionally a recommended action.
+Read a completed epic's telemetry and distill durable lessons: what patterns
+worked, what failed, and what was surprising. Each lesson carries the context
+that makes it reusable on a future story.
 
-This is a **callable, non-interactive** skill. You are handed a single story's
-transcript and you return structured JSON. You never pause for input, never
+This is a **callable, non-interactive** skill. You are handed an `EpicTelemetry`
+payload and you return structured JSON. You never pause for input, never
 facilitate a discussion, and never read anything outside the payload you are
 given.
 
 ## Input
 
-You receive a JSON object:
+You receive a JSON object representing the epic's execution telemetry:
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `story_id` | string | The completed story's id (provenance only). |
-| `epic_id` | string | The story's epic id (provenance only). |
-| `transcript` | string | The full record of the story's execution: dev notes, decisions, review feedback, test runs, failures, and outcomes. |
+| `epic_id` | string | The completed epic's id (provenance only). |
+| `final_status` | `"done"` \| `"failed"` | How the epic ended. |
+| `decision_traces` | array | Agent reasoning events captured during the epic. |
+| `agents` | array | Per-story agent records (story_id, review_summary, log_tail). |
+| `audit_tail` | array | Recent audit log rows for the epic's agents. |
 
-The transcript is your **only** source. Do not read story files, configuration,
-or any other repository path to supplement it — operate solely on the text you
-were handed.
+The payload is your **only** source. Do not read story files, configuration,
+or any repository path — operate solely on the data you were handed.
 
-## Output schema (PROVISIONAL — pending Epic D)
+## Output schema (FR-6 — ratified by epic-005)
 
 Return a single JSON object with one key, `lessons`: an array of zero or more
-lesson objects.
+lesson objects. The model must return **only** the LLM-owned fields; do NOT
+include `epic_id`, `created_at`, `applied_as`, or `applied_ref` — those are
+stamped by the handler before schema validation.
 
 ```json
 {
   "lessons": [
     {
-      "kind": "worked-well | did-not-work | surprise",
-      "summary": "required, non-empty — the lesson in one sentence",
-      "context": "required, non-empty — the situation that makes it reusable: what was being done, what triggered it, what to watch for",
-      "recommended_action": "optional — the concrete thing to do (or avoid) next time"
+      "category":     "required — area tag, lowercase-hyphen (e.g. 'schema-migration', 'test-coverage')",
+      "observation":  "required — what was observed in the data",
+      "general_rule": "required — the reusable rule, stated so a future worker can apply it without this epic's context",
+      "root_cause":   "optional — the underlying cause, when clear from the data",
+      "evidence":     "optional — a direct quote or pointer into the telemetry that grounds the lesson"
     }
   ]
 }
 ```
 
-Field rules (mirror the `Lesson` contract in
+Field rules (mirror the `LessonContent` contract in
 `packages/loom-core/src/findings/lesson.ts`):
 
-- `kind` — exactly one of `worked-well`, `did-not-work`, `surprise`.
-- `summary` — required, non-empty string.
-- `context` — required, non-empty string.
-- `recommended_action` — optional; include it only when there is a concrete action.
-- Emit `{ "lessons": [] }` when the transcript carries no durable lesson. An
+- `category` — required, non-empty, lowercase-hyphen tag (e.g. `schema-migration`,
+  `test-coverage`, `test-isolation`, `auth`, `api-contract`). Used for retrieval
+  matching; prefer specificity over generality.
+- `observation` — required, non-empty. What was actually observed in the
+  telemetry — concrete, specific, past-tense.
+- `general_rule` — required, non-empty. A forward-looking rule that a future
+  worker can apply without reading this epic. Make the area keyword explicit
+  (e.g. "When migrating a schema…", "In auth flows…"). This is the load-bearing
+  field for retrieval.
+- `root_cause` — optional. The underlying reason, when the telemetry makes it
+  clear. Skip if speculative.
+- `evidence` — optional. A short direct quote or pointer (e.g. "audit row
+  `lesson_extractor_called` at …") that grounds the lesson. Skip if the
+  observation is self-evident from the data.
+- Emit `{ "lessons": [] }` when the telemetry carries no durable lesson. An
   empty array is a valid, expected result — do not invent lessons to fill it.
 
 ## How to extract lessons
 
-Scan the transcript for signal in these areas (ported from the retrospective's
-deep-story analysis) and convert each durable finding into one lesson:
+Scan the payload for signal in these areas and convert each durable finding
+into one lesson:
 
-- **Struggles and rework** → usually `did-not-work`. Where the work stalled, was
-  redone, or took an unexpected path; technical decisions that were reversed;
-  complexity that was underestimated.
-- **Review feedback** → `did-not-work` or `worked-well`. Recurring feedback
-  themes, quality or architectural issues flagged, and exemplary work explicitly
-  praised.
-- **Explicit takeaways** → any `kind`. "Aha" moments, breakthroughs, and things
-  the author said they would do differently.
-- **Technical debt incurred** → `did-not-work`. Shortcuts taken and why; debt
-  that will affect later work.
-- **Testing and quality** → `worked-well` or `surprise`. Testing approaches that
-  paid off, bug patterns, and coverage gaps discovered.
-- **Surprises** → `surprise`. Anything that violated an expectation: a tool
-  behaving differently than documented, a dependency interaction, an assumption
-  proven wrong.
+- **Struggles and rework** — where work stalled, was redone, or took an unexpected
+  path; technical decisions that were reversed; complexity underestimated.
+- **Review feedback themes** → recurring issues or quality patterns explicitly flagged.
+- **Explicit takeaways** — "aha" moments, breakthroughs, and things the agent
+  logs suggest would be done differently.
+- **Agent decisions that pivoted** → reasoning shifts visible in decision traces.
+- **Audit patterns** → repeated actions, unexpected denials, infra retries.
+- **Technical debt incurred** — shortcuts taken and why; debt that affects later work.
+- **Testing and quality signals** → patterns in review_summary or log_tail.
+- **Surprises** → anything that violated an expectation: a tool behaving
+  differently than documented, a dependency interaction, an assumption proven wrong.
 
-Each lesson must be **durable and reusable** — true beyond this one story. Drop
-anything purely incidental to this transcript (a one-off typo, a transient
-environment hiccup) that carries no forward-looking value.
+Each lesson must be **durable and reusable** — true beyond this one epic. Drop
+anything purely incidental that carries no forward-looking value.
 
-Write `context` so a future worker who never saw this story can tell whether the
-lesson applies to their situation. Prefer specifics ("SQLite WAL mode needed a
-PRAGMA on every connection, not just at init") over generalities ("database
-setup was tricky").
+Write `general_rule` so a future worker who never saw this epic can tell whether
+the lesson applies to their situation. Prefer specifics over generalities.
 
 ## Operating constraints
 
-- **Non-interactive.** Never ask a question, never pause for confirmation, never
-  block on input. Produce the JSON and stop.
-- **Self-contained.** The transcript is the whole input. Do not read any
-  repository path, configuration, persona, or runtime state to supplement it.
+- **Non-interactive.** Never ask a question, never pause, never block on input.
+- **Self-contained.** The telemetry is the whole input. Do not read any repository
+  path or runtime state.
 - **JSON only.** Your entire output is the JSON object described above, with no
   surrounding prose.
 - **No blame.** Lessons are about systems and decisions, not individuals.
+- **LLM-owned fields only.** Do not include `epic_id`, `applied_as`, `applied_ref`,
+  or `created_at` in your output — these are stamped by the caller.
 
 ## Example
 
-For a transcript where a worker discovered that a shared schema rejected an
-empty array until a default was set, and where running only the changed
-package's tests sped up iteration:
+For an epic where a shared schema rejected valid input until a default was set,
+and where scoping tests to one package sped up iteration:
 
 ```json
 {
   "lessons": [
     {
-      "kind": "surprise",
-      "summary": "The shared findings schema rejected an empty array until a default was set.",
-      "context": "Emitting an empty collection against the output schema; the field was required with no default, so validation failed on the empty case.",
-      "recommended_action": "When a skill can legitimately return an empty collection, give the schema field an explicit default or confirm it accepts an empty array."
+      "category": "schema-migration",
+      "observation": "The shared findings schema rejected an empty lessons array until an explicit default was added.",
+      "general_rule": "When a schema field can legitimately hold an empty collection, give it an explicit default or confirm the zod definition accepts an empty array before wiring consumers.",
+      "root_cause": "Zod's z.array() has no default; the field was required and the empty case was not tested.",
+      "evidence": "audit row lesson_extractor_called followed immediately by a ZodError on lessons: []"
     },
     {
-      "kind": "worked-well",
-      "summary": "Running only the changed package's test script kept the iteration loop fast.",
-      "context": "The repo's full test command compiles and runs every package; scoping to the single package under change avoided that cost while iterating.",
-      "recommended_action": "Iterate with the narrowest test selector, then run the full suite once before declaring done."
+      "category": "test-coverage",
+      "observation": "Running only the changed package's test script kept the iteration loop fast.",
+      "general_rule": "While iterating on a single package, scope the test command to that package; run the full suite once before declaring done.",
+      "evidence": "log_tail: 'node --test dist-test/test/findings/*.test.js — 1.3s vs full suite 28s'"
     }
   ]
 }

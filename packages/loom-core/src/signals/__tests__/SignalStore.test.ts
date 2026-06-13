@@ -8,14 +8,14 @@ import type { Signal } from '../types.js';
 
 // ─── Migration ────────────────────────────────────────────────────────────────
 
-describe('Database migration v17', () => {
-  it('applies SCHEMA_VERSION 17 and creates signals table on a fresh DB', () => {
+describe('Database migration v17/v18', () => {
+  it('applies current SCHEMA_VERSION and creates signals table on a fresh DB', () => {
     const db = createDatabase(':memory:');
 
     const row = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(row.version, 17);
+    assert.equal(row.version, 18);
 
     const tbl = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='signals'")
@@ -117,7 +117,7 @@ describe('Database migration v17', () => {
     const ver = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(ver.version, 17);
+    assert.equal(ver.version, 18);
 
     const tbl = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='signals'")
@@ -132,14 +132,14 @@ describe('Database migration v17', () => {
     assert.equal(epic!.title, 'A Pre-v17 Epic');
   });
 
-  it('runMigrations is idempotent on a v17 DB', () => {
+  it('runMigrations is idempotent on a current DB', () => {
     const db = createDatabase(':memory:');
     // Running a second time must not throw or corrupt the version row.
     assert.doesNotThrow(() => runMigrations(db));
     const ver = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(ver.version, 17);
+    assert.equal(ver.version, 18);
   });
 });
 

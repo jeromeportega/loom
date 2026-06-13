@@ -3,6 +3,7 @@ import { minimatch } from 'minimatch';
 import type Database from 'better-sqlite3';
 import { EpicStore, AgentStore, AuditLog } from '../state/index.js';
 import type { Story } from '../types.js';
+import type { AutoRetrospective } from './AutoRetrospective.js';
 import { EpicYamlSchema } from '../types.js';
 import { gitSafe, defaultRemote, remoteUrl } from './git.js';
 import { WorktreeManager } from './WorktreeManager.js';
@@ -106,6 +107,13 @@ export interface EpicFinalizerOptions {
    * throw or any error is swallowed (the hint is advisory, never blocking).
    */
   openEpicPrs?: (epicBranch: string) => string[];
+  /**
+   * Optional auto-retrospective. When set, finalize calls run() after each
+   * epic_finalize audit row and after the failed (all-conflicts) exit path.
+   * Best-effort: any error from run() is caught here and recorded as
+   * `auto_retro_skipped` so the finalize result is never affected (ADR-001).
+   */
+  autoRetro?: AutoRetrospective;
 }
 
 /** Subset of policy fields the finalizer re-reads at finalize entry. */
@@ -441,6 +449,9 @@ export class EpicFinalizer {
     if (merged.length === 0) {
       // Nothing integrated — in rolling mode tear down the empty branch+worktree.
       if (this.rolling) this.integration.removeBranch(epicId);
+      // Best-effort retro on the failed path (ADR-001).
+      try { await this.opts.autoRetro?.run(epicId, 'failed'); }
+      catch (err) { audit.record({ action: 'auto_retro_skipped', command: epicId, allowed: true, detail: { reason: String(err) } }); }
       return {
         status: 'failed',
         conflicted,
@@ -563,6 +574,9 @@ export class EpicFinalizer {
           push_gate: 'confirm',
         },
       });
+      // Best-effort retro after epic_finalize is durable (ADR-001).
+      try { await this.opts.autoRetro?.run(epicId, 'done'); }
+      catch (err) { audit.record({ action: 'auto_retro_skipped', command: epicId, allowed: true, detail: { reason: String(err) } }); }
       // PR-less success (ADR-2): a successful run that intentionally never
       // opened a PR. Persist the reason so the row explains itself; the
       // Supervisor's done-gate leaves the status as-is (epic_pr_url is null),
@@ -711,6 +725,9 @@ export class EpicFinalizer {
       allowed: true,
       detail: { status: conflicted.length ? 'partial' : 'merged', merged, conflicted, prUrl },
     });
+    // Best-effort retro after epic_finalize is durable (ADR-001).
+    try { await this.opts.autoRetro?.run(epicId, 'done'); }
+    catch (err) { audit.record({ action: 'auto_retro_skipped', command: epicId, allowed: true, detail: { reason: String(err) } }); }
 
     if (!prUrl) {
       // PR opened but no URL captured — leave a terminal-but-not-done state.
