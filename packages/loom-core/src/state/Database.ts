@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -123,6 +123,48 @@ CREATE TABLE IF NOT EXISTS decision_traces (
 
 CREATE INDEX IF NOT EXISTS idx_decision_traces_agent ON decision_traces(agent_id);
 CREATE INDEX IF NOT EXISTS idx_decision_traces_story ON decision_traces(story_id);
+
+-- v17: signals — scanner-emitted work items with UPSERT-on-key dedup semantics.
+-- Rows are never deleted (ADR-004); stale status marks un-re-observed signals.
+CREATE TABLE IF NOT EXISTS signals (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  key          TEXT NOT NULL UNIQUE,
+  source       TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  title        TEXT NOT NULL,
+  detail       TEXT,
+  evidence_url TEXT,
+  weight       REAL NOT NULL DEFAULT 1,
+  status       TEXT NOT NULL DEFAULT 'open',
+  first_seen   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  metadata     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status);
+CREATE INDEX IF NOT EXISTS idx_signals_source ON signals(source);
+
+-- v17: opportunities — LLM-clustered signal groups ranked by score.
+-- scoped_epic_id set when an operator promotes an opportunity to a planned epic.
+-- Rows are never deleted (ADR-004); status tracks open/scoped/dismissed lifecycle.
+CREATE TABLE IF NOT EXISTS opportunities (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  key             TEXT NOT NULL UNIQUE,
+  title           TEXT NOT NULL,
+  rationale       TEXT NOT NULL,
+  impact          REAL NOT NULL,
+  effort          REAL NOT NULL,
+  confidence      REAL NOT NULL,
+  score           REAL NOT NULL,
+  rank            INTEGER NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'open',
+  signal_count    INTEGER NOT NULL DEFAULT 0,
+  member_keys     TEXT NOT NULL DEFAULT '[]',
+  evidence        TEXT NOT NULL DEFAULT '[]',
+  scoped_epic_id  TEXT REFERENCES epics(id),
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 let _db: Database.Database | null = null;
