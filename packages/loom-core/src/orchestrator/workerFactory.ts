@@ -50,6 +50,8 @@ export interface WorkerFactoryOptions {
   handoff?: 'off' | 'telemetry' | 'summarized';
   /** policy.agents.phases — when 'on', run stories as implement+verify spawns. */
   phases?: 'off' | 'on';
+  /** policy.agents.worker_auth — 'session' strips inherited ANTHROPIC_API_KEY from workers. */
+  workerAuth?: 'inherit' | 'session';
   /** loom state database — required for the Review Forge orchestrated path (FR-6). */
   db?: Database.Database;
   /** LLM client — presence gates the Review Forge orchestrated path (FR-7). */
@@ -143,6 +145,7 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
       complexityMultipliers: opts.complexityMultipliers,
       handoff: opts.handoff,
       phases: opts.phases,
+      workerAuth: opts.workerAuth,
       reviewOrchestrator,
     });
   }

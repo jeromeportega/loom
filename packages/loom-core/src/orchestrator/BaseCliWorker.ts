@@ -172,6 +172,14 @@ export interface CliWorkerOptions {
    * bench baseline byte-identical.
    */
   phases?: 'off' | 'on';
+  /**
+   * policy.agents.worker_auth — when 'session', the worker spawn env strips
+   * ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN so the spawned CLI uses the
+   * operator's `claude login` session instead of an inherited API key. Lets
+   * an outer agent run on API credits while workers stay on the session.
+   * 'inherit' (default) leaves the parent env untouched.
+   */
+  workerAuth?: 'inherit' | 'session';
 }
 
 /** Legacy absolute cap used when neither absoluteCapMs nor timeoutMs is given. */
@@ -220,6 +228,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
   private contextNotesEnabled: boolean;
   private handoffEnabled: boolean;
   private phasesEnabled: boolean;
+  /** When true, strip inherited Anthropic API auth from the worker spawn env. */
+  private sessionAuth: boolean;
   /** Accumulated worker usage across the spawn (and its revisions). */
   private accumulatedUsage: WorkerUsage | undefined = undefined;
 
@@ -246,6 +256,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
     // resume. Set 'off' explicitly to opt out.
     this.handoffEnabled = (opts.handoff ?? 'telemetry') !== 'off';
     this.phasesEnabled = (opts.phases ?? 'off') === 'on';
+    this.sessionAuth = (opts.workerAuth ?? 'inherit') === 'session';
   }
 
   /**
@@ -348,6 +359,22 @@ export abstract class BaseCliWorker implements WorkerRunner {
     opts: SpawnOptions
   ): ChildProcessWithoutNullStreams {
     return spawn(bin, args, opts) as ChildProcessWithoutNullStreams;
+  }
+
+  /**
+   * Environment for the worker subprocess. With workerAuth='session' the
+   * inherited ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are removed so the
+   * spawned CLI falls back to the operator's `claude login` session rather
+   * than billing an inherited API key (e.g. the outer agent's credits). The
+   * default 'inherit' returns the parent env unchanged — byte-identical to
+   * the prior behaviour.
+   */
+  protected workerEnv(): NodeJS.ProcessEnv {
+    if (!this.sessionAuth) return process.env;
+    const env = { ...process.env };
+    delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+    return env;
   }
 
   /**
@@ -999,6 +1026,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: true,
+        env: this.workerEnv(),
       });
       if (typeof child.pid === 'number') onPid?.(child.pid);
 

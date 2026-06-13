@@ -436,6 +436,13 @@ export const PolicySchema = z.object({
       // and makes a crash mid-verify resumable from the committed implement
       // work. Default 'off' keeps the single-spawn bench baseline.
       phases: z.enum(['off', 'on']).default('off'),
+      // Worker subprocess auth. 'inherit' (default) passes the parent env
+      // through unchanged. 'session' strips ANTHROPIC_API_KEY /
+      // ANTHROPIC_AUTH_TOKEN from the worker spawn so the CLI falls back to
+      // the operator's `claude login` session — lets an outer agent run on
+      // API credits while workers stay on the session (NEVER put the key
+      // here; it lives in the outer agent's environment).
+      worker_auth: z.enum(['inherit', 'session']).default('inherit'),
     })
     .default({}),
   mcp: z
