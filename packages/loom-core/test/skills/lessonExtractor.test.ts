@@ -17,7 +17,7 @@ import {
   getSkillDefinition,
   registeredSkillNames,
 } from '../../src/skills/types.js';
-import { Lesson } from '../../src/findings/lesson.js';
+import { Lesson, LessonContent } from '../../src/findings/lesson.js';
 
 const SKILL_NAME = 'lesson-extractor';
 const LessonExtractorOutput = z.object({ lessons: z.array(Lesson) });
@@ -72,8 +72,6 @@ describe('lesson-extractor SKILL.md', () => {
 
   it('contains no interactive halts, WAIT-FOR-USER directives, or _bmad path reads', () => {
     const { raw } = readSkill();
-    // Hallmarks of the un-ported, interactive bmad-retrospective source. A
-    // headless, callable port must contain none of them.
     const forbidden = [
       'WAIT for',
       'HALT',
@@ -97,11 +95,10 @@ describe('lesson-extractor SKILL.md', () => {
     }
   });
 
-  it('carries a top-of-file PROVISIONAL marker that points at Epic D', () => {
-    const { raw, body } = readSkill();
+  it('carries a top-of-file PROVISIONAL marker that references epic-005', () => {
+    const { body } = readSkill();
     assert.ok(/PROVISIONAL/.test(body), 'body must contain a PROVISIONAL marker');
-    assert.ok(/Epic D/.test(body), 'the marker must reference Epic D');
-    // "top-of-file": the marker precedes the main heading.
+    assert.ok(/epic-005/.test(body), 'the marker must reference epic-005');
     const markerAt = body.indexOf('PROVISIONAL');
     const headingAt = body.indexOf('# Lesson Extractor');
     assert.ok(markerAt >= 0 && headingAt >= 0, 'both marker and heading must be present');
@@ -109,19 +106,17 @@ describe('lesson-extractor SKILL.md', () => {
       markerAt < headingAt,
       'PROVISIONAL marker must appear before the # Lesson Extractor heading',
     );
-    void raw;
   });
 
-  it('documents the lessons JSON schema, matching the Lesson contract', () => {
+  it('documents the lessons JSON schema matching the FR-6 LessonContent contract', () => {
     const { body } = readSkill();
     assert.ok(/"?lessons"?/.test(body), 'must document the top-level `lessons` key');
-    // Every `kind` value the code schema allows must be documented.
-    for (const kind of Lesson.shape.kind.options) {
-      assert.ok(body.includes(kind), `schema doc must mention kind "${kind}"`);
+    // Every required FR-6 field must be documented in the SKILL.md body.
+    for (const field of Object.keys(LessonContent.shape)) {
+      assert.ok(body.includes(field), `schema doc must mention FR-6 field "${field}"`);
     }
-    for (const field of ['summary', 'context', 'recommended_action']) {
-      assert.ok(body.includes(field), `schema doc must mention field "${field}"`);
-    }
+    // The old kind/summary/context shape must not appear as field definitions.
+    assert.ok(!/"kind"/.test(body), 'FR-6 SKILL.md must not define a "kind" field');
   });
 });
 
@@ -164,42 +159,67 @@ describe('lesson-extractor registration & invocation', () => {
   });
 });
 
-describe('Lesson schema (PROVISIONAL — the shape this skill emits)', () => {
-  function validLesson() {
+describe('Lesson schema (FR-6 — ratified by epic-005)', () => {
+  function validLesson(): Record<string, unknown> {
     return {
-      kind: 'worked-well' as const,
-      summary: 'Targeted test runs kept iteration fast.',
-      context: 'The full suite recompiles every package; scoping avoided that cost.',
-      recommended_action: 'Run the narrowest selector while iterating.',
+      category: 'test-coverage',
+      observation: 'Targeted test runs kept iteration fast.',
+      general_rule: 'Scope the test command to the package under change while iterating.',
+      root_cause: 'Full suite recompiles every package.',
+      epic_id: 'epic-001',
+      created_at: new Date().toISOString(),
+      applied_as: null,
+      applied_ref: null,
     };
   }
 
-  it('accepts a valid lesson', () => {
+  it('accepts a valid FR-6 lesson', () => {
     assert.equal(Lesson.safeParse(validLesson()).success, true);
   });
 
-  it('accepts a lesson without the optional recommended_action', () => {
-    const { recommended_action, ...rest } = validLesson();
-    void recommended_action;
+  it('accepts a lesson without optional fields (root_cause, evidence)', () => {
+    const { root_cause, ...rest } = validLesson();
+    void root_cause;
     assert.equal(Lesson.safeParse(rest).success, true);
   });
 
-  it('rejects an unknown kind', () => {
+  it('rejects a lesson missing a required LessonContent field', () => {
+    const { general_rule, ...rest } = validLesson();
+    void general_rule;
+    assert.equal(Lesson.safeParse(rest).success, false);
+  });
+
+  it('rejects an empty category or observation', () => {
+    assert.equal(Lesson.safeParse({ ...validLesson(), category: '' }).success, false);
+    assert.equal(Lesson.safeParse({ ...validLesson(), observation: '' }).success, false);
+  });
+
+  it('rejects the old kind/summary/context shape (FR-6 schema evolution)', () => {
+    const oldShape = {
+      kind: 'worked-well',
+      summary: 'Tests passed.',
+      context: 'Ran the suite.',
+      recommended_action: 'Do it again.',
+    };
     assert.equal(
-      Lesson.safeParse({ ...validLesson(), kind: 'neutral' }).success,
+      Lesson.safeParse(oldShape).success,
       false,
+      'old kind/summary/context shape must be rejected by the FR-6 Lesson schema',
     );
   });
 
-  it('rejects an empty summary or context', () => {
-    assert.equal(Lesson.safeParse({ ...validLesson(), summary: '' }).success, false);
-    assert.equal(Lesson.safeParse({ ...validLesson(), context: '' }).success, false);
-  });
-
-  it('kind axis is exactly {worked-well, did-not-work, surprise}', () => {
-    assert.deepEqual(
-      [...Lesson.shape.kind.options].sort(),
-      ['did-not-work', 'surprise', 'worked-well'],
+  it('applied_as only accepts the two allowed enum values or null', () => {
+    assert.equal(
+      Lesson.safeParse({ ...validLesson(), applied_as: 'worker_guidance' }).success,
+      true,
+    );
+    assert.equal(
+      Lesson.safeParse({ ...validLesson(), applied_as: 'policy_suggestion' }).success,
+      true,
+    );
+    assert.equal(
+      Lesson.safeParse({ ...validLesson(), applied_as: 'unknown_value' }).success,
+      false,
     );
   });
 });
