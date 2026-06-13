@@ -200,3 +200,82 @@ matters, suggested fix, severity (S1 blocker / S2 friction / S3 polish).
   that parses `.loom/policy.yaml` against the schema and reports invalid enums
   with the allowed values + a nearest-match suggestion. Bonus: accept `on` as an
   alias for the single non-off enum where unambiguous.
+
+---
+
+## Epics B–E (autonomous run) — cross-cutting findings
+
+### THE headline pattern: "built but not wired" is SYSTEMIC, not a one-off
+
+- **[S1 — correctness] Three separate epics shipped a module that passed its
+  isolated tests but was never wired into the live path.** (1) epic-002 reviewers
+  were stub handlers; (2) epic-002 doc-distiller invoked-but-not-injected; (3)
+  **epic-003 built `routes/inbox.ts` + project-aware `routes/mutations.ts`, fully
+  tested in isolation, but `createApp()` never mounted them** — `GET /api/inbox`
+  was 404 in the real server and the old inline non-project-aware mutations stayed.
+  Every time, the green integration gate missed it because the story's test built
+  its OWN express app / asserted a static fixture, never the real `createApp`.
+  *Why it matters:* this is the dominant loom failure mode — a "done, green" epic
+  whose headline feature is dark. Only a human reading the runtime caught each one.
+  *Fix that worked:* a forcing acceptance criterion — **"a test MUST import the
+  real `createApp` and assert the route is served"** (NFR-4 in Signal Scout/
+  Flywheel briefs). Epic-004 and epic-005 wired everything correctly under that
+  rule. Recommend loom's QA persona auto-emit this bar for any epic adding a route
+  or activating a cross-story seam, plus the "integration-owner story" rule.
+
+### Reviewers took THREE compounding fixes before they worked (mock-hides-reality)
+
+- **[S2] A mock-based integration test gave false confidence three times.** The
+  reviewers' real-model failures were invisible until run against a live model:
+  (PR #7) SKILL.md bodies instructed BMAD-shaped JSON, not loom's schema;
+  (PR #9) the handler validated `ReviewerOutput` (requires `source`) BEFORE the
+  `.map()` that stamps `source`, so every finding failed on `source: Required`.
+  Each fix exposed the next because the mock always returned loom-shaped, source-ful
+  canned JSON. Confirmed working in epic-005 (12 real deduped findings, zero
+  warn_and_continue). *Fix:* when a skill calls a live model, at least one test
+  should feed REALISTIC model output (wrong-shaped, field-less, prose) — not the
+  canned happy-path the implementation was written against.
+
+### [S1 — gate] Integration gate false-negatives in its no-node_modules worktree
+- The block-mode gate runs `npm test` in a detached worktree with no
+  `node_modules`; in a monorepo, `@loom-ai/core` resolves to the MAIN repo's stale
+  dist, so any epic adding a new core export false-fails the gate (hit epic-003 —
+  `loom-mcp` couldn't find the new autonomy exports; PR withheld despite correct
+  code). *Fix that worked:* `policy.agents.test_command = "npm ci && npm test"` so
+  the gate installs the worktree's own workspace links first. epic-004/005/006
+  gates then passed. Better long-term fix: have the gate ensure a workspace install
+  in its worktree itself, rather than relying on the operator to set test_command.
+
+### [S2 — brief gate] `ready:false` persists at high scores; forcing is the only converge
+- Every epic brief scored 7–8/10 (≥ the 6 threshold) yet returned `ready:false`
+  because the refiner always finds *more* open questions — even after two rounds
+  of resolving them, it surfaces new (increasingly minor) ones. The only way to
+  proceed on a genuinely strong brief is `force:true`. Combined with the S2
+  "misleading verdict" item above: the gate conflates "score" and "ready," and
+  "ready" has no convergence floor. *Suggested fix:* once `score >= min` AND the
+  remaining questions are all non-blocking, return `ready:true` (or a
+  `ready:'with_assumptions'` state) instead of looping; or cap refinement rounds.
+  NOTE: the refiner's critiques were genuinely high-value (it caught the
+  opportunity-reconciliation gap in Signal Scout) — the issue is purely the
+  binary verdict never settling, not the critique quality.
+
+### What worked well (keep) — positives
+- **[S3] The QA pass (Tessa) is the highest-leverage knob.** Turning `qa_planning`
+  on (the tune-before-plan fix) made every subsequent epic carry per-story
+  "Verification bar"s that forced real-execution proof — directly preventing the
+  built-but-not-wired gap that the QA-less epic-001 plan let through. The
+  difference between epic-001's plan and epic-003/004/005's plans is stark.
+- **[S3] The self-learning loop demonstrably works.** Candidate skills generated in
+  epic-003 (`loom-orchestration-autonomy-modes`,
+  `loom-express-enumerated-route-access-test`) were canary-injected into a
+  later epic's stories (story-005-005) — loom learning across epics, unprompted.
+- **[S3] Rolling integration + bounded integrator + block gate held up** across
+  five multi-story epics with no silent story drops; the `integrating` status and
+  per-epic leases worked under real concurrency (up to 4 stories in parallel).
+
+### Cost data points (Sonnet workers + Opus planning, post worker-model fix)
+- epic-001 ~$25 (ran on Opus before the model fix); epic-003 ~$17; later epics on
+  Sonnet workers were cheaper per story. The worker-model fix (PR #3) was the
+  single biggest cost lever — without it the whole run would have been ~5x.
+  block-and-revise + phases=on roughly double per-story spend vs comment/off;
+  worth it for quality here, but a real dial to watch on build day.

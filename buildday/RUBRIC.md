@@ -11,7 +11,7 @@ range is stated.
 
 | Pts | Check | Evidence |
 |---|---|---|
-| 8 | Build + full test suite pass on main | output tails |
+| 8 | Build + `npm test` (Vitest) green on main — fast/deterministic, gate-safe; `npm run e2e` (Playwright golden path) green as the final smoke | output tails for both |
 | 8 | Every change traceable to a loom epic (planning artifacts + audit_log rows in the loom state) | epic IDs + queries |
 | 8 | **Privacy**: no real account numbers, balances, or third-party PII anywhere in git history or working tree of either repo | grep/scan commands run + results |
 | 6 | SESSION_LOG.md current, timestamped, interventions classified | file review |

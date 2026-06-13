@@ -49,10 +49,13 @@ no installable official Geist component library — see H1. Use shadcn/ui, not
 
 - Full path works on the deployed URL: drop receipt → line items → match →
   classify → queue → confirm → rollup updates.
-- Queue actions persist and propagate (test).
+- Queue actions persist and propagate — **Vitest integration against the real
+  route handlers** (the anti-stub "built AND wired" test, not a fixture app).
 - Public URL returns 200, serves ONLY demo-household data, no mutation
   routes without token.
-- Smoke test script for the deployed instance (curl → 200, asserts demo data).
+- One **Playwright** golden-path E2E (receipt → items → confirm → rollup) under
+  `npm run e2e` (NOT in the `npm test` gate) + a `curl` deploy smoke (→ 200,
+  asserts demo data).
 - Tests written first from the acceptance criteria above (red → green).
 
 ## Non-goals

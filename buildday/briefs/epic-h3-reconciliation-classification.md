@@ -67,7 +67,9 @@ product from transaction-level budgeting apps.
   store-credit refund that posts to the ledger without a bank line; net spend
   correct in both (test).
 - The dedup invariant + matcher tests are written FIRST (red → green) — this
-  is the headline invariant, so lead with its failing test.
+  is the headline invariant, so lead with its failing test. All Vitest unit
+  tests over pure reconciliation/classification logic — fast, deterministic,
+  gate-safe.
 - ≥2 insight flags compute correctly on the demo household (test).
 
 ## Non-goals

@@ -102,7 +102,9 @@ NOT in scope).
 - A real bank Excel export and a real Amazon order CSV ingest cleanly via CLI
   or script.
 - Schema supports H2/H3 needs (shared contract with those epics).
-- Tests: importer normalization, parser extraction, idempotency. Suite green.
+- Tests (Vitest): importer normalization, parser extraction, idempotency, +
+  integration that imports the real ingest route/service against a fresh
+  libSQL test DB. Suite green.
 - Tests written first from the acceptance criteria above (red → green).
 - No real data in git; `.gitignore` proves it from commit #1.
 
