@@ -1,206 +1,289 @@
-# Architecture: Guard Parser Redirection Correctness + Integration-Gate Command Preflight
+# Fleet Commander — Governance Layer Architecture
 
 ## Architecture Philosophy
 
-Four constraints drive every decision below:
+Fleet Commander is an *additive control plane* over loom's existing web, MCP, and core surfaces. Four constraints drive every decision below:
 
-1. **Fail-safe classification.** The metacharacter check is a denylist guarding invariant #1 (`loom guard check` exits non-zero for any forbidden command regardless of LLM output). The fix therefore works by *recognizing and removing* a closed set of known-safe redirection tokens before the existing blockers run — anything we don't positively recognize keeps its `&` and stays blocked. We accept false positives on exotic forms to make false negatives structurally impossible.
-2. **Advisory means structurally advisory.** Preflight returns data; it never calls `process.exit`, never throws into a run path, and is wired only to `console.warn`-class output in the CLI. There is no code path where preflight alone can stop a run (NFR-2).
-3. **One detection brain, many surfaces.** The gate's command-resolution logic currently lives as private methods on `IntegrationGate` (`detectCommand`, `findScopedTestDir`, `resolveDiffRange` in `packages/loom-core/src/orchestrator/IntegrationGate.ts`). It is extracted into a standalone module that the gate *delegates to*, so doctor, `loom epic`, `loom run`, and the gate all resolve the identical command by construction — not by parallel reimplementation.
-4. **Parallel-agent merge cleanliness.** Six stories land concurrently, and a sibling epic is concurrently extending `loom doctor`. New behavior goes in new files with single-line insertion points in existing files, so independent branches merge without conflict.
+1. **Byte-compatibility is non-negotiable (NFR-1, FR-14).** With no new column values and no new flags, the running system must behave identically to today. This forces additive-only schema migrations (`ALTER TABLE ... DEFAULT 'manual'`), defaulted code paths, and a guard that degrades to *exactly* the current `requireToken` behavior when read-only is off.
+2. **One implementation per mutation (NFR-4, FR-9, FR-13).** The inbox and board are *views*; they must call the mutation endpoints that already exist. Autonomy enforcement and read-only gating each get exactly one home — the Supervisor and a single middleware — never per-handler copies. Where today's surfaces diverge (the MCP approve path writes no `epic_approved` audit row while the web path does), we *converge* them onto a shared action rather than adding a third variant.
+3. **Autonomy changes who decides, not what is recorded (FR-7, NFR-2).** A `full-auto` auto-approval must produce the identical `epic_approved` audit row *and* `policy_snapshot` as a human approval. The only safe way to guarantee "identical" is to make both paths the *same code*.
+4. **Federation already exists; reuse its shape (NFR-3, NFR-5).** `/api/status`, `/api/cost`, and the `ProjectRegistry` already read across projects. The inbox and fleet board are new federation endpoints cut from the same cloth (open each project DB, aggregate, tag with `project_root`) and ride the existing SSE `agent`/`epic` events rather than inventing a transport.
+
+The accepted trade-off across all four: Fleet Commander deliberately grows the two existing hot files — `packages/loom-web/src/server/index.ts` and `packages/loom-core/src/orchestrator/Supervisor.ts` — rather than introducing a parallel governance subsystem. We pay in file size to avoid a second, drifting source of truth for dispatch and routing.
 
 ## Component Diagram
 
 ```mermaid
 flowchart TB
-    subgraph cli [packages/loom-cli]
-        guard["guard.ts<br/>loom guard check / hook"]
-        doctor["doctor.ts<br/>runDoctor()"]
-        doctorGate["doctorGateCheck.ts (new)<br/>gate preflight Check + dry-run trigger"]
-        preflightWarn["gatePreflightWarning.ts (new)<br/>maybeWarnGatePreflight()"]
-        epicCmd["epic.ts — runEpic()"]
-        runCmd["run.ts — runRun()"]
-    end
+  subgraph Browser["Browser — public/index.html (vanilla JS, no build step)"]
+    InboxView["Inbox view\n(plan_approval / checkpoint_resume / escalation)"]
+    FleetView["Fleet board\n(cards: status, stories, cost, blockers)"]
+    DetailView["Epic detail + autonomy dial"]
+  end
 
-    subgraph core [packages/loom-core]
-        pe["guardrails/PolicyEngine.ts<br/>checkShellMetacharacters()"]
-        strip["stripQuoted() → stripRedirectionForms() (new fn)"]
-        gp["orchestrator/GatePreflight.ts (new)<br/>resolveGateCommand() / preflightGateCommand()"]
-        ig["orchestrator/IntegrationGate.ts<br/>run() — delegates detection to GatePreflight"]
-        dry["orchestrator/GateDryRun.ts (new)<br/>runGateDryRun()"]
-        git["orchestrator/git.ts — git()/gitSafe()"]
-    end
+  subgraph Web["packages/loom-web — Express createApp()"]
+    Guard["accessGuard middleware\n(replaces blanket requireToken)"]
+    GETs["GET /api/inbox\nGET /api/fleet\nGET /api/status\nGET /api/events (SSE)"]
+    MUT["POST /api/epics/:id/autonomy\nPOST .../approve · .../reject\nPOST .../retry · /stop · /kill"]
+    Resolver["resolveProjectDb(req)\n(?project → registry-validated DB + cwd)"]
+  end
 
-    guard --> pe
-    pe --> strip
-    doctor -->|"one insertion line"| doctorGate
-    doctorGate --> gp
-    doctorGate -->|"--dry-run-gate only"| dry
-    epicCmd --> preflightWarn
-    runCmd --> preflightWarn
-    preflightWarn --> gp
-    ig --> gp
-    dry --> ig
-    dry --> git
+  subgraph MCP["packages/loom-mcp — stdio server"]
+    Tools["loom_set_autonomy\nloom_approve_plan · loom_reject_plan ..."]
+  end
+
+  subgraph CoreActions["packages/loom-core/src/orchestrator — shared actions"]
+    Approve["approveAndDispatch()\n(snapshot + epic_approved audit + dispatch)"]
+    SetAuto["setEpicAutonomy()\n(persist + autonomy_set audit)"]
+    Resume["resumeEpic()\n(clear pause + re-dispatch)"]
+    Sup["Supervisor\n(autonomy gate + per-story checkpoint pause)"]
+  end
+
+  subgraph State["packages/loom-core/src/state — SQLite per project"]
+    EpicStore["EpicStore\n(+autonomy_level, paused_at, paused_after_story)"]
+    AgentStore["AgentStore"]
+    AuditLog["AuditLog"]
+    ControlStore["ControlStore"]
+    Registry["ProjectRegistry\n(~/.loom/projects.json)"]
+  end
+
+  InboxView & FleetView & DetailView -->|x-loom-token| Guard
+  Guard --> GETs & MUT
+  MUT --> Resolver --> Approve & SetAuto & Resume
+  GETs -->|federate| Registry
+  GETs --> EpicStore & AgentStore
+  Tools --> SetAuto & Approve
+  Approve & Resume --> Sup
+  Approve & SetAuto & Resume --> AuditLog
+  Sup --> EpicStore & AgentStore & ControlStore
+  GETs -. SSE epic/agent .-> Browser
 ```
 
 ## Tech Stack
 
-No new dependencies. This epic is a correctness fix inside the existing stack — adding a shell parser library here would trade a 40-line regex pre-pass for a new load-bearing dependency on the security boundary.
+No new runtime dependencies. Every choice is "the one already in the tree," in keeping with loom's boring-technology stance.
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| Language / runtime | TypeScript, Node.js 20+ | Existing stack; no change. |
-| Metachar classification | Regex token-stripping pre-pass inside `PolicyEngine.ts` | PRD explicitly scopes out an AST/shell parser. A closed-set token stripper is auditable in one screen and fail-safe by construction. Trade-off: exotic-but-legal redirections stay blocked. |
-| Command detection / preflight | Pure functions in new `GatePreflight.ts`, injectable `fileExists`/`fileReader` probes | Mirrors the existing `IntegrationGateOptions` injection pattern, so unit tests need no disk. |
-| Dry-run execution | Reuse `IntegrationGate.run()` against a throwaway worktree created via `orchestrator/git.ts` helpers | "Identical to the real gate" is guaranteed by *calling* the real gate, not simulating it. |
-| CLI wiring | `commander` flag on existing `doctor` command in `packages/loom-cli/src/index.ts` | No new subcommand surface; one option line. |
-| Tests | `node:test` + `node:assert`, under `src/__tests__/` | House convention (`PolicyEngine.test.ts`, `IntegrationGate.test.ts` already exist there). |
+| Schema migration | `ALTER TABLE ADD COLUMN` in `Database.ts` `runMigrations`, bumped to **v16** | Existing migration runner is additive and idempotent; a defaulted column is the only change that keeps pre-existing epics reading as `manual` with zero backfill (FR-1, FR-14). |
+| State access | `better-sqlite3` via existing `EpicStore` / `AgentStore` | Synchronous, single-file, already the home of every column we extend (NFR-4). |
+| Validation | `zod` (`AutonomyLevelSchema`) in `loom-core/src/types.ts` | Mirrors `EpicStatusSchema`; one enum, reused by web body parsing and the MCP `inputSchema`. |
+| Web routing | `express` route table in `createApp()` (`loom-web/src/server/index.ts`) | Extend the existing factory; the new endpoints sit beside `/api/status` and reuse its federation pattern. |
+| Access control | Single `accessGuard` middleware in `loom-web/src/server/auth.ts` | Replaces the blanket `app.use('/api', requireToken(...))` with one method-aware classifier — the only place read-only logic lives (FR-13). |
+| Live updates | Existing SSE `eventStreamHandler` (`loom-web/src/server/events.ts`) | `epic`/`agent` events already diff the DB every 500 ms; board and inbox subscribe rather than poll (FR-11, NFR-5). |
+| MCP tool | `ToolDefinition` + handler in `loom-mcp/src/tools/{registry,handlers}.ts` | Follows the `loom_approve_plan` pattern exactly; delegates to the shared core action (FR-3). |
+| Frontend | Vanilla JS in `public/index.html` | No framework, no build step; add two views to the existing router (NFR-4). |
 
 ## Data Models
 
-```ts
-// packages/loom-core/src/orchestrator/GatePreflight.ts
+### Schema migration (Database.ts → v16)
 
-/** How the gate command was resolved — same precedence the gate itself uses. */
-export interface ResolvedGateCommand {
-  command?: string;                 // undefined => no command resolvable (amputation-only gate)
-  cwd: string;                      // projectRoot, or the monorepo-scoped subdir
-  source: 'configured' | 'auto-detected' | 'none';
-}
+```sql
+-- All additive. Existing rows take the default; no backfill, no rewrite (FR-1, FR-14).
+ALTER TABLE epics ADD COLUMN autonomy_level     TEXT NOT NULL DEFAULT 'manual';
+ALTER TABLE epics ADD COLUMN paused_at          DATETIME;   -- NULL = not checkpoint-paused
+ALTER TABLE epics ADD COLUMN paused_after_story TEXT;       -- story_id the epic paused after
+```
 
-/** Advisory verdict. Pure data — carries no ability to block anything. */
-export interface GatePreflightResult {
-  resolved: ResolvedGateCommand;
-  viable: boolean;                  // structural prerequisites met for a bare worktree
-  reasons: string[];                // human-readable, empty when viable
-  /** Exact policy.agents.test_command value to set, e.g. "npm ci && npm test".
-      Always present when !viable — FR-3 requires naming the fix. */
-  recommendation?: string;
-}
+`autonomy_level ∈ {'full-auto','checkpoint','manual'}`. The pair `(paused_at, paused_after_story)` is the **durable paused indicator** of FR-5 / story-003-001: it lives on the epic row, so it survives a process restart and is readable by a federating inbox without any in-memory state.
 
-// packages/loom-core/src/orchestrator/GateDryRun.ts
-export interface GateDryRunOutcome {
-  worktreePath: string;             // .loom/integration/gate-dryrun-<pid>
-  gate: GateOutcome;                // verbatim from IntegrationGate.run()
-  cleanedUp: boolean;
+> Trade-off: checkpoint pause is stored as epic columns rather than in `ControlStore`. `ControlStore` is a single-row, global `running|stopping` flag — it cannot express *which epic, paused after which story*. Per-epic columns cost two migrations but give per-epic durability and clean federation.
+
+### Types (loom-core/src/types.ts)
+
+```typescript
+export const AutonomyLevelSchema = z.enum(['full-auto', 'checkpoint', 'manual']);
+export type AutonomyLevel = z.infer<typeof AutonomyLevelSchema>;
+
+// Extends the value returned by EpicStore.get()
+interface Epic {
+  // ...existing fields...
+  autonomy_level: AutonomyLevel;          // default 'manual'
+  paused_at: string | null;               // ISO8601; non-null ⇒ checkpoint-paused
+  paused_after_story: string | null;
 }
 ```
 
-Redirection token set (the closed list FR-1 permits — everything else keeps its `&`):
+### Inbox entry (loom-web/src/shared/types.ts)
 
-```ts
-// Inside PolicyEngine.ts. Applied to the stripQuoted() output, replacing each
-// match with a metacharacter-free placeholder before the blockers loop runs.
-const REDIRECTION_FORMS: RegExp[] = [
-  /\d*>&\d+/g,    // 2>&1, >&2, m>&n
-  /\d*<&\d+/g,    // <&0, n<&m  (symmetric)
-  /\d*>&-/g,      // >&-, 2>&-  (close fd)
-  /\d*<&-/g,      // <&-        (symmetric close)
-  /&>>?(?=\s|\S)/g, // &>file, &> file, &>>file (the &> token itself)
-];
+```typescript
+type InboxType = 'plan_approval' | 'checkpoint_resume' | 'escalation';
+
+interface InboxEntry {
+  type: InboxType;
+  project_root: string;     // absolute path; from ProjectRegistry
+  project: string;          // display name = basename(project_root)
+  epic_id: string;
+  title: string;
+  story_id: string | null;  // set for checkpoint_resume / escalation
+  age_ms: number;           // now - decision-relevant timestamp
+}
 ```
+
+Derivation, per registered project DB:
+- `plan_approval` ← `epicStore.listByStatus('planned')`, `age` from `updated_at`.
+- `checkpoint_resume` ← epics with `paused_at IS NOT NULL`, `story_id = paused_after_story`, `age` from `paused_at`.
+- `escalation` ← latest agents in `blocked` status (reuse `AgentStore.listLatestByEpic`), `age` from agent `updated_at`.
+
+### Fleet card (loom-web/src/shared/types.ts)
+
+```typescript
+interface FleetStory { story_id: string; status: AgentStatus; }
+
+interface FleetCard {
+  project_root: string;
+  epic_id: string;
+  title: string;
+  status: EpicStatus;
+  autonomy_level: AutonomyLevel;
+  paused: boolean;                  // paused_at !== null
+  stories: FleetStory[];            // AgentStore.listLatestByEpic(epic_id)
+  cost: EpicCost;                   // aggregateEpicCost(epic, agents) — reused verbatim
+  blockers: number;                 // count of stories in {'blocked','failed'}
+}
+```
+
+Cross-epic correctness (FR-10, NFR-3) is *structural*: every card is built from `listLatestByEpic(epic_id)`, which filters by `epic_id`. No shared accumulator spans epics, so two concurrent epics' agents cannot bleed into one card. The two-epic test asserts this by loading two epics' agents into one DB and checking card membership.
 
 ## API / Interface Contracts
 
-```ts
-// ── PolicyEngine.ts (story-003-001) — private, behavior visible via check() ──
-// New module-level helper, sibling to stripQuoted():
-function stripRedirectionForms(stripped: string): string;
-// checkShellMetacharacters pipeline becomes:
-//   stripQuoted(raw) → stripRedirectionForms(...) → existing blockers loop (unchanged)
+### Shared core actions (loom-core/src/orchestrator)
 
-// ── GatePreflight.ts (story-003-002) — exported from orchestrator/index.ts ──
-export function resolveGateCommand(
-  projectRoot: string,
-  opts: { testCommand?: string; fileExists?: (p: string) => boolean; fileReader?: (p: string) => string | null }
-): ResolvedGateCommand;
+```typescript
+// NEW: the single approve+dispatch path. Web, MCP, and full-auto all call this.
+// Writes the epic_approved audit row AND policy_snapshot, then dispatches — once.
+function approveAndDispatch(
+  deps: { epicStore: EpicStore; auditLog: AuditLog; ctx: ToolContext; db: Database; policy: Policy },
+  epicId: string,
+  opts: { actor: 'human' | 'full-auto' }
+): Promise<{ status: 'dispatching' }>;
 
-export function preflightGateCommand(
-  projectRoot: string,
-  opts: { testCommand?: string; fileExists?: (p: string) => boolean; fileReader?: (p: string) => string | null }
-): GatePreflightResult;
-// IntegrationGate.detectCommand() body moves here; the gate delegates so
-// resolution is identical by construction. Gate semantics untouched.
+// NEW: shared autonomy setter. Web route and loom_set_autonomy both call this.
+function setEpicAutonomy(
+  deps: { epicStore: EpicStore; auditLog: AuditLog },
+  epicId: string,
+  level: AutonomyLevel,
+  actor: string
+): { id: string; autonomy_level: AutonomyLevel };
 
-// ── GateDryRun.ts (story-003-004) ──
-export async function runGateDryRun(opts: {
-  projectRoot: string;
-  testCommand?: string;            // from policy.agents.test_command
-  timeoutMs?: number;
-}): Promise<GateDryRunOutcome>;
-
-// ── loom-cli: doctorGateCheck.ts (story-003-003 / 003-004) ──
-// Returns the same Check shape doctor.ts already renders; required is always false.
-export function gateCommandCheck(projectRoot: string): { name: string; ok: boolean; detail: string; required: false };
-export async function runGateDryRunCommand(projectRoot: string): Promise<void>; // prints GateDryRunOutcome
-
-// ── loom-cli: gatePreflightWarning.ts (story-003-003) ──
-// Called from runEpic() (after policy load) and runRun() (before supervisor.run()).
-// Prints a loud advisory block via console.warn when integration_gate !== 'off'
-// and preflight is non-viable. Returns void; never exits, never throws outward.
-export function maybeWarnGatePreflight(projectRoot: string, policy: Policy): void;
+// NEW: clears the checkpoint pause and re-dispatches remaining stories.
+function resumeEpic(
+  deps: { epicStore: EpicStore; ctx: ToolContext; db: Database; policy: Policy },
+  epicId: string
+): Promise<{ status: 'dispatching' }>;
 ```
 
-Viability heuristics (FR-3, structural only — never executes anything):
+### EpicStore additions
 
-| Resolved command | Viable when | Recommendation on failure |
-|---|---|---|
-| `npm test` | a lockfile (`package-lock.json` / `npm-shrinkwrap.json`) exists at the resolved `cwd` | `test_command: "npm ci && npm test"` |
-| `make test` | `Makefile` at `cwd` has a `^test:` target | name the explicit `test_command` to set |
-| `pytest` | a pytest config (`pytest.ini` or pytest in `pyproject.toml`/`setup.cfg`/`tox.ini`) exists at `cwd` | name the explicit `test_command` to set |
-| `source: 'none'` | reported as informational (gate runs amputation-only) | suggest setting `test_command` if a suite exists |
-| `source: 'configured'` | always reported viable unless it begins with a known-detectable form that fails its check | operator's word is law; we only annotate |
+```typescript
+class EpicStore {
+  getAutonomy(id: string): AutonomyLevel;                 // default 'manual'
+  setAutonomy(id: string, level: AutonomyLevel): void;
+  pauseAfterStory(id: string, storyId: string): void;    // sets paused_at = CURRENT_TIMESTAMP
+  resume(id: string): void;                               // clears paused_at, paused_after_story
+  isPaused(id: string): boolean;
+}
+```
+
+### Supervisor seams (two enforcement points, one file)
+
+```typescript
+// Seam 1 — the planned→approved gate, consulted by the planner-completion path.
+//   'manual'    → leave 'planned', wait for human (current behavior, FR-4)
+//   'checkpoint'→ approveAndDispatch({actor:'full-auto'}) then pause-after-each-story
+//   'full-auto' → approveAndDispatch({actor:'full-auto'}), run straight through (FR-6, FR-7)
+
+// Seam 2 — inside dispatchLoop, after each integrateStory():
+//   if autonomy === 'checkpoint': epicStore.pauseAfterStory(epicId, storyId);
+//                                 stop dispatching further stories (FR-5)
+```
+
+### Web endpoints
+
+```
+POST /api/epics/:id/autonomy   body {level}      → setEpicAutonomy()       [mutation, token]
+GET  /api/inbox                                   → InboxEntry[]            [read]
+GET  /api/fleet                                   → FleetCard[]             [read]
+POST /api/epics/:id/approve    ?project=<root>    → approveAndDispatch()    [mutation, token]
+POST /api/epics/:id/reject     ?project=<root>                              [mutation, token]
+POST /api/stories/:id/retry    ?project=<root>                             [mutation, token]
+POST /api/stop                 ?project=<root>                             [mutation, token]
+POST /api/agents/:id/kill      ?project=<root>                            [mutation, token]
+```
+
+The inbox is cross-project, so its inline actions pass `?project=<project_root>`. A new `resolveProjectDb(req)` helper maps that param (validated against `ProjectRegistry.list()`) to the target DB and spawn `cwd`, defaulting to the host project when absent. This keeps **one** mutation implementation while letting the inbox act on a peer (FR-9).
+
+### Access guard middleware
+
+```typescript
+function accessGuard(opts: { token: string; readOnly: boolean }): RequestHandler;
+// readOnly === false (default): require valid token for ALL /api/* — byte-identical to today's requireToken.
+// readOnly === true: GET/HEAD and SSE pass without token; any mutation without the write token → 403.
+// "mutation" is classified by HTTP method (non-GET/HEAD), enumerable by the route test.
+```
+
+### MCP tool
+
+```typescript
+{ name: 'loom_set_autonomy',
+  inputSchema: { type:'object',
+    properties: { epic_id:{type:'string'}, level:{type:'string', enum:['full-auto','checkpoint','manual']} },
+    required: ['epic_id','level'] } }
+// handler → setEpicAutonomy(deps, epic_id, level, 'mcp')  — identical effect & audit as the web route (FR-3).
+```
 
 ## Security Model
 
+The access model is exactly two tiers — write-token holder and read-only observer — by explicit PRD scope (RBAC and multi-user identity are out of scope).
+
 | Threat | Control |
 |---|---|
-| Loosening the `&` blocker reopens backgrounding (`cmd &`, `a & b`) — invariant #1 breach | Stripping is allowlist-only: a `&` survives unless it sits inside one of the five named redirection tokens. The blockers loop in `checkShellMetacharacters` is byte-for-byte unchanged; tests in `PolicyEngine.test.ts` pin both directions plus an ambiguous form (`>& $FD`) that must stay blocked. |
-| Redirection tokens used to smuggle chaining (`foo 2>&1 && rm -rf /`) | Stripping replaces tokens with metacharacter-free placeholders; the surviving `&&` / `;` / backtick / `$(` blockers fire exactly as before. |
-| Dry-run executes an arbitrary operator-configured command | Runs only on the explicit `loom doctor --dry-run-gate` flag (FR-6 — never during planning), inside a detached throwaway worktree under `.loom/integration/gate-dryrun-<pid>` (outside `.loom/worktrees/`, so the `WorktreeJanitor` never races it), through `IntegrationGate.run()` with its existing SIGTERM→SIGKILL timeout escalation. Worktree is force-removed in a `finally`. |
-| Preflight acquiring blocking power over runs | `GatePreflightResult` is plain data; the only CLI consumers are a `required: false` doctor `Check` and `console.warn` in `maybeWarnGatePreflight`. No exit codes, no thrown errors reach `supervisor.run()`. |
+| Unauthorized mutation in normal mode | `accessGuard` requires the token on every `/api/*` request — unchanged from today (FR-14, NFR-2). Token compared with `crypto.timingSafeEqual`. |
+| Mutation slips through in read-only mode | Single centralized guard returns `403` for any non-GET without the write token; an **enumerated-route test** walks the Express route table asserting every mutation fails tokenless and every GET serves (FR-13, NFR-3). Centralization means a newly added mutation route is covered by default — no per-handler opt-in to forget. |
+| `full-auto` bypasses the audit trail | `approveAndDispatch` is the *only* approval path; it writes `epic_approved` + `policy_snapshot` before dispatch regardless of `actor`. Autonomy changes the caller, not the record (FR-7, NFR-2). |
+| Cross-project mutation hits an arbitrary DB / path traversal | `resolveProjectDb` accepts only `project_root` values present in `ProjectRegistry.list()`; anything else is rejected before a DB is opened. |
+| **Read-only tunnel leaks sensitive data** | `[ASSUMPTION, NFR-6]` A publicly tunneled read-only server still streams worker `log_tail`, costs, branch names, and PR URLs over SSE and `/api/fleet`. This is documented as an operator-facing sensitivity note in `docs/capabilities.md`; field-level scrubbing is explicitly deferred (out of scope). |
 
 ## ADR Log
 
-### ADR-1 — Redirection handled by a token-stripping pre-pass, not a relaxed `&` regex
+### ADR-1 — Additive v16 migration with a defaulted column
+**Decision.** Add `autonomy_level TEXT NOT NULL DEFAULT 'manual'` plus `paused_at` / `paused_after_story` via `ALTER TABLE` in the existing `runMigrations` (schema v15 → v16).
+**Context.** FR-1/FR-14 demand that pre-existing epics read as `manual` with no behavior change.
+**Rationale.** The migration runner is already additive and idempotent; a defaulted column needs no backfill and no data rewrite.
+**Trade-off.** Three columns instead of a normalized `autonomy` side-table. Accepted: the data is 1:1 with an epic and queried on every fleet/inbox read, so co-locating it on the epic row is faster and simpler than a join.
 
-- **Decision:** Add `stripRedirectionForms()` between `stripQuoted()` and the blockers loop in `PolicyEngine.checkShellMetacharacters`, rather than complicating the `/(?<!&)&(?!&)/` backgrounding regex with redirection lookarounds.
-- **Context:** The current regex (line 79 of `PolicyEngine.ts`) flags the `&` in `2>&1` as backgrounding, contradicting the method's own doc comment that redirection is allowed.
-- **Rationale:** One regex trying to express "an `&` that is not backgrounding" grows lookbehind/lookahead cases until it's unreviewable — and unreviewable is unacceptable on a security boundary. Stripping a closed set of known-good tokens first leaves the blockers exactly as they are today, so the proof obligation is local: "does any forbidden `&` survive stripping?" — and the answer is yes by default.
-- **Trade-off:** Legal-but-exotic redirections (`>&$FD`, `{fd}>&1`, `>& word`) remain blocked. The PRD explicitly accepts this (fail-safe direction, Out of Scope item 4).
+### ADR-2 — Converge approval onto one shared `approveAndDispatch` action
+**Decision.** Extract a single core action that captures the policy snapshot, writes the `epic_approved` audit row, transitions `planned→approved`, and dispatches. Web, MCP, and the `full-auto` path all call it.
+**Context.** Today the web approve route writes an `epic_approved` audit row (`index.ts:438`) but the MCP `approvePlan` handler does not — a pre-existing divergence. FR-7 requires `full-auto` to be *identical* to a human approve.
+**Rationale.** "Identical" is only guaranteeable if it is literally the same code. Converging also fixes the existing MCP/web audit gap as a side effect.
+**Trade-off.** We modify two working handlers (`loom-mcp/.../handlers.ts:608` and `loom-web/.../index.ts:427`) rather than leaving them alone. Accepted under the "one implementation per mutation" constraint; the alternative is a third copy that will drift.
 
-### ADR-2 — Extract command detection into `GatePreflight.ts`; the gate delegates
+### ADR-3 — Enforce autonomy at two seams inside the Supervisor, not a new orchestrator
+**Decision.** Put autonomy logic in the Supervisor: a gate at `planned→approved`, and a per-story pause inside `dispatchLoop` after `integrateStory`.
+**Context.** NFR-3 mandates that autonomy enforcement live in the Supervisor and be unit-tested per level.
+**Rationale.** The Supervisor already owns the dispatch loop, the dependency graph, and the lease; the two decisions ("approve without a human?" and "pause after this story?") are exactly where its existing control flow already branches.
+**Trade-off.** `Supervisor.ts` (already ~1500 lines) grows further. Accepted over a parallel "autonomy controller" that would have to re-derive dispatch state and risk a second source of truth for what runs next.
 
-- **Decision:** Move `detectCommand`, `findScopedTestDir`, `resolveDiffRange`, and `commonAncestor` out of `IntegrationGate.ts` into a new `orchestrator/GatePreflight.ts` exporting pure functions; `IntegrationGate` calls `resolveGateCommand()` internally.
-- **Context:** FR-5's assumption holds: detection lives only inside `IntegrationGate` as private methods, but doctor, `loom epic`, and `loom run` all need the *same* resolution.
-- **Rationale:** Static methods on the gate class would work, but a standalone module keeps `IntegrationGate.ts` owned by no story in this epic except via one delegation edit, gives story-003-002 a file it solely owns, and lets the CLI import detection without constructing a gate. Identical-by-construction beats identical-by-duplication.
-- **Trade-off:** One more module and an indirection hop in the gate. Accepted: the alternative is three surfaces drifting from the gate's real behavior over time.
+### ADR-4 — One method-aware `accessGuard` replaces the blanket `requireToken`
+**Decision.** Replace `app.use('/api', requireToken(...))` with a single `accessGuard({ token, readOnly })` that classifies read vs mutation by HTTP method.
+**Context.** FR-12/FR-13 require read-only mode and a *single* centralized mutation guard, with byte-compatible default behavior.
+**Rationale.** When `readOnly=false` the guard reduces to today's behavior (token on everything), preserving compatibility; when `true` it opens GET/SSE and 403s tokenless mutations. Method-based classification (GET/HEAD = read) is enumerable, so the route-table test is exhaustive by construction.
+**Trade-off.** Correctness now depends on every mutation being a non-GET verb. Accepted: it already is, and the enumerated-route test fails loudly if a future read is mistakenly made a POST or vice versa.
 
-### ADR-3 — Preflight returns data; rendering and tone live in the CLI
+### ADR-5 — Cross-project mutation via a registry-validated DB resolver, not duplicated routes
+**Decision.** Add `resolveProjectDb(req)` that maps an optional `?project=<root>` (validated against `ProjectRegistry`) to the target DB and spawn `cwd`; the inbox passes it. Mutation handlers stay single-implementation.
+**Context.** FR-8/FR-9: the inbox federates across projects but must act through the *existing* mutation endpoints with no duplicated logic.
+**Rationale.** `/api/epics/:id/archive` already accepts `?project`; generalizing that into one resolver lets every mutation become project-aware without forking handlers.
+**Trade-off.** Mutations now open a DB chosen at request time and must spawn `loom run` with the right `cwd`. Accepted: validation against the registry bounds the blast radius to known loom repos.
 
-- **Decision:** `preflightGateCommand()` returns `GatePreflightResult` and has no side effects; `loom-cli` owns all printing (`doctorGateCheck.ts`, `gatePreflightWarning.ts`).
-- **Context:** NFR-2 demands no code path where preflight blocks a run; G-4 demands zero runs blocked by preflight.
-- **Rationale:** If core never prints, exits, or throws advisory state, the "advisory only" property is enforced by the type system rather than by discipline — a consumer would have to write new blocking code to violate it.
-- **Trade-off:** Slight duplication of message formatting between the doctor check and the run-start warning. Accepted: the two surfaces legitimately want different verbosity.
+### ADR-6 — Reuse existing SSE; add fields, don't add an event
+**Decision.** The board and inbox subscribe to the existing `epic`/`agent` SSE events; the `epic` payload gains additive `autonomy_level` and `paused` fields so checkpoint pauses surface live.
+**Context.** FR-11 and NFR-5: render live off existing events, respect per-project SSE scoping, and introduce a new event only if strictly needed.
+**Rationale.** The `epic` event already fires on any epic-row change; a checkpoint pause *is* an epic-row change (`paused_at`), so widening the payload is sufficient. No new event type, no new transport.
+**Trade-off.** The `epic` SSE payload grows for all consumers. Accepted: additive fields are backward-compatible with the existing frontend, which ignores unknown keys.
 
-### ADR-4 — Doctor gains the check via a new module and a single insertion line
-
-- **Decision:** `gateCommandCheck()` lives in new `packages/loom-cli/src/commands/doctorGateCheck.ts`; `doctor.ts` changes by one `checks.push(...)` line (plus the flag handoff), and the new check is `required: false`.
-- **Context:** FR-4 — a concurrent sibling epic is also extending `loom doctor`; `runDoctor()` exits 1 when a `required` check fails.
-- **Rationale:** Two epics appending whole check bodies to `doctor.ts` guarantees merge conflicts; two epics each adding one short line near a list usually auto-merge. `required: false` keeps doctor's exit code honest — a missing lockfile is advice, not a broken installation.
-- **Trade-off:** A one-function file is mildly against house preference for editing existing files. Accepted explicitly for merge cleanliness, which the PRD calls out.
-
-### ADR-5 — Dry-run = the real gate in a detached throwaway worktree, behind `loom doctor --dry-run-gate`
-
-- **Decision:** `runGateDryRun()` creates `git worktree add --detach .loom/integration/gate-dryrun-<pid> HEAD` via the `git()`/`gitSafe()` helpers in `orchestrator/git.ts`, invokes `IntegrationGate.run({ projectRoot: <worktree> })`, and removes the worktree in `finally`. Exposed as a flag on the existing `doctor` command in `packages/loom-cli/src/index.ts`.
-- **Context:** FR-6 — opt-in only, never silent during planning; the dry-run must behave identically to the real gate.
-- **Rationale:** Calling `IntegrationGate.run()` reuses the resolved command, timeout, process-group kill, and output-tail semantics for free — simulating any of that would drift. Placing the tree under `.loom/integration/` (not `.loom/worktrees/`) mirrors the `IntegrationBranch` precedent: the `WorktreeJanitor` prunes `.loom/worktrees/*` entries with no agent record and must never reap a live dry-run. A flag (vs. a `doctor gate` subcommand) keeps the commander surface minimal and avoids colliding with the sibling epic's doctor additions.
-- **Trade-off:** A detached-HEAD worktree tests the *current* tree, not a future integrated `epic/<id>` tree — it validates the command's runnability, not the epic's correctness. That is exactly the PRD's stated scope (Out of Scope item 6).
-
-### ADR-6 — Capabilities page edits are a dedicated story touching exactly two rows
-
-- **Decision:** story-003-005 alone edits `docs/capabilities.md`: the policy-engine row (line 136, blocked-constructs description) and the prerequisites-probe/doctor row (line 169).
-- **Context:** Repo invariant: capabilities must ship in the same PR as the feature; five other stories land in parallel and several "touch user-visible behavior."
-- **Rationale:** If every story edited the doc, every pair of branches would conflict in the same table. One owning story, sequenced after the feature stories (it depends on 001, 003, 004), serializes the contention to zero.
-- **Trade-off:** A window inside the epic where code exists before its doc row. Accepted: the epic merges as one PR, so the invariant holds at the boundary that matters.
+### ADR-7 — Inbox and fleet are federation reads cut from the `/api/status` pattern
+**Decision.** Build `/api/inbox` and `/api/fleet` by iterating `ProjectRegistry.list()`, opening each project DB read-only, and aggregating — the same shape as the existing `/api/status` and `/api/cost`.
+**Context.** G-1/FR-8/FR-10 require one cross-project view; NFR-4 forbids rewrites.
+**Rationale.** The federation machinery (registry enumeration, per-project DB open, `project_root` tagging) already exists and is proven by `/api/status`. Reusing it keeps one mental model for "how loom reads across projects."
+**Trade-off.** Each inbox/fleet request opens N project DBs synchronously. Accepted at operator scale (a handful of repos); if it ever became hot, a short-TTL cache is the obvious next step — deliberately not built now (no premature optimization).

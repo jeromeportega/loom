@@ -1,62 +1,66 @@
-# Guard Parser Redirection Correctness + Integration-Gate Command Preflight
+# Fleet Commander — Deployable Mission Control for Governed Agent Fleets (v2.0)
 
 ## The Problem
 
-Two of loom's safety mechanisms misfire on legitimate developer workflows, observed directly in an earlier epic-011 run. Both failures erode operator trust in the guardrails — the one asset a structural policy engine cannot afford to lose.
+Loom's web dashboard already does the hard plumbing: it federates status across projects, streams live worker output over SSE, and exposes working approve / reject / stop / retry / kill endpoints across web, MCP, and core. What it lacks is a **governance layer** that lets one human safely supervise many epics at once.
 
-1. **Policy-engine false positive on fd redirection.** `PolicyEngine.checkShellMetacharacters` (`packages/loom-core/src/guardrails/PolicyEngine.ts`, line 79) blocks `&` backgrounding with the regex `(?<!&)&(?!&)`. This regex cannot distinguish backgrounding from file-descriptor redirection: audit entries 512/513 in that repo show an identical command blocked solely because it ended in `2>&1`, then allowed on retry without it. The engine's own documented intent (lines 63–66) is that redirection *is* allowed; the implementation contradicts it for the `&`-containing redirection forms.
-2. **Integration-gate command failure surfaces too late.** The gate's auto-detection (`packages/loom-core/src/orchestrator/IntegrationGate.ts`) can select a command that cannot run in a bare integration worktree. In that run it picked `make test`, which requires environment (JWT secrets, Redis, `JIRA_URL`) present only in the developer's shell. The gate failed every run until `test_command` was hand-scoped — and the failure was discovered only at finalize time, after a multi-hour run had completed all stories.
+Today, governance is scattered across three gaps:
+
+- **Decisions are per-epic.** Pending human approvals are surfaced one epic at a time. An operator running several epics has no single place to see — let alone act on — every decision waiting on them.
+- **Autonomy is global and coarse.** Autonomy is a single global policy file, so an operator cannot say "run epic A hands-off but checkpoint epic B after each story." Every epic is governed the same way.
+- **The dashboard can't be shared.** The auth token grants full mutation access, so there is no safe way to expose a read-only view to a stakeholder. Sharing progress means sharing the keys to the fleet.
+
+The result: a human governing concurrent agent work spends attention hunting for what needs a decision, cannot tune oversight per epic, and cannot delegate visibility without delegating control.
 
 ## Target Users
 
-- **Primary:** loom operators running epics on real repositories — they hit the `2>&1` block mid-run and the gate failure at the end of one.
-- **Primary:** story agents themselves, whose legitimate commands (`npm test 2>&1`) are rejected, forcing wasteful retry loops.
-- **Secondary:** loom maintainers triaging "guardrail blocked a safe command" reports.
-- **Anti-persona:** anyone wanting a general shell parser — this is a targeted regex fix, not an AST rewrite.
+- **Primary — the fleet governor (solo operator).** One human supervising multiple concurrent epics across one or more projects. They need to find the next decision fast, set how much autonomy each epic gets, and watch the whole fleet move. `[ASSUMPTION]` Given loom's single-token model and the "one human governs many" framing, this is a single power-user operator, not a team — consistent with the project's dogfooding posture.
+- **Secondary — the read-only observer.** A stakeholder, teammate, or the operator on a phone who wants to watch fleet progress (status, costs, worker output) without any ability to mutate state. Served by the public read-only mode.
+- **Anti-persona — the multi-user team needing accounts/RBAC.** Real auth systems, per-user identity, and role-based permissions are explicitly **out of scope**. The token + read-only split is the entire access model; anyone needing more is not this product's user.
 
 ## Proposed Solution
 
-**Part 1 — Redirection-aware metacharacter check.** Teach `checkShellMetacharacters` to recognize fd-duplication/redirection forms — `2>&1`, `>&2`, `m>&n`, `&>file`, `>&-` — as redirection (already deliberately permitted, since the filesystem heuristic scans the full raw command for protected paths), while continuing to block true backgrounding (trailing `cmd &`, mid-command `a & b`).
+Add a governance layer **on top of** loom's existing surfaces — extending `packages/loom-web` and supporting `loom-core`/state. This is a control surface, not a new dashboard product. The vanilla-JS frontend and the Express server are extended, never rewritten; all new actions reuse the existing mutation endpoints and audit/policy machinery.
 
-**Part 2 — Gate-command preflight.** Validate the configured-or-auto-detected `test_command` *early* rather than at finalize:
+Four pillars:
 
-- Check the command exists and the runner's prerequisites are plausible in a bare worktree (lockfile present for `npm test`, Makefile target exists for `make test`).
-- Report via `loom doctor`, plus a loud advisory warning at plan time (`loom epic`) and at `loom run` start when the epic will use the gate.
-- Offer an **opt-in** true dry-run (execute the command once in a throwaway worktree) as a doctor subcommand/flag — never silently during planning.
+1. A **per-epic autonomy dial** the Supervisor actually enforces.
+2. A **cross-epic decision inbox** that federates every pending human decision.
+3. A **fleet board** aggregating concurrent epics into live cards.
+4. A **deployable read-only public mode** that separates "watch" from "act."
+
+The default with no new flags or columns set must be **byte-compatible with today**: autonomy defaults to `manual`, read-only is off, and the token continues to gate all of `/api/*`.
 
 ## Key Capabilities
 
-1. `loom guard check --command "npm test 2>&1"` exits 0; same for `>&2` and `&> out.log` forms.
-2. `loom guard check --command "sleep 10 &"` and `a & b` still exit non-zero with the backgrounding reason.
-3. Preflight flags an auto-detected gate command whose prerequisites are missing in a bare worktree and names the exact `test_command` to set.
-4. `loom doctor` gains the gate-command check; `loom epic` and `loom run` emit the advisory warning when applicable.
-5. Opt-in dry-run actually executes the gate command once in a throwaway worktree, on explicit request only.
+1. **Per-epic autonomy dial (Supervisor-enforced).** A new `autonomy_level` column on `epics` (`full-auto` | `checkpoint` | `manual`, default `manual`), set via `POST /api/epics/:id/autonomy` and the `loom_set_autonomy` MCP tool (token-gated). The Supervisor enforces each mode: `manual` requires explicit human approval before dispatch; `checkpoint` pauses after each story with a durable paused indicator that the inbox can surface and a resume that re-dispatches; `full-auto` skips the human gate (auto-transition `planned`→`approved`, auto-dispatch, run to completion).
+2. **Audit/policy parity on auto-approve.** The `full-auto` path MUST write the `epic_approved` audit row and the policy snapshot exactly as a human approve does — autonomy changes who decides, not what is recorded.
+3. **Cross-epic decision inbox.** `GET /api/inbox` federates every pending decision across registered projects, each tagged with `project_root` and type — `plan_approval`, `checkpoint_resume`, or `escalation` — plus the minimum fields to act (epic id, title, project, story id, age). A new inbox view offers inline Approve/Reject, Resume/Stop, Retry/Kill wired to the **existing** mutation endpoints.
+4. **Fleet board.** `GET /api/fleet` aggregates epics into board cards — status, per-story states, cost roll-up (reusing `aggregateEpicCost`), blocker count — with every story correctly attributed to its epic/project and **no cross-epic state bleed** when ≥2 epics run concurrently. A new board view renders these cards and updates live off the existing SSE `agent`/`epic` events.
+5. **Deployable read-only public mode.** `LOOM_WEB_READONLY=1` and/or `loom web --read-only` serve GET/read routes + SSE without a token (safe to share), while every mutation route returns 403 without the write token. Enforced by a **single centralized mutation-guard** (not per-handler copies) so it cannot drift.
 
 ## Constraints
 
-- **Structural invariant holds throughout:** `loom guard check` must exit non-zero for any forbidden command regardless of LLM output (key invariant #1).
-- **Preflight is advisory only** — it warns, it never blocks a run by itself.
-- **No general shell parser/AST rewrite**; the fix stays within the existing regex-blocker structure.
-- **No changes** to gate execution semantics or `warn`/`block` behavior; no auto-installing dependencies in worktrees.
-- **Merge hygiene:** a concurrent sibling epic also extends `loom doctor` (cursor_model validation) — doctor additions must be self-contained so both PRs merge cleanly.
-- Tests live next to source under `__tests__/`; extend the existing metacharacter suite in `packages/loom-core/src/__tests__/PolicyEngine.test.ts`.
-- `docs/capabilities.md` must be updated in the same PR (policy-engine row's blocked-constructs description; `loom doctor` row).
+- **No rewrites.** Extend the existing vanilla-JS frontend and Express route table; reuse `EpicStore`, `AgentStore`, `Supervisor`, `AuditLog`, `ControlStore`, `ProjectRegistry`. New views call existing mutation endpoints — no duplicated mutation logic.
+- **Byte-compatible default.** With no new flags/columns set, behavior matches today exactly.
+- **Every mutation token-gated and audit-logged** (CLAUDE.md invariant #5), including the new `autonomy` endpoint.
+- **Autonomy enforcement lives in the Supervisor** and is unit-tested per level; the read-only guard is centralized and **test-enumerated** over the route table.
+- **`docs/capabilities.md` updated in the same PR** with the new CLI/MCP/web surfaces (CLAUDE.md requirement).
+- **`npm run build` and `npm run test` green** across all workspace packages.
 
 ## Risks and Open Questions
 
-- **Regex subtlety:** distinguishing `m>&n` from `cmd &` by pattern alone has edge cases (e.g. `&>` at start of token vs. a stray `&` followed by `>`). The test suite must pin both directions; an over-permissive fix would weaken invariant #1, an under-permissive one re-creates the bug.
-- **Preflight plausibility checks are heuristic.** A lockfile's presence doesn't guarantee `npm test` succeeds in a bare worktree (env vars, services). `[ASSUMPTION]` The brief accepts this: the heuristic catches the structural prerequisites, and the opt-in dry-run covers the rest.
-- **`[ASSUMPTION]`** The warning surface at `loom epic` and `loom run` start has access to the resolved policy and project root needed to run detection at that point; if detection currently lives only inside the gate, light refactoring to expose it is in scope.
-- **Open question:** exact catalogue of redirection forms to whitelist beyond the five named — e.g. `<&`, `n<&m`. Scope decision: cover the named forms plus obvious symmetric cases; anything exotic stays blocked (fail-safe direction).
-- **Open question:** whether the dry-run worktree should reuse the gate's existing worktree-creation path or a lighter throwaway. `[ASSUMPTION]` Reuse is preferred to keep behavior identical to the real gate.
+- **Cross-epic state bleed (highest risk).** The fleet board and inbox compose per-project SSE streams; attributing every story to the correct epic/project under ≥2 concurrent epics is the central correctness hazard. Must be proven by a test with two epics' agents in the DB.
+- **Durable paused indicator for `checkpoint`.** The brief leaves the mechanism open — a `paused` flag/column vs. a derived state. `[ASSUMPTION]` A persisted column is more robust for inbox surfacing and resume than a derived state, but the choice is a PM/architect decision and affects schema migration.
+- **Auto-approve fidelity.** The `full-auto` path must reproduce the human-approve side effects (audit row + policy snapshot) precisely; any divergence breaks governability and the audit invariant.
+- **SSE scoping under the board.** Live correctness depends on respecting existing per-project SSE scoping; whether a new lightweight event is needed is left to "only if strictly needed" — an open design call.
+- **Read-only deployment exposure.** `[ASSUMPTION]` A publicly tunneled read-only server still exposes worker output, costs, branch names, and PR URLs — potentially sensitive. The deploy doc should note this; sensitivity review of streamed fields may be warranted but is not specified.
+- **Scope discipline.** Cost *forecasting*, velocity charts, and owner/tag/deadline metadata are explicitly out of scope and should be resisted as scope creep — this is a control surface.
 
 ## Success Criteria
 
-- [ ] `loom guard check --command "npm test 2>&1"`, `"npm test >&2"`, and `"npm test &> out.log"` all exit 0.
-- [ ] `loom guard check --command "sleep 10 &"` and `--command "a & b"` exit non-zero, citing backgrounding.
-- [ ] All pre-existing metacharacter blocks (`;`, `&&`, `||`, backticks, `$(`) remain blocked — full existing suite green.
-- [ ] Preflight detects a gate command with missing bare-worktree prerequisites and its message states exactly which `test_command` to set.
-- [ ] `loom doctor` includes the gate-command check; `loom epic` and `loom run` warn when the epic will use the gate with a non-viable command; no run is ever blocked by preflight alone.
-- [ ] Dry-run executes only via explicit doctor opt-in; planning never silently runs test suites.
-- [ ] New tests in `__tests__/` cover both parser directions and preflight detection.
-- [ ] `docs/capabilities.md` updated for the policy-engine blocked-constructs description and the `loom doctor` row.
+- `autonomy_level` persists per epic; the Supervisor enforces all three modes, each covered by a unit test: `full-auto` auto-approves + dispatches **and writes the approve audit row**; `checkpoint` pauses after a story and resumes on re-dispatch; `manual` still requires explicit approve.
+- `GET /api/inbox` returns pending decisions federated across projects; the inbox view approves **and** rejects a plan end-to-end, with the status change + audit row asserted in a test.
+- `GET /api/fleet` aggregates ≥2 concurrent epics into board cards with correct per-epic attribution and no state bleed — covered by a test with two epics' agents in the DB.
+- Read-only mode: an enumerated-route test proves zero mutation routes succeed without the write token while every GET route serves without one; default (non-read-only) mode is unchanged.
+- `docs/capabilities.md` updated with the new CLI/MCP/web surfaces; `npm run build` + `npm run test` green across all workspace packages.
