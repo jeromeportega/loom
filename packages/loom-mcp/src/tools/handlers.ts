@@ -35,6 +35,7 @@ import {
   LessonStore,
   OpportunityStore,
   proposeNextEpic,
+  deriveBlocked,
 } from '@loom-ai/core';
 import type { ToolContext, ToolHandler } from './context.js';
 
@@ -391,6 +392,8 @@ const getStatus: ToolHandler = async (ctx, args) => {
       ...(epic.status === 'finalizing' && epic.finalize_phase
         ? { finalize_phase: epic.finalize_phase }
         : {}),
+      // Gate-blocked indicator: present only for in_progress + gate.
+      ...(deriveBlocked(epic) ?? {}),
       // The epic PR URL of record, once the finalizer has recorded it.
       ...(epic.epic_pr_url ? { epic_pr_url: epic.epic_pr_url } : {}),
       // Runtime failure message — present only for a 'failed' epic.

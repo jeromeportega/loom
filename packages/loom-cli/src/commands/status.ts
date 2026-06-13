@@ -6,6 +6,7 @@ import {
   AgentStore,
   AuditLog,
   ProjectRegistry,
+  deriveBlocked,
 } from '@loom-ai/core';
 
 /** Audit actions that mark a worker as approaching/hitting a deadline. */
@@ -122,6 +123,8 @@ interface JsonEpic {
   title: string;
   status: string;
   archived?: boolean;
+  blocked?: true;
+  blocked_reason?: 'integration_gate';
   stories: JsonStory[];
 }
 
@@ -196,6 +199,7 @@ function collectJsonEpics(
         title: epic.title,
         status: epic.status,
         ...(epic.archived_at ? { archived: true } : {}),
+        ...(deriveBlocked(epic) ?? {}),
         stories,
       });
     }
@@ -249,6 +253,9 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
       }
       if (epic.status === 'failed' && epic.error) {
         console.log(`        error: ${epic.error}`);
+      }
+      if (deriveBlocked(epic)) {
+        console.log(`        blocked: integration_gate`);
       }
 
       const gate = gateResultFor(auditStore, epic.id);
