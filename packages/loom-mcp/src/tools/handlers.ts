@@ -23,6 +23,7 @@ import {
   createGlobalLimiter,
   EpicFinalizer,
   EpicReverter,
+  EpicReconciler,
   OperatorGuidance,
   CodeReviewAgent,
   BriefRefiner,
@@ -826,6 +827,28 @@ const revertEpic: ToolHandler = async (ctx, args) => {
 };
 
 /**
+ * loom_reconcile_epic — verify a stranded-but-merged epic and flip it to done.
+ * Wraps EpicReconciler so chat clients have the same surface as `loom reconcile`.
+ * Identical inputs yield identical outcomes — both surfaces call the same
+ * EpicReconciler.reconcile() implementation (ADR-2).
+ */
+const reconcileEpic: ToolHandler = async (ctx, args) => {
+  const epicId = String(args.epic_id ?? '');
+  if (!epicId) return { status: 'error', message: 'epic_id is required' };
+  const db = openDatabase(ctx.loomDir);
+  const reconciler = new EpicReconciler({
+    projectRoot: ctx.projectRoot,
+    db,
+    ...(args._gitBin ? { gitBin: String(args._gitBin) } : {}),
+    ...(args._ghBin ? { ghBin: String(args._ghBin) } : {}),
+  });
+  const result = reconciler.reconcile(epicId, {
+    prUrl: args.pr_url ? String(args.pr_url) : undefined,
+  });
+  return result;
+};
+
+/**
  * loom_retry_story — retry one failed/blocked story and re-dispatch its epic
  * in the background. Delegates the guards + (optional) clean teardown +
  * dependent cascade to the shared StoryRetryService, then reuses the same
@@ -1381,6 +1404,7 @@ export const HANDLERS: Record<string, ToolHandler> = {
   loom_stop_epic: stopEpic,
   loom_retry_story: retryStory,
   loom_revert_epic: revertEpic,
+  loom_reconcile_epic: reconcileEpic,
   loom_archive_epic: archiveEpic,
   loom_guide_agent: guideAgent,
   loom_pull_guidance: pullGuidance,

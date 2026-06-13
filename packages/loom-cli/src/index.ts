@@ -13,6 +13,7 @@ import { runRetry } from './commands/retry.js';
 import { runWeb } from './commands/web.js';
 import { runStop } from './commands/stop.js';
 import { runRevert } from './commands/revert.js';
+import { runReconcile } from './commands/reconcile.js';
 import { runGuide } from './commands/guide.js';
 import { runMcpList, runMcpAdd } from './commands/mcp.js';
 import { runDoctor } from './commands/doctor.js';
@@ -253,6 +254,16 @@ program
   .option('--reason <text>', 'Optional explanation recorded with the revert in audit_log')
   .action((epicId: string, opts: { remote?: boolean; reason?: string }) => {
     runRevert(epicId, opts);
+  });
+
+// ─── loom reconcile ─────────────────────────────────────────────────────────
+program
+  .command('reconcile')
+  .description('Reconcile a stranded-but-merged epic to done. Verifies the PR was merged (via gh or git ancestry) then flips the epic status.')
+  .argument('<epic-id>', 'Epic id (e.g. epic-001)')
+  .option('--pr <url>', 'PR URL to verify via gh (squash-merged epics REQUIRE this)')
+  .action((epicId: string, opts: { pr?: string }) => {
+    runReconcile(epicId, { pr: opts.pr });
   });
 
 // ─── loom mcp ───────────────────────────────────────────────────────────────
