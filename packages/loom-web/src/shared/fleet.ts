@@ -43,4 +43,7 @@ export interface FleetCard {
   stories: FleetStory[];
   cost: EpicCost;
   blockers: number;
+  /** Set only when status='in_progress' and finalize_phase='gate'. */
+  blocked?: true;
+  blocked_reason?: 'integration_gate';
 }

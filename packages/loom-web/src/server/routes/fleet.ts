@@ -16,7 +16,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { Express } from 'express';
 import type Database from 'better-sqlite3';
-import { EpicStore, AgentStore, ProjectRegistry, createDatabase } from '@loom-ai/core';
+import { EpicStore, AgentStore, ProjectRegistry, createDatabase, deriveBlocked } from '@loom-ai/core';
 import type { EpicCost } from '../../shared/types.js';
 import type { FleetCard, FleetStory, AutonomyLevel } from '../../shared/fleet.js';
 
@@ -114,6 +114,7 @@ function buildProjectCards(
       stories,
       cost,
       blockers,
+      ...(deriveBlocked(epic) ?? {}),
     };
   });
 }
