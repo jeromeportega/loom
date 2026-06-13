@@ -50,6 +50,10 @@ export interface EpicStatus {
    * archived" toggle, `?include_archived=true`); the frontend dims them.
    */
   archived: boolean;
+  /** Set only when status='in_progress' and finalize_phase='gate' — the
+   *  integration gate blocked this epic. Absent for all other states. */
+  blocked?: true;
+  blocked_reason?: 'integration_gate';
 }
 
 export interface AgentSummary {

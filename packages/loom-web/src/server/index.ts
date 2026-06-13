@@ -12,6 +12,7 @@ import {
   ProjectRegistry,
   openDatabase,
   createDatabase,
+  deriveBlocked,
 } from '@loom-ai/core';
 import type {
   EpicStatus,
@@ -557,6 +558,7 @@ function rollupEpics(
     project_root: projectRoot,
     is_current_project: isCurrent,
     archived: epic.archived_at != null,
+    ...(deriveBlocked(epic) ?? {}),
   }));
 }
 

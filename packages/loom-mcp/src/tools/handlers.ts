@@ -23,6 +23,7 @@ import {
   createGlobalLimiter,
   EpicFinalizer,
   EpicReverter,
+  EpicReconciler,
   OperatorGuidance,
   CodeReviewAgent,
   BriefRefiner,
@@ -35,6 +36,7 @@ import {
   LessonStore,
   OpportunityStore,
   proposeNextEpic,
+  deriveBlocked,
 } from '@loom-ai/core';
 import type { ToolContext, ToolHandler } from './context.js';
 
@@ -391,6 +393,8 @@ const getStatus: ToolHandler = async (ctx, args) => {
       ...(epic.status === 'finalizing' && epic.finalize_phase
         ? { finalize_phase: epic.finalize_phase }
         : {}),
+      // Gate-blocked indicator: present only for in_progress + gate.
+      ...(deriveBlocked(epic) ?? {}),
       // The epic PR URL of record, once the finalizer has recorded it.
       ...(epic.epic_pr_url ? { epic_pr_url: epic.epic_pr_url } : {}),
       // Runtime failure message — present only for a 'failed' epic.
@@ -818,6 +822,28 @@ const revertEpic: ToolHandler = async (ctx, args) => {
   const result = reverter.revert(epicId, {
     remote: args.remote === true,
     reason: args.reason ? String(args.reason) : undefined,
+  });
+  return result;
+};
+
+/**
+ * loom_reconcile_epic — verify a stranded-but-merged epic and flip it to done.
+ * Wraps EpicReconciler so chat clients have the same surface as `loom reconcile`.
+ * Identical inputs yield identical outcomes — both surfaces call the same
+ * EpicReconciler.reconcile() implementation (ADR-2).
+ */
+const reconcileEpic: ToolHandler = async (ctx, args) => {
+  const epicId = String(args.epic_id ?? '');
+  if (!epicId) return { status: 'error', message: 'epic_id is required' };
+  const db = openDatabase(ctx.loomDir);
+  const reconciler = new EpicReconciler({
+    projectRoot: ctx.projectRoot,
+    db,
+    ...(args._gitBin ? { gitBin: String(args._gitBin) } : {}),
+    ...(args._ghBin ? { ghBin: String(args._ghBin) } : {}),
+  });
+  const result = reconciler.reconcile(epicId, {
+    prUrl: args.pr_url ? String(args.pr_url) : undefined,
   });
   return result;
 };
@@ -1378,6 +1404,7 @@ export const HANDLERS: Record<string, ToolHandler> = {
   loom_stop_epic: stopEpic,
   loom_retry_story: retryStory,
   loom_revert_epic: revertEpic,
+  loom_reconcile_epic: reconcileEpic,
   loom_archive_epic: archiveEpic,
   loom_guide_agent: guideAgent,
   loom_pull_guidance: pullGuidance,
