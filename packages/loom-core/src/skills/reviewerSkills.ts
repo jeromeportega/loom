@@ -54,10 +54,20 @@ export function registerReviewerSkills(deps: {
           system: [{ text: systemText, cache: true }],
           messages: [{ role: 'user', content: JSON.stringify(input) }],
         });
-        const parsed = ReviewerOutput.parse(extractJsonBlock(response.text));
-        return {
-          findings: parsed.findings.map((f) => ({ ...f, source: skillName })),
+        // The handler OWNS source attribution: JSON_INSTRUCTIONS tells the model
+        // to omit `source`, so we must inject it BEFORE validating against
+        // ReviewerOutput (whose Finding schema requires source). Validating
+        // first would reject every real finding on `source: Required` — the bug
+        // that made both reviewers warn-and-continue on every story despite the
+        // body-format fix.
+        const raw = extractJsonBlock(response.text) as { findings?: unknown[] };
+        const withSource = {
+          findings: (Array.isArray(raw?.findings) ? raw.findings : []).map((f) => ({
+            ...(f as Record<string, unknown>),
+            source: skillName,
+          })),
         };
+        return ReviewerOutput.parse(withSource);
       },
     });
   }
