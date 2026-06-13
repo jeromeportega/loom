@@ -32,7 +32,6 @@ import {
   setEpicAutonomy,
   EpicNotFoundError,
   runScan,
-  createLLMClient,
   LessonStore,
   OpportunityStore,
   proposeNextEpic,

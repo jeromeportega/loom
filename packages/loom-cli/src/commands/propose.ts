@@ -41,31 +41,30 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
   let db: Database.Database;
   let minBriefQualityScore = 7;
   let model = '';
+  let llm = opts.llm ?? null;
 
   if (opts._db) {
-    // Test path: skip policy.yaml/DB setup
+    // Test path: production setup (policy, db, llm) is bypassed via injected seams.
     db = opts._db;
   } else {
     if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
       console.error('loom is not initialized in this directory. Run `loom init` first.');
       process.exit(1);
     }
+    // Single policy load — reused for both DB setup and LLM creation.
     const policy = PolicyEngine.load(loomDir).policyData;
     minBriefQualityScore = policy.agents.min_brief_quality_score;
     model = modelFor(policy, 'planning');
     db = openDatabase(loomDir);
-  }
 
-  let llm = opts.llm ?? null;
-  if (!llm && !opts._refiner) {
-    const policy = PolicyEngine.load(loomDir).policyData;
-    model = modelFor(policy, 'planning');
-    try {
-      llm = createLLMClient(policy.agents.llm_backend);
-    } catch (err) {
-      console.error((err as Error).message);
-      process.exit(1);
-      return;
+    if (!llm && !opts._refiner) {
+      try {
+        llm = createLLMClient(policy.agents.llm_backend);
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exit(1);
+        return;
+      }
     }
   }
 

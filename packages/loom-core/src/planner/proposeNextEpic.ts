@@ -80,6 +80,7 @@ export async function proposeNextEpic(
   const brief = refinement.refined_brief ?? rough;
   const planResult = await deps.planner.run(brief);
   const epicId = planResult.epicIds[0];
+  if (!epicId) throw new Error('Planner returned no epic IDs — cannot complete proposal');
 
   // 7. Stamp proposed_by='loom'; epic stays planned + manual until human approves
   deps.epicStore.setProposedBy(epicId, 'loom');
