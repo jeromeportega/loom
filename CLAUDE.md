@@ -6,8 +6,8 @@ This is the **loom** repository: an open-source, self-learning, multi-agent engi
 
 ```
 packages/loom-core/   — orchestration engine (planner, supervisor, guardrails, skills, state)
-packages/loom-cli/    — CLI commands (loom init, loom epic, loom approve, loom status)
-packages/loom-mcp/    — MCP server (the primary loom surface for Claude Code, Cursor, etc.)
+packages/loom-cli/    — CLI commands — the PRIMARY loom surface (init, epic, approve, run, status, diff, review, artifacts, traces, audit, autonomy)
+packages/loom-mcp/    — optional MCP server for Claude Code / Cursor (opt in with `loom init --mcp`; the CLI is primary)
 packages/loom-web/    — local web dashboard (Express + vanilla JS frontend)
 skills/                — built-in loom skills (agentskills.io format)
 schemas/               — epic.schema.yaml, policy.schema.yaml

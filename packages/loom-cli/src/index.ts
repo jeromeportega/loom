@@ -21,6 +21,13 @@ import { runScanCommand, runOpportunitiesCommand } from './commands/scan.js';
 import { runGateDryRunCommand } from './commands/doctorDryRunGate.js';
 import { runCrossEpicGateCommand } from './commands/doctorCrossEpicGate.js';
 import { runPropose } from './commands/propose.js';
+import { runDiff } from './commands/diff.js';
+import { runReview } from './commands/review.js';
+import { runArtifacts } from './commands/artifacts.js';
+import { runTraces } from './commands/traces.js';
+import { runAudit } from './commands/audit.js';
+import { runAutonomy } from './commands/autonomy.js';
+import { runProjects } from './commands/projects.js';
 
 // Read the version from this package's package.json at runtime so
 // `loom --version` stays automatically in sync with the published
@@ -73,10 +80,11 @@ program
 // ─── loom init ─────────────────────────────────────────────────────────────
 program
   .command('init')
-  .description('Initialize loom in the current git repo')
+  .description('Initialize loom in the current git repo (CLI-first; MCP server is opt-in)')
   .option('--cursor', 'Also write .cursor/mcp.json and .cursor/rules/loom.mdc')
+  .option('--mcp', 'Also write .mcp.json so Claude Code connects the optional loom MCP server')
   .option('-y, --yes', 'Skip confirmation prompts')
-  .action((opts: { cursor?: boolean; yes?: boolean }) => {
+  .action((opts: { cursor?: boolean; yes?: boolean; mcp?: boolean }) => {
     runInit(opts);
   });
 
@@ -103,7 +111,7 @@ guard
 // ─── loom status ────────────────────────────────────────────────────────────
 program
   .command('status')
-  .description('Show current epic and agent status')
+  .description('Show epic and per-story status with PR links (use --json for machine-readable output)')
   .option('--watch', 'Refresh every 10s until all stories reach terminal status')
   .option('--epic <id>', 'Show only this epic')
   .option('--all', 'Aggregate status across every registered loom project')
@@ -266,6 +274,84 @@ program
     runReconcile(epicId, { pr: opts.pr });
   });
 
+// ─── loom diff ────────────────────────────────────────────────────────────
+program
+  .command('diff')
+  .description('Show a story or epic diff (git diff base..branch). Read-only.')
+  .argument('<id>', 'Story id (story-XXX-YYY) or epic id (epic-XXX)')
+  .option('--max-bytes <n>', 'Truncate the diff body at N bytes (default 200000)', (v: string) => parseInt(v, 10))
+  .option('--no-stat', 'Omit the leading --stat summary')
+  .option('--json', 'Emit JSON: { base, head, bytes, truncated, diff, stat }')
+  .action(async (id: string, opts: { maxBytes?: number; stat?: boolean; json?: boolean }) => {
+    await runDiff(id, { maxBytes: opts.maxBytes, stat: opts.stat, json: opts.json });
+  });
+
+// ─── loom review ──────────────────────────────────────────────────────────
+program
+  .command('review')
+  .description("Show a story's review verdict and summary (block-and-revise output)")
+  .argument('<story-id>', 'Story id (e.g. story-001-003)')
+  .option('--json', 'Emit JSON: { story_id, review_status, review_summary }')
+  .action((storyId: string, opts: { json?: boolean }) => {
+    runReview(storyId, { json: opts.json });
+  });
+
+// ─── loom artifacts ───────────────────────────────────────────────────────
+program
+  .command('artifacts')
+  .description("Show an epic's planning artifacts (brief, PRD, architecture, epic YAML)")
+  .argument('<epic-id>', 'Epic id (e.g. epic-001)')
+  .option('--section <name>', 'Print one body: brief | prd | architecture | epic_yaml')
+  .option('--json', 'Emit JSON with paths + all artifact bodies')
+  .action((epicId: string, opts: { section?: string; json?: boolean }) => {
+    runArtifacts(epicId, { section: opts.section, json: opts.json });
+  });
+
+// ─── loom traces ──────────────────────────────────────────────────────────
+program
+  .command('traces')
+  .description('Show captured worker reasoning (decision traces). Scope to exactly one of --story/--agent/--epic.')
+  .option('--story <id>', 'Story id to scope to')
+  .option('--agent <id>', 'Agent id to scope to')
+  .option('--epic <id>', 'Epic id to scope to')
+  .option('--limit <n>', 'Max rows to return', (v: string) => parseInt(v, 10))
+  .option('--json', 'Emit JSON: { traces: [...] }')
+  .action((opts: { story?: string; agent?: string; epic?: string; limit?: number; json?: boolean }) => {
+    runTraces(opts);
+  });
+
+// ─── loom audit ───────────────────────────────────────────────────────────
+program
+  .command('audit')
+  .description('Show recent audit_log entries. Optionally scope to --story or --agent.')
+  .option('--story <id>', 'Story id (matches across retries)')
+  .option('--agent <id>', 'Agent id to scope to')
+  .option('--limit <n>', 'Max rows to return (default 20)', (v: string) => parseInt(v, 10))
+  .option('--json', 'Emit JSON: { entries: [...] }')
+  .action((opts: { story?: string; agent?: string; limit?: number; json?: boolean }) => {
+    runAudit(opts);
+  });
+
+// ─── loom autonomy ────────────────────────────────────────────────────────
+program
+  .command('autonomy')
+  .description('Set or show an epic autonomy level (full-auto | checkpoint | manual)')
+  .argument('<epic-id>', 'Epic id (e.g. epic-001)')
+  .argument('[level]', 'full-auto | checkpoint | manual; omit to show the current value')
+  .option('--json', 'Emit JSON: { id, autonomy_level }')
+  .action((epicId: string, level: string | undefined, opts: { json?: boolean }) => {
+    runAutonomy(epicId, level, { json: opts.json });
+  });
+
+// ─── loom projects ────────────────────────────────────────────────────────
+program
+  .command('projects')
+  .description('List loom-initialized repos on this machine')
+  .option('--json', 'Emit JSON: { projects: [...] }')
+  .action((opts: { json?: boolean }) => {
+    runProjects({ json: opts.json });
+  });
+
 // ─── loom mcp ───────────────────────────────────────────────────────────────
 const mcp = program
   .command('mcp')
@@ -315,7 +401,7 @@ program
 // ─── loom serve ─────────────────────────────────────────────────────────────
 program
   .command('serve')
-  .description('Start the loom MCP server (stdio transport)')
+  .description('Start the optional loom MCP server (stdio transport). The CLI is the primary surface; prefer running loom commands directly.')
   .action(async () => {
     // Dynamically import to keep CLI startup fast when MCP is not needed
     const { startMcpServer } = await import('@loom-ai/mcp');

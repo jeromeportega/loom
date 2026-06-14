@@ -42,16 +42,17 @@ guardrail hook. `loom doctor` will warn if it's not on your PATH.
 
 ## Two ways to drive loom
 
-Loom speaks two interfaces over the same engine:
+Loom speaks two interfaces over the same engine. **The CLI is the primary
+surface;** MCP is optional.
 
 | Surface | When | How |
 |---|---|---|
-| **MCP (recommended)** | Conversational use from an IDE/agent client (Claude Code, Cursor) | `.mcp.json` and `.cursor/mcp.json` are written by `loom init`; ask your client to call `loom_start_epic`, `loom_approve_plan`, `loom_get_status`, etc. |
-| **CLI** | Scripts, automation, shell habit | `loom epic`, `loom approve`, `loom run`, `loom status`. The CLI commands are the authoritative implementation the MCP tools wrap. |
+| **CLI (primary)** | Default — scripts, automation, and outer-agent control | `loom epic`, `loom approve`, `loom run`, `loom status` (plus `diff`, `review`, `artifacts`, `traces`, `audit`, `autonomy`). Every read command supports `--json`. |
+| **MCP (optional)** | Conversational use from an IDE/agent client (Claude Code, Cursor) | Opt in with `loom init --mcp` (writes `.mcp.json`; `--cursor` writes `.cursor/mcp.json`). Then ask your client to call `loom_start_epic`, `loom_approve_plan`, `loom_get_status`, etc. |
 
-The walkthrough below uses the CLI for compactness; every step has a
-direct MCP-tool equivalent. Substitute `loom_start_epic` for
-`loom epic`, `loom_approve_plan` for `loom approve`, and so on.
+The walkthrough below uses the CLI; if you enabled MCP, every step has a
+direct tool equivalent (`loom_start_epic` for `loom epic`,
+`loom_approve_plan` for `loom approve`, and so on).
 
 ## Your first epic, end to end
 

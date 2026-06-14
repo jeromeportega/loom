@@ -17,25 +17,28 @@ loom approve epic-001 && loom run --checkpoint epic
 
 ---
 
-## MCP is the primary interface
+## The CLI is the primary interface
 
-Loom ships an MCP server (`loom serve`) that exposes the core loop as
-tools: `loom_start_epic`, `loom_approve_plan`, `loom_reject_plan`,
-`loom_get_planning_artifacts`, `loom_get_status`, `loom_get_diff`,
-`loom_get_review`, `loom_guide_agent`, and a handful of others.
-**Driving loom from
-your MCP-aware client (Claude Code, Cursor, or any other MCP host) is the
-recommended path** — you describe the work in a conversation, the host
-calls loom's tools, you stay in chat the whole time.
+Drive loom by running `loom …` commands. Each invocation runs fresh and
+prints to stdout, and every read command supports `--json` — so an outer
+agent can drive loom by running commands and reading their output, with no
+persistent server to watch (and nothing to silently run stale code after an
+upgrade).
 
-The CLI exists for the same operations the MCP tools provide; it's the
-authoritative implementation those tools wrap. Use it when you want
-shell-friendly scripting, or when you don't have an MCP client open. For
-ambient conversational use, use MCP.
+```bash
+loom epic "<brief>"               # plan an epic
+loom approve <epic-id> --run      # approve + dispatch
+loom status --json                # poll progress + PR links
+loom diff <story|epic-id>         # inspect a story/epic diff
+loom review <story-id>            # the reviewer verdict
+```
 
-`loom init` writes `.mcp.json` (Claude Code) and `.cursor/mcp.json`
-(Cursor) automatically; no extra wiring needed. To verify the server is
-reachable from your client, ask it to call `loom_get_status` after init.
+**Optional MCP server.** `loom serve` exposes the same operations as tools
+(`loom_start_epic`, `loom_get_status`, …) for Claude Code / Cursor. It is
+opt-in — run `loom init --mcp` to write `.mcp.json` (or `--cursor` for
+`.cursor/mcp.json`). A long-lived `loom serve` loads its build once at
+startup, so prefer the CLI unless you specifically want conversational,
+in-IDE control.
 
 ---
 

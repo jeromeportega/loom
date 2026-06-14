@@ -9,6 +9,7 @@ import {
   validateCursorModels,
 } from '@loom-ai/core';
 import { gateCommandCheck } from './doctorGateCheck.js';
+import { reportPolicyDrift } from './init.js';
 
 interface Check {
   name: string;
@@ -156,6 +157,11 @@ export function runDoctor(): void {
   if (process.env.LOOM_HOME) {
     console.log(`  [ok  ] LOOM_HOME override active: ${loomHome()}`);
   }
+
+  // Surface policy knobs added since this repo's policy.yaml was written (same
+  // notice `loom init` prints, since a user may re-run either after an upgrade).
+  if (initialized) reportPolicyDrift(loomDir);
+
   console.log('');
 
   if (checks.some((c) => c.required && !c.ok)) {
