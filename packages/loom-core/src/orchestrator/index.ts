@@ -116,3 +116,5 @@ export type {
 export { computeHeuristics, buildStorySignals } from './signalLedger.js';
 export type { HeuristicInput } from './signalLedger.js';
 export { SignalLedger } from './signalStore.js';
+export { renderBuildSignalAnalysis } from './signalRender.js';
+export type { SignalRenderInput } from './signalRender.js';

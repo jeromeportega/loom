@@ -16,6 +16,8 @@ import { PrDescriptionAgent } from '../review/index.js';
 import yaml from 'js-yaml';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SignalLedger } from './signalStore.js';
+import { renderBuildSignalAnalysis } from './signalRender.js';
 
 export interface EpicFinalizerOptions {
   projectRoot: string;
@@ -663,6 +665,18 @@ export class EpicFinalizer {
     // even on failure, so reviewers need to see it).
     if (gateOutcome) {
       body += '\n\n' + renderGateSection(gateOutcome);
+    }
+    // Append per-story build signal analysis — read-only readback, never writes
+    // (story-010-003, ADR-6). Only appended when at least one signal record exists.
+    const signalLedger = new SignalLedger({ db: this.opts.db, projectRoot: this.opts.projectRoot });
+    const signalRecords = signalLedger.readEpic(merged);
+    if (signalRecords.size > 0) {
+      const gateGreen = gateOutcome?.ok ?? null;
+      body += '\n\n' + renderBuildSignalAnalysis({
+        records: signalRecords,
+        outcomes: new Map(merged.map((id) => [id, { reviewFindings: null, gateGreen }])),
+        storyOrder: merged,
+      });
     }
 
     epicStore.updateFinalizePhase(epicId, 'opening_pr');
