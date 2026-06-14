@@ -196,6 +196,45 @@ export interface AuditLogEntry {
   timestamp: string;
 }
 
+// ─── Adaptive cost-control signals (epic: adaptive review) ───────────────────
+
+export type SignalLevel = 'low' | 'medium' | 'high';
+export type CostTier = 'light' | 'standard' | 'heavy';
+
+/** Cheap pre-dispatch LLM rating of a story (B0). */
+export interface TriageSignal {
+  risk: SignalLevel;
+  predicted_complexity: SignalLevel;
+  rationale: string;
+}
+
+/** The worker's post-work self-rating (B1), parsed from its LOOM_SELF_ASSESSMENT marker. */
+export interface SelfAssessment {
+  confidence: SignalLevel;
+  complexity: SignalLevel;
+  note?: string;
+}
+
+/** Free, computed-from-state signals (B2). */
+export interface HeuristicSignals {
+  diff_lines: number;
+  diff_files: number;
+  /** null = unknown (no first-try test signal available). */
+  tests_green_first_try: boolean | null;
+  /** Changed files matching policy.agents.risky_paths. */
+  risky_paths_touched: string[];
+}
+
+/** Per-story signal record persisted to the ledger and read back by the EpicFinalizer. */
+export interface StorySignals {
+  triage?: TriageSignal;
+  self_assessment?: SelfAssessment;
+  heuristics?: HeuristicSignals;
+  tier: CostTier;
+  /** What the tier actually gated — recorded so the epic review can audit the calls. */
+  steps: { reviewers: number; verify_phase: boolean; skill_gen: boolean };
+}
+
 // ─── Policy Schema ──────────────────────────────────────────────────────────
 
 export const PolicySchema = z.object({
@@ -265,6 +304,26 @@ export const PolicySchema = z.object({
       // worker keep self-correcting. 0 disables revision (review once, no
       // re-prompt). Ignored unless review_strategy='block-and-revise'.
       review_max_passes: z.number().int().min(0).default(2),
+      // Adaptive cost control (epic: adaptive review). When 'on' (default), loom
+      // sizes the expensive steps (reviewer count, verify-phase spawn, skill-gen)
+      // per story from cheap signals — triage, the worker's self-assessment, and
+      // heuristics — never EXCEEDING what the static flags above already allow
+      // (the ceiling rule). 'off' = every enabled step runs on every story.
+      adaptive_cost: z.enum(['on', 'off']).default('on'),
+      // Cheap model for the per-story triage call (one call/story: risk +
+      // complexity rating). Defaults to Haiku — triage is meta-work.
+      triage_model: z.string().default('claude-haiku-4-5-20251001'),
+      // Globs that force the heavy review tier when a story touches them,
+      // regardless of confidence — a safety floor for sensitive surface area.
+      risky_paths: z
+        .array(z.string())
+        .default([
+          '**/auth/**',
+          '**/migrations/**',
+          '**/payment/**',
+          '**/payments/**',
+          '**/.github/workflows/**',
+        ]),
       // Controls when SkillGenerator runs after a successful story:
       //   'on'      — every successful story (default)
       //   'off'     — never (cost-conscious teams)

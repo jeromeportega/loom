@@ -64,6 +64,8 @@ export { CursorAgentWorker } from './CursorAgentWorker.js';
 export type { CursorAgentWorkerOptions } from './CursorAgentWorker.js';
 export { createWorker } from './workerFactory.js';
 export type { WorkerBackend, WorkerFactoryOptions } from './workerFactory.js';
+export { resolveCostTier, tierSteps } from './tier.js';
+export type { TierInputs, TierSteps } from './tier.js';
 export { buildWorkerPrompt, workerTemplatePath } from './workerPrompt.js';
 export { git, gitSafe, isGitRepo, hasCommits, defaultRemote } from './git.js';
 export { stallConfigWarning } from './configWarnings.js';

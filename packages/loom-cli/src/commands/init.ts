@@ -574,6 +574,25 @@ agents:
   # forcefully limit review cost; 0 = review once, never re-prompt.
   review_max_passes: 2
 
+  # Adaptive cost control. When 'on' (default), loom sizes the expensive steps
+  # (reviewer count, verify-phase spawn, skill-gen) per story from cheap signals
+  # — a triage call, the worker's self-assessment, and heuristics — never
+  # exceeding the static flags above (the ceiling rule). 'off' runs every
+  # enabled step on every story (today's behavior).
+  adaptive_cost: "on"
+
+  # Cheap model for the per-story triage rating (one call/story: risk + complexity).
+  triage_model: "claude-haiku-4-5-20251001"
+
+  # Globs that force the heavy review tier when a story touches them, regardless
+  # of confidence — a safety floor for sensitive surface area.
+  risky_paths:
+    - "**/auth/**"
+    - "**/migrations/**"
+    - "**/payment/**"
+    - "**/payments/**"
+    - "**/.github/workflows/**"
+
   # Wall-clock bound (in minutes) for the reviewer subprocess. The legacy
   # hardcoded 10-min timeout silently shipped large story diffs unreviewed
   # (e.g. story-007-003 in the multi-epic shared-client run); raise this
