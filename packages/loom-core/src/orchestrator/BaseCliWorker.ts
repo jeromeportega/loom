@@ -284,10 +284,18 @@ export abstract class BaseCliWorker implements WorkerRunner {
    */
   protected parseStreamLine(line: string): {
     humanText?: string;
+    /**
+     * The FULL, untruncated assistant message text — used to scan for the
+     * self-assessment marker (B1). `humanText` is truncated for display and a
+     * stream-json backend's raw stdout has the marker's JSON escaped, so neither
+     * is safe to parse the marker from. Stream backends set this from the
+     * decoded text blocks. The default treats the whole line as assistant text.
+     */
+    assistantText?: string;
     usage?: WorkerUsage;
     traces?: Array<{ kind: string; subject?: string; rationale: string }>;
   } {
-    return { humanText: line };
+    return { humanText: line, assistantText: line };
   }
 
   private resetUsage(): void {
@@ -500,11 +508,13 @@ export abstract class BaseCliWorker implements WorkerRunner {
     const proc = await this.spawnWithInfraRetry(assignment, prompt);
     let logTail = tail(proc.output, LOG_TAIL_CHARS);
 
-    // Parse the worker's self-assessment marker from the FULL implement output
-    // (not the truncated tail) before any early return. Observe-only — surfaced
-    // on the result for the signal ledger; gates nothing here (B1).
+    // Parse the worker's self-assessment marker before any early return.
+    // Prefer the decoded assistant text — a stream-json backend's raw `output`
+    // has the marker's JSON escaped, so parsing that would always fail. Fall
+    // back to `output` for non-stream backends (mock) where it's clean text.
+    // Observe-only: surfaced on the result for the signal ledger (B1).
     const selfAssessment: SelfAssessment | undefined = this.adaptiveCostEnabled
-      ? parseSelfAssessment(proc.output)
+      ? parseSelfAssessment(proc.assistantText ?? proc.output)
       : undefined;
 
     const implementFailure = this.terminalFailureResult(assignment, proc, logTail);
@@ -1015,6 +1025,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
 
     return new Promise((resolve) => {
       let output = '';
+      // Decoded assistant text (untruncated) for self-assessment parsing (B1).
+      let assistantText = '';
       let timedOut = false;
       let timeoutReason: TimeoutKillReason | undefined;
       let budgetExhausted = false;
@@ -1097,6 +1109,9 @@ export abstract class BaseCliWorker implements WorkerRunner {
           if (parsed.humanText !== undefined && parsed.humanText.length > 0) {
             onOutput?.(parsed.humanText + '\n', 'stdout');
           }
+          if (parsed.assistantText && parsed.assistantText.length > 0) {
+            assistantText += parsed.assistantText + '\n';
+          }
           if (parsed.usage) {
             applySessionUsage(parsed.usage);
             // Budget is per-story (cumulative across revisions), so check the
@@ -1151,6 +1166,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
         resolve({
           code: null,
           output,
+          assistantText: assistantText || undefined,
           timedOut,
           timeoutReason,
           spawnError: err.message,
@@ -1168,6 +1184,9 @@ export abstract class BaseCliWorker implements WorkerRunner {
           if (parsed.humanText !== undefined && parsed.humanText.length > 0) {
             onOutput?.(parsed.humanText, 'stdout');
           }
+          if (parsed.assistantText && parsed.assistantText.length > 0) {
+            assistantText += parsed.assistantText + '\n';
+          }
           if (parsed.usage) {
             applySessionUsage(parsed.usage);
           }
@@ -1176,7 +1195,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
         closeStdinIfOpen();
         channel.close();
         onPid?.(null);
-        resolve({ code, output, timedOut, timeoutReason, budgetExhausted, producedOutput, suspendDetected });
+        resolve({ code, output, assistantText: assistantText || undefined, timedOut, timeoutReason, budgetExhausted, producedOutput, suspendDetected });
       });
 
       // Initial prompt write. `formatInitialPrompt` is identity for

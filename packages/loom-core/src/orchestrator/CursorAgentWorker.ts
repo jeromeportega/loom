@@ -84,6 +84,7 @@ export class CursorAgentWorker extends BaseCliWorker {
    */
   protected parseStreamLine(line: string): {
     humanText?: string;
+    assistantText?: string;
     usage?: WorkerUsage;
     traces?: Array<{ kind: string; subject?: string; rationale: string }>;
   } {
@@ -116,7 +117,7 @@ export class CursorAgentWorker extends BaseCliWorker {
         }
       }
       const text = textParts.join(' ');
-      return text ? { humanText: text } : {};
+      return text ? { humanText: text, assistantText: text } : {};
     }
 
     // system, user, tool_call, and anything cursor-agent grows later —

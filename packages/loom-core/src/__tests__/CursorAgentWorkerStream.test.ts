@@ -253,9 +253,10 @@ describe('CursorAgentWorker.parseStreamLine — fixture-driven', () => {
     assert.deepEqual(w.exposeParseStreamLine(FIXTURE.user), {});
   });
 
-  it('assistant text content → humanText equals the text', () => {
+  it('assistant text content → humanText and assistantText equal the text', () => {
     assert.deepEqual(w.exposeParseStreamLine(FIXTURE.assistantText), {
       humanText: 'Reading CursorAgentWorker.ts to understand the seam.',
+      assistantText: 'Reading CursorAgentWorker.ts to understand the seam.',
     });
   });
 
