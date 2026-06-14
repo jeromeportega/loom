@@ -4,6 +4,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { ClaudeCodeWorker } from '../orchestrator/ClaudeCodeWorker.js';
 import { MAX_GUIDANCE_BYTES } from '../orchestrator/WorkerInputChannel.js';
+import { parseSelfAssessment } from '../orchestrator/selfAssessment.js';
 
 /**
  * Subclass exposing the protected hooks so we can exercise the streaming-
@@ -59,6 +60,50 @@ describe('ClaudeCodeWorker — streaming-input integration', () => {
     assert.ok(!w.exposeIsTerminalLine('{"type":"assistant"}'));
     assert.ok(!w.exposeIsTerminalLine('{"type":"user"}'));
     assert.ok(!w.exposeIsTerminalLine('not json'));
+  });
+});
+
+describe('ClaudeCodeWorker — self-assessment marker survives stream-json (B1)', () => {
+  it('decodes assistantText so the escaped-JSON marker parses', () => {
+    const w = new TestableClaude();
+    // A real stream-json assistant line: the marker JSON is ESCAPED inside the
+    // event's text string. Parsing the raw line would fail; assistantText must
+    // carry the DECODED text so parseSelfAssessment succeeds.
+    const innerText =
+      'All acceptance criteria met.\nLOOM_SELF_ASSESSMENT {"confidence":"high","complexity":"low","note":"small fix"}';
+    const streamLine = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: innerText }] },
+    });
+    // Sanity: the raw stream line has the marker's quotes escaped — parsing it
+    // directly would NOT yield a valid assessment (the bug this guards).
+    assert.equal(parseSelfAssessment(streamLine), undefined);
+
+    const parsed = w.exposeParseStreamLine(streamLine);
+    assert.ok(parsed.assistantText, 'assistant event must yield assistantText');
+    assert.deepEqual(parseSelfAssessment(parsed.assistantText), {
+      confidence: 'high',
+      complexity: 'low',
+      note: 'small fix',
+    });
+  });
+
+  it('does not truncate assistantText (humanText cap could cut the trailing marker)', () => {
+    const w = new TestableClaude();
+    const longPrefix = 'x'.repeat(800);
+    const innerText = `${longPrefix}\nLOOM_SELF_ASSESSMENT {"confidence":"medium","complexity":"high"}`;
+    const streamLine = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: innerText }] },
+    });
+    const parsed = w.exposeParseStreamLine(streamLine);
+    // humanText is truncated to 400 chars — the marker is gone from it...
+    assert.ok(!(parsed.humanText ?? '').includes('LOOM_SELF_ASSESSMENT'));
+    // ...but assistantText is untruncated, so the marker survives.
+    assert.deepEqual(parseSelfAssessment(parsed.assistantText), {
+      confidence: 'medium',
+      complexity: 'high',
+    });
   });
 });
 

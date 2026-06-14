@@ -44,6 +44,13 @@ export interface SpawnOutcome {
   code: number | null;
   /** Everything the child wrote to stdout+stderr, concatenated. */
   output: string;
+  /**
+   * Decoded assistant message text (untruncated), concatenated across the spawn.
+   * Set by stream-json backends so the self-assessment marker (B1) can be parsed
+   * from clean text rather than escaped JSON; undefined for backends that don't
+   * decode assistant text.
+   */
+  assistantText?: string;
   /** Message from the child `'error'` event — carries ENOENT and the cli-config rename race. */
   spawnError?: string;
   /** The WorkerTimeoutGuard fired a wall-clock kill (stall/cap). */

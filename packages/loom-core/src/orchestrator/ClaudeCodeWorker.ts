@@ -249,6 +249,9 @@ export class ClaudeCodeWorker extends BaseCliWorker {
       const usage = parseUsage(message?.usage);
       return {
         ...(text ? { humanText: truncate(text, 400) } : {}),
+        // Untruncated text for self-assessment marker parsing (B1) — humanText
+        // is capped at 400 chars and could cut the trailing marker.
+        ...(text ? { assistantText: text } : {}),
         ...(usage ? { usage } : {}),
         ...(traces.length > 0 ? { traces } : {}),
       };

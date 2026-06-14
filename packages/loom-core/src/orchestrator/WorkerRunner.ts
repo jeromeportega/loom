@@ -1,4 +1,4 @@
-import type { Story, AgentStatus } from '../types.js';
+import type { Story, AgentStatus, SelfAssessment } from '../types.js';
 import type { WorkerInputChannel } from './WorkerInputChannel.js';
 import type { AttemptClass, InfraSignature } from './resilience/types.js';
 
@@ -208,6 +208,13 @@ export interface WorkerResult {
   usage?: WorkerUsage;
   /** True when the run was halted because it crossed `budget_tokens_per_story`. */
   budgetExhausted?: boolean;
+  /**
+   * The worker's post-work self-rating (B1), parsed from its
+   * LOOM_SELF_ASSESSMENT marker. Requested only under adaptive cost control;
+   * unset when the marker is absent/malformed or adaptive_cost is off. Consumed
+   * by the signal ledger (and, later, the cost-tier gating).
+   */
+  selfAssessment?: SelfAssessment;
 }
 
 /**

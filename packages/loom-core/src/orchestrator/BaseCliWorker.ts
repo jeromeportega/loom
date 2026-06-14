@@ -19,6 +19,8 @@ import type {
 } from './WorkerRunner.js';
 import { type WorkerInputChannel, NO_OP_CHANNEL } from './WorkerInputChannel.js';
 import { buildWorkerPrompt, buildIntegratorPrompt } from './workerPrompt.js';
+import { parseSelfAssessment } from './selfAssessment.js';
+import type { SelfAssessment } from '../types.js';
 import type { Story } from '../types.js';
 import { gitSafe, defaultRemote, remoteUrl } from './git.js';
 import {
@@ -180,6 +182,13 @@ export interface CliWorkerOptions {
    * 'inherit' (default) leaves the parent env untouched.
    */
   workerAuth?: 'inherit' | 'session';
+  /**
+   * policy.agents.adaptive_cost — when 'on', the implement prompt asks the
+   * worker to end with a self-assessment marker (B1), and the worker surfaces
+   * the parsed rating on its result for the signal ledger. Default 'off' keeps
+   * the worker prompt byte-identical to the bench baseline.
+   */
+  adaptiveCost?: 'on' | 'off';
 }
 
 /** Legacy absolute cap used when neither absoluteCapMs nor timeoutMs is given. */
@@ -228,6 +237,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
   private contextNotesEnabled: boolean;
   private handoffEnabled: boolean;
   private phasesEnabled: boolean;
+  /** When true, request + parse the worker self-assessment marker (B1). */
+  private adaptiveCostEnabled: boolean;
   /** When true, strip inherited Anthropic API auth from the worker spawn env. */
   private sessionAuth: boolean;
   /** Accumulated worker usage across the spawn (and its revisions). */
@@ -256,6 +267,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
     // resume. Set 'off' explicitly to opt out.
     this.handoffEnabled = (opts.handoff ?? 'telemetry') !== 'off';
     this.phasesEnabled = (opts.phases ?? 'off') === 'on';
+    this.adaptiveCostEnabled = (opts.adaptiveCost ?? 'off') === 'on';
     this.sessionAuth = (opts.workerAuth ?? 'inherit') === 'session';
   }
 
@@ -272,10 +284,18 @@ export abstract class BaseCliWorker implements WorkerRunner {
    */
   protected parseStreamLine(line: string): {
     humanText?: string;
+    /**
+     * The FULL, untruncated assistant message text — used to scan for the
+     * self-assessment marker (B1). `humanText` is truncated for display and a
+     * stream-json backend's raw stdout has the marker's JSON escaped, so neither
+     * is safe to parse the marker from. Stream backends set this from the
+     * decoded text blocks. The default treats the whole line as assistant text.
+     */
+    assistantText?: string;
     usage?: WorkerUsage;
     traces?: Array<{ kind: string; subject?: string; rationale: string }>;
   } {
-    return { humanText: line };
+    return { humanText: line, assistantText: line };
   }
 
   private resetUsage(): void {
@@ -477,6 +497,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
       includeUpstreamContext: this.contextNotesEnabled,
       pullGuidanceHint: this.pullGuidanceHint(),
       includeHandoff: this.handoffEnabled,
+      requestSelfAssessment: this.adaptiveCostEnabled,
       ...(this.phasesEnabled ? { phase: 'implement' as const } : {}),
     });
     // The single integration seam for epic-006's infra auto-retry: a detected
@@ -486,6 +507,15 @@ export abstract class BaseCliWorker implements WorkerRunner {
     // counted once downstream.
     const proc = await this.spawnWithInfraRetry(assignment, prompt);
     let logTail = tail(proc.output, LOG_TAIL_CHARS);
+
+    // Parse the worker's self-assessment marker before any early return.
+    // Prefer the decoded assistant text — a stream-json backend's raw `output`
+    // has the marker's JSON escaped, so parsing that would always fail. Fall
+    // back to `output` for non-stream backends (mock) where it's clean text.
+    // Observe-only: surfaced on the result for the signal ledger (B1).
+    const selfAssessment: SelfAssessment | undefined = this.adaptiveCostEnabled
+      ? parseSelfAssessment(proc.assistantText ?? proc.output)
+      : undefined;
 
     const implementFailure = this.terminalFailureResult(assignment, proc, logTail);
     if (implementFailure) return implementFailure;
@@ -517,6 +547,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
           summary: this.completionSummary(assignment, 0, {}),
           logTail,
           ...(this.accumulatedUsage ? { usage: this.accumulatedUsage } : {}),
+          ...(selfAssessment ? { selfAssessment } : {}),
         };
       }
       return {
@@ -572,6 +603,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
       logTail,
       review,
       ...(this.accumulatedUsage ? { usage: this.accumulatedUsage } : {}),
+      ...(selfAssessment ? { selfAssessment } : {}),
     };
   }
 
@@ -993,6 +1025,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
 
     return new Promise((resolve) => {
       let output = '';
+      // Decoded assistant text (untruncated) for self-assessment parsing (B1).
+      let assistantText = '';
       let timedOut = false;
       let timeoutReason: TimeoutKillReason | undefined;
       let budgetExhausted = false;
@@ -1075,6 +1109,9 @@ export abstract class BaseCliWorker implements WorkerRunner {
           if (parsed.humanText !== undefined && parsed.humanText.length > 0) {
             onOutput?.(parsed.humanText + '\n', 'stdout');
           }
+          if (parsed.assistantText && parsed.assistantText.length > 0) {
+            assistantText += parsed.assistantText + '\n';
+          }
           if (parsed.usage) {
             applySessionUsage(parsed.usage);
             // Budget is per-story (cumulative across revisions), so check the
@@ -1129,6 +1166,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
         resolve({
           code: null,
           output,
+          assistantText: assistantText || undefined,
           timedOut,
           timeoutReason,
           spawnError: err.message,
@@ -1146,6 +1184,9 @@ export abstract class BaseCliWorker implements WorkerRunner {
           if (parsed.humanText !== undefined && parsed.humanText.length > 0) {
             onOutput?.(parsed.humanText, 'stdout');
           }
+          if (parsed.assistantText && parsed.assistantText.length > 0) {
+            assistantText += parsed.assistantText + '\n';
+          }
           if (parsed.usage) {
             applySessionUsage(parsed.usage);
           }
@@ -1154,7 +1195,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
         closeStdinIfOpen();
         channel.close();
         onPid?.(null);
-        resolve({ code, output, timedOut, timeoutReason, budgetExhausted, producedOutput, suspendDetected });
+        resolve({ code, output, assistantText: assistantText || undefined, timedOut, timeoutReason, budgetExhausted, producedOutput, suspendDetected });
       });
 
       // Initial prompt write. `formatInitialPrompt` is identity for
