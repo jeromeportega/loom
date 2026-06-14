@@ -46,6 +46,10 @@ site/
 # does not pollute the PR diff.
 .loom/scratch/
 
+# Per-story signal records written by SignalLedger — runtime state,
+# never committed (story-010-002, NFR-3).
+.loom/signals/
+
 # Per-machine integration files (paths bake in your local install; regenerable via `loom init`):
 .claude/settings.json
 .claude/skills/loom-*/
