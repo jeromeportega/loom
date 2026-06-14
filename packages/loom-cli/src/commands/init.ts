@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { openDatabase, ProjectRegistry, bundledSkillsDir } from '@loom-ai/core';
+import { openDatabase, ProjectRegistry, bundledSkillsDir, missingPolicyKeys } from '@loom-ai/core';
 import { upsertMcpServer } from './mcpConfig.js';
 
 const LOOM_DIR = '.loom';
@@ -21,7 +21,7 @@ function loomScriptPath(): string {
   return process.argv[1];
 }
 
-export function runInit(options: { cursor?: boolean; yes?: boolean }): void {
+export function runInit(options: { cursor?: boolean; yes?: boolean; mcp?: boolean }): void {
   const projectRoot = process.cwd();
   const loomDir = path.join(projectRoot, LOOM_DIR);
 
@@ -30,13 +30,20 @@ export function runInit(options: { cursor?: boolean; yes?: boolean }): void {
   fs.mkdirSync(path.join(loomDir, 'worktrees'), { recursive: true });
 
   // ─── policy.yaml ─────────────────────────────────────────────────────────
+  // Never rewrite an existing policy.yaml — it carries the user's tuned knobs +
+  // comments (js-yaml drops comments on a round-trip, so an in-place merge would
+  // mangle it). Instead always refresh the documented policy.example.yaml and
+  // report any knobs added since the user's file was written.
   const policyPath = path.join(loomDir, 'policy.yaml');
   if (!fs.existsSync(policyPath)) {
     fs.writeFileSync(policyPath, DEFAULT_POLICY_YAML);
     console.log('  created  .loom/policy.yaml');
   } else {
-    console.log('  exists   .loom/policy.yaml (skipped)');
+    console.log('  exists   .loom/policy.yaml (preserved)');
   }
+  const exampleResult = writePolicyExample(loomDir);
+  console.log(`  ${exampleResult}  .loom/policy.example.yaml`);
+  reportPolicyDrift(loomDir);
 
   // ─── SQLite DB ────────────────────────────────────────────────────────────
   // openDatabase() opens an existing DB if present, otherwise creates a
@@ -65,9 +72,14 @@ export function runInit(options: { cursor?: boolean; yes?: boolean }): void {
   ensureGitignore(projectRoot);
   warnTrackedLocalFiles(projectRoot);
 
-  // ─── Claude Code: hook, MCP server, CLAUDE.md, slash commands ─────────────
+  // ─── Claude Code: hook, CLAUDE.md, slash commands ─────────────────────────
+  // The CLI is loom's primary surface. The persistent MCP server (`.mcp.json`)
+  // is opt-in via `loom init --mcp` — a long-lived `loom serve` loads dist once
+  // at startup, so it can silently run stale code after an upgrade.
   writeClaudeHook(projectRoot);
-  writeMcpJson(projectRoot);
+  if (options.mcp) {
+    writeMcpJson(projectRoot);
+  }
   writeClaudeMd(projectRoot);
   writeSlashCommands(projectRoot);
   writeUxDesignerSlashCommand(projectRoot);
@@ -300,6 +312,9 @@ const LOOM_IGNORE_BLOCK = [
   '# does not pollute the PR diff.',
   '.loom/scratch/',
   '',
+  '# Regenerated every `loom init` as living docs for policy.yaml knobs:',
+  '.loom/policy.example.yaml',
+  '',
   '# Per-machine integration files (paths bake in your local install; regenerable via `loom init`):',
   '.claude/settings.json',
   '.claude/skills/loom-*/',
@@ -409,23 +424,28 @@ function warnTrackedLocalFiles(projectRoot: string): void {
 
 const CLAUDE_MD_CONTENT = `# Loom
 
-This repo uses **loom** — an autonomous agentic engineering system. You can drive it
-through its MCP tools or its CLI.
+This repo uses **loom** — an autonomous agentic engineering system. Drive it
+through its CLI: each command runs fresh, prints to stdout, and supports \`--json\`
+for machine-readable output (no persistent server to watch).
 
 ## Workflow
 
 1. \`loom epic "<brief>"\` — plan an epic (Analyst → PM → Architect personas).
-2. Review the plan under \`.loom/planning/<run-id>/\`.
+2. Review the plan under \`.loom/planning/<run-id>/\` (or \`loom artifacts <epic-id>\`).
 3. \`loom approve <epic-id>\` — release it for execution.
 4. \`loom run\` — dispatch story agents, each in an isolated git worktree.
-5. \`loom status\` — track progress and PR links.
+5. \`loom status --json\` — track progress and PR links.
 
-## MCP tools
+## Inspecting a run (all support --json)
 
-When the loom MCP server is connected (\`.mcp.json\`), these tools are available:
-\`loom_start_epic\`, \`loom_approve_plan\`, \`loom_reject_plan\`, \`loom_get_status\`,
-\`loom_get_audit_log\`, \`loom_policy_check\`, \`loom_get_planning_artifacts\`,
-\`loom_get_diff\`, \`loom_get_review\`.
+- \`loom status\` — epics + per-story status and PR links.
+- \`loom diff <story|epic-id>\` — the diff for a story or epic.
+- \`loom review <story-id>\` — the reviewer verdict + summary.
+- \`loom artifacts <epic-id>\` — brief / PRD / architecture / epic YAML.
+- \`loom audit [--story <id>]\` / \`loom traces --story <id>\` — audit log + worker reasoning.
+
+An optional MCP server is still available (\`loom serve\` / \`loom init --mcp\`), but
+the CLI is the primary surface.
 
 ## Guardrails
 
@@ -442,27 +462,27 @@ const SLASH_COMMANDS: Record<string, string> = {
     'loom-epic',
     'Plan a new epic with loom from a one-paragraph brief.',
     '# /loom-epic\n\nThe user wants to plan an epic. Ask them for a one-paragraph\n' +
-      'brief if they have not given one, then call the `loom_start_epic` MCP tool\n' +
-      '(or run `loom epic "<brief>"`). When planning finishes, summarise the epics\n' +
-      'and remind the user to review the plan and run `/loom-approve`.'
+      'brief if they have not given one, then run `loom epic "<brief>"`. When planning\n' +
+      'finishes, summarise the epics and remind the user to review the plan and run\n' +
+      '`/loom-approve`.'
   ),
   'loom-status': slashCommand(
     'loom-status',
     'Show the status of loom epics and their story agents.',
-    '# /loom-status\n\nCall the `loom_get_status` MCP tool (or run `loom status`)\n' +
-      'and present the epic and per-story status clearly, including any PR links.'
+    '# /loom-status\n\nRun `loom status --json` and present the epic and per-story\n' +
+      'status clearly, including any PR links.'
   ),
   'loom-approve': slashCommand(
     'loom-approve',
     'Approve a planned loom epic, releasing it for execution.',
-    '# /loom-approve\n\nConfirm which epic the user means, then call the\n' +
-      '`loom_approve_plan` MCP tool (or run `loom approve <epic-id>`). Approve only\n' +
-      'releases the epic for execution — it does not dispatch workers. Tell the user\n' +
-      'to run `loom run <epic-id>` to dispatch the story agents.'
+    '# /loom-approve\n\nConfirm which epic the user means, then run\n' +
+      '`loom approve <epic-id>`. Approve only releases the epic for execution — it does\n' +
+      'not dispatch workers. Tell the user to run `loom run <epic-id>` to dispatch the\n' +
+      'story agents.'
   ),
 };
 
-const DEFAULT_POLICY_YAML = `# Loom Policy — committed to git, shared with the whole team
+export const DEFAULT_POLICY_YAML = `# Loom Policy — committed to git, shared with the whole team
 # See schemas/policy.schema.yaml for full documentation
 
 git:
@@ -657,6 +677,37 @@ mcp:
   # Example: registry: "/Users/me/checkouts/awesome-mcp"
   registry: ""
 `;
+
+const POLICY_EXAMPLE = 'policy.example.yaml';
+
+/**
+ * (Re)writes `.loom/policy.example.yaml` from the current template — always up to
+ * date, never touches the user's tuned policy.yaml. Returns 'created'|'updated'.
+ */
+export function writePolicyExample(loomDir: string): 'created' | 'updated' {
+  const examplePath = path.join(loomDir, POLICY_EXAMPLE);
+  const existed = fs.existsSync(examplePath);
+  fs.writeFileSync(examplePath, DEFAULT_POLICY_YAML);
+  return existed ? 'updated' : 'created';
+}
+
+/**
+ * Notifies about policy knobs that ship a default but are absent from the user's
+ * policy.yaml (added since it was generated). Shared by `loom init` and
+ * `loom doctor`; no-op when the file is current. The file still works — the zod
+ * schema applies defaults at load — so this is a discoverability aid, not an error.
+ */
+export function reportPolicyDrift(loomDir: string): void {
+  const missing = missingPolicyKeys(loomDir, DEFAULT_POLICY_YAML);
+  if (missing.length === 0) return;
+  console.log('');
+  console.log(`  ${missing.length} new policy knob(s) since your .loom/policy.yaml was written:`);
+  for (const m of missing) {
+    console.log(`    - ${m.path}  (default: ${JSON.stringify(m.default)})`);
+  }
+  console.log('  Your policy.yaml still works (defaults apply). Copy what you want to');
+  console.log(`  tune from .loom/${POLICY_EXAMPLE}.`);
+}
 
 const CURSOR_RULES_CONTENT = `---
 description: "Loom agentic engineering system — workflow and guardrail context"
