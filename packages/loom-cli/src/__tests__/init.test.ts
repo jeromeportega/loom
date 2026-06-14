@@ -102,7 +102,14 @@ describe('loom init', () => {
     assert.ok(cmd.startsWith('node '), 'hook should invoke node directly');
   });
 
-  it('writes .mcp.json with the loom MCP server', () => {
+  it('writes .mcp.json only with the --mcp flag (opt-in; CLI is the primary surface)', () => {
+    // Default init no longer writes .mcp.json — the MCP server is opt-in.
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.mcp.json')),
+      'default `loom init` must NOT write .mcp.json'
+    );
+    // Opting in writes it, wired to the loom MCP server.
+    loom('init', '--mcp');
     const mcp = JSON.parse(
       fs.readFileSync(path.join(tmpDir, '.mcp.json'), 'utf8')
     ) as { mcpServers: { loom?: { command: string; args: string[] } } };
