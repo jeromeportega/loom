@@ -566,8 +566,13 @@ agents:
   # the worker's diff before the PR opens.
   #   off              — no review pass
   #   comment          — review runs; findings attach as a PR comment (default)
-  #   block-and-revise — blockers re-prompt the worker (engine-tuned cap)
+  #   block-and-revise — blockers re-prompt the worker (up to review_max_passes)
   review_strategy: "comment"
+
+  # Max worker revision passes under block-and-revise before loom stops and
+  # marks the story blocked (replaces the old hardcoded cap of 2). Lower it to
+  # forcefully limit review cost; 0 = review once, never re-prompt.
+  review_max_passes: 2
 
   # Wall-clock bound (in minutes) for the reviewer subprocess. The legacy
   # hardcoded 10-min timeout silently shipped large story diffs unreviewed

@@ -426,6 +426,7 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
       reviewAgent,
       reviewStrategy: policy.agents.review_strategy,
       reviewReviseTrigger: policy.agents.review_revise_trigger,
+      maxReviewRevisions: policy.agents.review_max_passes,
       budgetTokensPerStory: policy.agents.budget_tokens_per_story,
       operatorGuidance: policy.agents.operator_guidance,
       sharedContract: policy.agents.shared_contract,
