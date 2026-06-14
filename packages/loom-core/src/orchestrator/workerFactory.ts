@@ -52,6 +52,8 @@ export interface WorkerFactoryOptions {
   phases?: 'off' | 'on';
   /** policy.agents.worker_auth — 'session' strips inherited ANTHROPIC_API_KEY from workers. */
   workerAuth?: 'inherit' | 'session';
+  /** policy.agents.adaptive_cost — 'on' requests the worker self-assessment marker (B1). */
+  adaptiveCost?: 'on' | 'off';
   /** loom state database — required for the Review Forge orchestrated path (FR-6). */
   db?: Database.Database;
   /** LLM client — presence gates the Review Forge orchestrated path (FR-7). */
@@ -146,6 +148,7 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
       handoff: opts.handoff,
       phases: opts.phases,
       workerAuth: opts.workerAuth,
+      adaptiveCost: opts.adaptiveCost,
       reviewOrchestrator,
     });
   }
@@ -165,6 +168,7 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
     complexityMultipliers: opts.complexityMultipliers,
     handoff: opts.handoff,
     phases: opts.phases,
+    adaptiveCost: opts.adaptiveCost,
     reviewOrchestrator,
   });
 }

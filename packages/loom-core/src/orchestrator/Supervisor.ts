@@ -2050,7 +2050,12 @@ export class Supervisor {
           riskyPaths,
           testsGreenFirstTry: null,
         });
-        const signals = buildStorySignals(heuristics);
+        // Feed the worker's self-assessment (B1) into the tier resolution when
+        // present — without it confidence defaults to low and the resolver
+        // recommends `heavy` for nearly every story. Still observe-only.
+        const signals = buildStorySignals(heuristics, {
+          ...(result.selfAssessment ? { selfAssessment: result.selfAssessment } : {}),
+        });
         this.signalLedger.record(task.story.id, signals, task.agentId);
       }
     }

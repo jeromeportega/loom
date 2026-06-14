@@ -19,6 +19,8 @@ import type {
 } from './WorkerRunner.js';
 import { type WorkerInputChannel, NO_OP_CHANNEL } from './WorkerInputChannel.js';
 import { buildWorkerPrompt, buildIntegratorPrompt } from './workerPrompt.js';
+import { parseSelfAssessment } from './selfAssessment.js';
+import type { SelfAssessment } from '../types.js';
 import type { Story } from '../types.js';
 import { gitSafe, defaultRemote, remoteUrl } from './git.js';
 import {
@@ -180,6 +182,13 @@ export interface CliWorkerOptions {
    * 'inherit' (default) leaves the parent env untouched.
    */
   workerAuth?: 'inherit' | 'session';
+  /**
+   * policy.agents.adaptive_cost — when 'on', the implement prompt asks the
+   * worker to end with a self-assessment marker (B1), and the worker surfaces
+   * the parsed rating on its result for the signal ledger. Default 'off' keeps
+   * the worker prompt byte-identical to the bench baseline.
+   */
+  adaptiveCost?: 'on' | 'off';
 }
 
 /** Legacy absolute cap used when neither absoluteCapMs nor timeoutMs is given. */
@@ -228,6 +237,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
   private contextNotesEnabled: boolean;
   private handoffEnabled: boolean;
   private phasesEnabled: boolean;
+  /** When true, request + parse the worker self-assessment marker (B1). */
+  private adaptiveCostEnabled: boolean;
   /** When true, strip inherited Anthropic API auth from the worker spawn env. */
   private sessionAuth: boolean;
   /** Accumulated worker usage across the spawn (and its revisions). */
@@ -256,6 +267,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
     // resume. Set 'off' explicitly to opt out.
     this.handoffEnabled = (opts.handoff ?? 'telemetry') !== 'off';
     this.phasesEnabled = (opts.phases ?? 'off') === 'on';
+    this.adaptiveCostEnabled = (opts.adaptiveCost ?? 'off') === 'on';
     this.sessionAuth = (opts.workerAuth ?? 'inherit') === 'session';
   }
 
@@ -477,6 +489,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
       includeUpstreamContext: this.contextNotesEnabled,
       pullGuidanceHint: this.pullGuidanceHint(),
       includeHandoff: this.handoffEnabled,
+      requestSelfAssessment: this.adaptiveCostEnabled,
       ...(this.phasesEnabled ? { phase: 'implement' as const } : {}),
     });
     // The single integration seam for epic-006's infra auto-retry: a detected
@@ -486,6 +499,13 @@ export abstract class BaseCliWorker implements WorkerRunner {
     // counted once downstream.
     const proc = await this.spawnWithInfraRetry(assignment, prompt);
     let logTail = tail(proc.output, LOG_TAIL_CHARS);
+
+    // Parse the worker's self-assessment marker from the FULL implement output
+    // (not the truncated tail) before any early return. Observe-only — surfaced
+    // on the result for the signal ledger; gates nothing here (B1).
+    const selfAssessment: SelfAssessment | undefined = this.adaptiveCostEnabled
+      ? parseSelfAssessment(proc.output)
+      : undefined;
 
     const implementFailure = this.terminalFailureResult(assignment, proc, logTail);
     if (implementFailure) return implementFailure;
@@ -517,6 +537,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
           summary: this.completionSummary(assignment, 0, {}),
           logTail,
           ...(this.accumulatedUsage ? { usage: this.accumulatedUsage } : {}),
+          ...(selfAssessment ? { selfAssessment } : {}),
         };
       }
       return {
@@ -572,6 +593,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
       logTail,
       review,
       ...(this.accumulatedUsage ? { usage: this.accumulatedUsage } : {}),
+      ...(selfAssessment ? { selfAssessment } : {}),
     };
   }
 

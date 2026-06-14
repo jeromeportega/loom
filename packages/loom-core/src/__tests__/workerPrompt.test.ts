@@ -156,6 +156,27 @@ describe('buildWorkerPrompt', () => {
     // The specific anti-patterns observed in Run 6 are named:
     assert.ok(prompt.includes('ROOT_CAUSE.md'));
   });
+
+  it('appends the self-assessment instruction when requestSelfAssessment is on', () => {
+    const prompt = buildWorkerPrompt(assignment(), { requestSelfAssessment: true });
+    assert.ok(prompt.includes('self-assessment (required)'));
+    assert.ok(prompt.includes('LOOM_SELF_ASSESSMENT'));
+  });
+
+  it('is byte-identical to the baseline when requestSelfAssessment is off (bench discipline)', () => {
+    const baseline = buildWorkerPrompt(assignment());
+    const off = buildWorkerPrompt(assignment(), { requestSelfAssessment: false });
+    assert.equal(off, baseline);
+    assert.ok(!off.includes('LOOM_SELF_ASSESSMENT'));
+  });
+
+  it('does NOT request self-assessment on the verify phase even when on', () => {
+    const prompt = buildWorkerPrompt(assignment(), {
+      requestSelfAssessment: true,
+      phase: 'verify',
+    });
+    assert.ok(!prompt.includes('LOOM_SELF_ASSESSMENT'));
+  });
 });
 
 describe('buildWorkerPrompt — shared contract injection', () => {

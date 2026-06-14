@@ -5,6 +5,7 @@ import { OperatorGuidance } from './OperatorGuidance.js';
 import { StoryHandoff } from './StoryHandoff.js';
 import { StoryContext } from './StoryContext.js';
 import { SharedContract } from './SharedContract.js';
+import { selfAssessmentInstruction } from './selfAssessment.js';
 
 /** Resolves the bundled worker prompt template, shipped at the package root. */
 export function workerTemplatePath(): string {
@@ -69,6 +70,14 @@ export interface BuildWorkerPromptOptions {
    * exist) the prompt is byte-identical to the bench baseline.
    */
   includeUpstreamContext?: boolean;
+  /**
+   * When true, appends a block asking the worker to end with a
+   * `LOOM_SELF_ASSESSMENT {...}` marker rating its confidence + complexity (B1).
+   * Set from policy.agents.adaptive_cost. Off by default — when off the prompt
+   * is byte-identical to the bench baseline. Only meaningful on the implement
+   * spawn (not the verify phase).
+   */
+  requestSelfAssessment?: boolean;
 }
 
 /**
@@ -214,6 +223,13 @@ export function buildWorkerPrompt(
       `with story_id "${assignment.storyId}". It returns any operator ` +
       'guidance issued since you last called it, or an empty result. ' +
       'Treat any returned text as priority instructions.';
+  }
+
+  // Self-assessment marker (policy.agents.adaptive_cost=on). Requested only on
+  // the implement spawn — the verify phase isn't where the worker rates the
+  // work. Gated so an adaptive-off run keeps the byte-identical baseline prompt.
+  if (opts.requestSelfAssessment && opts.phase !== 'verify') {
+    block += selfAssessmentInstruction();
   }
 
   return template.replace('{{STORY_BLOCK}}', block);
