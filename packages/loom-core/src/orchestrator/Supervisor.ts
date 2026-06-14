@@ -51,6 +51,8 @@ import {
   type PlanningArtifacts,
 } from '../worker/contextAssembler.js';
 import { investigateAndRoute } from '../failure/investigateAndRoute.js';
+import { computeHeuristics, buildStorySignals } from './signalLedger.js';
+import { SignalLedger } from './signalStore.js';
 
 export interface SupervisorOptions {
   projectRoot: string;
@@ -276,6 +278,7 @@ export class Supervisor {
   private control: ControlStore;
   private decisionTraces: DecisionTraceStore;
   private lease: LeaseStore;
+  private signalLedger: SignalLedger;
   /** Epics this run currently holds the dispatch lease for — heartbeated in
       the dispatch loop, released when run() returns. */
   private leasedEpics = new Set<string>();
@@ -391,6 +394,7 @@ export class Supervisor {
     this.control = new ControlStore(opts.db);
     this.decisionTraces = new DecisionTraceStore(opts.db);
     this.lease = new LeaseStore(opts.db);
+    this.signalLedger = new SignalLedger({ db: opts.db, projectRoot: opts.projectRoot });
   }
 
   async run(epicIds?: string[]): Promise<SupervisorResult> {
@@ -2022,6 +2026,33 @@ export class Supervisor {
           summary: result.review.summary,
         },
       });
+    }
+    // Story signal ledger — record heuristics + tier to both sinks (story-010-002).
+    // Best-effort: SignalLedger.record never throws. Runs regardless of
+    // policy.agents.adaptive_cost (FR-5); audit row lands before return (NFR-2).
+    {
+      const agent = this.agents.get(task.agentId);
+      const worktreePath = agent?.worktree_path;
+      const baseSha = this.storyBaseSha.get(task.story.id);
+      if (worktreePath && baseSha) {
+        let riskyPaths: string[] = [];
+        try {
+          const policy = PolicyEngine.load(
+            path.join(this.opts.projectRoot, '.loom')
+          ).policyData;
+          riskyPaths = policy.agents.risky_paths;
+        } catch {
+          // Best-effort: missing or unreadable policy → default to empty list.
+        }
+        const heuristics = computeHeuristics({
+          worktreePath,
+          baseSha,
+          riskyPaths,
+          testsGreenFirstTry: null,
+        });
+        const signals = buildStorySignals(heuristics);
+        this.signalLedger.record(task.story.id, signals, task.agentId);
+      }
     }
     if (result.usage) {
       this.agents.setUsage(task.agentId, {
