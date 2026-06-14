@@ -698,7 +698,7 @@ export function writePolicyExample(loomDir: string): 'created' | 'updated' {
  * schema applies defaults at load — so this is a discoverability aid, not an error.
  */
 export function reportPolicyDrift(loomDir: string): void {
-  const missing = missingPolicyKeys(loomDir);
+  const missing = missingPolicyKeys(loomDir, DEFAULT_POLICY_YAML);
   if (missing.length === 0) return;
   console.log('');
   console.log(`  ${missing.length} new policy knob(s) since your .loom/policy.yaml was written:`);
