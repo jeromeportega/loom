@@ -113,3 +113,5 @@ export type {
   ReconcileStatus,
   ReconcileRefusalReason,
 } from './EpicReconciler.js';
+export { computeHeuristics, buildStorySignals } from './signalLedger.js';
+export type { HeuristicInput } from './signalLedger.js';
