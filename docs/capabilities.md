@@ -74,7 +74,8 @@ Two interfaces over the same engine:
 
 | Capability | How to use | Notes |
 |---|---|---|
-| **Block-and-revise review** | `policy.agents.review_strategy=block-and-revise` | After commits, before the PR opens, a `CodeReviewAgent` reviews the diff. Blocker findings re-prompt the worker with the review in context (up to `maxReviewRevisions`). |
+| **Block-and-revise review** | `policy.agents.review_strategy=block-and-revise` | After commits, before the PR opens, a `CodeReviewAgent` reviews the diff. Blocker findings re-prompt the worker with the review in context (up to `review_max_passes`). |
+| **Cap review passes** | `policy.agents.review_max_passes` (int, default 2) | Maximum worker revision passes under `block-and-revise` before loom stops re-prompting and marks the story blocked. Replaces the former hardcoded cap of 2; `0` reviews once with no re-prompt. |
 | **Comment-only review** | `policy.agents.review_strategy=comment` | Findings attach as a PR comment; no revisions. |
 | **Cross-model review (opt-in)** | `policy.agents.review_model='cross' + review_model_id=<id>` | Routes the reviewer through a different model than the worker. |
 | **Reviewer wall-clock cap** | `policy.agents.review_timeout_minutes` (1–60, default 10) | Bounds the reviewer's CLI subprocess. The legacy hardcoded 10-minute `ClaudeCliClient` timeout silently shipped large story diffs unreviewed (the operator saw `review_status=errored` only in the audit log); raising this lets the reviewer finish on sizable diffs. |

@@ -259,6 +259,12 @@ export const PolicySchema = z.object({
       review_strategy: z
         .enum(['off', 'comment', 'block-and-revise'])
         .default('comment'),
+      // Max worker revision passes under 'block-and-revise' before loom stops
+      // re-prompting and marks the story blocked. Replaces the former hardcoded
+      // cap of 2 — lower it to forcefully limit review cost, raise it to let a
+      // worker keep self-correcting. 0 disables revision (review once, no
+      // re-prompt). Ignored unless review_strategy='block-and-revise'.
+      review_max_passes: z.number().int().min(0).default(2),
       // Controls when SkillGenerator runs after a successful story:
       //   'on'      — every successful story (default)
       //   'off'     — never (cost-conscious teams)
