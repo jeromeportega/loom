@@ -115,3 +115,4 @@ export type {
 } from './EpicReconciler.js';
 export { computeHeuristics, buildStorySignals } from './signalLedger.js';
 export type { HeuristicInput } from './signalLedger.js';
+export { SignalLedger } from './signalStore.js';
