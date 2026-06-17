@@ -24,15 +24,16 @@ function capture(fn: () => void): Captured {
   console.log = (...args: unknown[]) => stdout.push(args.map(String).join(' '));
   console.error = (...args: unknown[]) => stderr.push(args.map(String).join(' '));
 
+  let exitCode: number | undefined;
   try {
     fn();
   } finally {
     console.log = prevLog;
     console.error = prevError;
+    exitCode = process.exitCode as number | undefined;
+    process.exitCode = prevExitCode;
   }
 
-  const exitCode = process.exitCode as number | undefined;
-  process.exitCode = prevExitCode;
   return { stdout, stderr, exitCode };
 }
 
@@ -179,5 +180,29 @@ describe('runPullGuidance — error handling', () => {
     assert.ok(!errorOutput.includes('\nError:'), 'no multi-line Error: dump');
     // Message is meaningful
     assert.ok(errorOutput.includes('loom pull-guidance:'), 'message prefixed with command name');
+  });
+
+  it('prints "no new guidance" and exits 0 for a valid but nonexistent story id', () => {
+    // pullSince returns { content: null } when the guidance file doesn't exist —
+    // the command cannot distinguish "no story" from "no guidance yet" at the
+    // OperatorGuidance level, so the correct behaviour is "no new guidance" + exit 0.
+    const { stdout, stderr, exitCode } = capture(() => runPullGuidance('story-does-not-exist-999'));
+
+    assert.ok(stdout.join('\n').includes('no new guidance'), 'no new guidance on stdout');
+    assert.equal(stderr.length, 0, 'nothing on stderr');
+    assert.equal(exitCode, undefined, 'exit 0 (not an error)');
+  });
+
+  it('emits JSON error object on --json when storyId causes an error', () => {
+    const { stdout, stderr, exitCode } = capture(() => runPullGuidance('', { json: true }));
+
+    assert.equal(exitCode, 1, 'process.exitCode set to 1');
+    assert.equal(stderr.length, 0, 'nothing on stderr in JSON mode');
+    const jsonLine = stdout.find((l) => l.trim().startsWith('{'));
+    assert.ok(jsonLine, 'JSON error object present on stdout');
+    const parsed = JSON.parse(jsonLine!) as { content: null; has_more: boolean; error: string };
+    assert.equal(parsed.content, null);
+    assert.equal(parsed.has_more, false);
+    assert.ok(typeof parsed.error === 'string' && parsed.error.length > 0, 'error message present');
   });
 });
