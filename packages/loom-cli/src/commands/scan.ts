@@ -44,7 +44,7 @@ export async function runScanCommand(opts: ScanOptions = {}): Promise<void> {
     const known = new ProjectRegistry().list();
     if (!known.some((p) => p.root === resolved)) {
       console.error(`Project not registered: ${resolved}`);
-      process.exit(1);
+      process.exitCode = 1;
       return;
     }
     projectRoot = resolved;

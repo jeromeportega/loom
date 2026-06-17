@@ -62,8 +62,15 @@ export interface StatusOptions {
 }
 
 export function runStatus(options: StatusOptions): void {
+  if (options.project && options.all) {
+    console.error('--project and --all are mutually exclusive');
+    process.exitCode = 1;
+    return;
+  }
+
   if (options.json) {
-    console.log(JSON.stringify(buildJsonStatus(options), null, 2));
+    const status = buildJsonStatus(options);
+    if (status !== null) console.log(JSON.stringify(status, null, 2));
     return;
   }
 
@@ -154,7 +161,7 @@ interface JsonStatus {
  * `loom_get_status` payload uses — so `--json` yields exactly one row per
  * story (old attempts in `history[]`), never a duplicate blocked+done pair.
  */
-function buildJsonStatus(options: StatusOptions): JsonStatus {
+function buildJsonStatus(options: StatusOptions): JsonStatus | null {
   let loomDirs: string[];
   if (options.project) {
     const resolved = path.resolve(options.project);
@@ -162,7 +169,7 @@ function buildJsonStatus(options: StatusOptions): JsonStatus {
     if (!entry) {
       console.error(`Project not registered: ${resolved}`);
       process.exitCode = 1;
-      return { epics: [] };
+      return null;
     }
     loomDirs = [path.join(resolved, '.loom')];
   } else {
@@ -339,7 +346,10 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
 function allTerminal(options: StatusOptions): boolean {
   let loomDirs: string[];
   if (options.project) {
-    loomDirs = [path.join(path.resolve(options.project), '.loom')];
+    const resolved = path.resolve(options.project);
+    const entry = new ProjectRegistry().list().find((p) => p.root === resolved);
+    if (!entry) return false; // unregistered — not terminal, let render() surface the error
+    loomDirs = [path.join(resolved, '.loom')];
   } else {
     loomDirs = options.all
       ? new ProjectRegistry().list().map((p) => path.join(p.root, '.loom'))

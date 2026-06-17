@@ -212,4 +212,42 @@ describe('loom status --project <root>', () => {
       fs.rmSync(loomHome, { recursive: true, force: true });
     }
   });
+
+  it('--json --project <unregistered>: emits nothing to stdout (no fake empty payload)', () => {
+    const loomHome = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-home4-'));
+    const prevLoomHome = process.env.LOOM_HOME;
+    process.env.LOOM_HOME = loomHome;
+
+    try {
+      const { stdout, exitCode } = captureStatusFull({
+        project: '/tmp/not-a-registered-project',
+        json: true,
+      });
+      assert.equal(exitCode, 1, 'exitCode must be 1 for unregistered project');
+      // Before the fix, stdout was '{"epics":[]}' which is indistinguishable from
+      // a registered project with no epics. After the fix, stdout must be empty.
+      assert.equal(stdout.trim(), '', `stdout must be empty for unregistered project with --json; got: ${stdout}`);
+    } finally {
+      process.env.LOOM_HOME = prevLoomHome;
+      fs.rmSync(loomHome, { recursive: true, force: true });
+    }
+  });
+
+  it('--project and --all together: sets exitCode=1 with error message', () => {
+    const loomHome = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-home5-'));
+    const prevLoomHome = process.env.LOOM_HOME;
+    process.env.LOOM_HOME = loomHome;
+
+    try {
+      const { exitCode, stderr } = captureStatusFull({ project: repo, all: true });
+      assert.equal(exitCode, 1, 'exitCode must be 1 for mutually exclusive flags');
+      assert.ok(
+        /mutually exclusive/i.test(stderr),
+        `stderr must mention "mutually exclusive": ${stderr}`
+      );
+    } finally {
+      process.env.LOOM_HOME = prevLoomHome;
+      fs.rmSync(loomHome, { recursive: true, force: true });
+    }
+  });
 });

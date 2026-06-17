@@ -218,9 +218,9 @@ describe('runPropose', () => {
       });
     });
 
-    // composeBrief emits "*(from epic <id>)*" once per lesson; at most 1 with topLessons=1
+    // composeBrief emits "*(from epic <id>)*" once per lesson; exactly 1 with topLessons=1
     const lessonEntries = (capturedBrief.match(/\*\(from epic /g) ?? []).length;
-    assert.ok(lessonEntries <= 1, `expected ≤1 lesson entry in brief with topLessons=1, got ${lessonEntries}`);
+    assert.equal(lessonEntries, 1, `expected exactly 1 lesson entry in brief with topLessons=1, got ${lessonEntries}`);
   });
 
   it('--top-opps limits the opportunities passed to proposeNextEpic (n=1 yields at most 1)', async () => {
@@ -246,9 +246,9 @@ describe('runPropose', () => {
       });
     });
 
-    // composeBrief emits "### <title>" once per opportunity; at most 1 with topOpps=1
+    // composeBrief emits "### <title>" once per opportunity; exactly 1 with topOpps=1
     const oppEntries = (capturedBrief.match(/^### /gm) ?? []).length;
-    assert.ok(oppEntries <= 1, `expected ≤1 opportunity in brief with topOpps=1, got ${oppEntries}`);
+    assert.equal(oppEntries, 1, `expected exactly 1 opportunity in brief with topOpps=1, got ${oppEntries}`);
   });
 
   it('--json emits { ok: true, epicId } as valid JSON on success', async () => {

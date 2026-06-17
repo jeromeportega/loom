@@ -48,6 +48,8 @@ async function capture(fn: () => Promise<void> | void): Promise<Captured> {
   const origExit = process.exit as (code?: number) => never;
   const origLog = console.log;
   const origErr = console.error;
+  const origExitCode = process.exitCode;
+  process.exitCode = undefined;
   const logs: string[] = [];
   const errors: string[] = [];
   let exitCode: number | null = null;
@@ -68,6 +70,11 @@ async function capture(fn: () => Promise<void> | void): Promise<Captured> {
     console.log = origLog;
     console.error = origErr;
   }
+  // Also capture soft exit-code (process.exitCode = 1; return) in addition to process.exit()
+  if (exitCode === null && typeof process.exitCode === 'number') {
+    exitCode = process.exitCode;
+  }
+  process.exitCode = origExitCode;
   return { logs, errors, exitCode };
 }
 

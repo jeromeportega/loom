@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runInit } from './commands/init.js';
@@ -398,8 +398,16 @@ program
 program
   .command('propose')
   .description('Propose the next epic from top-ranked lessons + open opportunities (one LLM call)')
-  .option('--top-lessons <n>', 'Number of top lessons to include in the proposal', (v: string) => parseInt(v, 10))
-  .option('--top-opps <n>', 'Number of top opportunities to include in the proposal', (v: string) => parseInt(v, 10))
+  .option('--top-lessons <n>', 'Number of top lessons to include in the proposal', (v: string) => {
+    const n = parseInt(v, 10);
+    if (!Number.isInteger(n) || n < 1) throw new InvalidArgumentError('Must be a positive integer');
+    return n;
+  })
+  .option('--top-opps <n>', 'Number of top opportunities to include in the proposal', (v: string) => {
+    const n = parseInt(v, 10);
+    if (!Number.isInteger(n) || n < 1) throw new InvalidArgumentError('Must be a positive integer');
+    return n;
+  })
   .option('--json', 'Emit machine-readable JSON output ({ ok, epicId? } or { ok, critique })')
   .action(async (opts: { topLessons?: number; topOpps?: number; json?: boolean }) => {
     await runPropose({ topLessons: opts.topLessons, topOpps: opts.topOpps, json: opts.json });
