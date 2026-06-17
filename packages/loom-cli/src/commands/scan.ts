@@ -8,6 +8,7 @@ import {
   AuditLog,
   runScan,
   OpportunityStore,
+  ProjectRegistry,
 } from '@loom-ai/core';
 import type { LLMClient, SignalScanner } from '@loom-ai/core';
 import type { OpportunityRecord } from '@loom-ai/core';
@@ -19,6 +20,8 @@ export interface ScanOptions {
   llm?: LLMClient;
   /** Test seam — inject scanners. Production uses defaultScanners(). */
   scanners?: SignalScanner[];
+  /** Target the named registered project (absolute path). */
+  project?: string;
 }
 
 /**
@@ -33,8 +36,20 @@ export interface ScanOptions {
  * Also exposed as `loom opportunities` (alias).
  */
 export async function runScanCommand(opts: ScanOptions = {}): Promise<void> {
-  const projectRoot = process.cwd();
-  const loomDir = path.join(projectRoot, '.loom');
+  let projectRoot = process.cwd();
+  let loomDir = path.join(projectRoot, '.loom');
+
+  if (opts.project) {
+    const resolved = path.resolve(opts.project);
+    const known = new ProjectRegistry().list();
+    if (!known.some((p) => p.root === resolved)) {
+      console.error(`Project not registered: ${resolved}`);
+      process.exit(1);
+      return;
+    }
+    projectRoot = resolved;
+    loomDir = path.join(resolved, '.loom');
+  }
 
   // When no LLM is injected (production path), a policy.yaml is required to
   // configure the LLM backend. Test callers inject opts.llm directly so they

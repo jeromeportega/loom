@@ -19,6 +19,7 @@ import {
   OpportunityStore,
   createDatabase,
   AuditLog,
+  ProjectRegistry,
 } from '@loom-ai/core';
 import type { LLMClient, LLMRequest, LLMResponse } from '@loom-ai/core';
 import { runScanCommand, runOpportunitiesCommand } from '../commands/scan.js';
@@ -144,6 +145,62 @@ describe('runScanCommand', () => {
 
     assert.equal(exitCode, 1);
     assert.ok(errors.some(e => /not initialized/i.test(e)));
+  });
+
+  it('--project scopes the scan to the named project (not cwd)', async () => {
+    // Create a second project distinct from cwd (tmpDir)
+    const projectA = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-scan-proj-a-'));
+    fs.mkdirSync(path.join(projectA, '.loom'), { recursive: true });
+
+    resetDatabaseForTest(); // ensure no leftover singleton
+
+    try {
+      // Register both projects via the test loomHome
+      const registry = new ProjectRegistry();
+      registry.register(projectA);
+      registry.register(tmpDir);
+
+      const llm = new StubLLM();
+      const { exitCode } = await capture(async () => {
+        await runScanCommand({ project: projectA, llm, scanners: [] });
+      });
+
+      assert.equal(exitCode, null, 'should not exit with error');
+
+      // project A's DB must exist and contain a signal_scan audit record
+      const dbAPath = path.join(projectA, '.loom', 'loom.db');
+      assert.ok(fs.existsSync(dbAPath), 'projectA loom.db must be created by the scan');
+      const dbA = createDatabase(dbAPath);
+      const auditA = new AuditLog(dbA);
+      const entries = auditA.recent(10);
+      dbA.close();
+      assert.ok(
+        entries.some((e) => e.action === 'signal_scan'),
+        'signal_scan must be recorded in projectA DB'
+      );
+
+      // cwd (tmpDir) must NOT have a loom.db — the scan never opened it
+      assert.ok(
+        !fs.existsSync(path.join(tmpDir, '.loom', 'loom.db')),
+        'cwd loom.db must not be created when --project targets a different dir'
+      );
+    } finally {
+      resetDatabaseForTest();
+      fs.rmSync(projectA, { recursive: true, force: true });
+    }
+  });
+
+  it('--project exits 1 when project is not registered', async () => {
+    const { exitCode, errors } = await capture(async () => {
+      await runScanCommand({
+        project: '/tmp/not-a-registered-scan-project',
+        llm: new StubLLM(),
+        scanners: [],
+      });
+    });
+
+    assert.equal(exitCode, 1, 'should exit 1 for unregistered project');
+    assert.ok(errors.some((e) => /not registered/i.test(e)), 'error message must mention not registered');
   });
 });
 
