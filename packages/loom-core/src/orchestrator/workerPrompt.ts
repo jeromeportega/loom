@@ -212,16 +212,16 @@ export function buildWorkerPrompt(
 
   // Backend-conditional: `cursor-cli` workers have no stdin streaming
   // surface for the supervisor to push operator guidance into mid-spawn.
-  // Instead we instruct cursor workers to poll the MCP tool between
-  // major tool calls. This addition is gated so the `claude-cli`
+  // Instead we instruct cursor workers to read guidance via the CLI or
+  // the on-disk file directly. This addition is gated so the `claude-cli`
   // prompt stays byte-identical for bench discipline.
   if (opts.pullGuidanceHint) {
     block +=
       '\n\n### Live operator steering (cursor backend)\n' +
       'Between major tool calls (after each meaningful Edit / Write / ' +
-      'Bash block), consider calling the MCP tool `loom_pull_guidance` ' +
-      `with story_id "${assignment.storyId}". It returns any operator ` +
-      'guidance issued since you last called it, or an empty result. ' +
+      `Bash block), check for operator guidance by running \`loom pull-guidance ${assignment.storyId}\` ` +
+      `in the terminal or by reading \`.loom/guidance/${assignment.storyId}.md\` directly. ` +
+      'Either method returns any operator instructions issued since dispatch. ' +
       'Treat any returned text as priority instructions.';
   }
 

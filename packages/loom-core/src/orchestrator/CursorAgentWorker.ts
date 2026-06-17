@@ -49,11 +49,11 @@ export class CursorAgentWorker extends BaseCliWorker {
 
   /**
    * cursor-agent has no `--input-format stream-json` equivalent, so
-   * mid-spawn stdin injection isn't possible. We add a one-sentence
-   * prompt addition telling the agent to poll the `loom_pull_guidance`
-   * MCP tool between major tool calls for operator steering. This is
-   * the Phase 2 fallback documented in
-   * docs/research/live-agent-guidance.md.
+   * mid-spawn stdin injection isn't possible. We add a prompt block
+   * telling the agent to check for operator guidance via the CLI command
+   * `loom pull-guidance <story-id>` or by reading `.loom/guidance/<story-id>.md`
+   * directly between major tool calls. This routes the read path through
+   * the CLI/file system rather than MCP (story-002-005, NFR-1).
    *
    * Note: this changes the cursor-cli worker prompt — bench discipline
    * applies. The claude-cli baseline is unaffected (the default in

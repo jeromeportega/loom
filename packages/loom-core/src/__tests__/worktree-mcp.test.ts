@@ -373,4 +373,60 @@ describe('Supervisor.dispatch — worker MCP materialization', () => {
     assert.deepEqual(detail.disabledServers, []);
     assert.deepEqual(detail.gaps, []);
   });
+
+  it('cursor-cli without loomServerEntry → loom absent, third-party retained (story-002-005 AC#2+#3)', async () => {
+    // Simulates the Phase-1 removal: run.ts no longer passes loomServerEntry,
+    // so Supervisor receives undefined and must NOT write a loom entry.
+    // Third-party registry servers must still appear unchanged (AC#3).
+    writeServer('jira-mcp', STDIO_SERVER);
+    writePolicy({
+      agents: { worker_backend: 'cursor-cli' },
+      mcp: { registry: registryPath },
+    });
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    let contentAtRun: { mcpServers: Record<string, McpJsonEntry> } | undefined;
+    const worker = new MockWorkerRunner((a) => {
+      contentAtRun = readConfig(path.join(a.worktreePath, '.cursor', 'mcp.json'));
+      return { status: 'done', commitCount: 1, summary: 'ok', logTail: '' };
+    });
+
+    // No loomServerEntry passed — matches the new run.ts behavior.
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker,
+      maxConcurrent: 1,
+    }).run();
+
+    // AC#2: loom self-server must NOT appear.
+    assert.equal(
+      contentAtRun!.mcpServers.loom,
+      undefined,
+      'loom self-server must be absent from cursor worktree mcp.json'
+    );
+    // AC#3: third-party registry server must be retained.
+    assert.ok(
+      contentAtRun!.mcpServers['jira-mcp'],
+      'third-party registry server must still be present'
+    );
+    // AC#4: secrets must survive as ${VAR} references, not inlined.
+    const jiraEntry = contentAtRun!.mcpServers['jira-mcp'] as McpJsonEntry & {
+      env?: Record<string, string>;
+    };
+    if ('env' in jiraEntry && jiraEntry.env) {
+      assert.ok(
+        (jiraEntry.env['JIRA_TOKEN'] ?? '').includes('${'),
+        'secret env var must remain as ${VAR} reference'
+      );
+    }
+
+    const row = new AuditLog(db)
+      .getByStory('story-001-001')
+      .find((r) => r.action === 'worker_mcp_servers');
+    const detail = JSON.parse(row!.detail!) as Record<string, unknown>;
+    assert.equal(detail.loomServerIncluded, false, 'audit row must record loomServerIncluded=false');
+    assert.deepEqual(detail.servers, ['jira-mcp']);
+  });
 });

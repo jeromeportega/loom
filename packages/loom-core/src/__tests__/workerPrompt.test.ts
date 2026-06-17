@@ -177,6 +177,35 @@ describe('buildWorkerPrompt', () => {
     });
     assert.ok(!prompt.includes('LOOM_SELF_ASSESSMENT'));
   });
+
+  it('cursor pull-guidance hint instructs CLI usage, not MCP tool (story-002-005 AC#1)', () => {
+    const a = assignment();
+    const prompt = buildWorkerPrompt(a, { pullGuidanceHint: true });
+    // Must mention the CLI command with the story id.
+    assert.ok(
+      prompt.includes(`loom pull-guidance ${a.storyId}`),
+      'prompt must contain `loom pull-guidance <story-id>`'
+    );
+    // Must mention the on-disk guidance file path.
+    assert.ok(
+      prompt.includes(`.loom/guidance/${a.storyId}.md`),
+      'prompt must contain `.loom/guidance/<story-id>.md`'
+    );
+    // Must NOT instruct the worker to call the MCP tool.
+    assert.ok(
+      !prompt.includes('loom_pull_guidance'),
+      'prompt must NOT reference the MCP tool loom_pull_guidance'
+    );
+  });
+
+  it('cursor pull-guidance hint is absent when pullGuidanceHint is false (bench discipline)', () => {
+    const baseline = buildWorkerPrompt(assignment());
+    const withHint = buildWorkerPrompt(assignment(), { pullGuidanceHint: true });
+    // Baseline (cursor off) must not contain the hint section.
+    assert.ok(!baseline.includes('loom pull-guidance'), 'baseline must not contain hint');
+    // With hint enabled, the prompt differs.
+    assert.notEqual(withHint, baseline);
+  });
 });
 
 describe('buildWorkerPrompt — shared contract injection', () => {
