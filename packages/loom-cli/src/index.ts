@@ -28,6 +28,7 @@ import { runTraces } from './commands/traces.js';
 import { runAudit } from './commands/audit.js';
 import { runAutonomy } from './commands/autonomy.js';
 import { runProjects } from './commands/projects.js';
+import { runProject } from './commands/project.js';
 
 // Read the version from this package's package.json at runtime so
 // `loom --version` stays automatically in sync with the published
@@ -350,6 +351,16 @@ program
   .option('--json', 'Emit JSON: { projects: [...] }')
   .action((opts: { json?: boolean }) => {
     runProjects({ json: opts.json });
+  });
+
+// ─── loom project ─────────────────────────────────────────────────────────────
+program
+  .command('project')
+  .description('Show a registered project and its latest epic')
+  .argument('<project-root>', 'Absolute or relative path to the project root')
+  .option('--json', 'Emit JSON: { project, latest_epic? }')
+  .action((projectRoot: string, opts: { json?: boolean }) => {
+    runProject(projectRoot, { json: opts.json });
   });
 
 // ─── loom mcp ───────────────────────────────────────────────────────────────
