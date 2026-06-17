@@ -251,3 +251,61 @@ describe('prepareRetry — queue path (a live run holds the lease)', () => {
     assert.equal(detail.budget_reset, true);
   });
 });
+
+// ─── --reason audit parity ────────────────────────────────────────────────────
+
+describe('prepareRetry — --reason audit parity', () => {
+  it('queue path: --reason text → detail.reason === text', () => {
+    const a = agents.create('epic-001', 'story-001-001', 'A');
+    agents.updateStatus(a.id, 'failed');
+    liveOtherLease();
+
+    prepareRetry(db, root, 'story-001-001', { reason: 'flaky-infra' }, ourLease());
+
+    const rows = new AuditLog(db)
+      .getByStory('story-001-001')
+      .filter((r) => r.action === 'story_retry');
+    assert.equal(rows.length, 1);
+    assert.equal(JSON.parse(rows[0].detail!).reason, 'flaky-infra');
+  });
+
+  it('queue path: --reason omitted → detail.reason === "cli"', () => {
+    const a = agents.create('epic-001', 'story-001-001', 'A');
+    agents.updateStatus(a.id, 'failed');
+    liveOtherLease();
+
+    prepareRetry(db, root, 'story-001-001', {}, ourLease());
+
+    const rows = new AuditLog(db)
+      .getByStory('story-001-001')
+      .filter((r) => r.action === 'story_retry');
+    assert.equal(rows.length, 1);
+    assert.equal(JSON.parse(rows[0].detail!).reason, 'cli');
+  });
+
+  it('self path: --reason text → detail.reason === text (via StoryRetryService)', () => {
+    const a = agents.create('epic-001', 'story-001-001', 'A');
+    agents.updateStatus(a.id, 'failed');
+
+    prepareRetry(db, root, 'story-001-001', { reason: 'manual-retry' }, ourLease());
+
+    const rows = new AuditLog(db)
+      .getByStory('story-001-001')
+      .filter((r) => r.action === 'story_retry');
+    assert.equal(rows.length, 1);
+    assert.equal(JSON.parse(rows[0].detail!).reason, 'manual-retry');
+  });
+
+  it('self path: --reason omitted → detail.reason === "cli"', () => {
+    const a = agents.create('epic-001', 'story-001-001', 'A');
+    agents.updateStatus(a.id, 'failed');
+
+    prepareRetry(db, root, 'story-001-001', {}, ourLease());
+
+    const rows = new AuditLog(db)
+      .getByStory('story-001-001')
+      .filter((r) => r.action === 'story_retry');
+    assert.equal(rows.length, 1);
+    assert.equal(JSON.parse(rows[0].detail!).reason, 'cli');
+  });
+});

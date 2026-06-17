@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, ControlStore, AgentStore, AuditLog } from '@loom-ai/core';
+import { openDatabase, ControlStore, AgentStore, EpicStore, AuditLog } from '@loom-ai/core';
 import type { AgentRecord } from '@loom-ai/core';
 import type Database from 'better-sqlite3';
 
@@ -162,7 +162,115 @@ export function checkpointInFlightWorktrees(
   return results;
 }
 
-export function runStop(storyIds: string[] = []): void {
+/** Injectable kill fn for `stopEpicWorkers` — always sends SIGTERM; overridden in tests. */
+export interface StopDeps {
+  kill?: (pid: number) => void;
+}
+
+export interface StopEpicResult {
+  status: 'ok' | 'not_found';
+  stopped: { storyId: string; pid: number }[];
+  noop: { storyId: string; agentStatus: string }[];
+  errors: { storyId: string; message: string }[];
+}
+
+/**
+ * Core logic for `loom stop --epic <id>`: terminate every running worker of
+ * one epic while leaving other epics running. Records `stop_agent` per
+ * worker plus one aggregate `stop_epic` row. Injectable `deps.kill` for tests.
+ */
+export function stopEpicWorkers(
+  db: Database.Database,
+  epicId: string,
+  reason: string,
+  deps: StopDeps = {},
+): StopEpicResult {
+  const kill = deps.kill ?? ((pid: number) => process.kill(pid, 'SIGTERM'));
+  const epicStore = new EpicStore(db);
+  const agentStore = new AgentStore(db);
+  const audit = new AuditLog(db);
+
+  const epic = epicStore.get(epicId);
+  if (!epic) {
+    return { status: 'not_found', stopped: [], noop: [], errors: [] };
+  }
+
+  const agents = agentStore.listLatestByEpic(epicId);
+  const stopped: { storyId: string; pid: number }[] = [];
+  const noop: { storyId: string; agentStatus: string }[] = [];
+  const errors: { storyId: string; message: string }[] = [];
+
+  for (const agent of agents) {
+    if (agent.status !== 'running') {
+      noop.push({ storyId: agent.story_id, agentStatus: agent.status });
+      continue;
+    }
+    if (!agent.worker_pid) {
+      errors.push({ storyId: agent.story_id, message: 'running but no worker_pid recorded' });
+      continue;
+    }
+    try {
+      kill(agent.worker_pid);
+      stopped.push({ storyId: agent.story_id, pid: agent.worker_pid });
+      audit.record({
+        agent_id: agent.id,
+        action: 'stop_agent',
+        command: agent.story_id,
+        allowed: true,
+        detail: { reason, pid: agent.worker_pid, epic_id: epicId },
+      });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const msg = code === 'ESRCH' ? 'worker process already gone' : (err as Error).message;
+      errors.push({ storyId: agent.story_id, message: msg });
+      audit.record({
+        agent_id: agent.id,
+        action: 'stop_agent',
+        command: agent.story_id,
+        allowed: true,
+        detail: { reason, success: false, error: msg, epic_id: epicId },
+      });
+    }
+  }
+
+  audit.record({
+    action: 'stop_epic',
+    command: epicId,
+    allowed: true,
+    detail: {
+      reason,
+      stopped: stopped.map((s) => s.storyId),
+      noop: noop.map((n) => n.storyId),
+      errors: errors.map((e) => e.storyId),
+    },
+  });
+
+  return { status: 'ok', stopped, noop, errors };
+}
+
+/**
+ * Core logic for bare `loom stop`: checkpoint in-flight worktrees and raise
+ * the supervisor stop signal. Exported for testability — `runStop` delegates
+ * to this after validating the loom directory.
+ */
+export function stopSupervisor(
+  db: Database.Database,
+  reason = 'cli',
+  clock: RetryClock = realClock,
+  deps: CheckpointDeps = {},
+): { checkpoints: { storyId: string; checkpointed: boolean }[] } {
+  const checkpoints = checkpointInFlightWorktrees(db, clock, deps);
+  new ControlStore(db).setState('stopping');
+  new AuditLog(db).record({
+    action: 'stop_agent',
+    command: 'supervisor',
+    allowed: true,
+    detail: { reason, mode: 'supervisor_halt' },
+  });
+  return { checkpoints };
+}
+
+export function runStop(storyIds: string[] = [], opts?: { epic?: string; reason?: string }): void {
   const loomDir = path.join(process.cwd(), '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
@@ -170,14 +278,33 @@ export function runStop(storyIds: string[] = []): void {
   }
 
   const db = openDatabase(loomDir);
+  const reason = opts?.reason || 'cli';
+
+  // ─── loom stop --epic <id> ───────────────────────────────────────────────
+  if (opts?.epic) {
+    const epicId = opts.epic;
+    const result = stopEpicWorkers(db, epicId, reason);
+    if (result.status === 'not_found') {
+      console.error(`  Epic "${epicId}" not found.`);
+      process.exit(1);
+    }
+    const { stopped, noop, errors } = result;
+    if (stopped.length === 0) {
+      console.log(
+        `\n  No running workers in ${epicId} (${noop.length} non-running, ${errors.length} errored).\n`
+      );
+    } else {
+      console.log(`\n  SIGTERM sent to ${stopped.length} worker(s) in ${epicId}.\n`);
+    }
+    return;
+  }
 
   if (storyIds.length === 0) {
     // No story ids → graceful run-wide halt. Checkpoint every in-flight
     // worktree FIRST (bounded per worker) so a worker the supervisor is about
     // to terminate leaves a resumable wip commit, then raise the stop signal.
-    const checkpoints = checkpointInFlightWorktrees(db, realClock);
+    const { checkpoints } = stopSupervisor(db, reason, realClock);
     const saved = checkpoints.filter((c) => c.checkpointed).length;
-    new ControlStore(db).setState('stopping');
     console.log('\n  Stop signal sent.');
     if (checkpoints.length > 0) {
       console.log(
@@ -214,7 +341,7 @@ export function runStop(storyIds: string[] = []): void {
         action: 'stop_agent',
         command: storyId,
         allowed: true,
-        detail: { reason: 'cancelled by user (CLI)', pid: agent.worker_pid },
+        detail: { reason, pid: agent.worker_pid },
       });
       console.log(`  ${storyId}: SIGTERM sent (pid ${agent.worker_pid})`);
       stopped++;

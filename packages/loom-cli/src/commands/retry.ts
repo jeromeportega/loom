@@ -94,6 +94,7 @@ export function prepareRetry(
   leaseStore?: LeaseStore
 ): RetryPrep {
   const clean = opts.clean === true;
+  const reason = opts.reason ?? 'cli';
   const agents = new AgentStore(db);
   const epics = new EpicStore(db);
   const lease = leaseStore ?? new LeaseStore(db);
@@ -141,7 +142,7 @@ export function prepareRetry(
       detail: {
         epic_id: epicId,
         clean,
-        reason: opts.reason ?? null,
+        reason,
         reset_stories: [storyId],
         prior_status: agent.status,
         dispatch: 'queue',
@@ -172,7 +173,7 @@ export function prepareRetry(
     projectRoot,
     db,
     clean,
-    reason: opts.reason,
+    reason,
     leaseStore: lease,
   });
   const prep = service.prepare(storyId);
