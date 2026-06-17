@@ -28,6 +28,7 @@ import { runTraces } from './commands/traces.js';
 import { runAudit } from './commands/audit.js';
 import { runAutonomy } from './commands/autonomy.js';
 import { runProjects } from './commands/projects.js';
+import { runPullGuidance } from './commands/pullGuidance.js';
 
 // Read the version from this package's package.json at runtime so
 // `loom --version` stays automatically in sync with the published
@@ -350,6 +351,16 @@ program
   .option('--json', 'Emit JSON: { projects: [...] }')
   .action((opts: { json?: boolean }) => {
     runProjects({ json: opts.json });
+  });
+
+// ─── loom pull-guidance ──────────────────────────────────────────────────────
+program
+  .command('pull-guidance')
+  .description('Print new operator guidance for a story since the last pull (worker read path)')
+  .argument('<story-id>', 'Story id (e.g. story-001-003)')
+  .option('--json', 'Emit JSON: { content, has_more }')
+  .action((storyId: string, opts: { json?: boolean }) => {
+    runPullGuidance(storyId, { json: opts.json });
   });
 
 // ─── loom mcp ───────────────────────────────────────────────────────────────
