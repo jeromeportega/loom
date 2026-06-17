@@ -217,8 +217,9 @@ program
     '--clean',
     'Tear down the story\'s worktree + branch (and those stacked on it) so it re-runs from scratch instead of resuming'
   )
-  .action(async (storyId: string, opts: { clean?: boolean }) => {
-    await runRetry(storyId, { clean: opts.clean });
+  .option('--reason <text>', 'Optional explanation recorded with the retry in the audit log')
+  .action(async (storyId: string, opts: { clean?: boolean; reason?: string }) => {
+    await runRetry(storyId, { clean: opts.clean, reason: opts.reason });
   });
 
 // ─── loom web ───────────────────────────────────────────────────────────────
@@ -235,10 +236,12 @@ program
 // ─── loom stop ──────────────────────────────────────────────────────────────
 program
   .command('stop')
-  .description('Halt the supervisor (no args), or SIGTERM specific worker(s) by story id')
+  .description('Halt the supervisor (no args), SIGTERM specific worker(s) by story id, or stop all workers in one epic with --epic')
   .argument('[story-ids...]', 'Story ids to stop individually; omit to halt the whole run')
-  .action((storyIds: string[]) => {
-    runStop(storyIds);
+  .option('--epic <epic-id>', 'Stop every running worker in this epic only (leaves other epics running)')
+  .option('--reason <text>', 'Optional explanation recorded in the audit log (defaults to "cli")')
+  .action((storyIds: string[], opts: { epic?: string; reason?: string }) => {
+    runStop(storyIds, opts);
   });
 
 // ─── loom guide ─────────────────────────────────────────────────────────────

@@ -13,6 +13,8 @@ import {
 } from '@loom-ai/core';
 import {
   checkpointInFlightWorktrees,
+  stopEpicWorkers,
+  stopSupervisor,
   type RetryClock,
   type CheckpointRunner,
 } from '../commands/stop.js';
@@ -252,5 +254,157 @@ describe('checkpointInFlightWorktrees — real git checkpoint', () => {
 
     assert.deepEqual(results, [{ storyId: 'story-clean-real', checkpointed: false }]);
     assert.equal(after, before);
+  });
+});
+
+// ─── stopEpicWorkers ─────────────────────────────────────────────────────────
+
+function seedRunningAgentForEpic(
+  epicId: string,
+  storyId: string,
+  pid: number,
+): string {
+  const agents = new AgentStore(db);
+  const agent = agents.create(epicId, storyId, `title ${storyId}`);
+  agents.updateStatus(agent.id, 'running', {
+    worktree_path: `/tmp/wt-${storyId}`,
+    branch_name: `story/${storyId}`,
+  });
+  agents.updateWorkerPid(agent.id, pid);
+  return agent.id;
+}
+
+describe('stopEpicWorkers — isolation (load-bearing case)', () => {
+  beforeEach(() => {
+    new EpicStore(db).create('epic-A', 'Epic A');
+    new EpicStore(db).create('epic-B', 'Epic B');
+  });
+
+  it('stops only epic-A workers; epic-B workers remain running', () => {
+    const pidA1 = 10001;
+    const pidA2 = 10002;
+    const pidB1 = 10003;
+    seedRunningAgentForEpic('epic-A', 'story-A-001', pidA1);
+    seedRunningAgentForEpic('epic-A', 'story-A-002', pidA2);
+    seedRunningAgentForEpic('epic-B', 'story-B-001', pidB1);
+
+    const killed: number[] = [];
+    const result = stopEpicWorkers(db, 'epic-A', 'cli', {
+      kill: (pid) => { killed.push(pid); },
+    });
+
+    assert.equal(result.status, 'ok');
+    assert.deepEqual(killed.sort(), [pidA1, pidA2].sort(), 'only epic-A PIDs signalled');
+    assert.ok(!killed.includes(pidB1), 'epic-B worker was NOT signalled');
+    assert.equal(result.stopped.length, 2);
+    assert.equal(result.noop.length, 0);
+
+    // Epic B's agent is still "running" in the DB (we don't change DB status
+    // when signalling; the worker itself updates on exit).
+    const agents = new AgentStore(db);
+    assert.equal(agents.getByStory('story-B-001')?.status, 'running');
+  });
+
+  it('returns status not_found for a nonexistent epic — no workers signalled', () => {
+    const pidA1 = 10011;
+    seedRunningAgentForEpic('epic-A', 'story-A-003', pidA1);
+
+    const killed: number[] = [];
+    const result = stopEpicWorkers(db, 'epic-NOPE', 'cli', {
+      kill: (pid) => { killed.push(pid); },
+    });
+
+    assert.equal(result.status, 'not_found');
+    assert.deepEqual(killed, [], 'no worker was signalled');
+    assert.equal(result.stopped.length, 0);
+  });
+
+  it('noops on non-running agents in the epic', () => {
+    const agents = new AgentStore(db);
+    const pending = agents.create('epic-A', 'story-A-004', 'pending story');
+    agents.updateStatus(pending.id, 'pending');
+
+    const killed: number[] = [];
+    const result = stopEpicWorkers(db, 'epic-A', 'cli', {
+      kill: (pid) => { killed.push(pid); },
+    });
+
+    assert.equal(result.status, 'ok');
+    assert.equal(killed.length, 0);
+    assert.equal(result.noop.length, 1);
+    assert.equal(result.noop[0].storyId, 'story-A-004');
+  });
+});
+
+describe('stopEpicWorkers — audit rows', () => {
+  beforeEach(() => {
+    new EpicStore(db).create('epic-A', 'Epic A');
+  });
+
+  it('records stop_agent per worker and one aggregate stop_epic row', () => {
+    const pid1 = 20001;
+    const pid2 = 20002;
+    const id1 = seedRunningAgentForEpic('epic-A', 'story-audit-1', pid1);
+    const id2 = seedRunningAgentForEpic('epic-A', 'story-audit-2', pid2);
+    void id1; void id2;
+
+    stopEpicWorkers(db, 'epic-A', 'test-reason', {
+      kill: () => {},
+    });
+
+    const audit = new AuditLog(db);
+    const epicRow = audit.getByCommand('epic-A', ['stop_epic']);
+    assert.equal(epicRow.length, 1, 'exactly one stop_epic row');
+    const epicDetail = JSON.parse(epicRow[0].detail!);
+    assert.equal(epicDetail.reason, 'test-reason');
+    assert.equal(epicDetail.stopped, 2);
+
+    const agentRow1 = audit.getByStory('story-audit-1').filter((r) => r.action === 'stop_agent');
+    assert.equal(agentRow1.length, 1);
+    assert.equal(JSON.parse(agentRow1[0].detail!).reason, 'test-reason');
+  });
+
+  it('--reason omitted → detail.reason defaults to "cli" (the canonical default)', () => {
+    const pid = 20010;
+    seedRunningAgentForEpic('epic-A', 'story-default-reason', pid);
+
+    stopEpicWorkers(db, 'epic-A', 'cli', {
+      kill: () => {},
+    });
+
+    const audit = new AuditLog(db);
+    const epicRow = audit.getByCommand('epic-A', ['stop_epic']);
+    assert.equal(epicRow.length, 1);
+    assert.equal(JSON.parse(epicRow[0].detail!).reason, 'cli');
+
+    const agentRows = audit.getByStory('story-default-reason').filter((r) => r.action === 'stop_agent');
+    assert.equal(agentRows.length, 1);
+    assert.equal(JSON.parse(agentRows[0].detail!).reason, 'cli');
+  });
+});
+
+// ─── stopSupervisor — bare loom stop audit ────────────────────────────────────
+
+describe('stopSupervisor — bare stop audit', () => {
+  it('records a stop_agent row with the provided reason', () => {
+    const { checkpoints } = stopSupervisor(db, 'test-reason', new FakeClock(), {
+      runCheckpoint: () => false,
+    });
+
+    assert.deepEqual(checkpoints, []);
+
+    const rows = new AuditLog(db).recent(10).filter((r) => r.action === 'stop_agent');
+    assert.equal(rows.length, 1);
+    const detail = JSON.parse(rows[0].detail!);
+    assert.equal(detail.reason, 'test-reason');
+    assert.equal(detail.mode, 'supervisor_halt');
+  });
+
+  it('--reason omitted → detail.reason defaults to "cli"', () => {
+    stopSupervisor(db, 'cli', new FakeClock(), { runCheckpoint: () => false });
+
+    const rows = new AuditLog(db).recent(10).filter((r) => r.action === 'stop_agent');
+    assert.equal(rows.length, 1);
+    assert.equal(JSON.parse(rows[0].detail!).reason, 'cli');
   });
 });
