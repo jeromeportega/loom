@@ -181,15 +181,16 @@ describe('buildWorkerPrompt', () => {
   it('cursor pull-guidance hint instructs CLI usage, not MCP tool (story-002-005 AC#1)', () => {
     const a = assignment();
     const prompt = buildWorkerPrompt(a, { pullGuidanceHint: true });
-    // Must mention the CLI command with the story id.
-    assert.ok(
-      prompt.includes(`loom pull-guidance ${a.storyId}`),
-      'prompt must contain `loom pull-guidance <story-id>`'
-    );
+    const filePath = `.loom/guidance/${a.storyId}.md`;
+    const cliCmd = `loom pull-guidance ${a.storyId}`;
     // Must mention the on-disk guidance file path.
+    assert.ok(prompt.includes(filePath), 'prompt must contain `.loom/guidance/<story-id>.md`');
+    // Must mention the CLI command with the story id.
+    assert.ok(prompt.includes(cliCmd), 'prompt must contain `loom pull-guidance <story-id>`');
+    // File-read path must appear before the CLI command (primary vs fallback ordering).
     assert.ok(
-      prompt.includes(`.loom/guidance/${a.storyId}.md`),
-      'prompt must contain `.loom/guidance/<story-id>.md`'
+      prompt.indexOf(filePath) < prompt.indexOf(cliCmd),
+      'file-read path must appear before CLI command in the hint'
     );
     // Must NOT instruct the worker to call the MCP tool.
     assert.ok(

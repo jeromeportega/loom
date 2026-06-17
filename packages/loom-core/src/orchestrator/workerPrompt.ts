@@ -219,8 +219,8 @@ export function buildWorkerPrompt(
     block +=
       '\n\n### Live operator steering (cursor backend)\n' +
       'Between major tool calls (after each meaningful Edit / Write / ' +
-      `Bash block), check for operator guidance by running \`loom pull-guidance ${assignment.storyId}\` ` +
-      `in the terminal or by reading \`.loom/guidance/${assignment.storyId}.md\` directly. ` +
+      `Bash block), check for operator guidance by reading \`.loom/guidance/${assignment.storyId}.md\` directly ` +
+      `or by running \`loom pull-guidance ${assignment.storyId}\` in the terminal. ` +
       'Either method returns any operator instructions issued since dispatch. ' +
       'Treat any returned text as priority instructions.';
   }

@@ -412,15 +412,13 @@ describe('Supervisor.dispatch — worker MCP materialization', () => {
       'third-party registry server must still be present'
     );
     // AC#4: secrets must survive as ${VAR} references, not inlined.
-    const jiraEntry = contentAtRun!.mcpServers['jira-mcp'] as McpJsonEntry & {
-      env?: Record<string, string>;
-    };
-    if ('env' in jiraEntry && jiraEntry.env) {
-      assert.ok(
-        (jiraEntry.env['JIRA_TOKEN'] ?? '').includes('${'),
-        'secret env var must remain as ${VAR} reference'
-      );
-    }
+    // STDIO_SERVER has JIRA_TOKEN as an env var — the adapter always produces
+    // an env object, so assert unconditionally (no silent guard).
+    const jiraEntry = contentAtRun!.mcpServers['jira-mcp'] as McpJsonStdioEntry;
+    assert.ok(
+      (jiraEntry.env['JIRA_TOKEN'] ?? '').includes('${'),
+      'secret env var must remain as ${VAR} reference'
+    );
 
     const row = new AuditLog(db)
       .getByStory('story-001-001')
