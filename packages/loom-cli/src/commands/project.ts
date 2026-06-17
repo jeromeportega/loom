@@ -25,13 +25,23 @@ export function runProject(projectRoot: string, opts: ProjectOptions = {}): void
     const dbPath = path.join(entry.root, '.loom', 'loom.db');
     if (fs.existsSync(dbPath)) {
       const db = createDatabase(dbPath);
-      const epics = new EpicStore(db).list();
-      const last = epics[epics.length - 1];
-      if (last) latestEpic = { id: last.id, status: last.status, title: last.title };
-      db.close();
+      try {
+        const epics = new EpicStore(db).list();
+        // Sort ascending by created_at so the last element is always the newest,
+        // regardless of what order EpicStore.list() returns.
+        const sorted = [...epics].sort((a, b) =>
+          a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0
+        );
+        const last = sorted[sorted.length - 1];
+        if (last) latestEpic = { id: last.id, status: last.status, title: last.title };
+      } finally {
+        db.close();
+      }
     }
-  } catch {
-    // ignore — registry entry is still useful without epic data
+  } catch (err) {
+    process.stderr.write(
+      `[loom project] warning: could not read epic data: ${(err as Error).message}\n`
+    );
   }
 
   if (opts.json) {

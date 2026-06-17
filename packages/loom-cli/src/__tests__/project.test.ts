@@ -65,36 +65,23 @@ afterEach(() => {
   fs.rmSync(projectDir, { recursive: true, force: true });
 });
 
-function makeRegistry(root: string): ProjectRegistry {
-  return new ProjectRegistry({ path: path.join(registryDir, 'projects.json') });
-}
-
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('loom project — happy path with epics', () => {
   it('default output contains root, name, and LATEST epic id/status/title', () => {
-    // Seed ≥2 epics to prove ordering: we want the last one to appear.
-    const registry = makeRegistry(projectDir);
-    registry.register(projectDir);
-
-    const db = createDatabase(path.join(projectDir, '.loom', 'loom.db'));
-    const epicStore = new EpicStore(db);
-    epicStore.create('epic-001', 'First Epic');
-    epicStore.create('epic-002', 'Second Epic');
-    db.close();
-
-    // Pass custom registry path via monkey-patching by calling runProject with
-    // a real registry. We override ProjectRegistry by pointing the registryDir.
-    // Since runProject uses `new ProjectRegistry()` (default path), we need
-    // to seed the default registry location or use an integration approach.
-    //
-    // Pattern: set LOOM_HOME env var to redirect loomHome() to our tmp dir.
+    // Set LOOM_HOME first so all registry writes go to the same tmp location
+    // that runProject will read.
     const origHome = process.env['LOOM_HOME'];
     process.env['LOOM_HOME'] = registryDir;
     try {
-      // Re-register using the same registry that runProject will read.
-      const reg = new ProjectRegistry();
-      reg.register(projectDir);
+      new ProjectRegistry().register(projectDir);
+
+      // Seed ≥2 epics to prove ordering: we want the latest one to appear.
+      const db = createDatabase(path.join(projectDir, '.loom', 'loom.db'));
+      const epicStore = new EpicStore(db);
+      epicStore.create('epic-001', 'First Epic');
+      epicStore.create('epic-002', 'Second Epic');
+      db.close();
 
       const result = capture(() => runProject(projectDir));
 
@@ -211,15 +198,14 @@ describe('loom project — unregistered root', () => {
 
       const result = capture(() => runProject(unregistered));
 
-      // exit code must be 1 (set via process.exitCode)
-      const effectiveExitCode = result.exitCode ?? process.exitCode;
-      assert.ok(effectiveExitCode !== 0, 'exits non-zero for unregistered project');
+      // exit code must be 1 (set via process.exitCode, captured by the helper)
+      assert.ok(result.exitCode !== 0, 'exits non-zero for unregistered project');
 
       // exactly one error line
       assert.equal(result.errors.length, 1, 'exactly one error message');
       const msg = result.errors[0];
       assert.ok(!msg.includes('\n'), 'one-line message (no newlines)');
-      assert.ok(!msg.includes('Error:') || !msg.includes('at '), 'no stack trace');
+      assert.ok(!msg.includes('Error:') && !msg.includes(' at '), 'no stack trace');
       assert.ok(msg.includes(unregistered) || msg.includes('not registered'),
         'message references the unknown path or says not registered');
     } finally {
