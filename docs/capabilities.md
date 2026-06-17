@@ -109,6 +109,7 @@ Two interfaces over the same engine:
 | **Decision traces (worker reasoning)** | `loom traces --story <id> \| --agent <id> \| --epic <id>` / `loom_get_decision_traces` | Replayable worker reasoning captured to SQLite. |
 | **Diff for a story or epic** | `loom diff <story\|epic-id>` / `loom_get_diff` | The worker's diff vs. the epic base SHA. CLI supports `--max-bytes`, `--no-stat`, `--json`. |
 | **Project directory** | `loom projects` / `loom_list_projects`, `loom_get_project` | Lists every loom-init'ed repo on the machine + their latest epic snapshot. |
+| **Single project detail** | `loom project <project-root>` | Shows one registered project: root, name, and latest epic id/status/title. `--json` emits `{ project, latest_epic? }`. Exits non-zero if the root is not registered. Mirrors `loom_get_project`. |
 | **"loom learned this run" CLI summary** | Automatic at end of `loom run` | When the self-learning loop generated, promoted, or demoted a skill during the run, the CLI prints a single block summarizing what changed. Silent when nothing changed. |
 | **Skill provenance on canary injections** | Automatic in `loom run` output | A candidate skill injected into a story prints `(from story-X)` — the story that originally produced it. Closes the loop visibly between "loom wrote a skill" and "loom used it." |
 | **Per-skill history timeline** | `loom skills history <name>` | Merges audit rows + injection records into one chronological timeline: `★` generated, `↻` lifecycle change, `·` injection with outcome. Track-record tail line. |
