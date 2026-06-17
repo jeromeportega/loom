@@ -162,9 +162,9 @@ export function checkpointInFlightWorktrees(
   return results;
 }
 
-/** Injectable kill fn for `stopEpicWorkers` and per-story stop — overridden in tests. */
+/** Injectable kill fn for `stopEpicWorkers` — always sends SIGTERM; overridden in tests. */
 export interface StopDeps {
-  kill?: (pid: number, signal: string) => void;
+  kill?: (pid: number) => void;
 }
 
 export interface StopEpicResult {
@@ -185,7 +185,7 @@ export function stopEpicWorkers(
   reason: string,
   deps: StopDeps = {},
 ): StopEpicResult {
-  const kill = deps.kill ?? ((pid: number, sig: string) => process.kill(pid, sig as NodeJS.Signals));
+  const kill = deps.kill ?? ((pid: number) => process.kill(pid, 'SIGTERM'));
   const epicStore = new EpicStore(db);
   const agentStore = new AgentStore(db);
   const audit = new AuditLog(db);
@@ -195,7 +195,7 @@ export function stopEpicWorkers(
     return { status: 'not_found', stopped: [], noop: [], errors: [] };
   }
 
-  const agents = agentStore.listByEpic(epicId);
+  const agents = agentStore.listLatestByEpic(epicId);
   const stopped: { storyId: string; pid: number }[] = [];
   const noop: { storyId: string; agentStatus: string }[] = [];
   const errors: { storyId: string; message: string }[] = [];
@@ -210,7 +210,7 @@ export function stopEpicWorkers(
       continue;
     }
     try {
-      kill(agent.worker_pid, 'SIGTERM');
+      kill(agent.worker_pid);
       stopped.push({ storyId: agent.story_id, pid: agent.worker_pid });
       audit.record({
         agent_id: agent.id,
@@ -227,8 +227,8 @@ export function stopEpicWorkers(
         agent_id: agent.id,
         action: 'stop_agent',
         command: agent.story_id,
-        allowed: false,
-        detail: { reason, error: msg, epic_id: epicId },
+        allowed: true,
+        detail: { reason, success: false, error: msg, epic_id: epicId },
       });
     }
   }
@@ -237,7 +237,12 @@ export function stopEpicWorkers(
     action: 'stop_epic',
     command: epicId,
     allowed: true,
-    detail: { reason, stopped: stopped.length, noop: noop.length, errors: errors.length },
+    detail: {
+      reason,
+      stopped: stopped.map((s) => s.storyId),
+      noop: noop.map((n) => n.storyId),
+      errors: errors.map((e) => e.storyId),
+    },
   });
 
   return { status: 'ok', stopped, noop, errors };
@@ -258,6 +263,7 @@ export function stopSupervisor(
   new ControlStore(db).setState('stopping');
   new AuditLog(db).record({
     action: 'stop_agent',
+    command: 'supervisor',
     allowed: true,
     detail: { reason, mode: 'supervisor_halt' },
   });
@@ -272,7 +278,7 @@ export function runStop(storyIds: string[] = [], opts?: { epic?: string; reason?
   }
 
   const db = openDatabase(loomDir);
-  const reason = opts?.reason ?? 'cli';
+  const reason = opts?.reason || 'cli';
 
   // ─── loom stop --epic <id> ───────────────────────────────────────────────
   if (opts?.epic) {

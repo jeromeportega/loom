@@ -334,6 +334,31 @@ describe('stopEpicWorkers — isolation (load-bearing case)', () => {
     assert.equal(result.noop.length, 1);
     assert.equal(result.noop[0].storyId, 'story-A-004');
   });
+
+  it('a retried story (prior failed attempt + running retry) is counted once, not as a noop', () => {
+    // Simulate a retry: first attempt is failed, second is running.
+    const agents = new AgentStore(db);
+    const first = agents.create('epic-A', 'story-A-retry', 'retry story');
+    agents.updateStatus(first.id, 'failed');
+    const second = agents.create('epic-A', 'story-A-retry', 'retry story');
+    const retryPid = 19999;
+    agents.updateStatus(second.id, 'running');
+    agents.updateWorkerPid(second.id, retryPid);
+    // Force the running retry to have a strictly later timestamp so listLatestByEpic
+    // deterministically picks it (avoids same-ms tie-break on random id).
+    const laterTs = new Date(Date.now() + 1000).toISOString();
+    db.prepare('UPDATE agents SET updated_at = ? WHERE id = ?').run(laterTs, second.id);
+
+    const killed: number[] = [];
+    const result = stopEpicWorkers(db, 'epic-A', 'cli', {
+      kill: (pid) => { killed.push(pid); },
+    });
+
+    // The running retry is stopped; the stale failed attempt is NOT counted as a noop.
+    assert.deepEqual(killed, [retryPid], 'only the running retry is signalled');
+    assert.equal(result.stopped.length, 1);
+    assert.equal(result.noop.length, 0, 'stale failed attempt must not inflate noop count');
+  });
 });
 
 describe('stopEpicWorkers — audit rows', () => {
@@ -357,7 +382,11 @@ describe('stopEpicWorkers — audit rows', () => {
     assert.equal(epicRow.length, 1, 'exactly one stop_epic row');
     const epicDetail = JSON.parse(epicRow[0].detail!);
     assert.equal(epicDetail.reason, 'test-reason');
-    assert.equal(epicDetail.stopped, 2);
+    assert.deepEqual(
+      epicDetail.stopped.sort(),
+      ['story-audit-1', 'story-audit-2'],
+      'stop_epic detail.stopped contains story IDs, not a count',
+    );
 
     const agentRow1 = audit.getByStory('story-audit-1').filter((r) => r.action === 'stop_agent');
     assert.equal(agentRow1.length, 1);
