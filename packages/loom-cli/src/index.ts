@@ -359,6 +359,8 @@ export function buildProgram(): Command {
   return program;
 }
 
+// package.json#bin → dist/index.js directly (no wrapper), so require.main === module
+// is true when Node invokes the CLI entry point and false when tests import buildProgram.
 if (require.main === module) {
   buildProgram().parse();
 }

@@ -1,16 +1,4 @@
-/**
- * story-009-001: Live registry manifest — factory purity and collect completeness.
- *
- * Verifies:
- *   AC1 — Manifest.source === 'live-commander-registry' and collection reads the live registry.
- *   AC2 — publishSpec is included in collectSpecs() (publish now collected into manifest).
- *   AC3 — buildManifest(buildProgram()) resolves descriptions for both publish and release.
- *   AC4 — buildProgram() structural shape is unchanged (no user-facing CLI regression).
- *
- * Factory purity is proven implicitly: this file imports { buildProgram } from '../index.js'.
- * If index.ts called .parse() at module load, the test runner's argv would cause Commander
- * to exit 1 here — the test file would never run. Reaching the first assertion IS the proof.
- */
+// story-009-001: factory purity (AC4), publishSpec collected (AC2), manifest completeness (AC1, AC3).
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildProgram } from '../index.js';
@@ -18,43 +6,48 @@ import { collectSpecs, enumerateRegisteredCommands } from '../describe/registry.
 import { buildManifest } from '../describe/manifest.js';
 import type { Manifest } from '../describe/schema.js';
 
-// ─── Factory purity ───────────────────────────────────────────────────────────
-// The module loaded without calling .parse() — otherwise the test runner's argv
-// would trip Commander and exit before reaching here. These assertions confirm
-// the factory is callable and returns a well-formed program.
+// ─── Factory purity (AC4 enabling refactor) ──────────────────────────────────
+// Reaching this block at all proves the implicit purity invariant: if buildProgram()
+// called .parse() at module load, Commander would have exited on the test runner's argv
+// before any test ran. The explicit checks below make the invariant test-visible.
 
 describe('buildProgram factory purity (AC4 enabling refactor)', () => {
+  let program: ReturnType<typeof buildProgram>;
+
+  before(() => {
+    program = buildProgram();
+  });
+
   it('buildProgram is exported as a function', () => {
     assert.equal(typeof buildProgram, 'function');
   });
 
-  it('buildProgram() returns a Command named "loom"', () => {
-    const program = buildProgram();
+  it('factory does not call .parse() — program.args is empty after construction', () => {
+    // program.args is populated only when .parse() is called.
+    // An empty array proves the factory did not consume process.argv during construction.
+    assert.equal(program.args.length, 0);
+  });
+
+  it('returns a Command named "loom"', () => {
     assert.equal(program.name(), 'loom');
   });
 
-  it('buildProgram() registers publish as a leaf command', () => {
-    const program = buildProgram();
+  it('registers publish as a top-level command', () => {
     const names = program.commands.map((c) => c.name());
     assert.ok(names.includes('publish'), `expected publish in top-level commands; got: ${names.join(', ')}`);
   });
 
-  it('buildProgram() registers release as a leaf command', () => {
-    const program = buildProgram();
+  it('registers release as a top-level command', () => {
     const names = program.commands.map((c) => c.name());
     assert.ok(names.includes('release'), `expected release in top-level commands; got: ${names.join(', ')}`);
   });
 
-  it('buildProgram() help text mentions publish (no user-facing regression)', () => {
-    const program = buildProgram();
-    const help = program.helpInformation();
-    assert.ok(help.includes('publish'), 'loom --help must mention publish');
+  it('help text mentions publish (no user-facing regression)', () => {
+    assert.ok(program.helpInformation().includes('publish'), 'loom --help must mention publish');
   });
 
-  it('buildProgram() help text mentions release (no user-facing regression)', () => {
-    const program = buildProgram();
-    const help = program.helpInformation();
-    assert.ok(help.includes('release'), 'loom --help must mention release');
+  it('help text mentions release (no user-facing regression)', () => {
+    assert.ok(program.helpInformation().includes('release'), 'loom --help must mention release');
   });
 });
 
@@ -81,7 +74,13 @@ describe('buildManifest via live buildProgram() (AC1, AC3)', () => {
   let manifest: Manifest;
 
   before(() => {
-    manifest = buildManifest(buildProgram());
+    try {
+      manifest = buildManifest(buildProgram());
+    } catch (err) {
+      throw new Error(
+        `buildManifest setup failed — ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   });
 
   it('Manifest.source is "live-commander-registry" (AC1)', () => {
@@ -101,8 +100,7 @@ describe('buildManifest via live buildProgram() (AC1, AC3)', () => {
   });
 
   it('every live command enumerated by enumerateRegisteredCommands has a spec in the manifest (AC1)', () => {
-    const program = buildProgram();
-    const liveNames = enumerateRegisteredCommands(program);
+    const liveNames = enumerateRegisteredCommands(buildProgram());
     const manifestNames = new Set(manifest.commands.map((c) => c.name));
     for (const name of liveNames) {
       assert.ok(
