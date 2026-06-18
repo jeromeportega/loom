@@ -153,6 +153,22 @@ describe('runRelease — semver validation', () => {
     await capture(() => runRelease('1.2.3-alpha.1', opts));
     assert.equal(bumpCalls[0].version, '1.2.3-alpha.1');
   });
+
+  it('accepts pre-release with hyphen (e.g. 1.2.3-alpha-1)', async () => {
+    const { bumpCalls, opts } = makeSeams('1.2.3-alpha-1');
+    await capture(() => runRelease('1.2.3-alpha-1', opts));
+    assert.equal(bumpCalls[0].version, '1.2.3-alpha-1');
+  });
+
+  it('rejects pre-release with underscore (e.g. 1.2.3-rc_1)', async () => {
+    let bumpCalled = false;
+    const { opts } = makeSeams('1.2.3');
+    opts._runBump = () => { bumpCalled = true; };
+    const { exitCode, errors } = await capture(() => runRelease('1.2.3-rc_1', opts));
+    assert.equal(exitCode, 1);
+    assert.equal(bumpCalled, false, 'bump must not be called with underscore pre-release');
+    assert.ok(errors.some((e) => /semver/i.test(e)), 'error mentions semver');
+  });
 });
 
 // ─── [AC2/AC3] Branch + PR shape ─────────────────────────────────────────────

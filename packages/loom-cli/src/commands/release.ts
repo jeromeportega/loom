@@ -7,27 +7,22 @@ import { gitSafe } from '@loom-ai/core';
 export interface ReleaseCommandOptions {
   /** Test seam — injectable bump script runner. Production callers omit this. */
   _runBump?: (version: string, cwd: string) => void;
-  /** Test seam — injectable git runner. Defaults to gitSafe. */
-  _git?: (cwd: string, args: string[]) => { ok: boolean; output: string };
+  /** Test seam — type is typeof gitSafe so any signature drift surfaces at compile time. */
+  _git?: typeof gitSafe;
   /** Test seam — injectable gh runner. Returns captured output (e.g. PR URL). */
   _gh?: (args: string[], cwd: string) => string | undefined;
 }
 
-/**
- * `loom release <version>` — bump all workspace versions and open a release PR.
- *
- * Never pushes main directly. Creates release/v<version>, commits, pushes, and
- * opens a PR against main. Safe under the protected-branch guard (release/v* is
- * not a protected branch; no --force is used).
- */
+// Never pushes main directly; creates release/v<version>, commits, pushes, and opens a PR.
 export function runRelease(version: string, opts: ReleaseCommandOptions = {}): void {
   const projectRoot = process.cwd();
 
   // Normalize: strip leading 'v' so internal logic always works with bare semver.
   const ver = version.startsWith('v') ? version.slice(1) : version;
 
-  // Validate semver before running any git operations or the bump script.
-  if (!/^\d+\.\d+\.\d+(-[\w.]+)?(\+[\w.]+)?$/.test(ver)) {
+  // Validate semver: pre-release and build-metadata allow alphanumeric, dots, and hyphens only.
+  // Underscores are not valid per semver 2.0; hyphens (e.g. 1.2.3-alpha-1) are.
+  if (!/^\d+\.\d+\.\d+(-[-a-zA-Z0-9.]+)?(\+[-a-zA-Z0-9.]+)?$/.test(ver)) {
     console.error('  Invalid version — must be semver, e.g. 1.2.3');
     process.exit(1);
   }
@@ -55,8 +50,8 @@ export function runRelease(version: string, opts: ReleaseCommandOptions = {}): v
     process.exit(1);
   }
 
-  // 3a. Stage only the version-bump files — root and workspace package.json files.
-  //     Git expands the glob pathspec packages/*/package.json itself (no shell).
+  // 3a. Stage version-bump files. bump-versions.mjs does surgical package.json edits only —
+  //     it never runs npm install and never touches lockfiles, so no lockfile pathspec needed.
   const addResult = runGit(projectRoot, ['add', '--', 'package.json', 'packages/*/package.json']);
   if (!addResult.ok) {
     console.error(`  Failed to stage version-bump files: ${addResult.output}`);
@@ -114,8 +109,7 @@ function defaultRunGh(args: string[], cwd: string): string | undefined {
     }).trim();
     const lines = output.split('\n').filter(Boolean);
     return lines[lines.length - 1] || undefined;
-  } catch (err) {
-    console.error('  gh error:', err instanceof Error ? err.message : String(err));
+  } catch {
     return undefined;
   }
 }
