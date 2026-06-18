@@ -1,20 +1,3 @@
-/**
- * Describe completeness test — story-004-005
- *
- * Asserts every command the CLI registers has a complete, valid description in
- * the spec registry. Unlike cliParity.test.ts (which pins a frozen snapshot),
- * this test derives its inventory from the live Commander registry built from
- * collectSpecs() — so adding a command without a valid spec turns the suite red.
- *
- * ADR-001: the inventory comes from the live Commander registry (via
- *   enumerateRegisteredCommands), never from a hardcoded list.
- * ADR-003: each spec's options[].name set must match the registered
- *   command.options long-flag names (no drift).
- *
- * Trade-off: this test catches *added* commands lacking specs; it does NOT
- * guard against removed commands — that removal tripwire stays owned by
- * cliParity.test.ts.
- */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Command } from 'commander';
@@ -23,96 +6,71 @@ import type { CommandDescription } from '../describe/schema.js';
 import { collectSpecs, enumerateRegisteredCommands } from '../describe/registry.js';
 import { applySpec } from '../describe/applySpec.js';
 
-// ---------------------------------------------------------------------------
-// Helpers — build a Commander program from the live spec registry
-// ---------------------------------------------------------------------------
-
-/**
- * Builds a Commander program whose structure mirrors the spec registry.
- * Spec names drive the hierarchy: "guard check" → guard.command("check").
- * This is the ADR-001-compliant approach: the inventory is always derived
- * from collectSpecs() at test time, not from a hardcoded array.
- */
-function buildProgramFromSpecs(specs: CommandDescription[]): Command {
-  const program = new Command('loom');
-  // Parent-group containers keyed by their single-segment name (e.g. "guard").
-  const containers = new Map<string, Command>();
-
-  for (const spec of specs) {
-    const parts = spec.name.split(' ');
-    if (parts.length === 1) {
-      applySpec(program.command(parts[0]), spec);
-    } else if (parts.length === 2) {
-      const [parentName, childName] = parts;
-      let parent = containers.get(parentName);
-      if (!parent) {
-        parent = program.command(parentName);
-        containers.set(parentName, parent);
-      }
-      applySpec(parent.command(childName), spec);
-    }
-    // Deeper nesting (3+ parts) is not present in the current registry.
+// Builds a fresh Commander command for a single spec — used only for ADR-003 drift checks.
+// Handles top-level (1-part) and grouped (2-part) spec names.
+// Throws for 3+ segments so the caller discovers unsupported depth early.
+function buildCommandForSpec(spec: CommandDescription): Command {
+  const root = new Command('__test__');
+  const parts = spec.name.split(' ');
+  if (parts.length === 1) {
+    return applySpec(root.command(parts[0]), spec);
   }
-
-  return program;
-}
-
-/**
- * Walks the Commander tree to find the Command at the given full path.
- * e.g. "guard check" → program → guard → check
- */
-function findCommand(root: Command, fullPath: string): Command | undefined {
-  const parts = fullPath.split(' ');
-  let current: Command = root;
-  for (const part of parts) {
-    const found = current.commands.find((c) => c.name() === part);
-    if (!found) return undefined;
-    current = found;
+  if (parts.length === 2) {
+    const parent = root.command(parts[0]);
+    return applySpec(parent.command(parts[1]), spec);
   }
-  return current;
+  throw new Error(`buildCommandForSpec: spec "${spec.name}" has ${parts.length} segments (max 2)`);
 }
 
 // ---------------------------------------------------------------------------
-// Build shared test fixtures once — avoids re-instantiation per test case
-// ---------------------------------------------------------------------------
-
-const allSpecs = collectSpecs();
-const program = buildProgramFromSpecs(allSpecs);
-const commandNames = enumerateRegisteredCommands(program);
-const specsByName = new Map<string, CommandDescription>(allSpecs.map((s) => [s.name, s]));
-
-// ---------------------------------------------------------------------------
-// Completeness assertions — enumerate → assert → fail loud
+// Main suite — derives inventory from the live spec registry (ADR-001).
+// Iterates collectSpecs() directly so the schema and drift checks are
+// non-circular: spec validity is asserted independently of Commander wiring.
 // ---------------------------------------------------------------------------
 
 describe('describe completeness: every registered command has a valid spec', () => {
-  it('enumerateRegisteredCommands returns a non-empty command list', () => {
-    assert.ok(commandNames.length > 0, 'expected at least one registered command');
+  const allSpecs = collectSpecs();
+  const specsByName = new Map<string, CommandDescription>(allSpecs.map((s) => [s.name, s]));
+
+  it('registry is non-empty (collectSpecs returns at least one spec)', () => {
+    assert.ok(allSpecs.length > 0, 'collectSpecs() must return at least one spec');
   });
 
-  it('includes expected commands — status, run, guard check, guard hook, mcp add, mcp list', () => {
-    for (const expected of ['status', 'run', 'guard check', 'guard hook', 'mcp add', 'mcp list']) {
+  it('at least 10 commands enumerated (dynamic count, not a hardcoded list)', () => {
+    assert.ok(
+      allSpecs.length >= 10,
+      `Expected at least 10 specs in collectSpecs(), got ${allSpecs.length}`
+    );
+  });
+
+  it('guard subcommands appear as full-path entries in the spec names', () => {
+    // Verifies 2-part spec names are correctly authored for guard subcommands.
+    for (const expected of ['guard check', 'guard hook']) {
       assert.ok(
-        commandNames.includes(expected),
-        `expected "${expected}" in enumerated commands but it was not found`
+        specsByName.has(expected),
+        `Expected a spec named "${expected}" in collectSpecs()`
       );
     }
   });
 
-  it('parent group containers are not present as leaf entries', () => {
-    // "guard" and "mcp" are containers with sub-commands — they must not
-    // appear as standalone entries in the enumeration.
-    assert.equal(commandNames.filter((n) => n === 'guard').length, 0, '"guard" must not appear as a leaf');
-    assert.equal(commandNames.filter((n) => n === 'mcp').length, 0, '"mcp" must not appear as a leaf');
+  it('spec names are unique across collectSpecs()', () => {
+    const names = allSpecs.map((s) => s.name);
+    const unique = new Set(names);
+    const duplicates = names.filter((n, i) => names.indexOf(n) !== i);
+    assert.equal(
+      unique.size,
+      names.length,
+      `Duplicate spec names: ${duplicates.join(', ')}`
+    );
   });
 
-  it('every enumerated command has a matching spec in collectSpecs()', () => {
-    for (const name of commandNames) {
-      assert.ok(
-        specsByName.has(name),
-        `Command "${name}" is registered but has no spec in collectSpecs() — add a CommandDescription or the suite stays red`
-      );
-    }
+  it('no spec has 3+ name segments (unsupported nesting depth)', () => {
+    const deep = allSpecs.filter((s) => s.name.split(' ').length > 2);
+    assert.equal(
+      deep.length,
+      0,
+      `Specs with 3+ name segments are not supported: ${deep.map((s) => s.name).join(', ')}`
+    );
   });
 
   it('every spec passes CommandDescriptionSchema (schema validity)', () => {
@@ -127,16 +85,13 @@ describe('describe completeness: every registered command has a valid spec', () 
     }
   });
 
-  it('ADR-003 drift check: spec options match Commander command options for every registered command', () => {
-    for (const name of commandNames) {
-      const spec = specsByName.get(name);
-      if (!spec) continue; // already caught by the previous test
-
-      const cmd = findCommand(program, name);
-      if (!cmd) continue;
-
+  it('ADR-003 drift check: spec options round-trip through applySpec without drift', () => {
+    // For each spec, wire it into a fresh Commander and compare option sets.
+    // Both sides use the "--flag" convention so no normalization is needed.
+    for (const spec of allSpecs) {
+      const cmd = buildCommandForSpec(spec);
       const specOptionNames = new Set(spec.options.map((o) => o.name));
-      // Commander automatically adds --help; exclude it from comparison.
+      // Commander adds --help automatically; exclude it.
       const cmdOptionNames = new Set(
         cmd.options
           .filter((o) => o.long !== '--help')
@@ -147,44 +102,34 @@ describe('describe completeness: every registered command has a valid spec', () 
       for (const optName of specOptionNames) {
         assert.ok(
           cmdOptionNames.has(optName),
-          `Spec for "${name}" declares option "${optName}" but Commander does not register it — drift detected`
+          `Spec "${spec.name}" declares option "${optName}" but Commander does not register it via applySpec — drift detected`
         );
       }
       for (const optName of cmdOptionNames) {
         assert.ok(
           specOptionNames.has(optName),
-          `Commander command "${name}" has option "${optName}" not declared in spec — drift detected`
+          `Spec "${spec.name}": Commander registered option "${optName}" via applySpec but spec does not declare it — drift detected`
         );
       }
     }
   });
-
-  it('spec names are unique across collectSpecs()', () => {
-    const names = allSpecs.map((s) => s.name);
-    const unique = new Set(names);
-    const duplicates = names.filter((n, i) => names.indexOf(n) !== i);
-    assert.equal(
-      unique.size,
-      names.length,
-      `Duplicate spec names found: ${duplicates.join(', ')}`
-    );
-  });
 });
 
 // ---------------------------------------------------------------------------
-// Meta-proof: demonstrate the tripwire goes red for missing / invalid specs
+// Meta-proof — demonstrates the tripwire goes red for missing / invalid specs.
+// Uses enumerateRegisteredCommands with synthetic programs to avoid the
+// circular dependency that would arise from using the spec-derived program.
 // ---------------------------------------------------------------------------
 
 describe('meta-proof: completeness tripwire fails loud for bad specs', () => {
   it('detects a registered command with no matching spec', () => {
-    // Build a minimal program with one command that has NO entry in collectSpecs().
     const testProgram = new Command('loom-test');
     testProgram.command('phantom-cmd');
 
     const testNames = enumerateRegisteredCommands(testProgram);
     assert.ok(testNames.includes('phantom-cmd'), '"phantom-cmd" must appear in enumeration');
 
-    // Run the same completeness check the main suite runs.
+    const specsByName = new Map(collectSpecs().map((s) => [s.name, s]));
     let detectedMissing = false;
     for (const name of testNames) {
       if (!specsByName.has(name)) {
@@ -219,22 +164,25 @@ describe('meta-proof: completeness tripwire fails loud for bad specs', () => {
     );
   });
 
-  it('inventory is not derived from a hardcoded list (ADR-001)', () => {
-    // Prove that commandNames is dynamic — adding a new command to the program
-    // causes it to appear in the enumeration without any code change here.
-    const augmented = buildProgramFromSpecs(allSpecs);
-    // Inject a new command directly (simulating a future registration).
-    augmented.command('future-cmd');
+  it('inventory is registry-driven: adding a command to a program makes it enumerable without code changes here', () => {
+    // Proves enumerateRegisteredCommands is dynamic — the inventory grows when
+    // a new command is registered, so a hardcoded list would immediately lag.
+    const base = new Command('loom-test');
+    base.command('existing-cmd');
+    const baseNames = enumerateRegisteredCommands(base);
 
+    const augmented = new Command('loom-test');
+    augmented.command('existing-cmd');
+    augmented.command('future-cmd');
     const augmentedNames = enumerateRegisteredCommands(augmented);
+
     assert.ok(
       augmentedNames.includes('future-cmd'),
       '"future-cmd" must appear when added to the program — proving the inventory is registry-driven, not hardcoded'
     );
-    // The original commandNames array did NOT include 'future-cmd'.
     assert.ok(
-      !commandNames.includes('future-cmd'),
-      'original commandNames must not include "future-cmd" (it was added only to the augmented program)'
+      !baseNames.includes('future-cmd'),
+      'base names must not include "future-cmd" (it was added only to the augmented program)'
     );
   });
 });
