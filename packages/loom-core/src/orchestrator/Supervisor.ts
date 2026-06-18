@@ -609,6 +609,9 @@ export class Supervisor {
    *     `finalizing`+phase state (a defined, not-stranded, not-`done` state).
    *   - `gated` (block) → the finalizer already flipped the epic back to
    *     `in_progress` → we leave it.
+   *   - `publish_pending` → recoverable push/PR failure → the finalizer already
+   *     wrote the state (status + finalize_ref + publish_note); do NOT call
+   *     `fail()` or flip to `done`. Leave it for `loom publish`.
    *   - `failed` → terminal infra failure → `fail(id, message)` records the
    *     error and clears `finalize_phase`.
    *   - `skipped` → no PR flow → leave the prior status untouched.
@@ -636,6 +639,8 @@ export class Supervisor {
       this.epics.fail(epicId, `finalize threw: ${(err as Error).message}`.slice(0, 500));
       return;
     }
+
+    if (fin.status === 'publish_pending') return; // finalizer already wrote state — do NOT fail() or done()
 
     if (fin.status === 'failed') {
       // ADR-2: a finalize failure is a terminal infra failure. Record the
