@@ -1,0 +1,215 @@
+# Loom CLI Command Description Schema (ADR-004)
+# Validated at runtime by zod (see packages/loom-cli/src/describe/schema.ts)
+# This file is the human-readable reference; zod is the source of truth.
+# Hand-synced with the zod module — no codegen. When the zod schemas change,
+# update this file in the same PR.
+
+$schema: "http://json-schema.org/draft-07/schema#"
+
+definitions:
+
+  ArgType:
+    type: string
+    enum: [string, number, boolean, enum]
+
+  PositionalArg:
+    type: object
+    required: [name, type, required, description]
+    properties:
+      name:
+        type: string
+        minLength: 1
+        description: "Positional argument name as it appears in usage strings"
+      type:
+        $ref: "#/definitions/ArgType"
+      required:
+        type: boolean
+      description:
+        type: string
+        minLength: 1
+      values:
+        type: array
+        items:
+          type: string
+        description: "Allowed values; required when type=enum, forbidden otherwise"
+
+  OptionFlag:
+    type: object
+    required: [name, type, description, changesOutputShape]
+    properties:
+      name:
+        type: string
+        pattern: "^--[a-z][a-z0-9-]*$"
+        description: "Long-form flag, e.g. --json, --epic-id"
+      type:
+        $ref: "#/definitions/ArgType"
+      default:
+        description: "Default value when the flag is omitted (any type)"
+      description:
+        type: string
+        minLength: 1
+      changesOutputShape:
+        type: boolean
+        description: "True when this flag alters the structure of the output (e.g. --json)"
+
+  OutputContract:
+    type: object
+    required: [text]
+    properties:
+      text:
+        type: string
+        minLength: 1
+        description: "Human-readable description of the default (text) output"
+      json:
+        type: object
+        required: [supported]
+        properties:
+          supported:
+            type: boolean
+          shape:
+            type: string
+            description: "Free-text description or TypeScript type of the JSON payload"
+
+  UsageExample:
+    type: object
+    required: [command, description]
+    properties:
+      command:
+        type: string
+        minLength: 1
+        description: "Exact shell invocation the user can copy-paste"
+      description:
+        type: string
+        minLength: 1
+        description: "What this example demonstrates"
+
+  ExitCode:
+    type: object
+    required: [code, meaning]
+    properties:
+      code:
+        type: integer
+        description: "Numeric exit code (0 = success by convention)"
+      meaning:
+        type: string
+        minLength: 1
+
+  Relationships:
+    type: object
+    properties:
+      prerequisites:
+        type: array
+        items:
+          type: string
+        default: []
+        description: "Commands that should typically run before this one"
+      nextSteps:
+        type: array
+        items:
+          type: string
+        default: []
+        description: "Commands commonly run after this one"
+
+  CommandDescription:
+    type: object
+    required: [name, summary, whenToUse, arguments, options, output, examples, exitCodes, errors, relationships]
+    properties:
+      name:
+        type: string
+        minLength: 1
+        description: "Full registered path, e.g. 'status', 'guard check', 'mcp add'"
+      summary:
+        type: string
+        minLength: 5
+        maxLength: 100
+        description: "One-line description; fed directly into Commander .description()"
+      whenToUse:
+        type: string
+        minLength: 1
+        description: "Agent-facing guidance on when to invoke this command"
+      arguments:
+        type: array
+        items:
+          $ref: "#/definitions/PositionalArg"
+      options:
+        type: array
+        items:
+          $ref: "#/definitions/OptionFlag"
+      output:
+        $ref: "#/definitions/OutputContract"
+      examples:
+        type: array
+        items:
+          $ref: "#/definitions/UsageExample"
+        minItems: 1
+        description: "At least one copy-paste-ready usage example is required"
+      exitCodes:
+        type: array
+        items:
+          $ref: "#/definitions/ExitCode"
+        minItems: 1
+        description: "At least one exit code must be documented"
+      errors:
+        type: array
+        items:
+          type: string
+        description: "Common error conditions described in prose"
+      relationships:
+        $ref: "#/definitions/Relationships"
+
+  WorkflowStep:
+    type: object
+    required: [command, why]
+    properties:
+      command:
+        type: string
+        minLength: 1
+        description: "Exact CommandDescription.name of the command to run"
+      why:
+        type: string
+        minLength: 1
+        description: "Why this step belongs in the workflow"
+
+  Workflow:
+    type: object
+    required: [id, goal, steps]
+    properties:
+      id:
+        type: string
+        pattern: "^[a-z][a-z0-9-]*$"
+        description: "Machine-readable workflow identifier, e.g. 'plan', 'run'"
+      goal:
+        type: string
+        minLength: 1
+        description: "Human-readable goal of the workflow"
+      steps:
+        type: array
+        items:
+          $ref: "#/definitions/WorkflowStep"
+        minItems: 1
+
+  Manifest:
+    type: object
+    required: [loomVersion, source, commands, workflows]
+    properties:
+      loomVersion:
+        type: string
+        minLength: 1
+        description: "loom version read from package.json (same source as PKG_VERSION in index.ts)"
+      source:
+        type: string
+        enum: [live-commander-registry]
+        description: "Always 'live-commander-registry' — provenance marker"
+      commands:
+        type: array
+        items:
+          $ref: "#/definitions/CommandDescription"
+        minItems: 1
+      workflows:
+        type: array
+        items:
+          $ref: "#/definitions/Workflow"
+        minItems: 1
+
+# Top-level schema: a Manifest (output of `loom describe`)
+$ref: "#/definitions/Manifest"
