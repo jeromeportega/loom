@@ -5,6 +5,9 @@
  * by this story: docs/capabilities.md, CLAUDE.md, README.md,
  * docs/getting-started/index.md, and docs/index.md.
  *
+ * docs/operations/releasing.md is owned by story-003-004 and was audited there;
+ * it is included here in OWNED_FILES so the forbidden-string test covers it too.
+ *
  * The mechanical done-ness bar (ADR-004): the seven forbidden strings must
  * return zero hits in the owned files. Retained mentions (loom mcp add/list,
  * provisioning docs) must be preserved.
@@ -23,6 +26,8 @@ const OWNED_FILES = [
   path.join(REPO_ROOT, 'docs', 'capabilities.md'),
   path.join(REPO_ROOT, 'docs', 'index.md'),
   path.join(REPO_ROOT, 'docs', 'getting-started', 'index.md'),
+  // releasing.md is owned by story-003-004; included here as a cross-check
+  path.join(REPO_ROOT, 'docs', 'operations', 'releasing.md'),
 ];
 
 const FORBIDDEN_STRINGS = [
@@ -65,12 +70,11 @@ describe('docs scrub (story-003-005) — forbidden strings absent from owned fil
 });
 
 describe('docs scrub (story-003-005) — retained provisioning content preserved', () => {
-  const capabilities = fs.readFileSync(
-    path.join(REPO_ROOT, 'docs', 'capabilities.md'),
-    'utf8'
-  );
-
   it('capabilities.md retains loom mcp add provisioning row', () => {
+    const capabilities = fs.readFileSync(
+      path.join(REPO_ROOT, 'docs', 'capabilities.md'),
+      'utf8'
+    );
     assert.ok(
       capabilities.includes('loom mcp add'),
       'capabilities.md must retain the "loom mcp add" provisioning row'
@@ -78,6 +82,10 @@ describe('docs scrub (story-003-005) — retained provisioning content preserved
   });
 
   it('capabilities.md retains policy.mcp.registry reference', () => {
+    const capabilities = fs.readFileSync(
+      path.join(REPO_ROOT, 'docs', 'capabilities.md'),
+      'utf8'
+    );
     assert.ok(
       capabilities.includes('policy.mcp.registry'),
       'capabilities.md must retain policy.mcp.registry (worker-provisioning config)'
@@ -85,6 +93,10 @@ describe('docs scrub (story-003-005) — retained provisioning content preserved
   });
 
   it('capabilities.md retains cursor-mcp-strictness.md research link', () => {
+    const capabilities = fs.readFileSync(
+      path.join(REPO_ROOT, 'docs', 'capabilities.md'),
+      'utf8'
+    );
     assert.ok(
       capabilities.includes('cursor-mcp-strictness.md'),
       'capabilities.md must retain the link to the retained research doc'
@@ -93,13 +105,11 @@ describe('docs scrub (story-003-005) — retained provisioning content preserved
 });
 
 describe('docs scrub (story-003-005) — CLI=usability, web=observability reframing', () => {
-  const capabilities = fs.readFileSync(
-    path.join(REPO_ROOT, 'docs', 'capabilities.md'),
-    'utf8'
-  );
-  const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
-
   it('capabilities.md contains CLI=usability, web=observability framing', () => {
+    const capabilities = fs.readFileSync(
+      path.join(REPO_ROOT, 'docs', 'capabilities.md'),
+      'utf8'
+    );
     assert.ok(
       capabilities.includes('CLI = usability') || capabilities.includes('CLI=usability'),
       'capabilities.md should reflect CLI = usability framing'
@@ -111,6 +121,7 @@ describe('docs scrub (story-003-005) — CLI=usability, web=observability refram
   });
 
   it('README.md usability surface framing is present', () => {
+    const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
     assert.ok(
       readme.includes('usability surface') || readme.includes('CLI is the usability'),
       'README.md should frame the CLI as the usability surface'
@@ -118,6 +129,7 @@ describe('docs scrub (story-003-005) — CLI=usability, web=observability refram
   });
 
   it('README.md observability surface framing is present', () => {
+    const readme = fs.readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
     assert.ok(
       readme.includes('observability surface') || readme.includes('observability'),
       'README.md should reference observability'
@@ -125,6 +137,10 @@ describe('docs scrub (story-003-005) — CLI=usability, web=observability refram
   });
 
   it('capabilities.md Init row no longer lists --mcp option', () => {
+    const capabilities = fs.readFileSync(
+      path.join(REPO_ROOT, 'docs', 'capabilities.md'),
+      'utf8'
+    );
     const lines = capabilities.split('\n');
     const initRow = lines.find(
       (l) => l.includes('**Init in any repo**') && l.trimStart().startsWith('|')

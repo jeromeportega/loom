@@ -208,7 +208,7 @@ That is the whole loop. Everything below is reference.
 | Execute | `loom run` | The supervisor dispatches story agents in isolated worktrees |
 | Track | `loom status [--watch]` | Per-story status and PR links |
 
-`loom init --cursor` additionally writes the Cursor rules file.
+`loom init --cursor` additionally writes the Cursor rules file and `.cursor/mcp.json` for worker MCP provisioning.
 
 ---
 
