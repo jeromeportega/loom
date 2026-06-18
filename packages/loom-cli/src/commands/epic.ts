@@ -17,6 +17,7 @@ import {
 import type { LLMClient } from '@loom-ai/core';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
 import { formatClarificationsNotice } from './briefGateMessage.js';
+import { makePlanningPrinter } from './planningPrinter.js';
 
 /**
  * @param opts.force  Skip the brief-quality gate for this invocation only. The
@@ -29,7 +30,7 @@ import { formatClarificationsNotice } from './briefGateMessage.js';
  */
 export async function runEpic(
   brief: string,
-  opts: { force?: boolean; llm?: LLMClient; cursorBin?: string } = {}
+  opts: { force?: boolean; verbose?: boolean; llm?: LLMClient; cursorBin?: string } = {}
 ): Promise<void> {
   const force = opts.force === true;
   const projectRoot = process.cwd();
@@ -207,6 +208,7 @@ export async function runEpic(
     db,
     sharedContract: policy.agents.shared_contract === 'on',
     qaPlanning: policy.agents.qa_planning === 'advisory',
+    onPlanningEvent: makePlanningPrinter({ verbose: opts.verbose === true }),
   });
 
   let result;
@@ -295,11 +297,13 @@ export const spec: CommandDescription = {
   ],
   options: [
     { name: '--force', type: 'boolean', description: 'Skip the brief-quality gate for this invocation (critique still produced and audit-logged)', changesOutputShape: false },
+    { name: '--verbose', type: 'boolean', description: 'Stream live persona output to the terminal', changesOutputShape: true },
   ],
   output: { text: 'Epic id and summary of planned stories after the planning pipeline completes' },
   examples: [
     { command: 'loom epic "Add OAuth2 login with GitHub"', description: 'Plan a new epic from a brief' },
     { command: 'loom epic "Refactor auth module" --force', description: 'Plan without the brief quality gate' },
+    { command: 'loom epic "Add OAuth2 login with GitHub" --verbose', description: 'Stream live persona output while planning' },
   ],
   exitCodes: [
     { code: 0, meaning: 'Epic planned successfully' },
