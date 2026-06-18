@@ -9,9 +9,8 @@ import { collectSpecs, enumerateRegisteredCommands } from './registry.js';
 // ---------------------------------------------------------------------------
 
 /** A normalized identifier as it appears both on the page and in a live source.
- *
- * command tokens: command path with NO "loom " prefix — "epic", "guard check"
- * knob tokens:    dotted leaf paths with NO "policy." prefix — "git.protected_branches"
+ * command tokens: NO "loom " prefix — "epic", "guard check"
+ * knob tokens: dotted leaf paths, NO "policy." prefix — "git.protected_branches"
  */
 export type Token = string;
 
@@ -36,14 +35,7 @@ export interface CoverageReport {
 // repoRoot — walk up from a starting directory to find the repo root
 // ---------------------------------------------------------------------------
 
-/**
- * Find the monorepo root by walking up from `fromDir` until a directory
- * containing `schemas/policy.schema.yaml` is found.
- *
- * Defaults to __dirname (dist/describe/ at runtime) when omitted, so
- * the walk reaches the repo root in a standard worktree layout:
- *   dist/describe/ → dist/ → packages/loom-cli/ → packages/ → repo root
- */
+/** Walk up from `fromDir` until a directory containing schemas/policy.schema.yaml is found. */
 export function repoRoot(fromDir?: string): string {
   let dir = resolve(fromDir ?? __dirname);
   while (dir !== dirname(dir)) {
@@ -61,20 +53,13 @@ export function repoRoot(fromDir?: string): string {
 // operatorCommands — operator-visible command tokens from the live registry
 // ---------------------------------------------------------------------------
 
-/**
- * Subset rule for commands:
- *   A CommandDescription with audience === 'internal' is excluded.
- *   A CommandDescription with absent/undefined audience defaults to 'operator' and is included.
- *   Each included spec contributes spec.name + (spec.aliases ?? []) as tokens.
- *
- * When a Commander program is supplied, the command names are sourced from
- * enumerateRegisteredCommands(program) — proving derivation from the live
- * registry rather than a hardcoded list.  Each name is then looked up in
- * collectSpecs() to obtain its audience and alias annotations; a name with
- * no matching spec defaults to audience 'operator' (included).
- *
- * When no program is supplied, spec names come from collectSpecs() directly.
- */
+// Subset rule: audience === 'internal' → excluded; absent audience defaults to 'operator' (included).
+// Each included spec contributes spec.name + (spec.aliases ?? []) as tokens.
+// With program: command names from enumerateRegisteredCommands (proves live derivation, not hardcoded list).
+// Without program: command names from collectSpecs() only (spec-list, no Commander walk — diverges if a
+//   command is registered in Commander but absent from specs; prefer passing a program when possible).
+
+/** Operator command tokens from the live registry: collectSpecs() filtered to audience 'operator', names + aliases. */
 export function operatorCommands(program?: Command): Set<Token> {
   const specs = collectSpecs();
   const specsByName = new Map(specs.map((s) => [s.name, s]));
@@ -102,22 +87,21 @@ export function operatorCommands(program?: Command): Set<Token> {
 // operatorKnobs — operator-visible knob tokens from schemas/policy.schema.yaml
 // ---------------------------------------------------------------------------
 
-/**
- * Subset rule for knobs:
- *   Only leaf scalar paths under the top-level git | filesystem | agents blocks
- *   are included.  "Leaf" means the field is not a JSON-Schema object with
- *   nested properties — scalars, arrays, and enums all qualify.
- *   Any field carrying `x-internal: true` is excluded regardless of depth.
- *   Container (non-leaf) nodes are not emitted as tokens.
- *   Fields outside git | filesystem | agents are not included.
- *
- * The dotted path uses NO "policy." prefix: "agents.max_concurrent",
- * "git.protected_branches", etc.
- */
+// Subset rule: only leaf scalar paths under the top-level git | filesystem | agents blocks.
+// "Leaf" = not a JSON-Schema object with nested properties (scalars, arrays, enums all qualify).
+// Fields with x-internal: true are excluded at any depth; container nodes are not emitted as tokens.
+// Fields outside git | filesystem | agents are not included.
+// Dotted path uses NO "policy." prefix: "agents.max_concurrent", "git.protected_branches".
+
+/** Operator knob tokens from schemas/policy.schema.yaml: leaf scalars under git|filesystem|agents, x-internal excluded. */
 export function operatorKnobs(schemaPath?: string): Set<Token> {
   const resolvedPath = schemaPath ?? join(repoRoot(), 'schemas', 'policy.schema.yaml');
   const raw = readFileSync(resolvedPath, 'utf8');
-  const schema = yaml.load(raw) as Record<string, unknown>;
+  const loaded = yaml.load(raw);
+  if (!loaded || typeof loaded !== 'object') {
+    throw new Error(`operatorKnobs: ${resolvedPath} did not parse to an object`);
+  }
+  const schema = loaded as Record<string, unknown>;
 
   const tokens = new Set<Token>();
   const ROOT_BLOCKS = ['git', 'filesystem', 'agents'] as const;
@@ -134,12 +118,7 @@ export function operatorKnobs(schemaPath?: string): Set<Token> {
   return tokens;
 }
 
-/**
- * Recurse into `props` and emit dotted paths for every leaf scalar field.
- * Fields tagged `x-internal: true` at any depth are silently skipped.
- * Container nodes (type=object with nested properties) are recursed into but
- * not emitted themselves.
- */
+/** Recurse into props emitting dotted paths for every leaf scalar; x-internal fields skipped. */
 function collectLeafPaths(
   prefix: string,
   props: Record<string, unknown>,
@@ -151,11 +130,30 @@ function collectLeafPaths(
 
     if (field['x-internal'] === true) continue;
 
+    // Gather sub-schema properties from allOf / anyOf / oneOf composition keywords.
+    const composedProps: Record<string, unknown> = {};
+    for (const keyword of ['allOf', 'anyOf', 'oneOf'] as const) {
+      const arr = field[keyword] as Record<string, unknown>[] | undefined;
+      if (Array.isArray(arr)) {
+        for (const sub of arr) {
+          if (sub.properties && typeof sub.properties === 'object') {
+            Object.assign(composedProps, sub.properties as Record<string, unknown>);
+          }
+        }
+      }
+    }
+    // TODO: $ref resolution is not implemented; a field using $ref is treated as a leaf scalar.
+
     const isContainerObject =
-      field.type === 'object' && field.properties != null;
+      (field.type === 'object' && field.properties != null) ||
+      Object.keys(composedProps).length > 0;
 
     if (isContainerObject) {
-      collectLeafPaths(dotPath, field.properties as Record<string, unknown>, tokens);
+      const mergedProps: Record<string, unknown> = {
+        ...(field.properties as Record<string, unknown> ?? {}),
+        ...composedProps,
+      };
+      collectLeafPaths(dotPath, mergedProps, tokens);
     } else {
       tokens.add(dotPath);
     }
