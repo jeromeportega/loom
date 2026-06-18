@@ -2,6 +2,7 @@ import type { CommandDescription } from '../describe/schema.js';
 
 export const spec: CommandDescription = {
   name: 'describe',
+  audience: 'internal',
   summary: 'Emit the CLI self-description manifest as JSON',
   whenToUse:
     'Use when an agent or tool needs the full machine-readable manifest of every loom command and encoded task workflows, or when looking up the contract for a single command by name.',

@@ -67,6 +67,10 @@ export const CommandDescriptionSchema = z.object({
   exitCodes: z.array(ExitCodeSchema).min(1),
   errors: z.array(z.string()),
   relationships: RelationshipsSchema.default({ prerequisites: [], nextSteps: [] }),
+  /** absent/undefined === 'operator' (visible in capabilities docs and coverage checks) */
+  audience: z.enum(['operator', 'internal']).optional(),
+  /** extra tokens the capabilities page may legitimately use for this command */
+  aliases: z.array(z.string()).optional(),
 });
 export type CommandDescription = z.infer<typeof CommandDescriptionSchema>;
 
