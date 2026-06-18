@@ -403,9 +403,10 @@ describe('story-005-002 — finalize phase overlay + done-requires-PR-URL invari
     assert.equal(epic?.finalize_phase, null, 'skipped never enters the finalize overlay');
   });
 
-  // (7) failed (gh pr create throws) → fail(id, message): status='failed' with
-  // a non-empty error and finalize_phase cleared.
-  it('failed (push fails): fail() records a non-empty error and clears the phase', async () => {
+  // (7) push fails → publish_pending: the epic is left in 'finalizing' with the
+  //     push-failure message in reason. The phase stays at 'pushing' (not cleared).
+  //     No error field — this is a recoverable state, not a terminal infra failure.
+  it('push fails: epic lands finalizing (publish_pending), reason records the message', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
     addAllowedRemote();
     const db = openDatabase(path.join(repo, '.loom'));
@@ -423,41 +424,45 @@ describe('story-005-002 — finalize phase overlay + done-requires-PR-URL invari
     }).run();
 
     const epic = new EpicStore(db).get('epic-001');
-    assert.equal(epic?.status, 'failed');
-    assert.ok((epic?.error ?? '').length > 0, 'a failed epic carries a retrievable error');
-    assert.match(epic?.error ?? '', /push failed/i);
-    assert.equal(epic?.finalize_phase, null, 'fail() clears the live finalize_phase');
+    assert.equal(epic?.status, 'finalizing', 'push failure leaves epic recoverable (not failed)');
+    assert.equal(epic?.error ?? null, null, 'publish_pending path does not set error');
+    assert.match(epic?.reason ?? '', /push failed/i, 'reason carries the push failure message');
+    assert.equal(epic?.finalize_phase, 'pushing', 'phase stays at pushing (not cleared)');
     assert.equal(epic?.epic_pr_url, null);
   });
 
-  it('failed (gh pr create throws): fail() records the error after the push succeeds', async () => {
+  // (8) gh pr create throws → publish_pending: push succeeded but PR open failed.
+  //     Epic is left recoverable in 'finalizing'; operator runs `loom publish`.
+  it('gh pr create throws: epic lands finalizing (publish_pending), reason references loom publish', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
     addAllowedRemote();
     const db = openDatabase(path.join(repo, '.loom'));
 
-    // Push succeeds, but opening the PR throws. The finalizer returns the
-    // pushed-but-no-PR fallback (a PR-less terminal state, NOT failed), so the
-    // epic must NOT be 'done' and NOT 'failed' — it landed terminal non-done.
-    const epic0 = await (async () => {
-      await new Supervisor({
-        projectRoot: repo,
-        db,
-        worker: committingWorker(),
-        maxConcurrent: 1,
-        epicFinalizer: new EpicFinalizer(
-          finalizerOpts(db, {
-            openPr: () => {
-              throw new Error('gh exploded');
-            },
-          })
-        ),
-      }).run();
-      return new EpicStore(db).get('epic-001');
-    })();
+    // Push succeeds but opening the PR throws. The finalizer records the pushed
+    // ref and returns publish_pending — the epic must NOT be 'done' or 'failed'.
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: committingWorker(),
+      maxConcurrent: 1,
+      epicFinalizer: new EpicFinalizer(
+        finalizerOpts(db, {
+          openPr: () => {
+            throw new Error('gh exploded');
+          },
+        })
+      ),
+    }).run();
 
+    const epic0 = new EpicStore(db).get('epic-001');
     assert.notEqual(epic0?.status, 'done', 'a PR that fails to open must not be done');
+    assert.notEqual(epic0?.status, 'failed', 'publish_pending is recoverable — not failed');
     assert.equal(epic0?.epic_pr_url, null);
-    assert.match(epic0?.reason ?? '', /open the PR manually/i);
+    assert.match(
+      epic0?.reason ?? '',
+      /loom publish/i,
+      'reason must reference the loom publish recovery command'
+    );
   });
 
   // (8) Crash-between-writes — failure after recordPrUrl but before the done
@@ -627,13 +632,24 @@ describe('story-005-001 — finalizer-owned ref push target', () => {
     );
   });
 
-  // (2) Non-fast-forward survival: a push that would be non-fast-forward on
-  //     epic/<id> (because the remote has diverged) succeeds on the fresh ref.
-  //     finalize proceeds to open a PR with no retry or force.
-  it('non-fast-forward survival: push to fresh ref succeeds, finalize reaches done', async () => {
+  // (2) Non-fast-forward survival: the remote's epic/<id> ref has diverged (a
+  //     push to it would be non-fast-forward), but the finalizer pushes to the
+  //     fresh loom/finalize/* ref which is a brand-new ref on the remote —
+  //     always a fast-forward. finalize proceeds to open a PR with no retry.
+  it('non-fast-forward survival: push to fresh ref succeeds even when epic/<id> diverged', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
     addAllowedRemote();
     const db = openDatabase(path.join(repo, '.loom'));
+
+    // Simulate a diverged remote: create an orphan commit and point
+    // refs/remotes/origin/epic/epic-001 at it. A push to epic/<id> would be
+    // rejected as non-fast-forward; the finalizer must avoid that ref entirely.
+    const orphanSha = execFileSync(
+      'git',
+      ['commit-tree', '-m', 'orphan on remote', gitc(['rev-parse', 'HEAD^{tree}'])],
+      { cwd: repo, encoding: 'utf8' }
+    ).trim();
+    gitc(['update-ref', 'refs/remotes/origin/epic/epic-001', orphanSha]);
 
     let pushCount = 0;
 
@@ -644,15 +660,14 @@ describe('story-005-001 — finalizer-owned ref push target', () => {
       maxConcurrent: 1,
       epicFinalizer: new EpicFinalizer(
         finalizerOpts(db, {
-          // Simulate: fresh loom/finalize/* ref succeeds immediately (new ref on remote).
-          // A push to epic/<id> would have been rejected (non-fast-forward) because
-          // the remote's epic/<id> has diverged — but the fresh ref avoids that entirely.
+          // The push stub simulates the remote accepting the fresh loom/finalize/*
+          // ref (new ref — never a non-fast-forward), while the diverged
+          // refs/remotes/origin/epic/epic-001 above would have been rejected.
           pushBranch: (_remote, branch) => {
             pushCount++;
-            // The fresh ref is always a new ref on the remote — never a non-fast-forward.
             assert.ok(
               branch.startsWith('loom/finalize/'),
-              `expected fresh ref, got: ${branch}`
+              `push must go to fresh loom/finalize/* ref, not epic/<id>: got "${branch}"`
             );
             return { ok: true, output: 'pushed' };
           },
@@ -660,13 +675,21 @@ describe('story-005-001 — finalizer-owned ref push target', () => {
       ),
     }).run();
 
-    assert.equal(pushCount, 1, 'exactly one push, no retry issued');
+    assert.equal(pushCount, 1, 'exactly one push issued — no retry');
     const epic = new EpicStore(db).get('epic-001');
     assert.equal(epic?.status, 'done', 'finalize proceeds to done after successful push');
     assert.notEqual(epic?.epic_pr_url, null, 'PR URL was recorded');
   });
 
   // (3) No force flags: no --force or --force-with-lease in any captured push call.
+  //
+  // Structural guarantee: the non-stub gitSafe path calls
+  //   gitSafe(cwd, ['push', remote, `${epicBranch}:${finalRef}`])
+  // — no --force or --force-with-lease flag is present. This stub-based test
+  // catches the complementary case: a force flag accidentally injected into the
+  // ref arg itself (which is what `pushBranch` captures). It cannot catch a
+  // flag added directly to the gitSafe args array on the non-stub path; that
+  // invariant is structural (inspect EpicFinalizer.ts push call directly).
   it('no --force or --force-with-lease in any push invocation', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
     addAllowedRemote();
@@ -681,7 +704,7 @@ describe('story-005-001 — finalizer-owned ref push target', () => {
       maxConcurrent: 1,
       epicFinalizer: new EpicFinalizer(
         finalizerOpts(db, {
-          pushBranch: (remote, branch) => {
+          pushBranch: (_remote, branch) => {
             allPushedRefs.push(branch);
             return { ok: true, output: 'pushed' };
           },
@@ -689,16 +712,13 @@ describe('story-005-001 — finalizer-owned ref push target', () => {
       ),
     }).run();
 
-    // Verify that no push ref looks like a force flag slipped into the branch arg.
-    // The actual gitSafe call is: ['push', '-u', remote, finalRef] — no force flags.
     for (const ref of allPushedRefs) {
-      assert.ok(!ref.includes('--force'), `force flag must not appear in push ref: "${ref}"`);
+      assert.ok(!ref.includes('--force'), `force flag must not appear in push ref arg: "${ref}"`);
       assert.ok(
         !ref.includes('--force-with-lease'),
-        `force-with-lease must not appear in push ref: "${ref}"`
+        `force-with-lease must not appear in push ref arg: "${ref}"`
       );
     }
-    // Sanity: at least one push happened.
     assert.ok(allPushedRefs.length > 0, 'at least one push must have been issued');
   });
 

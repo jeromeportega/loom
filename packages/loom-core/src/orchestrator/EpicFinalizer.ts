@@ -643,19 +643,34 @@ export class EpicFinalizer {
     // deterministic: same integrated tree ⇒ same ref ⇒ retry is a no-op.
     // A different tree (e.g., re-run after a fix) gets a distinct ref.
     const headResult = gitSafe(this.opts.projectRoot, ['rev-parse', epicBranch]);
-    const integratedHead = headResult.ok ? headResult.output.trim() : '';
-    const finalRef = this.finalizeRef(epicId, integratedHead);
-
-    const push = this.opts.pushBranch
-      ? this.opts.pushBranch(remote, finalRef)
-      : gitSafe(this.opts.projectRoot, ['push', '-u', remote, finalRef]);
-    if (!push.ok) {
+    if (!headResult.ok) {
       return {
         status: 'failed',
         conflicted,
         merged,
         cleaned,
-        note: `${epicBranch} merged but push failed: ${push.output}`,
+        note: `failed to resolve HEAD of ${epicBranch}: ${headResult.output}`,
+      };
+    }
+    const integratedHead = headResult.output.trim();
+    const finalRef = this.finalizeRef(epicId, integratedHead);
+
+    // Push the local epicBranch to the finalizer-owned remote ref using a
+    // src:dst refspec. The remote finalRef is a fresh name derived from the
+    // integrated tree SHA, so this is always a fast-forward (or a new ref) on
+    // the remote — no force flag needed or used under any condition.
+    const push = this.opts.pushBranch
+      ? this.opts.pushBranch(remote, finalRef)
+      : gitSafe(this.opts.projectRoot, ['push', remote, `${epicBranch}:${finalRef}`]);
+    if (!push.ok) {
+      const note = `${epicBranch} merged but push failed: ${push.output}`;
+      epicStore.updateStatus(epicId, 'finalizing', note);
+      return {
+        status: 'publish_pending',
+        conflicted,
+        merged,
+        cleaned,
+        note,
       };
     }
 
@@ -716,12 +731,13 @@ export class EpicFinalizer {
         allowed: false,
         detail: { error: (err as Error).message },
       });
-      // Pushed but the PR didn't open — a PR-less terminal state at
-      // 'opening_pr'. Not 'done' (no epic_pr_url), and surfaced via the note.
-      const note = `${epicBranch} pushed; open the PR manually.`;
+      // Pushed but the PR didn't open. Record recoverable state — the operator
+      // can run `loom publish <epicId>` to open the PR against the already-pushed
+      // finalRef without re-merging or re-pushing.
+      const note = `${epicBranch} pushed to ${finalRef}; PR open failed — run \`loom publish ${epicId}\` to retry.`;
       epicStore.updateStatus(epicId, 'finalizing', note);
       return {
-        status: conflicted.length ? 'partial' : 'merged',
+        status: 'publish_pending',
         conflicted,
         merged,
         cleaned,
@@ -841,7 +857,8 @@ export class EpicFinalizer {
    * Returns the finalizer-owned remote ref for this integrated state.
    * The ref is deterministic (same epicId + same integratedHead SHA → same name)
    * so a retry is a fast-forward no-op. Each distinct integrated tree gets a
-   * unique name — collision-proof across epics and across content changes.
+   * unique name — collision-resistant across epics and across content changes
+   * (2^28 ≈ 268 M distinct values per epicId, matching git's own short-SHA display).
    * Format: `loom/finalize/<epicId>-<first7charsOfHead>`
    */
   private finalizeRef(epicId: string, integratedHead: string): string {

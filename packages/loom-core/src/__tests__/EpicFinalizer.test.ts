@@ -16,39 +16,39 @@ import type { IntegrationGate } from '../orchestrator/IntegrationGate.js';
 // `finalizeRef` is private but is a pure function with no side effects.
 // We test it by accessing it through the class instance.
 
-let loomDirForRefTests: string;
-let dbForRefTests: ReturnType<typeof openDatabase>;
-
-beforeEach(() => {
-  resetDatabaseForTest();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-ref-'));
-  loomDirForRefTests = path.join(tmp, '.loom');
-  fs.mkdirSync(loomDirForRefTests, { recursive: true });
-  dbForRefTests = openDatabase(loomDirForRefTests);
-});
-
-afterEach(() => {
-  resetDatabaseForTest();
-});
-
-function makeMinimalFinalizer(): EpicFinalizer {
-  return new EpicFinalizer({
-    projectRoot: loomDirForRefTests,
-    db: dbForRefTests,
-    allowedRemotes: [],
-    prStrategy: 'per-epic',
-  });
-}
-
-function callFinalizeRef(epicId: string, integratedHead: string): string {
-  const f = makeMinimalFinalizer();
-  return (f as unknown as { finalizeRef(a: string, b: string): string }).finalizeRef(
-    epicId,
-    integratedHead
-  );
-}
-
 describe('EpicFinalizer.finalizeRef — naming helper (story-005-001)', () => {
+  let loomDirForRefTests: string;
+  let dbForRefTests: ReturnType<typeof openDatabase>;
+
+  beforeEach(() => {
+    resetDatabaseForTest();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-ref-'));
+    loomDirForRefTests = path.join(tmp, '.loom');
+    fs.mkdirSync(loomDirForRefTests, { recursive: true });
+    dbForRefTests = openDatabase(loomDirForRefTests);
+  });
+
+  afterEach(() => {
+    resetDatabaseForTest();
+  });
+
+  function makeMinimalFinalizer(): EpicFinalizer {
+    return new EpicFinalizer({
+      projectRoot: loomDirForRefTests,
+      db: dbForRefTests,
+      allowedRemotes: [],
+      prStrategy: 'per-epic',
+    });
+  }
+
+  function callFinalizeRef(epicId: string, integratedHead: string): string {
+    const f = makeMinimalFinalizer();
+    return (f as unknown as { finalizeRef(a: string, b: string): string }).finalizeRef(
+      epicId,
+      integratedHead
+    );
+  }
+
   it('returns the expected deterministic ref name with 7-char sha prefix', () => {
     const ref = callFinalizeRef('epic-005', '1a2b3c4dabc1234');
     assert.equal(ref, 'loom/finalize/epic-005-1a2b3c4');
