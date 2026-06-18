@@ -94,6 +94,8 @@ export interface AgentSummary {
   /** Set on a running story whose worker is approaching/hitting a deadline.
       Reason is 'stall' | 'cap' | 'budget' | 'analysis-only'. Null otherwise. */
   stall_reason: string | null;
+  /** The model id the worker executed under. Null for pre-migration rows. */
+  model: string | null;
 }
 
 export interface EpicDetail extends EpicStatus {
