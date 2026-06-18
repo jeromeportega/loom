@@ -47,7 +47,7 @@ visibility surface.
 
 6. Verify with `npm view @loom-ai/core`.
 
-If publish fails partway (e.g. `core` published but `mcp` errored), do
+If publish fails partway (e.g. `core` published but `loom-ai` errored), do
 not retry the same version — bump to the next patch version and re-cut.
 Republishing the same version is rejected by npm.
 
