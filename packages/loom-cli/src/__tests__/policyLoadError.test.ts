@@ -41,6 +41,9 @@ function capture(fn: () => void): Captured {
   };
   process.stderr.write = (chunk: unknown, ...rest: unknown[]) => {
     stderrLines.push(String(chunk));
+    // Forward encoding/callback so callers that rely on write-completion don't hang.
+    const fn = rest.find((r) => typeof r === 'function') as (() => void) | undefined;
+    fn?.();
     return true;
   };
 

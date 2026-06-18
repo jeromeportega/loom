@@ -371,6 +371,16 @@ function handleTopLevelError(err: unknown): never {
 // package.json#bin → dist/index.js directly (no wrapper), so require.main === module
 // is true when Node invokes the CLI entry point and false when tests import buildProgram.
 if (require.main === module) {
+  // Catch non-policy errors that handleTopLevelError rethrows from the .catch() chain;
+  // they become unhandled rejections — print with stack so developers can debug them.
+  process.on('unhandledRejection', (err) => {
+    if (err instanceof Error) {
+      process.stderr.write((err.stack ?? err.message) + '\n');
+    } else {
+      process.stderr.write(String(err) + '\n');
+    }
+    process.exit(1);
+  });
   buildProgram().parseAsync().catch(handleTopLevelError);
 }
 
