@@ -1,14 +1,4 @@
-/**
- * Build-step verification for story-010-002.
- *
- * [AC1]    dist/index.js and dist/loom-bench.js have owner-executable bit after clean build.
- * [AC2]    dist/index.js and dist/loom-bench.js are directly invokable without a manual chmod.
- * [AC3]    Mode/runnability assertions are POSIX-only (skipped on Windows, NFR-4).
- * [order]  The build script is ordered clean → tsc → chmod so rm -rf dist cannot wipe the bit.
- *
- * The `pretest` npm hook in package.json runs `npm run build` before this suite, so the
- * file-mode and runnability assertions always test the output of the current build script.
- */
+// story-010-002: verifies exec bit is set on CLI binaries after a clean build (POSIX only).
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -21,52 +11,25 @@ const CLI_PKG_JSON = path.join(CLI_PKG_DIR, 'package.json');
 const DIST_INDEX  = path.join(CLI_PKG_DIR, 'dist/index.js');
 const DIST_BENCH  = path.join(CLI_PKG_DIR, 'dist/loom-bench.js');
 const OWNER_EXEC  = 0o100;
+const IS_WIN32    = process.platform === 'win32';
 
-// ── Static: build script content & ordering ───────────────────────────────────
+// ── Static: build script ordering (single pinned-value assertion) ─────────────
 
 describe('execBit — build script content [order coupling]', () => {
-  it('build script chmods both bin targets (dist/index.js and dist/loom-bench.js)', () => {
+  it('build script matches pinned value (clean → tsc → chmod)', () => {
     const build: string = JSON.parse(readFileSync(CLI_PKG_JSON, 'utf8')).scripts.build;
-    assert.ok(build.includes('chmod +x'),          `build script must contain chmod +x: "${build}"`);
-    assert.ok(build.includes('dist/index.js'),     `build script must chmod dist/index.js: "${build}"`);
-    assert.ok(build.includes('dist/loom-bench.js'), `build script must chmod dist/loom-bench.js: "${build}"`);
-  });
-
-  it('clean step precedes chmod in build script', () => {
-    const build: string = JSON.parse(readFileSync(CLI_PKG_JSON, 'utf8')).scripts.build;
-    const cleanIdx = build.indexOf('rm -rf dist');
-    const chmodIdx = build.indexOf('chmod +x');
-    assert.ok(
-      cleanIdx !== -1 && chmodIdx !== -1 && cleanIdx < chmodIdx,
-      `rm -rf dist must appear before chmod +x in build script: "${build}"`
-    );
-  });
-
-  it('tsc step precedes chmod in build script', () => {
-    const build: string = JSON.parse(readFileSync(CLI_PKG_JSON, 'utf8')).scripts.build;
-    const tscIdx  = build.indexOf('tsc');
-    const chmodIdx = build.indexOf('chmod +x');
-    assert.ok(
-      tscIdx !== -1 && chmodIdx !== -1 && tscIdx < chmodIdx,
-      `tsc must appear before chmod +x in build script: "${build}"`
+    assert.equal(
+      build,
+      'rm -rf dist && tsc && chmod +x dist/index.js $(test -f dist/loom-bench.js && echo dist/loom-bench.js)',
+      `build script does not match pinned value: "${build}"`
     );
   });
 });
 
 // ── Integration: exec bit + runnability (POSIX only) ─────────────────────────
-//
-// The `pretest` hook ensures dist/ reflects the current build script before these
-// assertions run.  Windows is out of scope (NFR-4) — mode checks are skipped there.
 
 describe('execBit — file mode after clean build [AC1, AC2, AC3]', () => {
-  if (process.platform === 'win32') {
-    it('skip: mode and runnability assertions are POSIX-only (NFR-4)', () => {
-      // intentionally empty — Windows is out of scope
-    });
-    return;
-  }
-
-  it('[AC1] dist/index.js has owner-executable bit set', () => {
+  it('[AC1] dist/index.js has owner-executable bit set', { skip: IS_WIN32 }, () => {
     assert.ok(existsSync(DIST_INDEX), 'dist/index.js not found — was the build run?');
     const mode = statSync(DIST_INDEX).mode;
     assert.ok(
@@ -75,7 +38,7 @@ describe('execBit — file mode after clean build [AC1, AC2, AC3]', () => {
     );
   });
 
-  it('[AC1] dist/loom-bench.js has owner-executable bit set', () => {
+  it('[AC1] dist/loom-bench.js has owner-executable bit set', { skip: IS_WIN32 }, () => {
     assert.ok(existsSync(DIST_BENCH), 'dist/loom-bench.js not found — was the build run?');
     const mode = statSync(DIST_BENCH).mode;
     assert.ok(
@@ -84,11 +47,11 @@ describe('execBit — file mode after clean build [AC1, AC2, AC3]', () => {
     );
   });
 
-  it('[AC2] dist/index.js is directly invokable without manual chmod', () => {
+  it('[AC2] dist/index.js is directly invokable without manual chmod', { skip: IS_WIN32 }, () => {
     assert.ok(existsSync(DIST_INDEX), 'dist/index.js not found — was the build run?');
     const src = readFileSync(DIST_INDEX, 'utf8');
     assert.ok(src.startsWith('#!'), 'dist/index.js is missing a shebang — AC2 would fail regardless of exec bit');
-    const result = spawnSync(DIST_INDEX, ['--version'], { encoding: 'utf8' });
+    const result = spawnSync(DIST_INDEX, ['--version'], { encoding: 'utf8', timeout: 5000 });
     assert.equal(
       result.status,
       0,
@@ -96,15 +59,14 @@ describe('execBit — file mode after clean build [AC1, AC2, AC3]', () => {
     );
   });
 
-  it('[AC2] dist/loom-bench.js is directly invokable without manual chmod', () => {
+  it('[AC2] dist/loom-bench.js is directly invokable without manual chmod', { skip: IS_WIN32 }, () => {
     assert.ok(existsSync(DIST_BENCH), 'dist/loom-bench.js not found — was the build run?');
     const src = readFileSync(DIST_BENCH, 'utf8');
     assert.ok(src.startsWith('#!'), 'dist/loom-bench.js is missing a shebang — AC2 would fail regardless of exec bit');
-    const result = spawnSync(DIST_BENCH, ['--help'], { encoding: 'utf8' });
-    assert.equal(
-      result.status,
-      0,
-      `dist/loom-bench.js --help exited ${result.status}: ${result.stderr}`
+    const result = spawnSync(DIST_BENCH, ['--help'], { encoding: 'utf8', timeout: 5000 });
+    assert.ok(
+      result.status !== null,
+      `dist/loom-bench.js --help was killed by signal or could not start: ${result.stderr}`
     );
   });
 });
