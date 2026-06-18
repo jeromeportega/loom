@@ -5,8 +5,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @loom-ai/core && npm run build -w @loom-ai/mcp && npm run build -w @loom-ai/web && npm run build -w loom-ai",
-    "test": "npm run build && npm run test -w @loom-ai/core && npm run test -w @loom-ai/mcp && npm run test -w loom-ai && npm run test -w @loom-ai/web",
+    "build": "npm run build -w @loom-ai/core && npm run build -w @loom-ai/web && npm run build -w loom-ai",
+    "test": "npm run build && npm run test -w @loom-ai/core && npm run test -w loom-ai && npm run test -w @loom-ai/web",
     "eval": "npm run build -w @loom-ai/core && node scripts/eval.mjs",
     "lint": "npm run lint --workspaces --if-present",
     "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules"
