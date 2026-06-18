@@ -6,4 +6,4 @@ export {
 export type { BriefRefinerOptions } from './BriefRefiner.js';
 export type { BriefRefinement } from './types.js';
 export { evaluateBriefGate } from './gate.js';
-export type { GateVerdict } from './gate.js';
+export type { GateVerdict, BriefGateOutcome } from './gate.js';
