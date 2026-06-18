@@ -1330,7 +1330,7 @@ Verify the files exist:
 ```bash
 ls -la .loom/             # policy.yaml, loom.db, worktrees/
 cat .claude/settings.json  # PreToolUse hook pointing to loom guard
-cat .cursor/mcp.json       # loom server registered
+cat .cursor/mcp.json       # worker MCP provisioning (no loom server)
 ```
 
 Then exercise the **policy engine** via `loom guard check` (manual / CLI usage):
