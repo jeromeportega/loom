@@ -17,7 +17,7 @@ loom approve epic-001 && loom run --checkpoint epic
 
 ---
 
-## The CLI is the primary interface
+## The CLI is the usability surface
 
 Drive loom by running `loom …` commands. Each invocation runs fresh and
 prints to stdout, and every read command supports `--json` — so an outer
@@ -32,13 +32,6 @@ loom status --json                # poll progress + PR links
 loom diff <story|epic-id>         # inspect a story/epic diff
 loom review <story-id>            # the reviewer verdict
 ```
-
-**Optional MCP server.** `loom serve` exposes the same operations as tools
-(`loom_start_epic`, `loom_get_status`, …) for Claude Code / Cursor. It is
-opt-in — run `loom init --mcp` to write `.mcp.json` (or `--cursor` for
-`.cursor/mcp.json`). A long-lived `loom serve` loads its build once at
-startup, so prefer the CLI unless you specifically want conversational,
-in-IDE control.
 
 ---
 
@@ -124,7 +117,8 @@ if you need a roll-up today.
 | **Build** | Parallel story agents implement, test, and merge — each isolated in its own git worktree; one PR per epic |
 | **Learn** | A curated skill library auto-injects into worker agents; new skills are extracted from successful work and gated by an eval harness (the lifecycle runs internally — no user-facing CRUD surface today) |
 | **Supervise** | `loom status`, checkpoints, and `loom stop` keep you in control; `loom status --all` spans every repo on the machine |
-| **Integrate** | First-class MCP server for Claude Code, Cursor, and any MCP-aware client; local web dashboard for visibility; provisions your org's approved MCP servers for worker agents |
+| **Observe** | Local web dashboard (`loom web`) for visibility into running agents, planning artifacts, and history |
+| **Integrate** | Provisions your org's approved MCP servers for worker agents via `loom mcp add` |
 
 ---
 
@@ -179,9 +173,9 @@ npm install && npm run build && npm link -w loom-ai
 
 > [!NOTE]
 > The first time you run `loom`, it will write a `.loom/` directory plus a
-> Claude Code guard hook and `.mcp.json` to the current repo. Run
-> `loom init` explicitly to do this without dispatching an epic; see
-> `loom init --help` for what gets written.
+> Claude Code guard hook to the current repo. Run `loom init` explicitly to
+> do this without dispatching an epic; see `loom init --help` for what gets
+> written.
 
 ---
 
@@ -214,7 +208,7 @@ That is the whole loop. Everything below is reference.
 | Execute | `loom run` | The supervisor dispatches story agents in isolated worktrees |
 | Track | `loom status [--watch]` | Per-story status and PR links |
 
-`loom init --cursor` additionally configures Cursor (`.cursor/mcp.json`, rules).
+`loom init --cursor` additionally writes the Cursor rules file.
 
 ---
 
@@ -356,8 +350,7 @@ stop / per-worker kill. No external services — local only.
 | `loom status [--watch] [--epic <id>] [--all]` | Epic and agent status; `--all` spans every repo |
 | `loom revert <epic-id> [--remote]` | Tear down an epic; `--remote` also deletes the upstream branch and PR |
 | `loom guide <story-id> "<msg>"` | Append operator guidance to a running worker |
-| `loom mcp list / add <name>` | Provision approved MCP servers |
-| `loom serve` | Start the loom MCP server (for Cursor / Claude Code) |
+| `loom mcp list / add <name>` | Provision approved MCP servers for worker agents |
 | `loom guard check / hook` | Guardrail enforcement (used by the hook) |
 
 Developer-tool binaries (separate from the main `loom` CLI):
@@ -372,12 +365,11 @@ Developer-tool binaries (separate from the main `loom` CLI):
 ## How it works
 
 Loom is a TypeScript monorepo: `loom-core` (orchestration), `loom-cli` (the `loom`
-command), `loom-mcp` (the MCP server — the primary loom surface), `loom-web` (the
-local dashboard). It uses SQLite for state (`.loom/loom.db`, auto-created — no DB
-server, no Docker). Worker
-agents are `claude` CLI sessions (or `cursor-agent`, with the `cursor-cli` backend) in
-git worktrees. The skill system learns reusable patterns from completed work, gated by
-an eval harness and a candidate→active→disabled lifecycle.
+command — the usability surface), `loom-web` (the local dashboard — the observability
+surface). It uses SQLite for state (`.loom/loom.db`, auto-created — no DB server, no
+Docker). Worker agents are `claude` CLI sessions (or `cursor-agent`, with the
+`cursor-cli` backend) in git worktrees. The skill system learns reusable patterns from
+completed work, gated by an eval harness and a candidate→active→disabled lifecycle.
 
 Beyond a single repo: `loom status --all` aggregates every loom repo on the machine,
 and a per-machine config (`~/.loom/config.json`) can cap worker concurrency across
@@ -410,7 +402,7 @@ For contributors working on loom itself (not customers):
 
 ```bash
 npm install            # install all workspace packages
-npm run build          # build loom-core, loom-mcp, loom-cli, loom-web
+npm run build          # build loom-core, loom-cli, loom-web
 npm test               # run the full test suite
 npm run eval           # run the planning eval suite and score it
 ```
