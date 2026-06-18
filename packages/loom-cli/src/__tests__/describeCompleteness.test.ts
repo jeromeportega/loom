@@ -4,44 +4,24 @@ import { Command } from 'commander';
 import { CommandDescriptionSchema } from '../describe/schema.js';
 import type { CommandDescription } from '../describe/schema.js';
 import { collectSpecs, enumerateRegisteredCommands } from '../describe/registry.js';
+import { buildManifest } from '../describe/manifest.js';
 import { applySpec } from '../describe/applySpec.js';
+import { buildProgram } from '../index.js';
 
 // ─── Module-level state ──────────────────────────────────────────────────────
-// Populated once in the top-level before() hook so:
-//   (a) any spec-load failure surfaces as a named test error, not an opaque
-//       module-crash; and
-//   (b) both describe blocks share the same result without re-invoking
-//       collectSpecs() a second time.
+// Populated once in the top-level before() hook.
+// liveCommands: authoritative command list from the real buildProgram() registry.
+// allSpecs / specsByName: authored spec inventory from collectSpecs().
+// These are independent sources — the completeness check is non-circular.
+let liveCommands: string[] = [];
 let allSpecs: CommandDescription[] = [];
 let specsByName = new Map<string, CommandDescription>();
 
 before(() => {
+  liveCommands = enumerateRegisteredCommands(buildProgram());
   allSpecs = collectSpecs();
   specsByName = new Map(allSpecs.map((s) => [s.name, s]));
 });
-
-// Builds a Commander program from the spec registry (via applySpec).
-// Used by the registry round-trip test to verify enumerateRegisteredCommands
-// returns every spec name. Parent commands (guard, mcp) are created on demand
-// when the first 2-part spec for that parent is encountered.
-function buildTestProgram(): Command {
-  const p = new Command('loom');
-  for (const spec of allSpecs) {
-    const parts = spec.name.split(' ');
-    if (parts.length === 1) {
-      applySpec(p.command(parts[0]), spec);
-    } else if (parts.length === 2) {
-      let parent = p.commands.find((c) => c.name() === parts[0]);
-      if (!parent) {
-        parent = p.command(parts[0]);
-      }
-      // Pass only the last-segment name to Commander; applySpec wires description/options.
-      applySpec(parent.command(parts[1]), spec);
-    }
-    // 3+ segments: excluded by the spec-validation test below; safe to skip here.
-  }
-  return p;
-}
 
 // Builds a fresh Commander command for a single spec — used only for ADR-003
 // drift checks. Handles 1-part (top-level) and 2-part (grouped) spec names.
@@ -55,42 +35,82 @@ function buildCommandForSpec(spec: CommandDescription): Command {
     const parent = root.command(parts[0]);
     return applySpec(parent.command(parts[1]), spec);
   }
-  // assert.fail returns never — TypeScript infers no return needed after this.
   assert.fail(
     `buildCommandForSpec: spec "${spec.name}" has ${parts.length} segments (max 2 supported)`
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main suite — derives inventory from collectSpecs() (ADR-001: live registry).
-// Iterates collectSpecs() directly so schema and drift checks are
-// non-circular: spec validity is asserted independently of Commander wiring.
-// ---------------------------------------------------------------------------
-
-// Conservative lower bound on registered spec count (31 as of epic-004).
+// Conservative lower bound on registered command count (34 as of epic-009).
 // Raise this when commands are intentionally added; never lower it without
 // a corresponding command removal.
-const SPEC_FLOOR = 25;
+const COMMAND_FLOOR = 30;
 
-describe('describe spec registry: all collected specs are schema-valid and drift-free', () => {
-  it('registry is non-empty (collectSpecs returns at least one spec)', () => {
-    assert.ok(allSpecs.length > 0, 'collectSpecs() must return at least one spec');
+// ---------------------------------------------------------------------------
+// Main suite — live-registry completeness check (non-circular).
+// liveCommands derives from buildProgram() (the live Commander registry).
+// specsByName derives from collectSpecs() (the authored spec inventory).
+// The two sides are independent — a command absent from collectSpecs() while
+// still registered in buildProgram() is immediately detected.
+// ---------------------------------------------------------------------------
+
+describe('describe completeness: live registry vs spec inventory', () => {
+  it('live registry is non-empty (buildProgram registers at least one command)', () => {
+    assert.ok(liveCommands.length > 0, 'enumerateRegisteredCommands(buildProgram()) must return at least one command');
   });
 
-  it(`has at least ${SPEC_FLOOR} specs (floor guards against accidental mass removal)`, () => {
+  it(`live registry has at least ${COMMAND_FLOOR} commands (floor guards against accidental mass removal)`, () => {
     assert.ok(
-      allSpecs.length >= SPEC_FLOOR,
-      `Expected at least ${SPEC_FLOOR} specs in collectSpecs(), got ${allSpecs.length}`
+      liveCommands.length >= COMMAND_FLOOR,
+      `Expected at least ${COMMAND_FLOOR} commands from buildProgram(), got ${liveCommands.length}`
     );
   });
 
-  it('guard subcommands appear as full-path entries in the spec names', () => {
-    for (const expected of ['guard check', 'guard hook']) {
-      assert.ok(
-        specsByName.has(expected),
-        `Expected a spec named "${expected}" in collectSpecs()`
-      );
-    }
+  it('every registered command resolves to a CommandDescription (non-circular check)', () => {
+    // Non-circular: liveCommands comes from buildProgram() (the live Commander registry);
+    // specsByName comes from collectSpecs() (the authored spec inventory).
+    // A command registered in buildProgram() but absent from collectSpecs() is named here.
+    const missing = liveCommands.filter((name) => !specsByName.has(name));
+    assert.equal(
+      missing.length,
+      0,
+      `Registered commands without specs (add them to collectSpecs()): ${missing.join(', ')}`
+    );
+  });
+
+  it('publish is in the live registry and resolves to a spec (AC4)', () => {
+    assert.ok(
+      liveCommands.includes('publish'),
+      `publish must appear in enumerateRegisteredCommands(buildProgram()); got: ${liveCommands.join(', ')}`
+    );
+    assert.ok(specsByName.has('publish'), 'publish must resolve to a CommandDescription in collectSpecs()');
+    const pub = specsByName.get('publish')!;
+    assert.ok(pub.summary.length > 0, 'publish CommandDescription must have a non-empty summary');
+  });
+
+  it('release is in the live registry and resolves to a spec (AC4)', () => {
+    assert.ok(
+      liveCommands.includes('release'),
+      `release must appear in enumerateRegisteredCommands(buildProgram()); got: ${liveCommands.join(', ')}`
+    );
+    assert.ok(specsByName.has('release'), 'release must resolve to a CommandDescription in collectSpecs()');
+    const rel = specsByName.get('release')!;
+    assert.ok(rel.summary.length > 0, 'release CommandDescription must have a non-empty summary');
+  });
+
+  it('would have caught the missing publish command — AC3 simulation', () => {
+    // Precondition: publish must be in the live registry for this simulation to be valid.
+    assert.ok(liveCommands.includes('publish'), 'precondition: publish must be in liveCommands for the AC3 simulation to be valid');
+    // Simulate the prior defect: collectSpecs() did not include publishSpec.
+    // The live program still registers publish. With the non-circular check the gap is visible.
+    const specsWithoutPublish = new Map(specsByName);
+    specsWithoutPublish.delete('publish');
+
+    const wouldBeMissing = liveCommands.filter((name) => !specsWithoutPublish.has(name));
+    assert.ok(
+      wouldBeMissing.includes('publish'),
+      `AC3: dropping publishSpec from collectSpecs() must cause 'publish' to appear as missing ` +
+        `in the non-circular check — the tripwire is broken if this assertion fails`
+    );
   });
 
   it('spec names are unique across collectSpecs()', () => {
@@ -125,43 +145,11 @@ describe('describe spec registry: all collected specs are schema-valid and drift
     }
   });
 
-  it('every registered command has a matching spec (registry completeness)', () => {
-    // Build a Commander program from the spec registry, then enumerate its
-    // leaf commands. A spec that fails to register correctly will be absent
-    // from the enumeration (forward check); an orphan command would lack a spec
-    // (backward check). Together these verify the full applySpec → enumerate
-    // round-trip is consistent with the registry.
-    const p = buildTestProgram();
-    const enumerated = enumerateRegisteredCommands(p);
-
-    // Forward: every spec name must appear in the Commander enumeration.
-    for (const spec of allSpecs) {
-      assert.ok(
-        enumerated.includes(spec.name),
-        `Spec "${spec.name}" is not enumerable via enumerateRegisteredCommands — ` +
-          `verify applySpec wires it into the correct Commander parent`
-      );
-    }
-
-    // Backward: every enumerated command name must have a matching spec.
-    for (const name of enumerated) {
-      assert.ok(
-        specsByName.has(name),
-        `Enumerated command "${name}" has no matching spec in collectSpecs() — ` +
-          `add a spec or remove the orphan command`
-      );
-    }
-  });
-
   it('ADR-003 drift check: spec options round-trip through applySpec without drift', () => {
     for (const spec of allSpecs) {
       const cmd = buildCommandForSpec(spec);
-      // Both spec.options[].name and Commander o.long use the "--flag" convention
-      // (enforced by OptionFlagSchema's regex). Normalise defensively so a future
-      // schema relaxation that drops the "--" prefix does not cause mass false failures.
       const normalize = (n: string) => (n.startsWith('--') ? n : `--${n}`);
       const specOptionNames = new Set(spec.options.map((o) => normalize(o.name)));
-      // Commander adds --help automatically; exclude it from the comparison.
       const cmdOptionNames = new Set(
         cmd.options
           .filter((o) => o.long !== '--help')
@@ -186,36 +174,49 @@ describe('describe spec registry: all collected specs are schema-valid and drift
 });
 
 // ---------------------------------------------------------------------------
-// Meta-proof — demonstrates the tripwire goes red for missing / invalid specs.
-// Uses synthetic programs and specs to avoid circular dependencies.
-// Uses the already-populated specsByName (no second collectSpecs() call).
+// Meta-proof — demonstrates the tripwire goes red for a missing spec.
+// Uses the real buildProgram() augmented with a synthetic command so the
+// proof exercises the actual live registry path, not just a toy program.
 // ---------------------------------------------------------------------------
 
-describe('meta-proof: completeness tripwire fails loud for bad specs', () => {
-  it('detects a registered command with no matching spec', () => {
-    const testProgram = new Command('loom-test');
-    testProgram.command('phantom-cmd');
+describe('meta-proof: completeness tripwire fails loud on missing spec (AC2)', () => {
+  it('detects a registered command with no matching spec — names it in the error', () => {
+    // Augment the live program with a synthetic command that has no spec.
+    const program = buildProgram();
+    program.command('phantom-cmd');
 
-    const testNames = enumerateRegisteredCommands(testProgram);
-    assert.ok(testNames.includes('phantom-cmd'), '"phantom-cmd" must appear in enumeration');
+    const enumerated = enumerateRegisteredCommands(program);
+    assert.ok(enumerated.includes('phantom-cmd'), '"phantom-cmd" must appear in enumeration');
 
-    let detectedMissing = false;
-    for (const name of testNames) {
-      if (!specsByName.has(name)) {
-        detectedMissing = true;
-        break;
-      }
-    }
+    // The completeness check must name phantom-cmd as missing.
+    const missing = enumerated.filter((name) => !specsByName.has(name));
     assert.ok(
-      detectedMissing,
-      'completeness check must detect "phantom-cmd" which has no spec — the tripwire is broken if this assertion fails'
+      missing.includes('phantom-cmd'),
+      `tripwire must detect "phantom-cmd" which has no spec — the check is broken if this assertion fails`
+    );
+  });
+
+  it('inventory is registry-driven: adding a command to a program makes it enumerable without code changes here', () => {
+    const base = new Command('loom-test');
+    base.command('existing-cmd');
+    const baseNames = enumerateRegisteredCommands(base);
+
+    const augmented = new Command('loom-test');
+    augmented.command('existing-cmd');
+    augmented.command('future-cmd');
+    const augmentedNames = enumerateRegisteredCommands(augmented);
+
+    assert.ok(
+      augmentedNames.includes('future-cmd'),
+      '"future-cmd" must appear when added to the program — proving the inventory is registry-driven, not hardcoded'
+    );
+    assert.ok(
+      !baseNames.includes('future-cmd'),
+      'base names must not include "future-cmd" (it was added only to the augmented program)'
     );
   });
 
   it('detects a structurally invalid spec (missing required summary field)', () => {
-    // Omit the required `summary` field — a structural defect that remains
-    // invalid regardless of schema threshold changes (unlike a value-constraint
-    // violation such as a too-short string).
     const badSpec = {
       name: 'test-cmd',
       // summary intentionally omitted
@@ -235,26 +236,35 @@ describe('meta-proof: completeness tripwire fails loud for bad specs', () => {
       'CommandDescriptionSchema must reject a spec missing the required summary field — the schema validator is broken if this fails'
     );
   });
+});
 
-  it('inventory is registry-driven: adding a command to a program makes it enumerable without code changes here', () => {
-    // Proves enumerateRegisteredCommands is dynamic — the inventory grows when
-    // a new command is registered, so a hardcoded list would immediately lag.
-    const base = new Command('loom-test');
-    base.command('existing-cmd');
-    const baseNames = enumerateRegisteredCommands(base);
+// ---------------------------------------------------------------------------
+// buildManifest fail-closed — THROWS (not warns) when any registered command
+// lacks a spec. Confirms the manifest build itself is a hard gate.
+// ---------------------------------------------------------------------------
 
-    const augmented = new Command('loom-test');
-    augmented.command('existing-cmd');
-    augmented.command('future-cmd');
-    const augmentedNames = enumerateRegisteredCommands(augmented);
+describe('buildManifest fails closed: throws on any unspecced registered command', () => {
+  it('throws when a registered command has no matching spec, and names the command in the error', () => {
+    const program = buildProgram();
+    program.command('manifest-phantom');
 
-    assert.ok(
-      augmentedNames.includes('future-cmd'),
-      '"future-cmd" must appear when added to the program — proving the inventory is registry-driven, not hardcoded'
+    assert.throws(
+      () => buildManifest(program),
+      (err: unknown) => {
+        assert.ok(err instanceof Error, 'expected an Error instance');
+        assert.ok(
+          err.message.includes('manifest-phantom'),
+          `error message must name the missing command; got: "${err.message}"`
+        );
+        return true;
+      }
     );
-    assert.ok(
-      !baseNames.includes('future-cmd'),
-      'base names must not include "future-cmd" (it was added only to the augmented program)'
+  });
+
+  it('does not throw for the clean program (all registered commands have specs)', () => {
+    assert.doesNotThrow(
+      () => buildManifest(buildProgram()),
+      'buildManifest(buildProgram()) must succeed when every registered command has a spec'
     );
   });
 });
