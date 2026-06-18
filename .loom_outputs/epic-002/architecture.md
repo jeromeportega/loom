@@ -1,219 +1,269 @@
-# Activate Review Forge — System Architecture
+# Architecture: Retiring the Loom MCP Server — CLI-Only Control, Web-Only Observability
 
 ## Architecture Philosophy
 
-Epic-001 already shipped the load-bearing logic — the frozen `ReviewerOutput` zod schema, the lexical dedupe, the deterministic try→repair→warn-and-continue router, the bounded `runReviewPass`/`runReviewLoop`, and both reviewer adapters. This epic is **activation, not invention**. Four constraints drive every decision:
+This is subtractive architecture. The system already exists and works; our job is to remove a redundant surface without dropping a single capability on the floor. Four constraints drive every decision below.
 
-1. **Touch the seam, not the engine.** The schema (`findings/schema.ts`), dedupe (`review/dedupe.ts`), router and loop (`review/orchestrator.ts`) are correct and out of scope. We change exactly two things: the *content* of two registered skill handlers (stub → LLM-backed) and the *wiring* that constructs `reviewOrchestrator`. Trade-off accepted: we work within the existing global skill registry rather than redesigning it.
+1. **Parity is an invariant, not a milestone.** The `mcp__loom` server (`@loom-ai/mcp`) republishes 23 `loom_*` tools that already sit on top of the same core engine the CLI uses. Seven of those tools have no CLI equivalent today. We port those seven *first*, prove parity with a test, and only then delete. At no commit between here and done may a capability exist solely in MCP. This is the load-bearing decision — everything else is sequencing around it.
 
-2. **Byte-identical legacy path.** Operators on `comment`/`off` must see zero behavioral change. `reviewOrchestrator` is an *optional* hook on `BaseCliWorker` (`BaseCliWorker.ts:130`); unset → the existing single-`CodeReviewAgent` pass runs unchanged. The new path is reachable only when `db`, an `LLMClient`, a `reviewAgent`, and `review_strategy='block-and-revise'` are all present. The activation is additive and gated.
+2. **Two surfaces collapse to one seam.** Both the CLI and the MCP server are thin shells over `packages/loom-core` (`Planner`, `Supervisor`, `EpicStore`, `AuditLog`, `OperatorGuidance`, `runScan`, `proposeNextEpic`). We are not rewriting that engine. We are deleting one of its two shells and re-pointing the few callers — chiefly the cursor worker's guidance read — at the surviving shell. The trade-off we accept: the MCP shell occasionally exposed an operation through a slightly richer typed payload than the CLI; we replace those with `--json` flags rather than a typed RPC.
 
-3. **Provenance flows through one path.** Every reviewer invocation writes `skill_usage` + `audit_log` via the *existing* `invokeSkill` (`skills/types.ts:84`). The new handlers add no provenance writes of their own (FR-4). Trade-off: handlers must be invoked *through* `invokeSkill`/`skillReviewer`, never called directly.
+3. **Retire the *server*, keep the *client*.** Loom-as-an-MCP-server (mount loom inside Claude Code/Cursor) dies. Loom-as-an-MCP-client (provisioning approved third-party servers into worker worktrees) lives, untouched. The entire `packages/loom-core/src/mcp/` tree — `McpRegistry`, `WorktreeMcp`, `adapter`, `CursorMcpEnforcer` — is on the retain side of the line. The hazard here is a sloppy grep deleting both; the contract and the search-allowlist exist precisely to draw that boundary in code.
 
-4. **No live model in any test.** The `LLMClient` interface (`llm/LLMClient.ts`) is the single injection seam. Production wiring supplies a CLI-backed client; tests supply a stub returning canned JSON. This is the design's central testability lever — it must be injectable all the way down to the skill handler.
+4. **"Done" is defined by search, not by feeling.** A fixed set of forbidden strings (`loom-mcp`, `loom serve`, `loom init --mcp`, `mcp__loom`, `first-class`, `primary surface`, `two interfaces over the same engine`) must return zero hits outside two allowlisted locations. This makes positioning drift a mechanically detectable regression rather than a matter of taste.
+
+---
 
 ## Component Diagram
 
 ```mermaid
-flowchart TD
-  subgraph cli["packages/loom-cli"]
-    RUN["run.ts<br/>opens db, builds LLMClient,<br/>builds CodeReviewAgent"]
-  end
+flowchart TB
+    subgraph clients["Control surfaces"]
+        CLI["loom-ai CLI<br/>packages/loom-cli<br/>(SURVIVES — usability)"]
+        WEB["loom web<br/>packages/loom-web<br/>(SURVIVES — observability)"]
+        MCP["loom-mcp server<br/>packages/loom-mcp<br/>(DELETED — Phase 2)"]
+    end
 
-  subgraph factory["orchestrator/workerFactory.ts"]
-    CW["createWorker(opts + db + llm)<br/>builds reviewOrchestrator closure"]
-  end
+    subgraph core["packages/loom-core (engine — unchanged)"]
+        ORCH["Orchestrator<br/>Planner · Supervisor<br/>EpicFinalizer/Reverter/Reconciler"]
+        STATE["State<br/>EpicStore · AgentStore<br/>AuditLog · ProjectRegistry"]
+        GUID["OperatorGuidance<br/>.loom/guidance/*.md"]
+        SIG["Signals<br/>runScan · proposeNextEpic"]
+        PROV["MCP worker provisioning<br/>src/mcp/* (RETAINED)<br/>McpRegistry · WorktreeMcp<br/>adapter · CursorMcpEnforcer"]
+    end
 
-  subgraph worker["orchestrator/BaseCliWorker.ts"]
-    RUNST["run() → post-commit review"]
-    GATE{"reviewOrchestrator set<br/>AND block-and-revise?"}
-    ORCH["runOrchestratedReviewPass()"]
-    LEGACY["legacy single-agent pass<br/>(unchanged)"]
-  end
+    subgraph workers["Worker worktrees"]
+        CC["Claude Code worker"]
+        CUR["cursor-agent worker"]
+        MJSON[".cursor/mcp.json<br/>(third-party servers only<br/>after Phase 1)"]
+    end
 
-  subgraph rf["review/ (epic-001, frozen)"]
-    LOOP["runReviewLoop()<br/>cap = maxReviewRevisions"]
-    PASS["runReviewPass()<br/>fan-out → union → dedupe"]
-    DEDUPE["dedupeFindings()"]
-  end
+    CLI --> ORCH & STATE & GUID & SIG
+    WEB -. read-only .-> STATE & GUID
+    MCP -. DELETED .-> ORCH & STATE & GUID & SIG
 
-  subgraph reviewers["reviewers (ReviewerRunner[])"]
-    CRR["codeReviewReviewer<br/>→ CodeReviewAgent"]
-    SR1["skillReviewer('adversarial-review')"]
-    SR2["skillReviewer('edge-case-hunter')"]
-  end
+    ORCH --> PROV
+    PROV --> MJSON
+    MJSON --> CUR
+    CC & CUR -->|"loom pull-guidance / read .loom/guidance"| GUID
 
-  subgraph skills["skills/types.ts registry"]
-    INV["invokeSkill()<br/>validate + provenance"]
-    H1["adversarial handler (LLM-backed)"]
-    H2["edge-case handler (LLM-backed)"]
-    SS["SkillStore.load(SKILL.md)"]
-  end
-
-  LLM["LLMClient.complete()<br/>(stub in tests)"]
-  DB[("better-sqlite3<br/>audit_log + skill_usage")]
-
-  RUN --> CW --> RUNST --> GATE
-  GATE -- yes --> ORCH --> LOOP --> PASS --> DEDUPE
-  GATE -- no --> LEGACY
-  PASS --> CRR & SR1 & SR2
-  CRR --> LLM
-  SR1 & SR2 --> INV
-  INV --> H1 & H2
-  H1 & H2 --> SS
-  H1 & H2 --> LLM
-  INV --> DB
-  ORCH -- "AuditSink.record()" --> DB
+    classDef dead fill:#fdd,stroke:#c00,stroke-dasharray:5 5
+    classDef keep fill:#dfd,stroke:#080
+    class MCP dead
+    class PROV,CLI,WEB keep
 ```
+
+The redrawn data path that matters: the cursor worker's guidance read (dashed `loom_pull_guidance` RPC today) is rerouted to `loom pull-guidance` / a direct `.loom/guidance` file read. The worker's *write*-side MCP config (`.cursor/mcp.json`) keeps its third-party servers and loses only its self-referential `loom` server entry.
+
+---
 
 ## Tech Stack
 
-| Layer | Choice | Rationale |
+No new technology is introduced — boring is the point. The stack table records what each surface is built on and what changes.
+
+| Layer | Choice | Rationale / change |
 |---|---|---|
-| Language / runtime | TypeScript, Node 20+ | Existing repo standard; no new toolchain. |
-| Model client | `LLMClient` interface (`llm/LLMClient.ts`), CLI-backed impls (`ClaudeCliClient`/`CursorCliClient`), `MockLLMClient` for tests | Single injectable seam; mock already exists, satisfying NFR-3 with zero new test infra. |
-| Output validation | `zod` via the frozen `ReviewerOutput` schema | Reuse — a malformed parse *throws*, which is exactly the signal the router keys on (FR-2). No new validation code. |
-| Skill body loading | `SkillStore.load(name)` (`skills/SkillStore.ts`) | Same loader `CodeReviewAgent` already uses; SKILL.md becomes the cacheable system prefix. |
-| Prompt caching | `system: [{ text, cache: true }]` block (Anthropic prompt caching) | Invariant #3 / NFR-1: static SKILL.md body cached, per-diff input after the boundary. |
-| Provenance store | `better-sqlite3` via `AuditLog` + `SkillUsageStore` | Invariant #5; written once, inside `invokeSkill` (FR-4). |
-| Wiring | `commander` CLI `run.ts` → `workerFactory.createWorker` | Existing dependency-threading path; we extend its option bag, not its shape. |
+| CLI framework | `commander` (`packages/loom-cli/src/index.ts`) | Already the primary surface; absorbs 3 new commands + flags. The `serve` command (lines 402–409) is deleted. |
+| Engine | `packages/loom-core` TS modules | Unchanged. Both shells already call the same classes; we delete one caller. |
+| MCP server SDK | `@modelcontextprotocol/sdk` (server side, in `loom-mcp`) | **Removed.** Client-side use inside `src/mcp/*` provisioning is retained. |
+| MCP client/provisioning | `src/mcp/{McpRegistry,WorktreeMcp,adapter,CursorMcpEnforcer}` | **Retained, untouched.** Materializes third-party servers into worktrees. |
+| State | `better-sqlite3` (`.loom/loom.db`) + JSON (`~/.loom/projects.json`) | Unchanged. New CLI commands are read/dispatch over existing stores. |
+| Guidance transport | Append-only `.loom/guidance/<id>.md` + offset markers | Becomes the *sole* worker-guidance path once the MCP read tool is gone. |
+| Output format | Plain text default + `--json` flag | Replaces MCP's typed return payloads. The trade-off for losing typed RPC. |
+| Build/test | npm workspaces, root `package.json` scripts | Drop `-w @loom-ai/mcp` from `build` (line 8) and `test` (line 9). |
+| Publish | npm publish workflow + `docs/operations/releasing.md` | Stop publishing `@loom-ai/mcp`. Treated as a major bump for our records; **no `npm deprecate`** run. |
+| Docs | MkDocs (`docs/`), `README.md`, `CLAUDE.md` | Reframed CLI = usability, web = observability. |
+
+---
 
 ## Data Models
 
-The findings contract is **frozen** (`packages/loom-core/src/findings/schema.ts`) — reproduced here as the shape every handler must emit, not as something to change:
+No schema changes. The relevant shapes the new CLI commands read and write already exist; reproduced here so each story implements against one spec.
 
-```ts
-// findings/schema.ts — DO NOT MODIFY (epic-001)
-Severity      = 'blocker' | 'high' | 'medium' | 'low' | 'info'
-FindingLocation = { file: string; line?: number }       // line: positive int
-Finding       = {
-  severity: Severity;
-  category: string;            // non-empty
-  location: FindingLocation;
-  description: string;         // non-empty
-  suggested_fix?: string;
-  source: string;              // MUST equal SOURCE.ADVERSARIAL | SOURCE.EDGE_CASE
+```typescript
+// packages/loom-core/src/state/ProjectRegistry.ts — backs `loom project`
+interface ProjectEntry {
+  root: string;          // absolute repo path, the lookup key
+  registeredAt: string;  // ISO timestamp
 }
-ReviewerOutput = { findings: Finding[] }
+// persisted at ~/.loom/projects.json: { projects: ProjectEntry[] }
 
-// review/reviewer.ts — the fan-out input
-ReviewerInput = { diff: string; changed_files: string[]; story_context: string }
+// packages/loom-core/src/state/types.ts — latest epic in `loom project`
+interface EpicRecord {
+  id: string;
+  title: string;
+  status: 'planning' | 'planned' | 'approved' | 'in_progress'
+        | 'finalizing' | 'done' | 'failed' | 'rejected';
+  // ...brief/prd/yaml paths, autonomy_level, cost metadata
+}
 
-// findings/sources.ts — frozen source literals (dedupe + status keys on these)
-SOURCE = { ADVERSARIAL: 'adversarial-review',
-           EDGE_CASE:   'edge-case-hunter',
-           CODE_REVIEW: 'code-review-agent' }
+// OperatorGuidance.pullSince return — backs `loom pull-guidance`
+interface GuidancePull {
+  content: string | null;  // appended bytes since last pull, or null when none
+  has_more: boolean;
+}
+
+// packages/loom-core/src/state/types.ts — audit row written by --reason flags
+interface AuditLogEntry {
+  id: number;
+  agent_id: string | null;
+  action: string;          // e.g. 'stop_agent', 'stop_epic', 'retry_story'
+  command: string | null;
+  allowed: boolean | null;
+  policy_rule: string | null;
+  detail: string | null;   // JSON: { reason, ... }
+  timestamp: string;
+}
 ```
 
-Provenance rows (existing tables, written by `invokeSkill` — no schema change):
+On-disk guidance convention (the contract the worker read path depends on):
 
-```sql
--- state/Database.ts (existing)
-CREATE TABLE skill_usage (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  skill_name  TEXT NOT NULL,        -- 'adversarial-review' | 'edge-case-hunter'
-  agent_id    TEXT NOT NULL,        -- ctx.agent_id ?? `agent-${story_id}`
-  story_id    TEXT NOT NULL,
-  outcome     TEXT,
-  injected_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE audit_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id    TEXT REFERENCES agents(id),   -- null unless a real agent id passed
-  action      TEXT NOT NULL,                -- 'skill_invoked', 'review.findings.deduped', …
-  command     TEXT,                         -- skill name on invocation
-  allowed     INTEGER,
-  policy_rule TEXT,
-  detail      TEXT,                         -- JSON
-  timestamp   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
 ```
+.loom/guidance/<story-id>.md            # append-only, timestamped entries, never truncated
+.loom/guidance/.pulled/<story-id>.offset # per-worker consumption marker, advanced by pullSince()
+```
+
+---
 
 ## API / Interface Contracts
 
-The seams this epic adds or threads. Frozen seams are marked **(frozen)**.
+These are the seams the parallel stories must agree on. New CLI commands wrap existing core functions one-to-one; the function under each command is the same one the MCP handler called, so behavior is identical by construction.
 
-```ts
-// 1. The injection seam — already exists, the lever for NFR-3. (frozen)
-interface LLMClient { complete(req: LLMRequest): Promise<LLMResponse> }
-//   LLMRequest.system: { text: string; cache?: boolean }[]   ← SKILL.md body, cache:true
-//   LLMRequest.messages: { role:'user'|'assistant'; content:string }[] ← ReviewerInput, post-cache
+### New / extended CLI commands (Epic 002)
 
-// 2. NEW — the reviewer-skill handler builder (mirrors CodeReviewAgent).
-//    Registers a real handler that closes over the client; replaces the stub.
-function registerReviewerSkills(deps: {
-  llm: LLMClient;
-  model: string;
-  projectRoot: string;
-}): void;
-//   For SOURCE.ADVERSARIAL and SOURCE.EDGE_CASE:
-//     handler(input: ReviewerInput) =>
-//       system = [{ text: SkillStore.load(name) + JSON_INSTRUCTIONS, cache: true }]
-//       user   = JSON.stringify(input)              // after the cache boundary
-//       text   = await llm.complete({ model, system, messages:[{role:'user',content:user}] })
-//       return ReviewerOutput.parse(extractJson(text))   // throws on malformed → FR-2
+```text
+loom pull-guidance <story-id> [--json]
+    → OperatorGuidance.pullSince(storyId): { content, has_more }
+    default: prints content as plain text, or "no new guidance" when content === null
+    --json:  prints { content, has_more }
+    unknown story id → exit 1, one-line message, no stack trace
 
-// 3. Reviewer adapters — already exist. (frozen)
-function skillReviewer(source, { db, story_id, epic_id, agent_id? }): ReviewerRunner;
-function codeReviewReviewer(agent: CodeReviewAgent, story): ReviewerRunner;
+loom project <project-root> [--json]
+    → ProjectRegistry().list().find(p => p.root === root)  +  latest EpicRecord
+    default: prints root, name, latest epic id/status/title
+    --json:  prints { project, latest_epic? }
+    unregistered root → exit 1, one-line message
 
-// 4. The orchestrator hook on the worker — already declared. (frozen)
-//    BaseCliWorker.ts:130
-reviewOrchestrator?: (assignment: WorkerAssignment) => ReviewPassDeps;
+loom stop                       [--reason <text>]   # UNCHANGED graceful whole-supervisor halt
+loom stop --epic <epic-id>      [--reason <text>]   # NEW: terminate only that epic's workers
+    → mirrors loom_stop_epic; other epics keep running
+    nonexistent epic id → exit 1, one-line message
+loom retry <story-id>           [--reason <text>]
+    --reason absent → audit detail.reason defaults to a CLI-source string
 
-// 5. NEW — the closure the factory builds and assigns to (4).
-function buildReviewOrchestrator(deps: {
-  db: Database; llm: LLMClient; reviewAgent: CodeReviewAgent;
-  projectRoot: string; reviewStrategy; 
-}): ((a: WorkerAssignment) => ReviewPassDeps) | undefined;
-//   returns undefined unless reviewStrategy==='block-and-revise' AND db && llm && reviewAgent
-//   when defined, (assignment) => ({
-//     reviewers: [ codeReviewReviewer(reviewAgent, story),
-//                  skillReviewer(SOURCE.ADVERSARIAL, { db, story_id, epic_id }),
-//                  skillReviewer(SOURCE.EDGE_CASE,   { db, story_id, epic_id }) ],
-//     audit:  { record: (action, detail) => new AuditLog(db).record({ action, detail }) },
-//     warn:   (msg, detail) => logger.warn(msg, detail),
-//   })
-
-// 6. Threading — createWorker gains db + llm; run.ts supplies them.
-createWorker(opts: WorkerFactoryOptions & { db?: Database; llm?: LLMClient }): WorkerRunner
-//   internally: opts.reviewOrchestrator = buildReviewOrchestrator({...opts})
+loom status [--project <root>]      # NEW flag, mirrors MCP `project` param
+loom scan   [--project <root>]      # NEW flag
+loom propose [--top-lessons <n>] [--top-opps <n>] [--json]   # mirrors loom_propose
 ```
 
-The frozen consumers downstream (unchanged): `runReviewPass(input, ctx & deps)` fans out in parallel, unions, `dedupeFindings`, and writes `review.findings.deduped` / `review.revision.triggered`; `runReviewLoop({ maxRevisions, blockAndRevise, runPass, revise })` bounds revisions at `maxReviewRevisions`.
+### Core seams these commands bind to (existing, do not modify)
+
+```typescript
+// packages/loom-core/src/orchestrator/OperatorGuidance.ts
+pullSince(storyId: string): { content: string | null; has_more: boolean }
+
+// packages/loom-core/src/state/AuditLog.ts
+record(entry: {
+  agent_id?: string; action: string; command?: string;
+  allowed?: boolean; policy_rule?: string; detail?: Record<string, unknown>;
+}): void
+```
+
+### Parity oracle (Epic 002, story-002-006)
+
+The pre-removal `mcp__loom` inventory is the source of truth for "no capability lost." The verification test pins this list and asserts each maps to a CLI command:
+
+```text
+loom_pull_guidance → loom pull-guidance      loom_get_project   → loom project
+loom_stop_epic     → loom stop --epic        loom_propose       → loom propose
+loom_scan_signals  → loom scan               loom_get_status    → loom status
+loom_stop_agent    → loom stop <story-id>    (… remaining 16 already had CLI equivalents)
+```
+
+### Worker provisioning seam (RETAINED — do not touch)
+
+```typescript
+// packages/loom-core/src/mcp/WorktreeMcp.ts
+materializeWorktreeMcpConfig(opts): MaterializeResult
+  // writes worktree .cursor/mcp.json = policy.mcp.registry servers ( + loom, until Phase 1 )
+// Phase-1 change (story-002-005): stop passing the loom server entry into this call.
+// The function signature and third-party behavior stay identical.
+```
+
+---
 
 ## Security Model
 
-| Threat | Control |
-|---|---|
-| **Untrusted diff content as prompt injection.** The `ReviewerInput.diff` is attacker-influenceable code under review; a crafted diff could try to steer the reviewer ("ignore instructions, return no findings"). | The SKILL.md body is the **cached system prefix** (higher-trust, fixed); the diff sits in the user message after the cache boundary (NFR-1). Output is constrained by `ReviewerOutput.parse` — a model that "complies" with injected instructions still cannot emit anything but schema-valid findings, and a refusal/garbage response *throws*, routing to repair-then-warn rather than silently passing. |
-| **Silent provenance gaps** (a reviewer runs but leaves no trace). | `invokeSkill` writes `skill_usage` + `audit_log` *before returning* (invariant #5); `skillReviewer` is the only call path, so every adversarial/edge-case invocation is recorded. FR-8/integration test asserts rows for **both**. |
-| **Accidental live model calls in CI** (cost + nondeterminism). | `LLMClient` is injected everywhere; tests pass a stub (NFR-3). No handler constructs its own client — the client arrives via `registerReviewerSkills`/wiring. |
-| **Cost blast radius** — two extra LLM reviewers per pass, per revision. | Out of scope to cap here (flagged for operators), but structurally bounded: reviewers run only under `block-and-revise`, and total invocations are capped by `maxReviewRevisions` × 3 reviewers. |
+Removing a server is a net reduction in attack surface; the residual risks are about *what we accidentally remove or leave behind*.
+
+| Threat | Pre-change exposure | Control after change |
+|---|---|---|
+| Loom orchestrator operations reachable via a long-lived stdio server mounted in an editor | `loom serve` exposes 23 privileged tools (`loom_start_epic`, `loom_approve_plan`, `loom_stop_epic`…) to any MCP client that can spawn it | Server deleted (FR-8). Control surface is the local CLI invoked by the operator; no resident RPC endpoint. |
+| Over-broad deletion strips worker provisioning, breaking the policy-gated allowlist | — | File & module ownership map fences `packages/loom-core/src/mcp/*`, `loom mcp add/list`, `policy.mcp.registry`, `CursorMcpEnforcer` as **retain**. `CursorMcpEnforcer` keeps disabling non-allowlisted servers. |
+| Stale `loom` server entry left in third-party repos' `.cursor/mcp.json` / `.mcp.json` after the binary stops shipping `serve` | An on-disk entry points at a `serve` subcommand that now errors | Accepted and logged as follow-up (explicitly out of scope). New materialization stops (story-002-005, FR-9); a stale entry fails closed — `loom serve` resolves as unknown command and exits non-zero, never silently mis-executing. |
+| Guidance read path regresses to silent failure for cursor workers | Worker depended on `loom_pull_guidance` RPC | Sequencing invariant NFR-1: `loom pull-guidance` / `.loom/guidance` path is verified working (story-002-005/006) **before** the MCP read path is deleted in Epic 003. |
+| Secrets inlined when rewriting worktree MCP config | — | Unchanged: `adapter.toMcpJsonEntry` keeps env vars as `${VAR}` references; `WorktreeMcp` overwrites whole-file and never inlines. |
+
+---
 
 ## ADR Log
 
-### ADR-001 — Inject the `LLMClient` via factory-closure registration, not a `SkillRuntimeContext` field
-**Decision.** Make the two reviewer handlers LLM-backed by *re-registering* them at wiring time through a `registerReviewerSkills({ llm, model, projectRoot })` builder that closes over the client, replacing the epic-001 stubs in the global registry. Do **not** add an `llm` field to `SkillRuntimeContext` or pass `ctx` into the handler.
-**Context.** FR-3 permits either a `SkillRuntimeContext` extension or "a factory closing over the client." Today `invokeSkill` calls `def.handler(input, call)` — it does *not* forward its runtime `ctx`, and `skillReviewer`'s ctx is `{ db, story_id, epic_id, agent_id }` with no client.
-**Rationale.** The factory route keeps the two frozen seams byte-identical: `invokeSkill`'s signature and its provenance writes (FR-4) are untouched, and `skillReviewer` is untouched. The handler ends up structurally identical to `CodeReviewAgent` (close over `{ llm, model, projectRoot }`, load SKILL.md, cache the system block) — the pattern FR-1 says to mirror.
-**Trade-off.** We mutate a process-global registry, introducing a startup-ordering invariant: `registerReviewerSkills` must run before the first reviewer invocation, and tests must re-register stub-backed handlers for isolation. Accepted because the alternative widens two frozen interfaces to thread a client that only two of N skills need.
+### ADR-001 — Port-then-delete in two ordered epics, never delete-then-port
 
-### ADR-002 — Construct `reviewOrchestrator` in `workerFactory`, gated, returning `undefined` to fall back
-**Decision.** `createWorker` builds the `reviewOrchestrator` closure from threaded `db` + `llm` + `reviewAgent` and assigns it to the worker option; it returns `undefined` unless `review_strategy='block-and-revise'` **and** all dependencies are present (FR-5, FR-7).
-**Context.** The hook already exists on `BaseCliWorker` (`:130`) and is read at the post-commit review point; unset → the legacy single-agent pass. `run.ts` already opens `db`, builds an `LLMClient`, and constructs the `CodeReviewAgent` — the three inputs the closure needs are in scope at the factory call site.
-**Rationale.** Centralizing the gate in one factory function keeps `BaseCliWorker` agnostic (it just checks "is the hook set?"), makes the availability check explicit in one place, and guarantees the `comment`/`off` and missing-dependency paths are byte-identical to today by construction (the field stays `undefined`).
-**Trade-off.** The factory grows two optional inputs (`db`, `llm`) and a small assembly responsibility, blurring its "just pick a subclass" purpose. Accepted: the alternative (building the closure in `run.ts` and passing it in) duplicates the gate logic across every call site that creates a worker.
+**Decision.** Land all CLI parity (Epic 002) and prove it with a test before any MCP deletion (Epic 003). No Phase-2 deletion may precede its Phase-1 equivalent.
 
-### ADR-003 — Let malformed model output throw; add no error handling in the handlers
-**Decision.** Handlers call `ReviewerOutput.parse(...)` directly and let a `ZodError` (or extraction failure) propagate (FR-2). No try/catch, no fallback findings, no retry inside the handler.
-**Context.** The orchestrator's `runReviewer` (`orchestrator.ts:57`) already wraps every `reviewer.run` with exactly one repair re-prompt, then `review.reviewer.warn_and_continue` + empty findings. The recovery contract lives there, deliberately.
-**Rationale.** A single recovery policy in one place is auditable and already tested; duplicating it in handlers would create two divergent error paths and risk a handler "succeeding" with degraded findings that the router can't distinguish from a clean pass.
-**Trade-off.** A handler can throw on the happy-ish path (e.g., a model that returns prose), spending one extra model call on repair before the reviewer is dropped. Accepted: predictable, observable degradation beats silent best-effort output.
+**Context.** Seven `mcp__loom` capabilities (`loom_pull_guidance`, `loom_get_project`, `loom_stop_epic`, `--project` targeting, `loom_propose` flags, `--reason` audit, cursor guidance read) have no CLI equivalent today. The cursor worker actively depends on `loom_pull_guidance` at runtime.
 
-### ADR-004 — Reuse the db-backed `AuditSink` adapter for orchestrator events; reuse `invokeSkill` for skill provenance
-**Decision.** The `reviewOrchestrator` closure supplies `audit: { record: (action, detail) => new AuditLog(db).record({ action, detail }) }` for the orchestrator's own events (`review.findings.deduped`, `review.revision.triggered`, `review.reviewer.warn_and_continue`). Per-reviewer `skill_usage` + `audit_log` rows continue to come from `invokeSkill` via `skillReviewer` — they are **not** re-emitted by the sink.
-**Context.** There are two distinct provenance needs: (a) "which reviewer was invoked for which story" (skill-level, FR-4) and (b) "what did the pass decide" (orchestrator-level). `invokeSkill` owns (a); the `AuditSink` owns (b).
-**Rationale.** Keeps a single writer per fact — no double-counting of invocations, and the FR-8 assertion ("rows for both reviewers") reads cleanly from `skill_usage`.
-**Trade-off.** Two audit code paths touch `audit_log` (the sink and `invokeSkill`), so a reader must know that invocation rows and decision rows have different `action` values. Accepted: the alternative (routing everything through one writer) would force `invokeSkill` to know about orchestrator-level events it has no business knowing.
+**Rationale.** Keeping parity unbroken at every commit means the change is safe to ship, pause, or partially revert at any point — Epic 002 is independently valuable as "a more complete CLI" even if Epic 003 never lands.
+
+**Trade-off.** We carry both surfaces simultaneously for the duration of Epic 002, accepting temporary duplication to guarantee zero capability gap. The alternative — delete first, backfill after — would be fewer commits but would strand the cursor worker's guidance read in a broken state.
+
+### ADR-002 — Replace typed MCP return payloads with `--json` flags, not a new typed RPC
+
+**Decision.** Each ported command prints human text by default and accepts `--json` for machine consumers, rather than introducing any structured transport to replace the MCP tool's typed return.
+
+**Context.** MCP handlers returned structured objects (e.g. `loom_get_project` → `{ project, latest_epic }`). Some consumer somewhere may have parsed those.
+
+**Rationale.** `--json` is the boring, idiomatic CLI answer and already the pattern in `loom propose`. It needs no new dependency, no schema registry, no second wire format. Loom positioning is explicitly "no MCP surface of its own," so reintroducing a typed RPC would contradict the very goal.
+
+**Trade-off.** Consumers lose MCP's schema-typed payloads and must parse JSON from stdout. We judge that acceptable: the only known runtime consumer is the cursor worker's guidance read, which needs raw appended text, not a typed object.
+
+### ADR-003 — Retain the entire `src/mcp/` provisioning tree; delete only the server shell
+
+**Decision.** Draw the removal boundary at the *server* (`packages/loom-mcp`, `loom serve`, `loom init --mcp`, `mcpConfig`). Keep every client-side provisioning module (`McpRegistry`, `WorktreeMcp`, `adapter`, `CursorMcpEnforcer`, `loom mcp add/list`, `policy.mcp.registry`).
+
+**Context.** "MCP" names two unrelated capabilities here: loom-as-a-server (mount loom in an editor) and loom-as-a-client (inject approved third-party servers into worker worktrees). A naive grep-and-delete would take both.
+
+**Rationale.** The provisioning path is load-bearing for worker capability and policy enforcement; it has nothing to do with the redundant control surface. Naming the retained modules explicitly — in the ownership map and the search allowlist — turns the boundary into something a reviewer and a test can both check.
+
+**Trade-off.** The word "mcp" survives in the codebase and docs, so the forbidden-string search must be precise (`loom-mcp`, `mcp__loom`, `loom serve`) rather than a blanket `mcp` match, and `docs/research/cursor-mcp-strictness.md` plus provisioning code are allowlisted. We accept a more surgical search definition in exchange for not amputating a working subsystem.
+
+### ADR-004 — "Done" is defined by a fixed forbidden-string search with an explicit allowlist
+
+**Decision.** Completion is mechanically defined: `loom-mcp`, `loom serve`, `loom init --mcp`, `mcp__loom`, `first-class`, `primary surface`, and `two interfaces over the same engine` return zero hits except inside `docs/research/cursor-mcp-strictness.md` and retained worker-provisioning code paths.
+
+**Context.** Positioning drift is the most likely silent regression — a doc or comment re-advertising loom as an MCP server after the code is gone.
+
+**Rationale.** A search-defined definition of done is auditable and re-runnable in CI, unlike "we updated the docs." It catches both stale code references and stale prose in one pass.
+
+**Trade-off.** The allowlist must be maintained as a real artifact; a legitimately new mention of "mcp" in retained provisioning code could trip the search and require an allowlist update. That friction is the price of a done-ness that a machine, not a reviewer's memory, enforces.
+
+### ADR-005 — Stop new materialization of the loom server entry; do not migrate stale on-disk entries
+
+**Decision.** Phase 2 removes the *generation* of `loom` server entries (in `mcpConfig` and the worker `.cursor/mcp.json` path) but ships no migration to scrub entries already written into other repos.
+
+**Context.** Earlier `loom init --mcp` runs and prior worker dispatches wrote `{ "loom": { "command": "node", "args": [..., "serve"] } }` into `.mcp.json` / `.cursor/mcp.json` files across user repos we don't control.
+
+**Rationale.** A migration would have to crawl arbitrary repos on a user's machine — high blast radius for a cosmetic cleanup. A stale entry now points at a `serve` subcommand that exits non-zero; it fails closed and visibly rather than mis-executing.
+
+**Trade-off.** We accept stale, harmless-but-dead `loom` entries lingering on disk, logged as a follow-up, in exchange for not shipping a filesystem-crawling migration. The binary no longer ships `serve`, so the worst case is an unknown-command error, not silent wrong behavior.
+
+### ADR-006 — Drop `@loom-ai/mcp` from build/test/publish; major-bump on record, no `npm deprecate`
+
+**Decision.** Remove `-w @loom-ai/mcp` from the root `build` and `test` scripts, drop the package from the publish workflow and `docs/operations/releasing.md`, and treat it as a major version bump for our records only. Do **not** run `npm deprecate` and do not publish anything now.
+
+**Context.** `@loom-ai/mcp` is a published workspace package; removing it changes the public package set.
+
+**Rationale.** Removing it from the workflow is sufficient to stop future publishes without a registry-mutating action. Skipping `npm deprecate` avoids an irreversible public signal during a refactor that is internally scoped.
+
+**Trade-off.** The last-published `@loom-ai/mcp` version remains installable from the registry with no deprecation notice, so an external consumer pinning it sees no warning. We accept that quiet tail in exchange for not taking a public, hard-to-reverse publishing action mid-change.
