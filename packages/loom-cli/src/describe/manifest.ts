@@ -22,8 +22,8 @@ export function buildManifest(program: Command): Manifest {
     const specNames = new Set(specs.map((s) => s.name));
     const unregistered = registered.filter((name) => !specNames.has(name));
     if (unregistered.length > 0) {
-      process.stderr.write(
-        `[loom describe] warning: registered commands without specs: ${unregistered.join(', ')}\n`
+      throw new Error(
+        `[loom describe] registered commands without specs: ${unregistered.join(', ')}`
       );
     }
   }
