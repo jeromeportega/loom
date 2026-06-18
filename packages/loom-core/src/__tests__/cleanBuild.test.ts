@@ -9,7 +9,21 @@ import path from 'node:path';
 //   packages/loom-core/dist/__tests__  →  packages/loom-core/dist  →
 //   packages/loom-core  →  packages  →  <workspace-root>
 const WORKSPACE_ROOT = path.resolve(__dirname, '../../../..');
-const TSC_BIN = path.join(WORKSPACE_ROOT, 'node_modules', '.bin', 'tsc');
+
+// In a git worktree, node_modules may live in the parent repo rather than
+// the worktree root itself — walk up until we find node_modules/.bin/tsc.
+function resolveBin(name: string, startDir: string): string {
+  let dir = startDir;
+  while (true) {
+    const candidate = path.join(dir, 'node_modules', '.bin', name);
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) throw new Error(`${name} not found in any node_modules/.bin along the path from ${startDir}`);
+    dir = parent;
+  }
+}
+
+const TSC_BIN = resolveBin('tsc', WORKSPACE_ROOT);
 
 // ─── Source-assertion helpers ────────────────────────────────────────────────
 
