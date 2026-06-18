@@ -36,7 +36,6 @@ interface WorkerMcpServersDetail {
   servers: string[];
   backend: 'claude-code' | 'cursor-cli';
   configPath: string;
-  loomServerIncluded: boolean;
   disabledServers?: string[];
   gaps?: string[];
 }
@@ -57,12 +56,6 @@ const STDIO_SERVER = {
       ],
     },
   ],
-};
-
-const LOOM_ENTRY: McpJsonEntry = {
-  command: 'node',
-  args: ['/abs/loom/index.js', 'serve'],
-  env: {},
 };
 
 let repo: string;
@@ -205,16 +198,16 @@ describe('Supervisor.dispatch — worker_mcp_servers audit row', () => {
     assert.deepEqual(detail.servers, []);
     assert.deepEqual(detail.servers, serversInConfig, 'detail.servers == generated config keys (sorted)');
     assert.equal(detail.backend, 'claude-code');
-    assert.equal(detail.loomServerIncluded, false);
+    assert.equal('loomServerIncluded' in detail, false, 'loomServerIncluded must not appear in audit row');
     assert.equal(detail.configPath, path.join('.cursor', 'mcp.json'));
     // Case 3 (claude-code half): cursor-only fields are absent.
     assert.equal('disabledServers' in detail, false);
     assert.equal('gaps' in detail, false);
   });
 
-  // Case 2 + 3 — cursor-cli payload: loom included, servers sorted and matching
+  // Case 2 + 3 — cursor-cli payload: third-party servers sorted and matching
   // the generated config, enforcer's disabledServers/gaps present.
-  it('cursor-cli: detail includes loom, sorted servers, and the enforcer disabledServers/gaps fields', async () => {
+  it('cursor-cli: detail has sorted third-party servers and the enforcer disabledServers/gaps fields', async () => {
     writeServer('jira-mcp', STDIO_SERVER);
     writePolicy({
       agents: { worker_backend: 'cursor-cli' },
@@ -235,17 +228,16 @@ describe('Supervisor.dispatch — worker_mcp_servers audit row', () => {
       db,
       worker,
       maxConcurrent: 1,
-      loomServerEntry: LOOM_ENTRY,
     }).run();
 
     const detail = JSON.parse(mcpRows(db, 'story-001-001')[0].detail!) as WorkerMcpServersDetail;
-    assert.deepEqual(detail.servers, ['jira-mcp', 'loom']);
+    assert.deepEqual(detail.servers, ['jira-mcp']);
     assert.deepEqual(detail.servers, serversInConfig, 'detail.servers == generated config keys (sorted)');
     assert.equal(detail.backend, 'cursor-cli');
-    assert.equal(detail.loomServerIncluded, true);
+    assert.equal('loomServerIncluded' in detail, false, 'loomServerIncluded must not appear in audit row');
     assert.equal(detail.configPath, path.join('.cursor', 'mcp.json'));
-    // Enforcer is a no-op stub in story-002-001's wiring, but the FIELDS must
-    // be present on the cursor-cli path so dashboards can rely on them.
+    // Enforcer is a no-op stub; the FIELDS must be present on the cursor-cli
+    // path so dashboards can rely on them.
     assert.deepEqual(detail.disabledServers, []);
     assert.deepEqual(detail.gaps, []);
   });
@@ -318,6 +310,6 @@ describe('Supervisor.dispatch — worker_mcp_servers audit row', () => {
     const detail = JSON.parse(row.detail!) as WorkerMcpServersDetail;
     assert.ok(Array.isArray(detail.servers));
     assert.equal(typeof detail.backend, 'string');
-    assert.equal(typeof detail.loomServerIncluded, 'boolean');
+    assert.equal('loomServerIncluded' in detail, false, 'loomServerIncluded must not appear in audit row');
   });
 });
