@@ -20,12 +20,10 @@ guardrail hook.
 | Package | npm name | Purpose |
 |---|---|---|
 | `packages/loom-core` | `@loom-ai/core` | Orchestration engine |
-| `packages/loom-mcp` | `@loom-ai/mcp` | MCP server (the primary loom surface) |
 | `packages/loom-web` | `@loom-ai/web` | Local web dashboard |
 | `packages/loom-cli` | `loom-ai` | The `loom` CLI (depends on the others) |
 
-Workers reach loom via the MCP server (Claude Code, Cursor, or any
-MCP-aware client); the local web dashboard (`loom web`) is the
+Workers reach loom via the CLI; the local web dashboard (`loom web`) is the
 visibility surface.
 
 ---
@@ -39,12 +37,10 @@ visibility surface.
    `git tag v0.1.0 && git push origin v0.1.0`.
 3. Build and test from a clean checkout: `npm ci && npm run build && npm test`.
 4. Authenticate to npm (`npm login`) if you are not already.
-5. Publish each workspace in dependency order: `core` → `mcp` → `web` →
-   `loom-ai`:
+5. Publish each workspace in dependency order: `core` → `web` → `loom-ai`:
 
    ```bash
    npm publish -w @loom-ai/core
-   npm publish -w @loom-ai/mcp
    npm publish -w @loom-ai/web
    npm publish -w loom-ai
    ```
