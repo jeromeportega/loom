@@ -1,57 +1,66 @@
-# Per-Story Signal Ledger (Observe-Only Cost-Control Harness)
+# Trustworthy Build, Test & Integration-Gate Reliability
 
 ## The Problem
 
-Loom now carries the machinery for adaptive cost control — a deterministic tier resolver (`resolveCostTier`), a tier→steps mapping (`tierSteps`), and the `policy.agents.adaptive_cost` knob — but it has never been validated against real runs. Before loom can be trusted to *gate* on those signals (spend fewer reviewers on cheap stories, more on risky ones), an operator needs evidence that the heuristics actually predict cost correctly. Today that evidence does not exist: signals are computed implicitly inside dispatch and thrown away, leaving no record to audit whether a tier call was right.
+Loom's own dogfooding surfaced that its quality machinery — the integration gate, the build/test pipeline, the command self-description registry, and the release command — produces **false signals in both directions**. The gate fails sound code, dev-machine runs disagree with the gate, a new command can ship invisibly, and a release leaves the repo in a subtly broken state. The unifying defect: correctness is being judged against *stale or derived state* instead of the *current source of truth*.
 
-There is a known calibration gap to validate against: with heuristics alone and no worker self-assessment, the resolver collapses toward `heavy` for nearly every story (confidence defaults to `low` → `heavy`). An observe-only ledger is the safe way to measure that gap on production runs *without* changing what any agent actually does.
+Four concrete failures were observed:
+
+1. **Stale dependency in the integration gate.** The gate runs in a throwaway integration worktree where dependencies are never installed. A dependent workspace package resolves a *stale built copy* of a dependency package. When story A adds a method to `loom-core` and story B's package uses it, the gate's build fails with "method does not exist" — even though the code is correct and a clean checkout builds and passes the full suite. Under a blocking gate, this would wrongly withhold a sound PR.
+
+2. **Stale build output on long-lived working trees.** The TypeScript compiler never deletes outputs for renamed or removed files; the test runner then discovers and runs every compiled test under `dist/`, including renamed-away ones; and a removal-guard test asserts a package directory is gone *on disk* when only an untracked build-output leftover remains. A fresh worktree hides all of this, so the gate and a real developer checkout disagree.
+
+3. **Silent gap in the describe registry.** A new command can ship with a valid description that is never collected into the manifest. The completeness test passes anyway because it checks the *derived collected list* rather than the *live command registry* — so the new command is silently absent from `describe` output.
+
+4. **Release leaves the repo dirty.** The release command leaves the lockfile drifting behind the bumped package versions, and a clean build drops the executable bit on the CLI entry, so the linked command is not runnable without a manual fix.
 
 ## Target Users
 
-- **Primary — loom operators/maintainers** (e.g. Jerome, dogfooding loom): need per-story evidence to decide whether and how to turn on adaptive gating later.
-- **Secondary — the EpicFinalizer / epic PR reviewer**: a downstream reader that surfaces the ledger as a "Build signal analysis" section so a human reviewing the epic PR sees the recommendations and mismatches inline.
-- **Anti-persona — the gating decision itself.** This feature must *not* influence execution. Nothing here may read the ledger to change reviewer count, verify phases, or skill generation. It only observes.
+- **Primary — loom contributors and the loom autonomous agents themselves.** Both rely on the integration gate as a truthful arbiter of whether a PR is mergeable. The agents are a first-class user here: a false gate failure stalls autonomous delivery.
+- **Secondary — loom operators / release managers** who run the release command and expect a clean, runnable, in-sync repository afterward.
+- **Anti-persona — end users of a published loom CLI.** This work is internal engineering hygiene; it must not change user-facing CLI behavior or human help output.
 
 ## Proposed Solution
 
-Add an **observe-only signal ledger**: at each story's completion, compute the cheap heuristics from data loom already has, resolve the implied tier/steps with the *existing* `tier.ts` functions, and persist one `StorySignals`-shaped record per story to two sinks — an `audit_log` row and a human-readable markdown file under `.loom/signals/<story-id>`. The `EpicFinalizer` reads these records back (it never writes them) to append a per-story analysis section to the epic PR body. No execution path changes; the resolver's output is recorded, not enforced.
+Make every quality check judge against current source rather than stale or derived state, across four independent fixes:
+
+1. **Trustworthy integration gate** — guarantee dependent packages build against freshly built dependencies in the integration worktree.
+2. **Clean build and test** — make build/test resilient to stale compiled output and assert removals against version control, not disk.
+3. **Honest self-description completeness** — drive manifest collection and its completeness test from the live command registry.
+4. **Release and build polish** — keep the lockfile in sync and preserve the CLI executable bit on a clean build.
+
+The four parts are independently deliverable and independently verifiable; they share the theme but not the code paths.
 
 ## Key Capabilities
 
-1. **Compute heuristics** (`HeuristicSignals`) at story completion: `diff_lines` and `diff_files` for the story branch vs. epic base; `risky_paths_touched` = changed files matching `policy.agents.risky_paths` via minimatch; `tests_green_first_try` = first-try test result, or `null` when unavailable.
-2. **Resolve tier and steps** by calling the existing `resolveCostTier` and `tierSteps` — no new decision logic, no behavior change.
-3. **Persist a `StorySignals` record to two sinks**: an `audit_log` row written *before the story result returns* (per the CLAUDE.md logging invariant), and a markdown file under `.loom/signals/` keyed by story id.
-4. **Always record**, regardless of `policy.agents.adaptive_cost` — the ledger is the validation harness that must run *before* any gating exists.
-5. **Append a "Build signal analysis" section** to the epic PR body in `EpicFinalizer`, alongside the existing integration-gate section, listing per story: the heuristics, recommended tier and steps, and flagged mismatches.
-6. **Flag the over-spend mismatch**: a story recommended `heavy` that then sailed through finalize with no review findings and a green gate → mark as a candidate future gating could safely downgrade.
-7. **Best-effort persistence**: any failure to write either sink is swallowed and must never block or fail story completion.
+1. In the integration worktree, ensure correct workspace linking and **build dependency packages in dependency order before dependents** (or refresh the dependency install), so a method added to `loom-core` in one story is visible to a dependent package built later in the same gate run.
+2. **Clean per-package compiled output before building** (or otherwise restrict the runner to tests that still exist in source) so renamed-away or deleted compiled tests cannot be picked up and run.
+3. Change removal-guard tests to **assert a package is absent from version control**, not from disk, so an untracked build-output leftover does not fail them.
+4. Make manifest collection **discover a description for every command from the command sources**, and rewrite the completeness test to **enumerate the live registry and assert every registered command resolves to a description** (the inverse of checking the already-collected list).
+5. **Wire the existing `publish` command into the manifest** so `describe` lists it.
+6. In the release command, **refresh and stage the lockfile** so it stays in sync with bumped package versions.
+7. Ensure a **clean build sets the executable bit** on the CLI entry so the linked command is runnable without manual intervention.
 
 ## Constraints
 
-- **No execution behavior changes.** Tier resolution is observed, not applied. Reuse `resolveCostTier`/`tierSteps` in `packages/loom-core/src/orchestrator/tier.ts` as-is.
-- **Write site** is the story-completion point in the Supervisor or worker path; **read site** is `EpicFinalizer` only.
-- **Logging invariant** (CLAUDE.md #5): the `audit_log` row is written *before* the story result returns to the caller.
-- **`.loom/signals` is gitignored run state**, consistent with `.loom/` as dogfood/run state — not committed artifacts.
-- **Docs**: update `docs/capabilities.md` for the new ledger files and the PR section (capabilities page is the source of truth).
-- **Tests required**: unit tests for heuristic computation, the record shape across *both* sinks, and the epic-review section renderer.
-- The mismatch definition is deliberately narrow (over-spend only), because the under-spend direction isn't trustworthy yet given the `heavy`-bias calibration gap.
+- **Do not weaken any guardrail.** The gate must still catch genuine cross-story regressions — this work removes false failures without hiding real ones.
+- **Do not reintroduce an MCP server.** (Worker provisioning is retained per current positioning.)
+- **Keep human help output working.**
+- Build/test changes must hold on a **long-lived working tree that previously built an older revision**, not only in a fresh checkout — that disagreement is the bug, not an edge case.
+- Per `CLAUDE.md`: if any change alters a user-visible feature, update `docs/capabilities.md` in the same PR. [ASSUMPTION] This is internal hygiene with no user-visible surface change, so no capabilities update is expected; confirm before merge.
 
 ## Risks and Open Questions
 
-- **Field-name mapping across sinks.** `tierSteps` returns camelCase (`verifyPhase`, `skillGen`) but `StorySignals.steps` is snake_case (`verify_phase`, `skill_gen`). The persistence layer must map these; the cross-sink shape test should pin it. *(Verified against `tier.ts` and `types.ts`.)*
-- **First-try test signal availability.** `tests_green_first_try` is explicitly nullable. [ASSUMPTION] The Supervisor/worker path has access to a first-try result; if not, records will systematically carry `null`, weakening the validation. The write site must confirm the signal source exists.
-- **Diff base resolution.** [ASSUMPTION] "Epic base" is a resolvable ref at story-completion time (e.g. the epic branch's merge-base). Computing diff against the wrong base silently skews `diff_lines`/`diff_files`.
-- **"No review findings" definition for the mismatch.** [ASSUMPTION] The finalize-time data exposes per-story review findings and gate status to the renderer; the over-spend flag depends on reading both. Needs confirmation that `EpicFinalizer` has story-level granularity (gate result appears epic-level today).
-- **Heavy-bias is expected, not a bug.** The ledger will likely show most stories as `heavy`. That is the calibration signal being measured — surface it plainly rather than "correcting" it.
-- **Self-assessment absence.** Without worker self-assessment (`SelfAssessment`), confidence defaults to `low`. [ASSUMPTION] This pass does not add self-assessment capture; the ledger documents the gap rather than closing it.
+- **Cleaning `dist/` before build may mask incremental-build assumptions** elsewhere in tooling or CI caching. [ASSUMPTION] No tooling depends on stale `dist/` persistence; verify against CI config.
+- **Choice between "build in dependency order" vs. "refresh dependency install"** in the integration worktree is left open by the brief. [ASSUMPTION] Dependency-ordered build is lighter-weight than a full install in a throwaway worktree and is the preferred path; the PM/architect should confirm which the gate's current structure supports most cleanly.
+- **Version-control-absence assertion** depends on a reliable way to query tracked state within the test environment. [ASSUMPTION] The test harness can shell out to git or read the index; confirm this is available in the gate's execution context.
+- **Regression test for cross-package addition** must itself avoid the fresh-worktree blind spot it is testing for — it needs to exercise the actual worktree-and-build path, not a simplified stand-in, or it will pass vacuously.
+- **Executable-bit preservation** is platform-sensitive. [ASSUMPTION] Target is POSIX (macOS/Linux dev + CI); Windows behavior is out of scope.
 
 ## Success Criteria
 
-- After every story completes, exactly one `StorySignals` record exists in **both** `audit_log` (written before the result returns) and `.loom/signals/<story-id>.md`, with identical computed values across sinks.
-- Heuristics are computed from existing state (diff vs. epic base, minimatch against `risky_paths`, first-try test result or `null`) — no new data collection paths.
-- Tier and steps in every record match what `resolveCostTier`/`tierSteps` return for the same inputs (no divergent logic).
-- Recording occurs **regardless of** `policy.agents.adaptive_cost`, and **no** execution path (reviewer count, verify phase, skill gen) changes as a result of any record.
-- A forced persistence failure (e.g. unwritable `.loom/signals`) does **not** block or fail story completion.
-- The epic PR body contains a "Build signal analysis" section beside the integration-gate section, listing per-story heuristics, recommended tier/steps, and any over-spend mismatch flags.
-- `docs/capabilities.md` documents both the ledger files and the new PR section.
-- Unit tests pass for: (a) heuristic computation, (b) record shape across both sinks, (c) the epic-review section renderer.
+1. A **correct cross-package API addition builds green** through the integration gate rather than failing on a stale dependency, proven by a regression that reproduces the cross-package addition scenario.
+2. The **full build and test suite passes on a long-lived working tree** that previously built an older revision — with no failures from stale compiled tests or build-output leftovers — and the removal-guard tests assert version-control absence.
+3. The **describe manifest includes every registered command**, proven by a completeness test that enumerates the live registry; `describe` returns a description for **`publish` and `release`**.
+4. The **release command leaves the lockfile in sync** with the bumped package versions, and a **clean build produces a runnable linked command** without a manual executable-bit change.
+5. The **full build and test suite passes**, and the integration gate still fails on a genuine cross-story regression (guardrail integrity preserved).

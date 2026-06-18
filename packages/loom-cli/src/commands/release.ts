@@ -7,6 +7,8 @@ import { gitSafe } from '@loom-ai/core';
 export interface ReleaseCommandOptions {
   /** Test seam — injectable bump script runner. Production callers omit this. */
   _runBump?: (version: string, cwd: string) => void;
+  /** Test seam — injectable lockfile refresh runner. Production callers omit this. */
+  _runNpmInstall?: (cwd: string) => void;
   /** Test seam — type is typeof gitSafe so any signature drift surfaces at compile time. */
   _git?: typeof gitSafe;
   /** Test seam — injectable gh runner. Returns captured output (e.g. PR URL). */
@@ -31,6 +33,7 @@ export function runRelease(version: string, opts: ReleaseCommandOptions = {}): v
   const commitMsg = `chore(release): v${ver}`;
 
   const runBump = opts._runBump ?? defaultRunBump;
+  const runNpmInstall = opts._runNpmInstall ?? defaultRunNpmInstall;
   const runGit = opts._git ?? gitSafe;
   const runGh = opts._gh ?? defaultRunGh;
 
@@ -43,16 +46,27 @@ export function runRelease(version: string, opts: ReleaseCommandOptions = {}): v
     process.exit(1);
   }
 
-  // 2. Create the release branch.
+  // 2. Create the release branch before refreshing the lockfile so any mutation is
+  //    isolated to this branch, not the caller's working branch.
   const checkoutResult = runGit(projectRoot, ['checkout', '-b', branch]);
   if (!checkoutResult.ok) {
     console.error(`  Failed to create branch ${branch}: ${checkoutResult.output}`);
     process.exit(1);
   }
 
-  // 3a. Stage version-bump files. bump-versions.mjs does surgical package.json edits only —
-  //     it never runs npm install and never touches lockfiles, so no lockfile pathspec needed.
-  const addResult = runGit(projectRoot, ['add', '--', 'package.json', 'packages/*/package.json']);
+  // 2b. Refresh the lockfile to reflect the bumped versions.
+  //     --package-lock-only rewrites package-lock.json without touching node_modules.
+  //     Release is already an online operation (opens a PR via gh), so registry access is accepted.
+  try {
+    runNpmInstall(projectRoot);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`  Lockfile refresh failed — run \`npm install --package-lock-only\` manually and retry: ${msg}`);
+    process.exit(1);
+  }
+
+  // 3a. Stage version-bump files and the refreshed lockfile.
+  const addResult = runGit(projectRoot, ['add', '--', 'package.json', 'packages/*/package.json', 'package-lock.json']);
   if (!addResult.ok) {
     console.error(`  Failed to stage version-bump files: ${addResult.output}`);
     process.exit(1);
@@ -90,6 +104,10 @@ export function runRelease(version: string, opts: ReleaseCommandOptions = {}): v
   console.log(`  PR: ${prUrl}`);
   console.log(`  Release ${ver} pushed as ${branch}. Merge the PR, then tag the merge commit.`);
   console.log('');
+}
+
+function defaultRunNpmInstall(cwd: string): void {
+  execFileSync('npm', ['install', '--package-lock-only'], { cwd, stdio: 'inherit' });
 }
 
 function defaultRunBump(version: string, cwd: string): void {
