@@ -1,194 +1,289 @@
-# Architecture — Remove BMAD Scaffolding (epic-006)
+# Architecture — Robust Epic Finalization & Guard-Compatible Release
+
+This document covers the two epics in the breakdown:
+
+- **epic-005** — collision-free finalization, a recoverable `publish_pending` lifecycle state, and an operator recovery command.
+- **epic-006** — a guard-compatible records-only release path and documentation parity.
+
+Everything below is grounded in the current code: `EpicFinalizer` (`packages/loom-core/src/orchestrator/EpicFinalizer.ts`), the `Supervisor` (`.../orchestrator/Supervisor.ts`), the `EpicStore`/`Database` (`.../state/`), the `PolicyEngine` (`.../guardrails/PolicyEngine.ts`), the existing `EpicReconciler`, and the release tooling (`scripts/bump-versions.mjs`, `docs/operations/releasing.md`).
+
+---
 
 ## Architecture Philosophy
 
-This epic ships **zero new behavior**. It is a subtractive change: delete ~44 vendored `bmad-*` IDE-command directories from each of two folders and reconcile every dangling reference. There is no runtime to design — so the "architecture" here is a *deletion-safety discipline*: a taxonomy that tells an agent which `bmad` strings to remove, which to keep, and which it must never touch. Four constraints drive every decision below.
+Four constraints drive every decision here. Each one is a load-bearing invariant from `CLAUDE.md` or the PRD's non-functional requirements, not a preference.
 
-1. **The literal string `bmad` is not a single thing.** It appears in three disjoint classes, and only one is in scope. Treating them uniformly (blind grep-and-delete) is the dominant failure mode — it deletes the very tests that prove the removal is safe and rewrites historical records. The taxonomy in **Data Models** is the load-bearing artifact of this epic.
+1. **The guard is sacrosanct — we route around friction, never through it.** The protected-branch rule and the `forbidden_flags` (`--force`, `--force-with-lease`) in `PolicyEngine` stay exactly as strong as they are today (NFR-1, NFR-2). A non-fast-forward push is solved by *changing where we push*, not by overriding the remote. No new code path may emit a force push.
+2. **The lifecycle must not lie.** Today `failed` is overloaded: a fully gate-green epic whose push is *correctly* rejected lands in terminal `failed` (`EpicFinalizer.ts:640-648` → `Supervisor.fail()`). We add exactly one new state, `publish_pending`, and reserve `failed` for genuine infrastructure failure and `rejected` for human verdicts (NFR-3).
+3. **Additive change over migration.** The new state is introduced by *new write paths only*. No migration reclassifies an existing row (FR-8). An in-flight epic on `main`-as-it-stands keeps its current status; the schema version bumps, the data does not move.
+4. **Boring, already-proven mechanics.** We reuse what already works in this repo: `gitSafe()` for porcelain, `gh pr create` for PRs (already the finalizer's default), `scripts/bump-versions.mjs` for version bumps, and the `release/v*` branch + PR shape visible in recent history (`41b223a` merged `release/v5.1.0`). No new release framework; we codify the path the maintainer already walks by hand.
 
-2. **Subtractive, but not byte-blind.** The four product packages (`loom-core`, `loom-cli`, `loom-mcp`, `loom-web`) must come out behaviorally identical. The only permitted source edits are reconciling *names of removed skills* (one confirmed site: `contextAssembler.ts:54`). Everything else under `packages/**/src` is off-limits.
-
-3. **Green is necessary, not sufficient.** `_bmad`-runtime-hiding tests already pass and must keep passing — but a naive cleanup could *delete* them and still go green. Verification is therefore by **explicit grep gates with triage**, not by test color alone (PRD FR-7).
-
-4. **One owner per path, one PR.** Stories run as parallel agents on isolated branches; the file-ownership map (in the companion contract) and the single-PR assembly in `story-006-004` are what keep four branches from colliding on `docs/` and the epic record.
+---
 
 ## Component Diagram
 
 ```mermaid
-flowchart TB
-    subgraph InScope["IN SCOPE — remove / reconcile"]
-        direction TB
-        CL[".claude/skills/<br/>44 bmad-* + 4 loom-*"]
-        AG[".agents/skills/<br/>44 bmad-* + 1 loom-*"]
-        DOCS["docs/ tree<br/>5 files w/ bmad refs"]
-        SRC["packages/**/src<br/>1 removed-skill name<br/>(contextAssembler.ts:54)"]
-    end
+flowchart TD
+  subgraph CLI["loom-cli (usability surface)"]
+    run["loom run"]
+    publish["loom publish &lt;epic&gt;  (new — epic-005)"]
+    reconcile["loom reconcile &lt;epic&gt;  (unchanged)"]
+    release["loom release &lt;version&gt;  (new — epic-006)"]
+    status["loom status"]
+  end
 
-    subgraph Preserve["PRESERVE — must not change"]
-        direction TB
-        LOOM["loom-* commands<br/>(both folders)"]
-        SKILLS["skills/ — 5 ported<br/>adversarial-review, doc-distiller,<br/>edge-case-hunter, failure-investigator,<br/>lesson-extractor"]
-        PERS["packages/loom-core/personas/<br/>(8 personas)"]
-        GUARD["GUARD TESTS<br/>headlessPurity.ts,<br/>withHiddenBmadPaths,<br/>init.test.ts:134"]
-    end
+  subgraph Core["loom-core (orchestration engine)"]
+    sup["Supervisor"]
+    fin["EpicFinalizer"]
+    rec["EpicReconciler"]
+    pub["EpicPublisher (new)"]
+    gate["IntegrationGate (unchanged)"]
+    store["EpicStore"]
+  end
 
-    subgraph OutScope["OUT OF SCOPE — records & runtime"]
-        direction TB
-        IGN[".gitignore L12-17<br/>_bmad/ runtime decision"]
-        HIST["_bmad-output/, .loom_outputs/,<br/>epics/*.yaml, buildday/"]
-    end
+  subgraph Guard["guardrails"]
+    pol["PolicyEngine.check()"]
+  end
 
-    S1["story-006-001<br/>delete + preserve"] --> CL & AG
-    S1 -.protects.-> LOOM
-    S2["story-006-002<br/>docs reconcile"] --> DOCS
-    S3["story-006-003<br/>repo-wide sweep"] --> SRC
-    S3 -.must NOT delete.-> GUARD
-    S4["story-006-004<br/>build/test + PR"] --> Gate{{"grep gates +<br/>npm build/test"}}
-    S1 --> S2 & S3 --> S4
+  db[("sqlite: epics table")]
+  git["git / gh (gitSafe, execFileSync)"]
+  remote["GitHub remote\n(protected: main)"]
+
+  run --> sup --> fin
+  publish --> pub
+  reconcile --> rec
+  release --> git
+  status --> store
+
+  fin --> gate
+  fin --> store
+  pub --> store
+  rec --> store
+  fin --> git
+  pub --> git
+  git -. "every command checked" .-> pol
+  git --> remote
+  store --> db
+
+  fin -. "push to fresh ref\nloom/finalize/&lt;id&gt;-&lt;sha7&gt;" .-> remote
+  release -. "push release/v* branch + open PR\n(never pushes main)" .-> remote
 ```
+
+The two new seams are **`EpicPublisher`** (drives a `publish_pending` epic to `done`) and the **`loom release`** command path. The `IntegrationGate` and `PolicyEngine` are untouched in behavior.
+
+---
 
 ## Tech Stack
 
-This epic has no application stack; its "stack" is the toolchain that performs and verifies the prune.
-
 | Layer | Choice | Rationale |
 |---|---|---|
-| Deletion | `git rm -r .{claude,agents}/skills/bmad-*` | Stages removal atomically; `git status` then shows *only* deletions under skill dirs, making "loom-* untouched" trivially auditable. Boring and reversible. |
-| Reference discovery | `git grep -in bmad` (case-insensitive, line numbers) | Tracked-files-only, fast, deterministic. The single source of the reference inventory triaged in Data Models. |
-| Glob audit | `find .agents/skills .claude/skills -maxdepth 1 -name 'bmad-*'` | Empty result is the machine-checkable acceptance gate for FR-1/FR-2. |
-| Build verify | `npm run build` (workspaces) | Catches any TS reference to a deleted name across `loom-core/cli/mcp/web`. |
-| Test verify | `npm run test` (workspaces) | Proves behavior unchanged *and* that the `_bmad`-hiding guard tests still load the five ported skills. |
-| Editing | `Edit` (targeted) on docs + the one source comment | Per-line edits keep the diff legible; no `sed` sweeps that could clobber Class B/C strings. |
+| Git porcelain | Existing `gitSafe(cwd, args)` (`orchestrator/git.ts`) | Never throws, returns `{ok, output}`; the finalizer's push path already uses it. No new git abstraction. |
+| PR creation | `gh pr create --head <ref> …` via `execFileSync` (existing `openPr` injection point in `EpicFinalizer`) | Already the finalizer default; the recovery command reuses the identical call so behavior is one code path, two callers. |
+| State | `better-sqlite3`, `epics` table, `EpicStore` methods | Single source of runtime truth; the new state is one enum value + two nullable columns, applied via the existing `runMigrations()` ladder. |
+| Schema validation | `zod` `EpicStatusSchema` (`types.ts`) | One enum edit propagates type-safety across core, cli, and web. |
+| Version bump | Existing `scripts/bump-versions.mjs <version>` | Idempotent, formatting-preserving, already walks workspace globs. FR-9 mandates reuse. |
+| Release branch + PR | `git checkout -b release/v<version>` → push → `gh pr create` | Matches the `release/v5.1.0` shape already in history; rides the guard instead of fighting it. |
+| Guard | Existing `PolicyEngine.check()` | Unmodified. Tag and `release/*` pushes are *already* permitted by its refspec matching; we add tests, not rules. |
+
+---
 
 ## Data Models
 
-The central entity is **not** a runtime object — it is the classification of every `bmad`-bearing path/string. An agent's only job is to assign each hit to a class and act per its policy.
+### Epic lifecycle states (`packages/loom-core/src/types.ts`)
 
-```typescript
-// Every directory under the two IDE-command folders.
-type SkillEntry = {
-  folder: '.claude/skills' | '.agents/skills';
-  name: string;                 // e.g. "bmad-prd" | "loom-epic"
-  kind: 'bmad' | 'loom';
-  action: 'DELETE' | 'PRESERVE';  // kind==='bmad' → DELETE; kind==='loom' → PRESERVE
-};
+One value added to the existing `EpicStatusSchema` enum. It is DB-only (like `failed`), so it does **not** appear in `EpicYamlSchema` (plan-time statuses).
 
-// Observed inventory (verified on disk at planning time):
-//   .claude/skills : 44 bmad-*  + 4 loom-*  [loom-approve, loom-epic, loom-status, loom-ux-designer]
-//   .agents/skills : 44 bmad-*  + 1 loom-*  [loom-approve]   ← ASYMMETRIC: only one loom command here
-//   skills/        : 5 ported (NO bmad- prefix) — PRESERVE, out of scope
-//   personas/      : 8 files — PRESERVE, out of scope
-
-// THE taxonomy: which class is every `git grep -i bmad` hit?
-type RefClass =
-  | 'A_REMOVED_SKILL_NAME'   // names a deleted bmad-* dir → MUST reconcile/remove
-  | 'B_PROVENANCE'           // generic lineage ("BMAD originals", "BMAD-era") → default KEEP
-  | 'C_GUARD_INVARIANT'      // test/assert that enforces independence FROM bmad → MUST PRESERVE
-  | 'D_HISTORICAL_RECORD';   // planning artifact / epic title / gitignore runtime path → DO NOT EDIT
-
-type Reference = { file: string; line: number; text: string; cls: RefClass; };
-
-// Triaged inventory from the repo-wide sweep (the load-bearing table):
-const INVENTORY: Reference[] = [
-  // ── Class A: the ONLY mandatory source reconciliation ───────────────────
-  { file: 'packages/loom-core/src/worker/contextAssembler.ts', line: 54,
-    text: '...the graceful-degradation path bmad-distillator', cls: 'A_REMOVED_SKILL_NAME' },
-
-  // ── Class B: provenance — keep (optionally soften to "the planning originals") ──
-  { file: 'packages/loom-core/src/findings/LessonExtractor.ts', line: 28,
-    text: 'overriding BMAD-era schema drift', cls: 'B_PROVENANCE' },
-  { file: 'packages/loom-core/src/skills/reviewerSkills.ts', line: 11,
-    text: 'the BMAD originals emit a...', cls: 'B_PROVENANCE' },
-
-  // ── Class C: PROTECTIVE — deleting these silently weakens loom (false-green trap) ──
-  { file: 'packages/loom-cli/src/__tests__/init.test.ts', line: 134,
-    text: "assert !/bmad/i.test(content) — bundled skill must not reference bmad", cls: 'C_GUARD_INVARIANT' },
-  { file: 'packages/loom-core/test/fixtures/headlessPurity.ts', line: 0,
-    text: 'withHiddenBmadPaths() / HIDDEN_FRAGMENTS = [_bmad/scripts, _bmad/bmm/config.yaml]', cls: 'C_GUARD_INVARIANT' },
-  // + seedStory.test.ts, adversarialReview/edgeCaseHunter/lessonExtractor/registration.test.ts,
-  //   contextAssembler.test.ts — all assert ported skills load with _bmad HIDDEN. PRESERVE ALL.
-
-  // ── Class D: records & runtime — editing rewrites history ────────────────
-  { file: '.gitignore', line: 12, text: 'L12-17: _bmad/ .bmad/ runtime is bootstrap-only, not a dep', cls: 'D_HISTORICAL_RECORD' },
-  { file: 'epics/epic-006.yaml', line: 0, text: 'epic title literally is "Remove BMAD scaffolding"', cls: 'D_HISTORICAL_RECORD' },
-  // + _bmad-output/**, .loom_outputs/epic-001/**, buildday/** — planning history, DO NOT EDIT.
-];
+```ts
+export const EpicStatusSchema = z.enum([
+  'planning',
+  'planned',
+  'approved',
+  'rejected',     // human decision — unchanged
+  'in_progress',
+  'finalizing',
+  'publish_pending', // NEW: stories done + gate green, only publish remains.
+                     // Non-terminal, recoverable. Never assigned by migration.
+  'failed',       // genuine infra/runtime failure — unchanged semantics
+  'done',
+]);
 ```
 
-Note two discrepancies surfaced against the PRD and resolved here:
-- **`_bmad/` runtime ≠ `bmad-*` skills.** `_bmad/` and `.bmad/` are the gitignored vendored *runtime* (reproducible via `npx bmad-method install`, not present on disk). The Class C tests guard that the five ported skills never read it. This epic removes *skills*, not the runtime decision; `.gitignore` L12–17 stay as-is.
-- **`docs/capabilities.md` is already clean.** `git grep -i bmad -- docs/capabilities.md` returns nothing. FR-5 is therefore almost certainly a **no-op verify**, not an edit. The agent must confirm and *not invent* rows to delete.
+State transitions (only the new/changed edges shown):
+
+```mermaid
+stateDiagram-v2
+  finalizing --> done: PR opened, epic_pr_url recorded
+  finalizing --> publish_pending: pushed to finalizer ref but PR/publish failed (epic-005)
+  finalizing --> in_progress: integration gate BLOCKED (unchanged)
+  finalizing --> failed: genuine infra failure ONLY (merge/worktree/gate-run error)
+  publish_pending --> done: loom publish — opens PR, records url
+  note right of publish_pending
+    NOT in Supervisor RUNNABLE set
+    (approved, in_progress) — dispatch
+    skips it; only loom publish resolves it.
+  end note
+```
+
+### `epics` table additions (`packages/loom-core/src/state/Database.ts`)
+
+`SCHEMA_VERSION` 18 → 19. Two nullable columns added via `ALTER TABLE` in `runMigrations()`. No `UPDATE` of existing rows — additive only (FR-8).
+
+```sql
+-- migration v19 (additive; no data backfill)
+ALTER TABLE epics ADD COLUMN finalize_ref  TEXT; -- the fresh finalizer-owned ref that was pushed
+ALTER TABLE epics ADD COLUMN publish_note  TEXT; -- "work complete / publish pending" detail for status
+```
+
+`finalize_ref` is the bridge between the finalizer and the recovery command: the finalizer records *which ref it pushed*, and `loom publish` opens the PR from exactly that ref. `publish_note` carries the human reason (push rejected / remote disallowed / PR open failed).
+
+### Finalizer-owned ref naming
+
+A deterministic, collision-proof name in a namespace that rolling integration never touches (`epic/<id>` is the rolling branch; `loom/finalize/*` is finalizer-private).
+
+```
+loom/finalize/<epicId>-<integratedHead7>
+        e.g.  loom/finalize/epic-005-1a2b3c4
+```
+
+- `<integratedHead7>` = first 7 chars of the integrated epic HEAD sha.
+- **Deterministic:** same integrated tree ⇒ same name ⇒ a retry re-pushes the identical ref as a fast-forward no-op.
+- **Collision-proof:** different epics differ by `<epicId>`; a retry that changed content differs by `<integratedHead7>`, so it pushes a *brand-new* ref — a non-fast-forward is structurally impossible without ever forcing.
+
+---
 
 ## API / Interface Contracts
 
-The "seams" are the verification gates. Each is a command with an exact pass condition; `story-006-004` is green only when all hold.
+The signatures below are the seams the stories must agree on.
 
-```bash
-# GATE 1 — FR-1/FR-2: no bmad-* directory survives in either folder
-find .agents/skills .claude/skills -maxdepth 1 -name 'bmad-*'      # → MUST be empty
+### Finalizer (`EpicFinalizer.ts`)
 
-# GATE 2 — FR-3: loom-* preserved, nothing else under skill dirs touched
-git status --porcelain -- .claude/skills .agents/skills
-#   → every line is "D  …/bmad-*…"; ZERO lines mention loom-*, skills/, or personas/
+```ts
+// FinalizeResult gains one status value (currently: skipped|merged|partial|failed|gated)
+export interface FinalizeResult {
+  status: 'skipped' | 'merged' | 'partial' | 'failed' | 'gated' | 'publish_pending';
+  url?: string;
+  conflicted: string[];
+  merged: string[];
+  cleaned: string[];
+  note: string;
+}
 
-# GATE 3 — FR-4: docs reference no removed skill (Class A/B only; A must be 0)
-git grep -in bmad -- docs/                                          # → triage: 0 Class-A hits
+// New private helper — the ONLY place the ref name is computed.
+private finalizeRef(epicId: string, integratedHead: string): string;
+//   => `loom/finalize/${epicId}-${integratedHead.slice(0, 7)}`
 
-# GATE 4 — FR-6/FR-7: repo-wide sweep, triaged — Class A == 0, Class C count UNCHANGED
-git grep -in bmad -- ':!docs/' ':!.loom_outputs/' ':!_bmad-output/' ':!epics/' ':!buildday/'
-#   → remaining hits are Class B (provenance) or Class C (guards) ONLY
-
-# GATE 5 — guard-invariant survival check (the false-green tripwire)
-git grep -c 'withHiddenBmadPaths' -- packages/loom-core/test/      # → count MUST equal pre-change count
-
-# GATE 6 — FR-7: test tree names no removed skill
-git grep -in 'bmad-' -- packages/loom-core/test/ packages/loom-cli/src/__tests__/   # → empty
-
-# GATE 7 — no regression
-npm run build      # → 0 errors across loom-core/cli/mcp/web
-npm run test       # → all green, including the five ported-skill load tests
+// Push target changes from `epic/<id>` to finalizeRef(...). On a push that is
+// rejected (non-fast-forward) OR remote-disallowed OR a PR-open failure, the
+// finalizer writes publish_pending itself and returns status:'publish_pending'.
 ```
+
+### Store (`EpicStore.ts`)
+
+```ts
+// New writes — additive, mirror the existing fail()/recordPrUrl() shape.
+publishPending(id: string, finalizeRef: string, note: string): void; // status='publish_pending'
+recordFinalizeRef(id: string, ref: string): void;
+// recordPrUrl(id, url) + updateStatus(id, 'done') reused unchanged by the publisher.
+```
+
+### Supervisor (`Supervisor.ts`)
+
+```ts
+// finalizeAndGateDone() gains ONE branch BEFORE the existing failed-branch:
+//   if (fin.status === 'publish_pending') return;   // finalizer already wrote state; do NOT fail() or done()
+//   if (fin.status === 'failed') { this.epics.fail(...); return; }   // unchanged
+// RUNNABLE set { 'approved', 'in_progress' } is UNCHANGED — publish_pending is never re-dispatched.
+```
+
+### Recovery command — `loom publish <epic-id>` (new, `loom-cli/src/commands/publish.ts` → `EpicPublisher`)
+
+```ts
+export type PublishStatus = 'published' | 'noop' | 'refused' | 'failed';
+export interface PublishResult { status: PublishStatus; epicId: string; prUrl?: string; note: string; }
+
+class EpicPublisher {
+  // Refuses unless epic.status === 'publish_pending' (distinct premise from reconcile).
+  // 1. read epic.finalize_ref  2. gh pr create --head <finalize_ref>
+  // 3. ordered write in one txn: recordPrUrl → clearFinalizePhase → audit → updateStatus('done')
+  publish(epicId: string): PublishResult;
+}
+```
+
+### Release command — `loom release <version>` (new, `loom-cli/src/commands/release.ts`)
+
+```ts
+// Phase 1 (pre-merge):
+//   node scripts/bump-versions.mjs <version>
+//   git checkout -b release/v<version>
+//   git commit -am "chore(release): v<version>"
+//   git push -u origin release/v<version>        // allowed: not a protected branch
+//   gh pr create --head release/v<version> --title "chore(release): v<version>"
+// Phase 2 (post-merge, documented operator step — see ADR-6):
+//   git tag v<version> <merge-sha> && git push origin v<version>   // tag ref — guard permits
+```
+
+### Guard (`PolicyEngine.ts`) — unchanged, asserted by test
+
+`checkGit()` matches `cmd.args[2]` (the refspec destination) against `policy.git.protected_branches` globs (`main`, `master`). `release/v*` and `v<version>` tag refs do not match, so both are permitted today. `--force` / `--force-with-lease` remain blocked by the `forbidden_flags` check. **No rule is added; a regression test pins this behavior (story-006-002).**
+
+---
 
 ## Security Model
 
-The threat model here is not adversarial input; it is **agent self-harm during deletion**. Threats and controls:
+The whole point of this work is to relieve friction *without* widening the attack surface. The guard's job — stop an agent from rewriting or bypassing protected history — is preserved.
 
-| # | Threat | Blast radius | Control |
-|---|---|---|---|
-| T1 | Blind `sed`/grep-delete removes Class C guard tests; suite stays green | loom silently loses its "independent of BMAD runtime" invariant | GATE 5: assert `withHiddenBmadPaths` reference count is unchanged; ownership map forbids `story-006-003` from editing `test/fixtures/headlessPurity.ts`. |
-| T2 | Over-eager removal of a `loom-*` command or a `skills/`/`personas/` file | Breaks autonomous pipeline (the *opposite* of the PRD goal) | GATE 2: `git status` under skill dirs must show deletions only; Out-of-Scope list pins `skills/` + `personas/` as read-only. |
-| T3 | Editing `epics/epic-006.yaml`, `_bmad-output/**`, or `buildday/**` to "fix" a bmad hit | Rewrites the historical record / corrupts the epic whose title *is* BMAD removal | Class D policy = DO NOT EDIT; GATE 4 pathspec excludes these dirs from the sweep. |
-| T4 | Two parallel branches both edit a shared `docs/` file or the PR-assembly point | Merge conflict / lost edits | File-ownership map (companion contract): `story-006-002` solely owns `docs/`; `story-006-003` solely owns `packages/**/src` + test tree; `story-006-004` solely assembles the PR. |
-| T5 | Asymmetric loom set: agent assumes both folders preserve the same loom commands | Accidentally deletes `loom-epic/status/ux-designer` (present only in `.claude/skills`) | Data Models pins the per-folder loom inventory; PRESERVE acts on observed entries, not an assumed list. |
+| Threat | Existing control | Effect of this change |
+|---|---|---|
+| Worker/finalizer force-pushes over remote history | `forbidden_flags` block in `PolicyEngine.check()` | **Unchanged & untested-loosened.** New ref-naming removes the *motive* to force-push (no non-fast-forward arises) but adds no `--force` path. NFR-2 holds. |
+| Agent pushes directly to `main` | `protected_branches` block (`agents_must_use_pr`) | **Unchanged.** Release flow opens a PR to `main`; it never pushes `main`. |
+| Recovery/release command becomes a guard bypass | All git calls route through `gitSafe` → still subject to `PolicyEngine` when run as an agent | New commands issue only PR-opening, non-protected branch pushes, and tag pushes — each already permitted. Operator-run release still passes the guard. |
+| Finalizer ref namespace collides with a real branch and clobbers work | Distinct `loom/finalize/*` namespace + sha suffix | Rolling integration only ever writes `epic/<id>`; the finalizer-owned ref cannot overwrite integration work. |
+| New state mis-grants execution | `RUNNABLE = {approved, in_progress}` in `Supervisor.selectEpics()` | `publish_pending` is deliberately excluded — a recoverable epic is never silently re-run by dispatch; only the explicit `loom publish` resolves it. |
+
+Out of scope (accepted): garbage-collection of stale `loom/finalize/*` refs (PRD Out of Scope; revisit if trivial).
+
+---
 
 ## ADR Log
 
-**ADR-001 — Classify every `bmad` string before acting; never blanket-delete.**
-*Decision:* Introduce the A/B/C/D reference taxonomy and gate actions on it.
-*Context:* `git grep -i bmad` returns hits in source comments, guard tests, planning records, and `.gitignore` — far more than the 44 skill dirs.
-*Rationale:* Only Class A (a name of a *removed* skill) is genuinely dangling. The rest are provenance, protective invariants, or history.
-*Trade-off:* Per-hit human/agent judgment is slower than a `sed` sweep and demands the inventory table be right — but a sweep would delete the safety net (T1) and pass tests anyway.
+### ADR-1 — Push finalization to a fresh, finalizer-owned ref
+- **Decision:** The finalizer pushes the integrated branch to `loom/finalize/<epicId>-<integratedHead7>`, not to `epic/<id>`. The PR's `--head` uses that ref.
+- **Context:** In rolling mode the Supervisor pushes `epic/<id>` during the run; legacy mode recreates `epic/<id>` from `base_sha` at finalize. Either way the local ref can diverge from the remote, so `git push epic/<id>` is rejected non-fast-forward — and force-push is (correctly) blocked, stranding a green epic in `failed` (`EpicFinalizer.ts:640-648`).
+- **Rationale:** A ref nobody else writes cannot be non-fast-forward. The sha suffix makes the name deterministic (idempotent re-push) and collision-proof across retries and concurrent epics (FR-1, FR-2).
+- **Trade-off:** Accumulates one ref per distinct integrated state on the remote. We accept stale-ref buildup (no GC, per Out of Scope) in exchange for a structurally force-free finalize.
 
-**ADR-002 — Preserve all `_bmad`-runtime-hiding guard tests; verify by reference count, not test color.**
-*Decision:* Treat `headlessPurity.ts`, `withHiddenBmadPaths`, and the `init.test.ts:134` assertion as protected invariants; add GATE 5.
-*Context:* These tests *contain* the string `bmad` yet exist to prove loom does **not** depend on BMAD.
-*Rationale:* A green run after deleting them is a false positive — the strongest signal that the removal is safe would itself be gone.
-*Trade-off:* Carrying a count-stability gate is extra ceremony for a "just delete files" epic, but it is the only thing standing between us and a silent invariant regression.
+### ADR-2 — Introduce `publish_pending` as a new DB-only, non-terminal state
+- **Decision:** Add exactly one enum value, `publish_pending`, distinct from `failed` and `rejected`. DB-only; absent from `EpicYamlSchema`.
+- **Context:** The finalizer already has "PR-less terminal" paths that overload `finalizing` with a note (`updateStatus(id, 'finalizing', note)` at the remote-disallowed and PR-fail branches), while the push-fail path returns `failed`. The lifecycle can't truthfully say "work done, publish pending."
+- **Rationale:** A first-class state lets status surfaces label the situation honestly (FR-4, FR-5) and gives the recovery command a precise precondition to refuse on. The three publish-friction paths (push rejected, remote disallowed, PR-open failed) all converge on this one state.
+- **Trade-off:** Every surface that switches on `EpicStatus` (cli `status.ts` icons, `loom-web` union type and frontend) must learn the new value. We accept a wider blast radius now for a lifecycle that doesn't lie later. Mitigated by the `zod` enum giving compile-time coverage.
 
-**ADR-003 — `.gitignore` BMAD-runtime lines and `_bmad-output/` are out of scope.**
-*Decision:* Leave `.gitignore` L12–17 and all `_bmad-output/`/`.loom_outputs/` content untouched.
-*Context:* FR-6 says "update any config reference," but these reference the BMAD *runtime/output*, not a removed *skill*.
-*Rationale:* The runtime decision (BMAD was bootstrap-only planning, reproducible via `npx bmad-method install`) is still true and still useful documentation.
-*Trade-off:* `git grep -i bmad` will not return zero repo-wide after this epic. We accept residual provenance/history hits and define success as "zero Class-A hits," not "zero `bmad`."
+### ADR-3 — The finalizer owns the `publish_pending` write; the Supervisor must not override it
+- **Decision:** `FinalizeResult.status` gains `'publish_pending'`. The finalizer writes the state itself (via `EpicStore.publishPending`) and returns that status; `Supervisor.finalizeAndGateDone()` adds one early branch that returns without calling `fail()` or flipping `done`.
+- **Context:** The Supervisor currently maps `fin.status === 'failed'` → `epics.fail()`. Any publish friction that returns `'failed'` becomes terminal.
+- **Rationale:** Making the seam an explicit enum value (not an inferred "merged-but-no-url" condition) keeps the Supervisor branch trivial and unit-testable, and keeps the done-gate's `epic_pr_url` invariant (ADR-3 write-ordering already in the code) intact — `publish_pending` has no url, so it can never be mistaken for `done`.
+- **Trade-off:** Two components must stay in sync on the new status value. We prefer an explicit contract over the Supervisor re-deriving intent from `merged`/`url` fields.
 
-**ADR-004 — Treat `docs/capabilities.md` as verify-only unless a real hit appears.**
-*Decision:* Do not edit `capabilities.md` unless `git grep -i bmad` shows a hit there.
-*Context:* PRD FR-5 names it, but the grep currently returns nothing.
-*Rationale:* The capabilities page is a public-API-style surface; inventing rows to delete to satisfy a checklist would damage it. CLAUDE.md's "capabilities page must stay current" cuts the other way only when a *user-visible feature* changes — removing operator IDE commands arguably warrants a note, deferred to the PR body per FR-8.
-*Trade-off:* If a row does exist in a form the grep missed (e.g. "BMAD" inside a larger word), the agent must still catch it — so GATE 3 reads the file, not just the grep count.
+### ADR-4 — Recovery via a new `loom publish`, separate from `loom reconcile`
+- **Decision:** Add `loom publish <epic-id>` backed by an `EpicPublisher`. It refuses unless the epic is `publish_pending`, opens the PR from `finalize_ref`, records the url, and flips to `done` in one transaction.
+- **Context:** `EpicReconciler` already exists but answers a *different* question — "this epic's branch is already merged into `main`; record reality and mark done" (it verifies merge ancestry or a merged PR URL). A publish-pending epic is the opposite: pushed but *not yet PR'd or merged*. Reusing `reconcile` would blur two preconditions (FR-7).
+- **Rationale:** Distinct verb, distinct precondition, distinct refusal reasons. `reconcile` (gate-blocked / already-merged recovery) is left byte-for-byte unchanged. The PR-open call is the finalizer's exact `gh pr create` path, so there's one publishing implementation.
+- **Trade-off:** Two recovery commands for an operator to learn. We choose `publish` over a `reconcile --mode` flag because conflating preconditions behind one command is how the original truth-in-lifecycle bug crept in. (Naming: `publish` names the remaining action and is maximally distinct from `reconcile`; `recover` was rejected as too close to `reconcile`.)
 
-**ADR-005 — One owner per path; assemble a single PR in `story-006-004`.**
-*Decision:* `story-006-001` owns the deletions; `story-006-002` solely owns `docs/`; `story-006-003` solely owns `packages/**/src` + test tree; `story-006-004` owns build/test + PR assembly.
-*Context:* Stories run as parallel agents on isolated branches that cannot see each other (PRD: single clean PR, no split).
-*Rationale:* Disjoint ownership is what lets `002` and `003` run concurrently after `001` without conflicting, then fold into one PR.
-*Trade-off:* `002` and `003` both *observe* the deletions from `001` but neither re-performs them; this requires `001` to land first in the assembly order, serializing one dependency edge in exchange for conflict-free parallelism on the rest.
+### ADR-5 — Guard-compatible release via bump → `release/v*` branch → PR
+- **Decision:** `loom release <version>` runs `scripts/bump-versions.mjs <version>`, creates and pushes `release/v<version>`, and opens a PR to `main`. It never pushes `main` and never hand-makes a branch outside the command.
+- **Context:** The documented runbook (`docs/operations/releasing.md`) says "commit the bump on `main`, then push" — which the protected-branch guard blocks inside a loom repo. Yet history already shows `release/v5.1.0` merged via PR (`41b223a`), so the working shape exists informally.
+- **Rationale:** Codifying the branch+PR shape makes the runbook match reality (FR-9, FR-11) and rides the guard rather than asking an operator to disable it. Reuses the existing, idempotent bump script verbatim.
+- **Trade-off:** A release now requires a PR merge step (human or CI) before the tag can be cut — slightly more ceremony than a direct push. That ceremony is exactly the guarantee the guard exists to provide.
+
+### ADR-6 — Tag pushes are already permitted; pin with a test, push the tag post-merge
+- **Decision:** Do not add a guard rule for tags. Add a regression test asserting `git push origin v<version>` and `git push origin release/v*` pass `PolicyEngine.check()`, and document the post-merge `git tag … && git push origin v<version>` as a defined operator step.
+- **Context:** `checkGit()` matches the refspec destination against `protected_branches` (`main`/`master`) globs; a tag ref or `release/*` branch does not match, so both already pass. The tag can only be cut after the release PR merges, so it cannot live inside phase 1.
+- **Rationale:** The guard already does the right thing; adding rules to "allow" what is already allowed risks weakening the matcher. A test freezes the behavior so a future tightening of `protected_branches` can't silently break releases (FR-10).
+- **Trade-off:** The tag push is a separate, documented step rather than one atomic command. We accept the two-phase flow because the tag must point at the *merged* `main` commit, which doesn't exist until the human/CI merges the PR.
+
+### ADR-7 — Schema change is additive; no migration reclassifies existing rows
+- **Decision:** Bump `SCHEMA_VERSION` 18 → 19, add `finalize_ref` and `publish_note` columns via `ALTER TABLE`, and add the enum value. No `UPDATE` touches existing epics.
+- **Context:** In-flight epics persisted under v18 must not be retro-labeled into the new state (FR-8, NFR-3).
+- **Rationale:** `publish_pending` is only ever reached through the *new* finalize write paths. An existing `failed` row stays `failed`; an existing `finalizing` row stays `finalizing`. The state machine grows additively.
+- **Trade-off:** Historical epics that *were* stranded in `failed` for publish friction stay `failed` — we don't retro-correct them. Correcting history would mean inferring intent from old rows, which violates the "don't misclassify" requirement. New epics get the honest state; old ones keep their recorded (if blunt) truth.
