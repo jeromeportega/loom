@@ -1,61 +1,63 @@
-# Fleet Commander — Governance Layer for Governed Agent Fleets (PRD v2.0)
+# PRD: Remove the loom MCP Server — CLI-Only Control, Web-Only Observability
 
 ## Overview
 
-Loom's web dashboard already federates status, streams live worker output over SSE, and exposes working mutation endpoints (approve / reject / stop / retry / kill) across web, MCP, and core. What it lacks is a **governance layer** that lets one human safely supervise many concurrent epics. Fleet Commander adds that layer **on top of** the existing surfaces — extending `packages/loom-web` and supporting `loom-core`/state, never rewriting them. It delivers four pillars: a per-epic autonomy dial the Supervisor enforces, a cross-epic decision inbox, a live fleet board, and a deployable read-only public mode. With no new flags or columns set, behavior is **byte-compatible with today**.
+Loom exposes two control surfaces: the CLI (primary) and the `loom-mcp` server, which republishes the same operations as `mcp__loom` tools to Claude Code and Cursor. The second surface costs more than it returns — operator context bloat, duplicated maintenance, and a wider access/attack surface — and contradicts loom's intended positioning: **the CLI is the usability surface, loom web is the observability surface, and loom offers no MCP surface of its own.** This work retires the loom-as-a-server surface **without losing any capability**, executed in two load-bearing phases: first port every MCP-only capability to the CLI so parity holds at all times, then delete the server, its wiring, and all positioning that advertises it. Worker-facing MCP *provisioning* of approved third-party servers is explicitly retained.
 
 ## Goals
 
-| # | Goal | Success Metric |
-|---|------|----------------|
-| G-1 | Cut time-to-decision for a multi-epic operator | `GET /api/inbox` surfaces 100% of pending decisions across all registered projects in one view; inbox approves **and** rejects a plan end-to-end (asserted in a test) |
-| G-2 | Give per-epic oversight control | `autonomy_level` persists per epic and the Supervisor enforces all three modes, each covered by a passing unit test |
-| G-3 | Allow safe delegation of visibility | Enumerated-route test proves zero mutation routes succeed without the write token while every GET route serves without one |
-| G-4 | Ship with zero regression | Default (non-read-only, `manual`) behavior is unchanged; `npm run build` + `npm run test` green across all workspace packages |
+1. **No capability loss.** Every `mcp__loom` operation is reachable from the CLI. *Metric:* a parity mapping test enumerates the pre-removal `mcp__loom` tool inventory and asserts each maps to a CLI command; all seven Phase-1 capabilities are reachable from the CLI.
+2. **Singular positioning enforced.** No code, doc, or positioning advertises a loom MCP surface. *Metric:* repo search for `loom-mcp`, `loom serve`, `loom init --mcp`, `mcp__loom`, `first-class`, `primary surface`, and `two interfaces over the same engine` returns **no hits** except inside `docs/research/cursor-mcp-strictness.md` and retained worker-provisioning code paths.
+3. **Reduced surface and clean build.** The duplicated package, its tests, and its publish wiring are gone. *Metric:* `npm run build` and `npm run test` pass with `packages/loom-mcp` deleted; the mcp package is removed from the publish workflow and releasing runbook.
+4. **Worker guidance continuity.** Cursor-backend workers retain live operator guidance after the MCP read path is removed. *Metric:* live guidance is verified working through `loom pull-guidance` or the `.loom/guidance` file path before the MCP read path is deleted.
 
 ## User Stories
 
-- **US-1 (Must)** — As a fleet governor, I want a single inbox of every pending decision across all my epics and projects, so that I can act on what needs me without hunting epic-by-epic.
-- **US-2 (Must)** — As a fleet governor, I want to set autonomy per epic, so that I can run epic A hands-off while checkpointing epic B after each story.
-- **US-3 (Must)** — As a fleet governor, I want a live board aggregating my concurrent epics into cards, so that I can watch the whole fleet move at a glance.
-- **US-4 (Must)** — As a fleet governor, I want `full-auto` epics to record the same audit row and policy snapshot as a human approval, so that autonomy changes who decides, not what is recorded.
-- **US-5 (Must)** — As a read-only observer (stakeholder, teammate, or the operator on a phone), I want to watch fleet progress — status, costs, worker output — without any ability to mutate state, so that visibility can be shared without sharing control.
+- **As a loom operator,** I want every orchestrator operation available from the CLI, so that no capability is stranded in MCP and my client context stays light. *(Must)*
+- **As a cursor-backend worker agent,** I want to pull live operator guidance via a CLI command or by reading `.loom/guidance` for my story, so that guidance still works once the MCP read path is gone. *(Must)*
+- **As a loom maintainer,** I want the duplicated mcp package, its tests, and its publish/build wiring removed, so that I maintain one control surface instead of two. *(Must)*
+- **As a new loom user,** I want docs and positioning to reflect a single CLI control surface and web observability, so that I am not misled into mounting loom as an MCP server. *(Should)*
 
 ## Functional Requirements
 
-- **FR-1** — Add an `autonomy_level` column to `epics` with values `full-auto` | `checkpoint` | `manual` and default `manual`; the value persists per epic.
-- **FR-2** — `POST /api/epics/:id/autonomy` sets the autonomy level; the endpoint is token-gated and writes an audit row.
-- **FR-3** — The `loom_set_autonomy` MCP tool sets the autonomy level; token-gated, with the same audit-logging as FR-2.
-- **FR-4** — In `manual` mode the Supervisor requires explicit human approval before dispatch (current behavior).
-- **FR-5** — In `checkpoint` mode the Supervisor pauses after each story, persists a durable paused indicator that the inbox can surface, and re-dispatches on resume.
-- **FR-6** — In `full-auto` mode the Supervisor skips the human gate: auto-transition `planned`→`approved`, auto-dispatch, and run to completion.
-- **FR-7** — The `full-auto` path writes the `epic_approved` audit row **and** the policy snapshot exactly as a human approve does.
-- **FR-8** — `GET /api/inbox` federates every pending decision across registered projects, each tagged with `project_root` and a `type` of `plan_approval` | `checkpoint_resume` | `escalation`, plus the minimum fields to act: epic id, title, project, story id, age.
-- **FR-9** — The inbox view offers inline Approve/Reject, Resume/Stop, and Retry/Kill, each wired to the **existing** mutation endpoints (no duplicated mutation logic).
-- **FR-10** — `GET /api/fleet` aggregates epics into board cards carrying status, per-story states, cost roll-up (reusing `aggregateEpicCost`), and blocker count, with every story correctly attributed to its epic/project and **no cross-epic state bleed** when ≥2 epics run concurrently.
-- **FR-11** — The fleet board view renders these cards and updates live off the existing SSE `agent`/`epic` events.
-- **FR-12** — `LOOM_WEB_READONLY=1` and/or `loom web --read-only` serve GET/read routes + SSE without a token.
-- **FR-13** — In read-only mode every mutation route returns `403` without the write token, enforced by a **single centralized mutation-guard** (not per-handler copies).
-- **FR-14** — With no new flags or columns set, behavior is byte-compatible with today: autonomy defaults to `manual`, read-only is off, and the token continues to gate all of `/api/*`.
+**Phase 1 — Port first (parity port):**
+
+- **FR-1** — `loom pull-guidance <story-id>` wraps `OperatorGuidance.pullSince` (mirrors `loom_pull_guidance`). Prints new guidance as plain text by default; supports `--json`; prints a clear "no new guidance" message when empty.
+- **FR-2** — `loom project <project-root>` returns the one registered project's detail plus its latest epic (mirrors `loom_get_project`). Prints a short human summary by default (root, name, latest epic id/status/title); `--json` emits the full object.
+- **FR-3** — `loom stop --epic <epic-id>` terminates every running worker of one epic while leaving other epics running (mirrors `loom_stop_epic`). The existing no-argument `loom stop` (graceful whole-supervisor halt) is retained unchanged.
+- **FR-4** — `loom status` and `loom scan` accept a `--project <root>` flag that targets one registered project (mirrors the MCP `project` parameter).
+- **FR-5** — `loom propose` accepts `--top-lessons`, `--top-opps`, and `--json` flags (mirrors `loom_propose`).
+- **FR-6** — `loom stop` (bare and `--epic`) and `loom retry` accept an optional `--reason` flag for audit parity with MCP; when omitted, the audit log records a default CLI-source reason string.
+- **FR-7** — The cursor worker prompt is updated to pull guidance via `loom pull-guidance` or by reading `.loom/guidance` for the story directly, and the loom-server entry is no longer materialized into the cursor worktree `.cursor/mcp.json`.
+
+**Phase 2 — Remove cleanly:**
+
+- **FR-8** — Delete `packages/loom-mcp` entirely; remove the `loom serve` command and its dynamic import.
+- **FR-9** — Remove `loom init --mcp` and all loom-server `.mcp.json` generation (the `mcpConfig` module and its use in `init`), retaining third-party worker-provisioning wiring only where needed.
+- **FR-10** — Remove the `@loom-ai/mcp` (`at-loom-ai-slash-mcp`) dependency and the MCP-driven test in `loom-web`; update or delete every test referencing the mcp package across loom-core, loom-cli, and loom-web.
+- **FR-11** — Update root `package.json` build/test scripts to drop the mcp workspace; update the npm publish workflow to stop publishing the mcp package.
+- **FR-12** — Update all docs/positioning — `docs/capabilities.md` (drop MCP-as-server rows, the two-interfaces framing, `loom serve` and `loom init --mcp` entries, MCP tool listings, and first-class Claude Code/Cursor-via-MCP rows; reframe as CLI = usability, web = observability), plus `CLAUDE.md`, `README.md`, `docs/getting-started`, `docs/index.md`, and `docs/operations/releasing.md` — and scrub "mcp as a first-class citizen" / "primary surface" language repo-wide.
+
+**Cross-cutting:**
+
+- **FR-13** — A verification test/step lists the pre-removal `mcp__loom` tool inventory and asserts each tool maps to a CLI command — parity is proven, not asserted.
+- **FR-14** — Error behavior: an unknown story id (`pull-guidance`), an unregistered project root (`project`), and a nonexistent epic id (`stop --epic`) each exit non-zero with a clear one-line message — never a stack trace.
 
 ## Non-Functional Requirements
 
-- **NFR-1 (Compatibility)** — The default (no new flags/columns) code path must produce behavior identical to the current release.
-- **NFR-2 (Security/Audit)** — Every mutation is token-gated and audit-logged (CLAUDE.md invariant #5), including the new `autonomy` endpoint; `full-auto` auto-approval is held to the same audit standard as a human approval.
-- **NFR-3 (Correctness)** — Autonomy enforcement lives in the Supervisor and is unit-tested per level; the read-only guard is centralized and test-enumerated over the route table; cross-epic attribution is proven by a test with two epics' agents in the DB.
-- **NFR-4 (No rewrites)** — Reuse `EpicStore`, `AgentStore`, `Supervisor`, `AuditLog`, `ControlStore`, and `ProjectRegistry`; extend the vanilla-JS frontend and Express route table rather than replacing them.
-- **NFR-5 (Live correctness)** — The board and inbox must respect existing per-project SSE scoping; introduce a new event only if strictly needed.
-- **NFR-6 (Deployment exposure)** `[ASSUMPTION]` — A publicly tunneled read-only server still exposes worker output, costs, branch names, and PR URLs; the deploy documentation must note this sensitivity.
+- **NFR-1** — **Sequencing invariant.** No Phase 2 deletion may land before its Phase 1 CLI equivalent exists; CLI parity must be unbroken at every commit.
+- **NFR-2** — **Search-defined done-ness.** After the change, the forbidden-string searches in Goal 2 return no hits except inside `docs/research/cursor-mcp-strictness.md` and the retained worker-provisioning code paths.
 
 ## Epics
 
-This PRD is a single cohesive shipping unit — a governance layer added on top of loom's existing surfaces — and breaks into **one epic**:
+This PRD breaks into **two ordered epics**; the order is load-bearing and Epic 2 depends on Epic 1.
 
-- **epic-001 — Fleet Commander governance layer** (Must): per-epic autonomy dial (Supervisor-enforced), cross-epic decision inbox, live fleet board, and deployable read-only public mode, plus the `docs/capabilities.md` update and a full build/test pass. Covers FR-1 through FR-14.
+1. **Epic 1 — CLI Parity Port (Phase 1).** Add CLI equivalents for every MCP-only capability so parity holds before any deletion. Covers FR-1 through FR-7, FR-13, FR-14. Independently shippable: it delivers a complete CLI even before removal.
+2. **Epic 2 — Remove the loom MCP Server (Phase 2).** Delete the server, strip wiring and tests, fix build/test/publish, and scrub all positioning. Covers FR-8 through FR-12. Begins only once Epic 1 parity is verified.
 
-## Out of Scope (V1)
+## Out of Scope
 
-- **Cost *forecasting*, velocity charts, and owner/tag/deadline metadata** — this is a control surface, not an analytics product; resist as scope creep.
-- **Multi-user accounts, per-user identity, and role-based permissions (RBAC)** — the token + read-only split is the entire access model.
-- **Rewrites** of the vanilla-JS frontend or the Express server, and any duplicated mutation logic — all new views call existing mutation endpoints.
-- **Sensitivity scrubbing of streamed read-only fields** beyond a documentation note (a deeper field-level review is unspecified and deferred).
+- **Worker-facing MCP provisioning of approved third-party servers** — explicitly retained and untouched: `loom mcp add` / `loom mcp list`, `policy.mcp.registry`, the `McpRegistry` / `WorktreeMcp` / adapter modules in `packages/loom-core/src/mcp`, `CursorMcpEnforcer`, and `docs/research/cursor-mcp-strictness.md`.
+- **Cleaning stale on-disk entries.** Phase 2 only stops *new* materialization of the loom server into worktree configs and removes the generation code. No migration scrubs loom-server entries already on disk in other repos; stale entries are acceptable and logged as a follow-up.
+- **Any publishing action now.** The mcp package is dropped from future publishing by removal from the workflow and runbook only; `npm deprecate` is **not** run. Treated as a major version bump for our records only.
+- **The "loom-as-a-server" integration use case** — mounting loom itself as an MCP server inside Claude Code or Cursor — is deliberately removed and not designed for.
