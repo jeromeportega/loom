@@ -1,58 +1,55 @@
-# Per-Story Signal Ledger (Observe-Only Cost-Control Harness)
+# Trustworthy Build, Test & Integration-Gate Reliability
 
 ## Overview
 
-Loom already carries the machinery for adaptive cost control — a deterministic tier resolver (`resolveCostTier`), a tier→steps mapping (`tierSteps`), and the `policy.agents.adaptive_cost` knob — but it has never been validated against real runs. Today the cost signals are computed implicitly inside dispatch and discarded, so there is no record to audit whether a tier call was correct. This feature adds an **observe-only signal ledger**: at each story's completion it computes cheap heuristics from data loom already has, resolves the implied tier/steps with the *existing* `tier.ts` functions, and persists one `StorySignals` record per story to two sinks — an `audit_log` row and a markdown file under `.loom/signals/<story-id>.md`. The `EpicFinalizer` reads these records back to append a per-story "Build signal analysis" section to the epic PR body. Critically, **no execution path changes** — the resolver's output is recorded, not enforced. The ledger is the validation harness that must exist *before* loom can be trusted to gate on these signals.
+Loom's own dogfooding surfaced that its quality machinery — the integration gate, the build/test pipeline, the command self-description registry, and the release command — produces false signals in both directions: the gate fails sound code, dev-machine runs disagree with the gate, a new command can ship invisibly, and a release leaves the repo subtly broken. The unifying defect is that correctness is judged against *stale or derived state* instead of the *current source of truth*. This PRD covers four independently deliverable, independently verifiable fixes that make every quality check judge against current source — without weakening any guardrail.
 
 ## Goals
 
-1. **Produce per-story cost-signal evidence on real runs.** Success metric: every completed story yields exactly one `StorySignals` record in *both* sinks (`audit_log` and `.loom/signals/<story-id>.md`) with identical computed values.
-2. **Surface the known calibration gap to operators plainly.** Success metric: each record's resolved tier/steps match `resolveCostTier`/`tierSteps` for the same inputs, and the epic PR body lists them per story so the expected `heavy`-bias is visible rather than hidden.
-3. **Guarantee zero execution impact.** Success metric: no execution path (reviewer count, verify phase, skill generation) reads the ledger or changes as a result of any record, verified by regression tests, and recording occurs regardless of `policy.agents.adaptive_cost`.
-4. **Never let observation break delivery.** Success metric: a forced persistence failure (e.g. unwritable `.loom/signals`) does not block or fail story completion.
+1. **Eliminate false gate failures from stale dependencies.** A correct cross-package API addition builds green through the integration gate — zero false failures on the reproduced cross-package scenario.
+2. **Achieve dev/gate parity.** The full build + test suite passes on a long-lived working tree that previously built an older revision, matching a fresh checkout — zero failures from stale compiled tests or build-output leftovers.
+3. **Make self-description complete and honest.** 100% of registered commands resolve to a description in `describe` output (including `publish` and `release`), proven by a test that enumerates the live registry.
+4. **Make release clean and runnable.** The release command leaves the lockfile in sync with bumped versions, and a clean build yields a runnable linked command with zero manual fixes — while the gate still fails a genuine cross-story regression (guardrail integrity preserved).
 
 ## User Stories
 
-- **As a loom operator/maintainer, I want** a per-story record of the computed heuristics and the implied tier/steps **so that** I can decide whether and how to turn on adaptive gating later. *(Must)*
-- **As the epic PR reviewer, I want** a "Build signal analysis" section in the epic PR body **so that** I see recommendations and mismatches inline while reviewing the epic. *(Must)*
-- **As a maintainer, I want** over-spend mismatches flagged **so that** I can identify stories that future gating could safely downgrade. *(Should)*
+- **As a loom contributor**, I want the integration gate to pass sound code, so that a correct PR is not wrongly withheld. (Must)
+- **As a loom autonomous agent**, I want the gate to be a truthful arbiter of mergeability, so that a false failure does not stall autonomous delivery. (Must)
+- **As a contributor on a long-lived working tree**, I want build/test to agree with the gate, so that I don't chase failures that vanish in a fresh checkout. (Must)
+- **As a contributor adding a command**, I want it discovered automatically by `describe`, so that it cannot ship invisibly. (Must)
+- **As a release manager**, I want the release command to leave a clean, runnable, in-sync repo, so that no manual lockfile or executable-bit fix is needed afterward. (Should)
 
 ## Functional Requirements
 
-- **FR-1** — At each story completion, compute `HeuristicSignals`: `diff_lines` and `diff_files` for the story branch vs. the epic base; `risky_paths_touched` = changed files matching `policy.agents.risky_paths` via minimatch; `tests_green_first_try` = the first-try test result, or `null` when unavailable.
-- **FR-2** — Resolve tier and steps by calling the *existing* `resolveCostTier` and `tierSteps`. No new decision logic; no divergence from their output.
-- **FR-3** — Persist one `StorySignals` record to two sinks: an `audit_log` row and a markdown file at `.loom/signals/<story-id>.md`. Computed values MUST be identical across both sinks.
-- **FR-4** — Map field-name casing during persistence: `tierSteps` returns camelCase (`verifyPhase`, `skillGen`) while `StorySignals.steps` is snake_case (`verify_phase`, `skill_gen`). The persistence layer maps these, and a cross-sink shape test pins the mapping.
-- **FR-5** — Record **always**, independent of `policy.agents.adaptive_cost`. The ledger runs before any gating exists.
-- **FR-6** — `EpicFinalizer` reads the ledger records (never writes them) and appends a "Build signal analysis" section to the epic PR body, beside the existing integration-gate section, listing per story: the heuristics, the recommended tier and steps, and any flagged mismatches.
-- **FR-7** — Flag the over-spend mismatch: a story recommended `heavy` that then sailed through finalize with no review findings and a green gate is marked as a candidate that future gating could safely downgrade. (The under-spend direction is deliberately *not* flagged — see Out of Scope.)
-- **FR-8** — Persistence is best-effort: any failure to write either sink is swallowed and MUST never block or fail story completion.
-- **FR-9** — Update `docs/capabilities.md` to document both the new ledger files and the new epic-PR section.
+- **FR-1:** In the integration worktree, dependency packages are built in dependency order before their dependents (or the dependency install is refreshed), so a method added to `loom-core` in one story is visible to a dependent package built later in the same gate run.
+- **FR-2:** A regression test reproduces the cross-package API-addition scenario by exercising the actual worktree-and-build path (not a simplified stand-in), and fails if the gate builds dependents against a stale dependency.
+- **FR-3:** The build cleans per-package compiled output before building (or otherwise restricts the runner to tests that still exist in source), so renamed-away or deleted compiled tests under `dist/` cannot be discovered and run.
+- **FR-4:** Removal-guard tests assert that a package is absent from version control (tracked state), not from disk, so an untracked build-output leftover does not fail them.
+- **FR-5:** Manifest collection discovers a description for every command from the command sources.
+- **FR-6:** The completeness test enumerates the live command registry and asserts that every registered command resolves to a description (the inverse of checking the already-collected list).
+- **FR-7:** The existing `publish` command is wired into the manifest so `describe` lists it; `describe` returns a description for both `publish` and `release`.
+- **FR-8:** The release command refreshes and stages the lockfile so it stays in sync with the bumped package versions.
+- **FR-9:** A clean build sets the executable bit on the CLI entry, so the linked command is runnable without manual intervention.
 
 ## Non-Functional Requirements
 
-- **NFR-1 (Observe-only)** — Nothing may read the ledger to change execution. No reviewer count, verify phase, or skill-generation decision may depend on a record. This is the load-bearing constraint of the feature.
-- **NFR-2 (Logging invariant)** — Per CLAUDE.md #5, the `audit_log` row is written *before* the story result returns to the caller.
-- **NFR-3 (Run state, not artifact)** — `.loom/signals` is gitignored run state, consistent with `.loom/` as dogfood/run state; ledger files are not committed.
-- **NFR-4 (No new data collection)** — Heuristics are derived only from existing state (diff vs. epic base, minimatch against `risky_paths`, first-try test result or `null`). No new data-collection paths are introduced.
-
-## Assumptions to Confirm at the Write Site
-
-- **[ASSUMPTION]** The Supervisor/worker path at story completion has access to a first-try test result. If not, `tests_green_first_try` will systematically be `null`; the write site must confirm the signal source exists.
-- **[ASSUMPTION]** The "epic base" is a resolvable ref at story-completion time (e.g. the epic branch's merge-base). Diffing against the wrong base silently skews `diff_lines`/`diff_files`.
-- **[ASSUMPTION]** Finalize-time data exposes per-story review findings and gate status to the renderer. The over-spend flag (FR-7) depends on reading both; gate result appears epic-level today, so `EpicFinalizer` story-level granularity needs confirmation.
-- **[ASSUMPTION]** This pass does not add worker self-assessment (`SelfAssessment`) capture. Confidence therefore defaults to `low`, and the ledger documents this gap rather than closing it. The expected result is a `heavy`-biased ledger — that bias is the calibration signal being measured, not a defect to correct.
+- **NFR-1:** No guardrail is weakened — the integration gate must still fail on genuine cross-story regressions.
+- **NFR-2:** No change to user-facing CLI behavior or human help output.
+- **NFR-3:** Build/test fixes must hold on a long-lived working tree that previously built an older revision, not only in a fresh checkout.
+- **NFR-4:** POSIX target (macOS/Linux dev + CI); Windows executable-bit behavior is out of scope. No MCP server is reintroduced (worker provisioning retained).
 
 ## Epics
 
-This PRD is a single cohesive piece of work and breaks into **one epic**:
+The brief explicitly describes four parts that "are independently deliverable and independently verifiable; they share the theme but not the code paths." This is one of the rare multi-epic cases — four separable shipping units:
 
-- **Epic 1 — Observe-only per-story signal ledger**: compute heuristics, resolve tier/steps via existing `tier.ts`, persist to both sinks at story completion, render the epic-PR analysis section in `EpicFinalizer`, and document in `docs/capabilities.md`.
+1. **Trustworthy integration gate** — build dependents against freshly built dependencies in the integration worktree (FR-1, FR-2).
+2. **Clean build and test** — resilience to stale compiled output; removal-guards assert against version control (FR-3, FR-4).
+3. **Honest self-description completeness** — drive manifest collection and its completeness test from the live registry; wire in `publish` (FR-5, FR-6, FR-7).
+4. **Release and build polish** — keep the lockfile in sync and preserve the CLI executable bit (FR-8, FR-9).
 
 ## Out of Scope
 
-- **Gating / enforcement of any kind.** Nothing reads the ledger to change reviewer count, verify phases, or skill generation. This release only observes.
-- **Worker self-assessment (`SelfAssessment`) capture.** Confidence stays defaulting to `low`; closing that gap is future work.
-- **Under-spend mismatch detection.** Only the over-spend direction is flagged, because the under-spend direction is not trustworthy given the `heavy`-bias calibration gap.
-- **New data-collection paths.** Only signals derivable from existing state are computed.
-- **"Correcting" the heavy-bias.** Surfacing it plainly is the goal; tuning the heuristics is a separate, later effort informed by this ledger.
+- Any change to user-facing CLI behavior or human help output.
+- Windows executable-bit handling.
+- Reintroducing an MCP server.
+- A `docs/capabilities.md` update — **[ASSUMPTION]** this is internal hygiene with no user-visible surface change, so none is expected; confirm before merge.
