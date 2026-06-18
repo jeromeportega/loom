@@ -1,262 +1,197 @@
-# Pre-1.0 Operator-Trust Hardening — System Architecture
+# Architecture: Trustworthy Build, Test & Integration-Gate Reliability
 
 ## Architecture Philosophy
 
-This epic is a polish wave, not a build-out. The architecture is therefore disciplined by what it must *not* disturb: the v1.0 stability freeze sits one merge away. Four constraints drive every decision below.
+Every defect in this PRD has the same shape: a correctness check consults **derived or stale state** instead of the **current source of truth**. The integration gate compiles against a stale symlink target; the test runner discovers compiled tests that no longer exist in source; the `describe` manifest reads a hand-maintained list rather than the live command tree; the release leaves the lockfile and executable bit lagging the bumped source. The architecture is therefore not a redesign — it is a set of surgical re-pointings, each replacing a stale oracle with the live one. Four constraints drive every decision:
 
-1. **One shared seam per behavior, never per call site.** `validateCursorModels` is consumed by `loom doctor`, `loom epic`, and `loom run` today. The alias tier (FR-1/FR-2) lands *inside that one function* — the three call sites keep their existing three-line `if (status==='invalid') exit; else if ('unavailable') warn;` shape. We extend `CursorModelCheck`, not the call sites. The trade-off: the shape of `CursorModelCheck` becomes load-bearing for three commands at once, so its test (`CursorModels.test.ts`) is the contract, not any one command's test.
+1. **Judge against current source, never derived state.** Each fix swaps a stale input (parent-repo `dist`, leftover `dist/*.test.js`, a curated spec array, an un-refreshed lockfile) for the live one (the worktree's own build output, source-present tests, the live commander registry, the bumped versions). This is the unifying invariant.
 
-2. **Additive only — no migration, no renamed status, no new top-level command.** Per the PRD `[ASSUMPTION]`, the reserved planning row (FR-5/FR-6) reuses the *existing* `epics` columns (`status`, `planning_phase`, `title`, `user_brief`, `error`) and the *existing* `beginPlanning`/`fail` seams. Cross-epic gating (FR-9) rides on the existing `doctor` command as a flag, exactly as `--dry-run-gate` already does. The trade-off: we accept the slightly awkward overloading of `'rejected'` (a human verdict) to also carry a quality-gate verdict (FR-6), rather than minting a new status and a migration — a freeze-appropriate trade.
+2. **No guardrail may weaken (NFR-1).** Every fix that makes the gate *stop* failing sound code is paired with a proof that it *still* fails genuine regressions: the cross-package regression test (FR-2) and the registry-enumerating completeness tripwire (FR-6). A fix that cannot demonstrate the guard still bites is rejected.
 
-3. **Advisories warn; they never fail and never block.** The alias advisory (FR-2), the cross-epic overlap notice (FR-7), and the finalizer PR hint (FR-11) all print and proceed. Only two paths exit non-zero: a *confirmed* invalid model, and `loom doctor --cross-epic-gate`'s graded exit codes (FR-10). The trade-off: an operator can ignore an advisory and hit the collision later — accepted, because the alternative (blocking on a lexical heuristic) would produce false failures, the exact failure mode this epic exists to kill.
+3. **Four independently shippable units, two real cross-epic couplings.** Epics 007–010 touch disjoint code paths and merge independently. But two physical couplings exist and are designed for, not ignored: cleaning `dist/` before build (epic-008) *removes* the CLI executable bit, which is exactly why epic-010 must restore it; and an in-sync lockfile (epic-010) is what lets the worktree dependency-refresh (epic-007) run offline via `npm ci`. These are noted at every relevant seam.
 
-4. **Reuse the throwaway-worktree machinery; never mutate real branches.** The cross-epic gate (FR-9) is a *second caller* of the same `git worktree add --detach` + `finally`-remove pattern that `runGateDryRun` already owns. It does not re-implement worktree lifecycle or command execution; it composes them. The trade-off: a detached union-merge worktree answers "do these branches merge and pass *together, right now*?" — not "will they pass after rebasing onto a moved main" — which is exactly the scope FR-9 promises.
+4. **Boring, POSIX, zero new dependencies.** The toolbox is `git`, `tsc`, `npm`, `rm -rf`, and `chmod` — all already in the repo. Target is macOS/Linux dev + (currently absent) CI. No new build tool, no `tsc -b`/project-references migration, no Windows executable-bit handling, no reintroduced MCP server.
 
 ## Component Diagram
 
 ```mermaid
-flowchart TD
-  subgraph CLI["loom-cli"]
-    DOCTOR["doctor.ts<br/>(+ --cross-epic-gate)"]
-    EPIC["epic.ts<br/>runEpic"]
-    RUN["run.ts<br/>runRun"]
-    APPROVE["gate.ts<br/>runApprove (+ --run)"]
-    IDX["index.ts<br/>command wiring"]
-    CEG["doctorCrossEpicGate.ts<br/>(new)"]
-    OVL["crossEpicOverlap.ts<br/>(new advisory printer)"]
+flowchart TB
+  subgraph E7["epic-007 · Trustworthy integration gate"]
+    SUP["Supervisor.ensureIntegrationBranch"] --> IB["IntegrationBranch.ensure<br/>(.loom/integration/&lt;epic&gt;/)"]
+    IB --> PREP["worktree dep-link preflight<br/>linkWorkspaceDeps(worktreeRoot)"]
+    PREP --> BUILD["ordered build: core → web → cli<br/>resolves worktree's OWN dist"]
+    BUILD --> GATE["IntegrationGate.run → GateOutcome"]
+    REG7["regression test (FR-2)<br/>real worktree-and-build fixture"] -. exercises .-> PREP
   end
 
-  subgraph CORE["loom-core"]
-    CM["llm/cursorModels.ts<br/>validateCursorModels (3-tier)"]
-    PL["planner/Planner.ts<br/>run(brief, reservedId?)"]
-    ES["state/EpicStore.ts<br/>beginPlanning / reject / fail"]
-    CP["orchestrator/ContractOwnership.ts<br/>(new parser)"]
-    CXG["orchestrator/CrossEpicGate.ts<br/>(new union-merge gate)"]
-    GDR["orchestrator/GateDryRun.ts<br/>runGateDryRun (existing)"]
-    IG["orchestrator/IntegrationGate.ts<br/>(existing)"]
-    EF["orchestrator/EpicFinalizer.ts<br/>(+ FR-11 hint)"]
-    SC["orchestrator/SharedContract.ts<br/>(contract paths)"]
+  subgraph E8["epic-008 · Clean build and test"]
+    RBUILD["per-package build:<br/>rm -rf dist[/dist-test] && tsc"] --> RUN["node --test from dist/__tests__"]
+    GUARD["removal-guard tests<br/>git ls-files, not fs.existsSync"]
   end
 
-  DOCS[("docs/capabilities.md<br/>+ .claude/.agents skills")]
+  subgraph E9["epic-009 · Honest self-description"]
+    FACT["buildProgram(): Command<br/>(live commander registry)"] --> MAN["buildManifest(program)<br/>FAIL on unregistered"]
+    SPECS["collectSpecs() + publishSpec"] --> MAN
+    FACT --> COMP["completeness test<br/>enumerate live registry"]
+    MAN --> DESC["loom describe → JSON manifest"]
+  end
 
-  EPIC --> CM
-  RUN --> CM
-  DOCTOR --> CM
-  EPIC --> PL
-  PL --> ES
-  PL -. "reservedId" .-> ES
-  APPROVE --> OVL
-  RUN --> OVL
-  OVL --> CP
-  CP --> SC
-  DOCTOR --> CEG
-  CEG --> CXG
-  CXG --> GDR
-  GDR --> IG
-  EF --> IG
-  APPROVE -. "--run chains into" .-> RUN
-  IDX --> DOCTOR
-  IDX --> APPROVE
-  EF -. "FR-11 hint" .-> CEG
+  subgraph E10["epic-010 · Release and build polish"]
+    REL["release.ts → bump-versions.mjs"] --> LOCK["npm install --package-lock-only<br/>git add package-lock.json"]
+    CLIB["loom-cli build"] --> CHMOD["chmod +x dist/index.js, dist/loom-bench.js"]
+  end
+
+  LOCK -. "in-sync lockfile enables npm ci refresh" .-> PREP
+  RBUILD -. "clean wipes exec bit → must restore" .-> CHMOD
 ```
 
 ## Tech Stack
 
-No new technology is introduced. The whole point is to reuse what exists.
+This work introduces **no new technology**. The table records the choice made *within* the existing stack for each seam.
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| Language / runtime | TypeScript, Node.js 20+ | Repo standard; no change. |
-| CLI | `commander` | Existing; `--run` and `--cross-epic-gate` are `.option()` additions, not new commands (FR-4, FR-9). |
-| State | `better-sqlite3` (synchronous) | The synchronous insert is *why* FR-5's reservation is durable before any async refiner work — the row exists before the first `await`. |
-| Schema validation | `zod` | `EpicStatusSchema` already enumerates `'rejected'`/`'failed'`; FR-6 reuses both, adds no enum member. |
-| Subprocess | `node:child_process` `execFileSync` / `git()` helper | `validateCursorModels` already shells `cursor-agent --list-models`; the union gate uses the same `git()`/`gitSafe()` wrappers as `runGateDryRun`. |
-| Markdown parsing | Hand-rolled line scanner (no dep) | The ownership table parser (FR-8) is a defensive line/cell splitter mirroring `parseListModelsOutput`'s "skip what doesn't match, never throw" style. Adding a markdown-AST dep for one table would violate the boring-tech constraint. |
-| Tests | `node:test` + temp git repos | Existing `GateDryRun.test.ts` / `doctorDryRunGate.test.ts` pattern: real `git init` temp repos, stubbed `gate`/`--list-models`, no `cursor-agent`, no sleeps. |
+| Worktree dep resolution (FR-1) | Worktree-local workspace symlinks + ordered `tsc` (recommended) **or** `npm ci` refresh | Build order is already correct (core→web→cli); the defect is *resolution*, so the fix is local linking, not reordering. Symlink is offline/fast; `npm ci` is the heavier "refresh the install" alternative. |
+| Build cleanliness (FR-3) | `rm -rf dist && tsc` per package | No `composite`/`tsBuildInfoFile` is configured and **no `.github/workflows` CI exists**, so there is no incremental-build or cache assumption to break. `rm -rf` is POSIX and already used by the root `clean` script. |
+| Test runner | `node --test` over `dist/**/__tests__/**/*.test.js` (unchanged) | Existing runner stays; cleanliness comes from the build step, not a runner swap. |
+| Removal-guard oracle (FR-4) | `git ls-files -- <path>` | Tracked state is the source of truth for "package removed"; disk presence conflates removal with build leftovers. |
+| Manifest source (FR-5/6) | Live commander tree via `buildProgram()` factory | The registry that `loom` actually exposes is the only honest source; a hand-curated array drifts (it already dropped `publish`). |
+| Lockfile refresh (FR-8) | `npm install --package-lock-only` | Rewrites `package-lock.json` to match bumped versions without touching `node_modules` — offline, fast, deterministic. |
+| CLI exec bit (FR-9) | `chmod +x` build step (POSIX) | tsc emits `644`; a clean build drops the bit. A build-time `chmod` is the smallest fix; Windows is out of scope. |
 
 ## Data Models
 
-No DDL changes. FR-5/FR-6 operate entirely on the existing `epics` table via existing `EpicStore` methods. The relevant existing columns:
-
-```sql
--- packages/loom-core/src/state/*  (EXISTING — shown for reference, NOT a migration)
-CREATE TABLE epics (
-  id              TEXT PRIMARY KEY,   -- 'epic-007'
-  title           TEXT NOT NULL,      -- FR-5 placeholder lives here, replaced at completePlanning
-  status          TEXT NOT NULL,      -- 'planning'|'planned'|'approved'|'rejected'|'failed'|... (EpicStatusSchema)
-  planning_phase  TEXT,               -- 'analyst'|'pm'|'architect' | NULL
-  user_brief      TEXT,               -- the raw brief, set by beginPlanning
-  reason          TEXT,               -- human reject reason (updateStatus 3rd arg)
-  error           TEXT,               -- infra failure message (fail()); FR-6 gate verdict ALSO lands here
-  ...
-);
-```
-
-New in-memory shapes (no persistence):
+These are the shapes the fixes read from and write to. They are TypeScript/JSON/DDL as they exist in the repo today.
 
 ```ts
-// packages/loom-core/src/llm/cursorModels.ts — EXTENDED, additive fields only
-export interface CursorModelCheck {
-  status: 'ok' | 'invalid' | 'unavailable';   // UNCHANGED enum — alias is still 'ok'
-  validModels: string[];
-  invalidIds: string[];
-  message: string;                              // '' on exact 'ok'; advisory text on alias 'ok'
-  advisory?: boolean;                           // NEW: true only on the FR-1(b) boundary-prefix tier
+// packages/loom-cli/src/describe/schema.ts — the contract `describe` must satisfy
+interface CommandDescription {
+  name: string;            // full path, e.g. "guard check", "publish"
+  summary: string;         // → commander .description()
+  whenToUse?: string;
+  arguments: Array<{ name: string; type: string; required: boolean; description: string }>;
+  options: Array<{ /* flags, description, ... */ }>;
+  output?: { text: string };
+  examples?: Array<{ command: string; description: string }>;
+  exitCodes?: Array<{ code: number; meaning: string }>;
+  errors?: string[];
+  relationships?: { prerequisites: string[]; nextSteps: string[] };
 }
 
-// packages/loom-core/src/orchestrator/ContractOwnership.ts — NEW (FR-7/FR-8)
-export interface OwnershipEntry {
-  epicId: string;                 // 'epic-007'
-  storyId?: string;               // 'story-007-003' when the row's owner cell carries one
-  path: string;                   // repo-relative POSIX, backticks/annotations/prose stripped
+interface Manifest {
+  loomVersion: string;
+  source: 'live-commander-registry';   // the literal claim this work must make true
+  commands: CommandDescription[];       // MUST cover every node of buildProgram()
+  workflows: Workflow[];
 }
-export type OwnershipMap = OwnershipEntry[];   // one entry per (owner, path) pair
+```
 
-// packages/loom-core/src/orchestrator/CrossEpicGate.ts — NEW (FR-9/FR-10)
-export interface CrossEpicGateOutcome {
-  exitCode: 0 | 1 | 3;            // FR-10: 0 clean / 3 advisory / 1 operational
-  conflicts: Array<{ epicA: string; epicB: string; files: string[] }>;  // non-empty => exit 3, stop
-  gate?: GateOutcome;             // present only when all merges clean; ok:false => exit 3
-  worktreePath: string;
-  cleanedUp: boolean;
+```ts
+// packages/loom-core/src/orchestrator/IntegrationGate.ts — gate verdict (unchanged shape)
+interface GateOutcome {
+  passed: boolean;
+  command: string;        // the resolved test_command run in the worktree
+  exitCode: number | null;
+  amputated: boolean;     // a story merge was dropped → gate fails regardless of tests
+  output: string;         // tail of stdout+stderr
 }
+```
 
-// crossEpicOverlap advisory (FR-7) — pure, returns lines the CLI prints
-export interface Overlap { path: string; owners: Array<{ epicId: string; storyId?: string }>; }
+```yaml
+# .loom/policy.yaml — the knobs the gate honors (no schema change; behavior must hold for both)
+agents:
+  integration_branch: rolling          # IntegrationBranch worktree at .loom/integration/<epic>/
+  test_command: "npm ci && npm test"   # or "npm test"; FR-1 must make BOTH worktree-correct
+```
+
+```jsonc
+// package.json shapes the release path mutates (FR-8) and the bin shape (FR-9)
+// root + packages/*/package.json
+{ "version": "5.3.0" }                                   // bumped by scripts/bump-versions.mjs
+// packages/loom-cli/package.json
+{ "bin": { "loom": "dist/index.js", "loom-bench": "dist/loom-bench.js" } } // targets must be +x
+// package-lock.json (lockfileVersion 3, git-tracked) — MUST match bumped versions post-release
 ```
 
 ## API / Interface Contracts
 
-These are the seams independent story-agents must agree on. Signatures are exact; the worker-prompt contract (task C) restates the ownership boundaries.
+The signatures of the seams each epic introduces or changes. These are the points where a producing story and a consuming story (or the regression test) must agree.
 
 ```ts
-// ── FR-1/FR-2 · packages/loom-core/src/llm/cursorModels.ts (story-007-001) ──
-// Three-tier. Exact match → {status:'ok', message:''}. Boundary-prefix alias →
-// {status:'ok', advisory:true, message:"cursor_model \"X\" matches \"X-8\"; set the
-// explicit id …"}. Neither → {status:'invalid', …full list…}. 'unavailable' untouched.
-export function validateCursorModels(policy: Policy, cursorBin?: string): CursorModelCheck | undefined;
-// Alias rule (story-007-001 owns it): `configured` aliases `listed` IFF
-// listed.startsWith(configured + '-')  — the trailing '-' enforces the boundary so
-// 'claude-opus-4' does NOT match 'claude-opus-4-8-high'. ('claude-opus-4-8' matches
-// 'claude-opus-4-8-high'? NO — that is also '-'-boundary-prefixed, so it WOULD alias;
-// pick the SHORTEST listed alias and recommend it, or 'invalid' if zero matches.)
+// ── epic-007 ────────────────────────────────────────────────────────────────
+// New helper: makes a worktree resolve @loom-ai/* to ITS OWN freshly built dist,
+// not the parent repo's stale symlink target. Invoked by loom's own build path
+// (pre-build) AND by the FR-2 regression fixture, so the test exercises the real path.
+function linkWorkspaceDeps(worktreeRoot: string): void;
+//   creates <worktreeRoot>/node_modules/@loom-ai/{core,web} → ../../packages/{loom-core,loom-web}
+//   (equivalently: the build runs `npm ci` in the worktree when the lockfile is in sync — see ADR-1)
 
-// Call-site contract (story-007-002) — IDENTICAL at all three sites, no special-casing:
-//   if (m?.status === 'invalid') { console.error(m.message); process.exit(1); }
-//   else if (m?.status === 'unavailable' || m?.advisory) { console.warn(m.message); }
-// doctor.ts renders advisory as a 'warn' Check with required:false and stays exit 0.
+// ── epic-008 ────────────────────────────────────────────────────────────────
+// Removal-guard oracle: tracked-state absence, not disk absence.
+function isTracked(repoRoot: string, relPath: string): boolean;   // `git ls-files -- relPath` non-empty
+//   guards assert: assert.ok(!isTracked(REPO_ROOT, 'packages/loom-mcp'))
 
-// ── FR-5 · packages/loom-core/src/planner/Planner.ts (story-007-005) ──
-async run(brief: string, reservedId?: string): Promise<PlanResult>;
-// reservedId: the row runEpic already inserted via beginPlanning. When passed,
-// the planner SKIPS Planner.nextEpicId() self-allocation and adopts it as runId —
-// guaranteeing one allocation per submission. Default (undefined) = today's
-// self-allocate-then-beginPlanning behavior (MCP path, tests).
-static nextEpicId(db: Database.Database): string;   // unchanged; now the single allocator
+// ── epic-009 ────────────────────────────────────────────────────────────────
+// Refactor: index.ts stops self-parsing at module scope; exposes a pure factory.
+function buildProgram(): Command;          // registers every command, does NOT call .parse()
+// bin entry becomes: buildProgram().parse();
+function collectSpecs(): CommandDescription[];          // MUST now include publishSpec
+function buildManifest(program: Command): Manifest;     // unregistered-without-spec → THROW (was: warn)
+function enumerateRegisteredCommands(program: Command): string[];   // unchanged; now fed buildProgram()
 
-// runEpic reserves BEFORE the refiner (story-007-005):
-//   const reservedId = Planner.nextEpicId(db);
-//   new EpicStore(db).beginPlanning(reservedId, brief);  // synchronous → durable pre-await
-//   ... refiner ... planner.run(brief, reservedId)
-
-// ── FR-5 · placeholder title derivation (story-007-005) ──
-export function derivePlaceholderTitle(brief: string): string;
-// First markdown heading (/^#{1,6}\s+(.+)$/m) trimmed, else brief.slice(0,60).
-// beginPlanning keeps writing '(planning…)' for the live phase; the DERIVED title
-// is written immediately after via store.completePlanning-style title update OR a
-// new EpicStore.setTitle(id,title) seam owned by story-007-005 (see task C).
-
-// ── FR-6 · gate-rejected terminal state (story-007-006) ──
-// In runEpic, on (!verdict.pass && !force): instead of bare process.exit(1),
-//   store.reject(reservedId, `brief gate: ${verdict.quality_score}/10 — ${firstCritiqueLine}`)
-// where reject() is EpicStore.updateStatus(id,'rejected',reason)+error column, owned by 007-006.
-// On refiner/planner throw: Planner's existing catch calls epicStore.fail() → 'failed' (UNCHANGED).
-// --force: reserve before refiner, NEVER reject (force bypasses the gate verdict).
-
-// ── FR-7/FR-8 · packages/loom-core/src/orchestrator/ContractOwnership.ts (story-007-007) ──
-export function parseOwnershipMap(markdown: string, epicId: string): OwnershipMap;
-// Finds the "File & module ownership map" heading, reads the table beneath it.
-// Col 1 = owner cell (story/epic id), col 2 = path cell. Cells split on /,|·|<br>/.
-// Per path: strip surrounding backticks, strip /\([^)]*\)/ annotations ((new)/(delete)),
-// strip trailing prose after the path token, normalize to repo-relative POSIX.
-// Unparseable row → skipped, never throws (mirrors parseListModelsOutput).
-export function loadOwnershipMap(projectRoot: string, epicId: string): OwnershipMap | null;
-// Reads .loom/contract/<epic-id>.md via SharedContract path convention.
-// Returns null when the file is absent (shared_contract=off) — caller skips silently.
-
-// ── FR-7 · cross-epic overlap advisory (story-007-008) ──
-export function computeOverlaps(target: OwnershipMap, others: Map<string, OwnershipMap>): Overlap[];
-// EXACT lexical path equality only — no glob, no dirname prefixing, no semantics.
-export function renderOverlapAdvisory(overlaps: Overlap[]): string[];
-// Lines framed as "lexical path match only". Empty overlaps → []. CLI prints; never exits.
-// Wired into runApprove() AND at runRun() dispatch start (before supervisor.run()).
-
-// ── FR-9/FR-10 · packages/loom-core/src/orchestrator/CrossEpicGate.ts (story-007-009) ──
-export async function runCrossEpicGate(
-  opts: { projectRoot: string; testCommand?: string; epics?: string[]; timeoutMs?: number },
-  deps?: { gate?: Pick<IntegrationGate,'run'>; listEpicBranches?: () => string[] }
-): Promise<CrossEpicGateOutcome>;
-// 1. Resolve open epic branches: explicit opts.epics allowlist, else `git branch --list 'epic/*'`.
-//    Zero branches → throw/return exitCode 1 (operational).
-// 2. `git worktree add --detach <wt> <default-branch tip>` (reuse runGateDryRun's lifecycle).
-// 3. Sequentially `git merge --no-ff <branch>`; a conflict → record per-pair files, STOP, exit 3.
-// 4. All clean → run IntegrationGate.run() ONCE; ok:false → exit 3; ok:true → exit 0.
-// 5. ALWAYS force-remove the worktree in finally. Real branches never mutated.
-
-// ── FR-11 · packages/loom-core/src/orchestrator/EpicFinalizer.ts (story-007-009) ──
-// After recordPrUrl(epicId, prUrl), when other epic/* branches have OPEN PRs, append a
-// one-line note naming `loom doctor --cross-epic-gate`. Injectable open-PR probe for tests.
+// ── epic-010 ────────────────────────────────────────────────────────────────
+// release.ts: after bump, before the release commit —
+//   git: add `package-lock.json` to the existing pathspec
+//   shell: `npm install --package-lock-only` (refresh lock to bumped versions)
+// loom-cli build script gains a post-tsc step: chmod +x dist/index.js dist/loom-bench.js
 ```
 
-## Security Model
+## Security & Guardrail-Integrity Model
 
-This epic widens no trust boundary; it mostly *narrows* the gap between claim and behavior. Two threats are worth naming.
+The dominant risk here is not exfiltration but **false confidence** — a guard that stops biting. NFR-1 makes guardrail integrity a security property.
 
-| Threat | Surface | Control |
+| Threat | Vector | Control |
 |---|---|---|
-| Untrusted markdown in `.loom/contract/*.md` drives the parser (path traversal, ReDoS, crash) | FR-8 `parseOwnershipMap` | Parser is pure and total: every regex is anchored and linear; an unparseable row is skipped, never thrown. Output paths are normalized repo-relative POSIX and used only for **string comparison and display** — never opened, never executed. No `fs` access keyed on parsed paths. |
-| Arbitrary command execution via the union gate | FR-9 `runCrossEpicGate` | The only command run is `policy.agents.test_command`, executed via the existing `IntegrationGate` inside a throwaway detached worktree — same trust model as `loom doctor --dry-run-gate`, which is already the sole opt-in that runs it. `git` invocations use the args-array `git()` helper (no shell). Real branches are read-only inputs; all mutation is confined to the worktree removed in `finally`. |
-| Error-message leakage | FR-6 | The gate verdict written to `epics.error` is `quality_score` + the first critique line — not a stack trace; the planner-crash path keeps using `fail()` with `(err as Error).message` only, per the existing Planner contract. |
-
-No change to the policy engine, guard, worktree isolation, or push-to-protected-branch invariants.
+| Gate stops failing real regressions (false negative) | The FR-1 dep-refresh masks a genuine cross-story break by always resolving "fresh" | FR-2 regression test asserts the gate **still fails** a genuine cross-package regression, exercising the real worktree-and-build path — not a stand-in (story-007-002 AC4). |
+| A command ships invisibly again | Future command registered in `buildProgram()` but absent from `collectSpecs()` | FR-6 completeness test enumerates the **live** registry and fails if any node lacks a spec; `buildManifest` upgraded from warn→throw so the manifest build itself fails closed. |
+| Supply-chain drift on release | Lockfile lags bumped versions; `npm ci` later resolves unexpected trees | FR-8 refreshes and stages `package-lock.json` in the release commit; lockfile and source versions move atomically. |
+| Shipping a non-runnable / wrong-bit binary | Clean build emits `dist/index.js` at `644`; `npm link` yields a non-executable `loom` | FR-9 `chmod +x` on the bin targets at build time; the linked command is runnable with no manual `chmod`. |
+| Policy bypass via gate commit | `commitResolved` uses `--no-verify` | Unchanged and intentional: the gate, not a target repo's pre-commit hook, is the authoritative check. The structural policy engine (`loom guard check`) is untouched by this work. |
 
 ## ADR Log
 
-### ADR-1 — The alias tier lives in `CursorModelCheck`, not the call sites
-- **Decision:** Add an optional `advisory?: boolean` to `CursorModelCheck` and keep `status` as the unchanged three-value enum; the alias case returns `status:'ok'` with `advisory:true`.
-- **Context:** FR-1(b) wants a *fourth* outcome (pass-with-warning), but FR-2 forbids per-site special-casing across `doctor`/`epic`/`run`.
-- **Rationale:** `'ok'` already means "proceed." An advisory is "proceed *and* warn" — a flag on `'ok'`, not a new status. Each call site adds the advisory to its existing `'unavailable'` warn branch; `doctor` renders it as a `warn` Check. One function changes; three commands inherit it.
-- **Trade-off:** A consumer that switches only on `status` silently misses the advisory. Accepted: the only consumers are these three sites, all updated in story-007-002, and `CursorModels.test.ts` pins the behavior.
+### ADR-1 — Fix worktree dependency *resolution*, not build *order*
+- **Decision:** In the integration worktree, establish worktree-local `node_modules/@loom-ai/*` symlinks (or refresh the install via `npm ci`) so dependents resolve the worktree's own freshly built `dist`. Do **not** reorder the build.
+- **Context:** The root build is *already* ordered core→web→cli (`package.json`). The real defect: `.loom/integration/<epic>/` has no local `node_modules`, so `loom-cli`'s `import '@loom-ai/core'` resolves *upward* to the main repo's `node_modules/@loom-ai/core`, a symlink to `../../packages/loom-core` — the **main checkout's stale `dist`**, not the worktree's. A method added to core in story A is invisible to story B's compile.
+- **Rationale:** Re-pointing resolution at the worktree's own output is the minimal change that addresses the actual cause; ordering changes would be cargo-culting and fix nothing.
+- **Trade-off:** Symlink-and-order is fast and offline but reimplements a slice of npm's workspace linking; `npm ci` is the "boring" refresh but is slower and **depends on the lockfile being in sync (ADR-5 / epic-010)**. We recommend the symlink helper for the gate's hot path and document `npm ci` as the supported policy alternative.
 
-### ADR-2 — `'rejected'` carries the brief-gate verdict; no new status, no migration
-- **Decision:** FR-6 flips the reserved row to the **existing** `'rejected'` status with the gate verdict in the **existing** `error` column.
-- **Context:** A below-threshold brief needs a clean terminal state distinct from an infra `'failed'`, but the freeze forbids schema migration and new statuses.
-- **Rationale:** A quality-gate rejection *is* a rejection — semantically adjacent to a human reject. Reusing `'rejected'` + `error` avoids a migration and keeps `EpicStatusSchema` frozen. The crash path stays on `'failed'` via the Planner's existing catch.
-- **Trade-off:** `'rejected'` now has two provenances (human via `reason`, gate via `error`). Mitigated by FR-6's required test that no downstream consumer mishandles the non-human verdict, and by writing the verdict to `error` (not `reason`) so the two are distinguishable.
+### ADR-2 — Clean `dist/` before each build with `rm -rf dist && tsc`
+- **Decision:** Each package's `build` script removes its compiled output (`loom-core` also clears `dist-test`) before invoking `tsc`.
+- **Context:** `tsc` overwrites in place but never deletes orphans. A renamed/deleted `src/*.test.ts` leaves its `dist/*.test.js`, which `node --test $(find dist ...)` then runs — a ghost test passing or failing against code that no longer exists.
+- **Rationale:** A clean output directory makes `dist/` a faithful projection of `src/`. Verified safe: no `composite`/`tsBuildInfoFile` is set and **no `.github/workflows` CI exists**, so nothing relies on incremental output (story-008-001 AC4 satisfied by inspection).
+- **Trade-off:** Full recompile every build — slower than incremental. Acceptable: the packages are small and no incremental build was configured to begin with. This step also **wipes the CLI executable bit, mandating ADR-6.**
 
-### ADR-3 — Reserve-then-pass-id: a single allocation site
-- **Decision:** `runEpic` calls `Planner.nextEpicId(db)` and `beginPlanning` *before* the refiner, then passes that id into `planner.run(brief, reservedId)`. `Planner.run` self-allocates only when `reservedId` is absent.
-- **Context:** Today `Planner.run` both allocates (`nextEpicId`) *and* reserves (`beginPlanning`). Reserving earlier without refactoring would allocate twice and double-insert.
-- **Rationale:** Making `reservedId` an optional parameter keeps the MCP/test path (no id passed → self-allocate) byte-compatible while the CLI submission path owns allocation exactly once. The synchronous `better-sqlite3` insert means the row is durable before the first `await`, so concurrent submissions allocate in submission order (FR-5's two-run test).
-- **Trade-off:** Two callers now share responsibility for "who allocates." Documented in the signature and the contract; the default keeps the old behavior so nothing silently breaks.
+### ADR-3 — Removal-guards assert git-tracked absence, not disk absence
+- **Decision:** Removal-guard tests (`mcpWorkspaceScrub.test.ts`, `serve.test.ts`) replace `fs.existsSync('packages/loom-mcp')` with a `git ls-files -- packages/loom-mcp` emptiness check.
+- **Context:** A removed package can leave untracked build leftovers (`dist/`, `node_modules/`) on a long-lived tree. Disk-presence guards then fail even though the package is gone from version control — the dev/gate disagreement the PRD targets.
+- **Rationale:** "Removed" means "no longer tracked." Querying git is querying the source of truth; querying disk conflates removal with build residue.
+- **Trade-off:** Tests now shell out to `git` and assume execution inside a git checkout (already true for the suite). The guard still fails correctly if any `loom-mcp` file remains *tracked* (story-008-002 AC3).
 
-### ADR-4 — Cross-epic overlap is exact lexical equality, advisory-only
-- **Decision:** FR-7 compares parsed ownership paths by `===` after normalization, prints both owners, and never blocks.
-- **Context:** Real collisions are mechanical (two stories editing the same file). Semantic/glob analysis is explicitly out of scope.
-- **Rationale:** Exact-string comparison is total, fast, and false-positive-free for the case that bites (identical paths). It cannot misfire on a directory prefix or a glob, so framing it "lexical-only" is honest. A missing contract (`shared_contract=off`) is skipped, never an error.
-- **Trade-off:** Two stories touching the *same directory* via different filenames won't be flagged. Accepted: that is not a mechanical conflict, and inferring it would reintroduce the false-failure mode this epic kills.
+### ADR-4 — Drive `describe` from a `buildProgram()` factory; manifest fails closed
+- **Decision:** Refactor `index.ts` to expose `buildProgram(): Command` (registers all commands, no `.parse()`); the bin entry calls `buildProgram().parse()`. `buildManifest` enumerates that live program and **throws** (was: warns to stderr) on any registered command lacking a spec. Wire `publishSpec` into `collectSpecs()`. The completeness test enumerates `buildProgram()` instead of a spec-derived stand-in.
+- **Context:** Today `index.ts` builds the program and self-parses at module load, so it can't be enumerated in a test. `describeCompleteness.test.ts` therefore reconstructs a program *from* `collectSpecs()` — circular: both sides derive from the curated array, so a command registered in `index.ts` but missing from the array (exactly `publish`) is never caught. `buildManifest` already enumerates the live registry but only *warns*.
+- **Rationale:** Enumerating the real registry is the only check that reflects what `loom` actually exposes. Failing closed turns an ignorable warning into a build-breaking guarantee.
+- **Trade-off:** Splitting construction from parsing is a non-trivial refactor of `index.ts` and a shared seam two epic-009 stories depend on (see contract). Worth it: it is the structural fix that makes invisible commands impossible, not just unlikely.
 
-### ADR-5 — The cross-epic gate is a second caller of the throwaway-worktree pattern, on `doctor`
-- **Decision:** `--cross-epic-gate` is an option on the existing `doctor` command; `runCrossEpicGate` composes the same `git worktree add --detach` + `finally`-remove lifecycle `runGateDryRun` owns, and the same `IntegrationGate.run()`.
-- **Context:** FR-9 needs union-merge + one suite run; FR-10 needs graded exit codes; the freeze forbids a new top-level command and a re-implemented runner.
-- **Rationale:** The worktree lifecycle and command-execution semantics (timeout, kill, output tail) already exist and are tested. Reusing them means the cross-epic gate inherits all of it instead of re-deriving it, and `doctor` is where the sibling `--dry-run-gate` opt-in already lives — operators look there.
-- **Trade-off:** A detached union worktree validates "merge + pass together *now*," not against a future moved `main`. That is the scope FR-9 promises; a rebase-aware gate is deliberately out of scope.
+### ADR-5 — Refresh the lockfile with `--package-lock-only`
+- **Decision:** `release.ts` runs `npm install --package-lock-only` after the version bump and adds `package-lock.json` to the release commit's pathspec.
+- **Context:** `bump-versions.mjs` does surgical `package.json` edits and explicitly never touches the lockfile, leaving drift that a clean post-release `npm ci` would choke on.
+- **Rationale:** `--package-lock-only` rewrites the lockfile to match bumped versions without mutating `node_modules` — deterministic, fast, no network install side effects mid-release.
+- **Trade-off:** It assumes the registry is reachable to resolve metadata; a fully air-gapped release would need a vendored cache. Accepted — release is an online operation by nature (it opens a PR via `gh`).
 
-### ADR-6 — Hand-rolled, total contract parser over a markdown-AST dependency
-- **Decision:** FR-8's parser is a defensive line/cell scanner with no new dependency; unparseable rows are skipped.
-- **Context:** The ownership table is a known, narrow shape (real epics 001–006 use the `·` delimiter); a malformed row must never be fatal.
-- **Rationale:** A markdown-AST dep is heavy for one table and would still need the same cell-splitting/stripping afterward. The scanner mirrors `parseListModelsOutput`'s proven "match the shape or skip it" idiom, and fixtures lifted from the real contracts pin it.
-- **Trade-off:** Exotic markdown (nested tables, HTML beyond `<br>`) parses loosely or is skipped. Accepted: the input is loom's own generated contracts, whose format the Architect persona controls.
-
-Proceeding is task B (per-story tech notes) and task C (the shared contract). Say the word and I'll produce them — though note I'm in Ask mode, so I'm delivering these as documents in the response rather than writing any files.
+### ADR-6 — Restore the CLI executable bit with a build-time `chmod +x`
+- **Decision:** `loom-cli`'s build appends `chmod +x dist/index.js dist/loom-bench.js` after `tsc`.
+- **Context:** `tsc` emits `644`. With ADR-2's clean build, the previously-surviving `755` bit is gone, so a freshly built `dist/index.js` is non-executable and `loom` won't run after `npm link` without a manual `chmod`.
+- **Rationale:** Setting the bit at build time keeps the artifact runnable by construction and survives the clean-build step — the bit is re-derived from source intent on every build rather than checked into git and hoped to persist.
+- **Trade-off:** POSIX-only; Windows ignores the bit (explicitly out of scope, NFR-4). This ADR exists *because of* ADR-2 — the two must ship such that clean-build-then-chmod is the build order.
