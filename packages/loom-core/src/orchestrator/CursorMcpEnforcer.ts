@@ -15,9 +15,6 @@ export interface CursorEnforceResult {
   gaps: string[];
 }
 
-/** 'loom' is always protected — it is the worker's link back to the orchestrator. */
-const ALWAYS_ALLOWED = 'loom';
-
 /**
  * Wall-clock guards so a prompting or wedged `cursor-agent` can never stall
  * worktree setup. Overridable via env purely as an internal test seam (lets the
@@ -64,7 +61,7 @@ export function enforceCursorMcpAllowlist(
 ): CursorEnforceResult {
   const bin = opts.cursorBin ?? 'cursor-agent';
   const cwd = opts.worktreePath;
-  const survive = new Set([...opts.allowlist, ALWAYS_ALLOWED]);
+  const survive = new Set(opts.allowlist);
 
   let listed: string[];
   try {

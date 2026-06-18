@@ -11,7 +11,6 @@ import { EpicStore } from '../state/EpicStore.js';
 import { AuditLog } from '../state/AuditLog.js';
 import { Supervisor } from '../orchestrator/Supervisor.js';
 import { MockWorkerRunner } from '../orchestrator/MockWorkerRunner.js';
-import type { McpJsonEntry } from '../mcp/adapter.js';
 import type { Story } from '../types.js';
 
 // ─── Fake cursor-agent binary ───────────────────────────────────────────────
@@ -131,19 +130,6 @@ describe('enforceCursorMcpAllowlist', () => {
     assert.deepEqual(res.gaps, []);
   });
 
-  it("protects 'loom' even when it is absent from the passed allowlist", () => {
-    const stub = makeStub({ listOutput: listText(['loom', 'rogue']) });
-
-    const res = enforceCursorMcpAllowlist({
-      worktreePath: stub.dir,
-      allowlist: [], // loom not passed — must still survive
-      cursorBin: stub.bin,
-    });
-
-    assert.deepEqual(res.disabled, ['rogue']);
-    assert.deepEqual(readCalls(stub).map((c) => c.name), ['rogue']);
-  });
-
   it('all servers already allowlisted → zero disable calls (QA case 3)', () => {
     const stub = makeStub({ listOutput: listText(['registry-a', 'registry-b', 'loom']) });
 
@@ -232,12 +218,6 @@ describe('enforceCursorMcpAllowlist', () => {
 // The frozen call site invokes enforceCursorMcpAllowlist with the default
 // binary name, so we put a fake `cursor-agent` first on PATH for the duration
 // of the test — deterministic, and the real CLI is never touched.
-
-const LOOM_ENTRY: McpJsonEntry = {
-  command: 'node',
-  args: ['/abs/loom/index.js', 'serve'],
-  env: {},
-};
 
 let repo: string;
 let registryPath: string;
@@ -329,10 +309,10 @@ describe('Supervisor.dispatch — cursor enforcer wiring (QA case 6)', () => {
   });
 
   it('cursor-cli backend: enforcer runs and disabled/gaps land in the audit row', async () => {
-    // Fake cursor-agent on PATH: lists allowlisted jira-mcp+loom plus two
+    // Fake cursor-agent on PATH: lists allowlisted jira-mcp plus two
     // inherited servers (one of which refuses to disable → a gap).
     const stub = makeStub({
-      listOutput: listText(['jira-mcp', 'loom', 'rogue-server', 'wedged-server']),
+      listOutput: listText(['jira-mcp', 'rogue-server', 'wedged-server']),
       failServers: ['wedged-server'],
     });
     process.env.PATH = `${stub.dir}${path.delimiter}${savedPath}`;
@@ -357,7 +337,6 @@ describe('Supervisor.dispatch — cursor enforcer wiring (QA case 6)', () => {
       db,
       worker,
       maxConcurrent: 1,
-      loomServerEntry: LOOM_ENTRY,
     }).run();
 
     const row = new AuditLog(db)

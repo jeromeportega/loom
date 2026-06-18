@@ -52,12 +52,6 @@ const HTTP_SERVER = {
   ],
 };
 
-const LOOM_ENTRY: McpJsonEntry = {
-  command: 'node',
-  args: ['/abs/loom/index.js', 'serve'],
-  env: {},
-};
-
 let worktreePath: string;
 let registryPath: string;
 
@@ -138,37 +132,6 @@ describe('materializeWorktreeMcpConfig', () => {
     assert.deepEqual(res.serverNames, ['jira-mcp']);
   });
 
-  it('loomServerEntry provided → loom present in file and sorted serverNames (cursor-cli shape)', () => {
-    writeServer('jira-mcp', STDIO_SERVER);
-    const registry = new McpRegistry(registryPath);
-    const res = materializeWorktreeMcpConfig({
-      worktreePath,
-      registry,
-      loomServerEntry: LOOM_ENTRY,
-    });
-    assert.deepEqual(res.serverNames, ['jira-mcp', 'loom']);
-    const cfg = readConfig(res.configPath);
-    assert.deepEqual(cfg.mcpServers.loom, LOOM_ENTRY);
-  });
-
-  it('loomServerEntry omitted → loom absent (claude-code shape)', () => {
-    writeServer('jira-mcp', STDIO_SERVER);
-    const registry = new McpRegistry(registryPath);
-    const res = materializeWorktreeMcpConfig({ worktreePath, registry });
-    assert.ok(!res.serverNames.includes('loom'));
-    assert.equal(readConfig(res.configPath).mcpServers.loom, undefined);
-  });
-
-  it('loom-only config when registry is null but loom entry given', () => {
-    const res = materializeWorktreeMcpConfig({
-      worktreePath,
-      registry: null,
-      loomServerEntry: LOOM_ENTRY,
-    });
-    assert.deepEqual(res.serverNames, ['loom']);
-    assert.deepEqual(readConfig(res.configPath).mcpServers, { loom: LOOM_ENTRY });
-  });
-
   it('overwrites (never merges) a stale .cursor/mcp.json and is idempotent', () => {
     // Pre-seed a stale config with a server NOT in the registry.
     const cursorDir = path.join(worktreePath, '.cursor');
@@ -197,12 +160,8 @@ describe('materializeWorktreeMcpConfig', () => {
     writeServer('alpha', { name: 'alpha', description: '', packages: STDIO_SERVER.packages });
     writeServer('mike', { name: 'mike', description: '', packages: STDIO_SERVER.packages });
     const registry = new McpRegistry(registryPath);
-    const res = materializeWorktreeMcpConfig({
-      worktreePath,
-      registry,
-      loomServerEntry: LOOM_ENTRY,
-    });
-    assert.deepEqual(res.serverNames, ['alpha', 'loom', 'mike', 'zeta']);
+    const res = materializeWorktreeMcpConfig({ worktreePath, registry });
+    assert.deepEqual(res.serverNames, ['alpha', 'mike', 'zeta']);
   });
 
   it('registry round-trip: a server added to the registry appears on the next materialize', () => {
@@ -321,7 +280,7 @@ describe('Supervisor.dispatch — worker MCP materialization', () => {
     await new Supervisor({ projectRoot: repo, db, worker, maxConcurrent: 1 }).run();
 
     assert.ok(existedAtRun, 'config must exist before the worker runs');
-    // No registry + claude-code backend → zero non-loom servers, no loom.
+    // No registry + claude-code backend → zero servers.
     assert.deepEqual(contentAtRun?.mcpServers, {});
 
     const row = new AuditLog(db)
@@ -331,47 +290,8 @@ describe('Supervisor.dispatch — worker MCP materialization', () => {
     const detail = JSON.parse(row!.detail!) as Record<string, unknown>;
     assert.deepEqual(detail.servers, []);
     assert.equal(detail.backend, 'claude-code');
-    assert.equal(detail.loomServerIncluded, false);
+    assert.equal('loomServerIncluded' in detail, false, 'loomServerIncluded must not appear in audit row');
     assert.equal(detail.configPath, path.join('.cursor', 'mcp.json'));
-  });
-
-  it('materializes registry servers + loom for the cursor-cli backend', async () => {
-    // Point policy at a registry checkout with one server, cursor-cli backend.
-    writeServer('jira-mcp', STDIO_SERVER);
-    writePolicy({
-      agents: { worker_backend: 'cursor-cli' },
-      mcp: { registry: registryPath },
-    });
-    seedEpic('epic-001', [story('story-001-001')]);
-    const db = openDatabase(path.join(repo, '.loom'));
-
-    let contentAtRun: { mcpServers: Record<string, McpJsonEntry> } | undefined;
-    const worker = new MockWorkerRunner((a) => {
-      contentAtRun = readConfig(path.join(a.worktreePath, '.cursor', 'mcp.json'));
-      return { status: 'done', commitCount: 1, summary: 'ok', logTail: '' };
-    });
-
-    await new Supervisor({
-      projectRoot: repo,
-      db,
-      worker,
-      maxConcurrent: 1,
-      loomServerEntry: LOOM_ENTRY,
-    }).run();
-
-    assert.deepEqual(Object.keys(contentAtRun!.mcpServers).sort(), ['jira-mcp', 'loom']);
-    assert.deepEqual(contentAtRun!.mcpServers.loom, LOOM_ENTRY);
-
-    const row = new AuditLog(db)
-      .getByStory('story-001-001')
-      .find((r) => r.action === 'worker_mcp_servers');
-    const detail = JSON.parse(row!.detail!) as Record<string, unknown>;
-    assert.deepEqual(detail.servers, ['jira-mcp', 'loom']);
-    assert.equal(detail.backend, 'cursor-cli');
-    assert.equal(detail.loomServerIncluded, true);
-    // Cursor backend records the (stubbed) enforcer result.
-    assert.deepEqual(detail.disabledServers, []);
-    assert.deepEqual(detail.gaps, []);
   });
 
   it('cursor-cli without loomServerEntry → loom absent, third-party retained (story-002-005 AC#2+#3)', async () => {
@@ -424,7 +344,6 @@ describe('Supervisor.dispatch — worker MCP materialization', () => {
       .getByStory('story-001-001')
       .find((r) => r.action === 'worker_mcp_servers');
     const detail = JSON.parse(row!.detail!) as Record<string, unknown>;
-    assert.equal(detail.loomServerIncluded, false, 'audit row must record loomServerIncluded=false');
     assert.deepEqual(detail.servers, ['jira-mcp']);
   });
 });
