@@ -6,6 +6,9 @@ import path from 'node:path';
 import {
   parseOwnershipMap,
   loadOwnershipMap,
+  normalizePath,
+  computeOverlaps,
+  renderOverlapAdvisory,
   type OwnershipMap,
 } from '../ContractOwnership.js';
 
@@ -274,5 +277,173 @@ describe('parseOwnershipMap — security: no fs access keyed on parsed paths', (
       'packages/loom-core/src/orchestrator/ContractOwnership.ts',
       'does/not/exist/anywhere.ts',
     ]));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isPathLike gate — tested via the exported normalizePath
+// ---------------------------------------------------------------------------
+
+describe('normalizePath — isPathLike TRUE (path-shaped tokens are kept) [AC1][AC2]', () => {
+  // Tokens with a path separator or known source-file extension must survive.
+  it('keeps tokens with a path separator', () => {
+    assert.equal(normalizePath('src/foo.ts'), 'src/foo.ts');
+    assert.equal(normalizePath('a/b'), 'a/b');
+    assert.equal(normalizePath('packages/loom-core/src/orchestrator/ContractOwnership.ts'),
+      'packages/loom-core/src/orchestrator/ContractOwnership.ts');
+  });
+
+  it('makes extensionless root files detectable via a leading ./', () => {
+    // ./Makefile carries a '/' that survives the gate; the ./ is stripped for storage.
+    assert.equal(normalizePath('./Makefile'), 'Makefile');
+  });
+
+  it('keeps every known extension — ts/tsx', () => {
+    assert.equal(normalizePath('foo.ts'), 'foo.ts');
+    assert.equal(normalizePath('foo.tsx'), 'foo.tsx');
+    assert.equal(normalizePath('Foo.TS'), 'Foo.TS'); // case-insensitive
+  });
+
+  it('keeps every known extension — js/jsx/mjs/cjs', () => {
+    assert.equal(normalizePath('foo.js'), 'foo.js');
+    assert.equal(normalizePath('foo.jsx'), 'foo.jsx');
+    assert.equal(normalizePath('foo.mjs'), 'foo.mjs');
+    assert.equal(normalizePath('foo.cjs'), 'foo.cjs');
+  });
+
+  it('keeps every known extension — json/md/yaml/yml', () => {
+    assert.equal(normalizePath('config.json'), 'config.json');
+    assert.equal(normalizePath('x.md'), 'x.md');
+    assert.equal(normalizePath('config.yaml'), 'config.yaml');
+    assert.equal(normalizePath('config.yml'), 'config.yml');
+  });
+
+  it('keeps every known extension — sql/sh/css/html', () => {
+    assert.equal(normalizePath('schema.sql'), 'schema.sql');
+    assert.equal(normalizePath('install.sh'), 'install.sh');
+    assert.equal(normalizePath('styles.css'), 'styles.css');
+    assert.equal(normalizePath('index.html'), 'index.html');
+  });
+
+  it('non-existent paths still pass — existence is not a gate [AC2]', () => {
+    assert.equal(normalizePath('does/not/exist/yet.ts'), 'does/not/exist/yet.ts');
+    assert.equal(normalizePath('future-epic/new-feature.ts'), 'future-epic/new-feature.ts');
+  });
+});
+
+describe('normalizePath — isPathLike FALSE (non-path tokens are excluded) [AC1]', () => {
+  // Bare words, extensionless names, and code fragments must all return ''.
+  it('excludes bare words with no extension or separator', () => {
+    assert.equal(normalizePath('computeOverlaps'), '');
+    assert.equal(normalizePath('loom'), '');
+    assert.equal(normalizePath('LICENSE'), '');
+  });
+
+  it('excludes extensionless root filenames (no leading ./)', () => {
+    assert.equal(normalizePath('Makefile'), '');
+    assert.equal(normalizePath('Dockerfile'), '');
+  });
+
+  it('excludes code fragments', () => {
+    // foo() — parens stripped by annotation regex, leaving bare "foo"
+    assert.equal(normalizePath('foo()'), '');
+    // if(!x) — parens stripped, leaving bare "if"
+    assert.equal(normalizePath('if(!x)'), '');
+    // ${VAR} — no separator, no known extension
+    assert.equal(normalizePath('${VAR}'), '');
+  });
+
+  it('existing pure-punctuation rejection still holds', () => {
+    assert.equal(normalizePath('(delete)'), '');
+    assert.equal(normalizePath(''), '');
+    assert.equal(normalizePath('---'), '');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression fixture — false bare-word entries now produce zero results [AC4]
+// ---------------------------------------------------------------------------
+
+describe('regression fixture — no false bare-word or code-fragment entries [AC4][AC5]', () => {
+  // A realistic planning input that previously produced false entries
+  // (bare words and code fragments in the path column).
+  const regressionMd =
+    '## File & module ownership map\n' +
+    '| Story | Owns |\n' +
+    '| --- | --- |\n' +
+    // Row mixing bare words, code fragments, and one real path:
+    '| story-007-001 | computeOverlaps · loom · Makefile · foo() · ${VAR} · packages/loom-core/src/real.ts |\n';
+
+  it('produces zero non-path entries from a contract with bare words and code fragments [AC4]', () => {
+    const map = parseOwnershipMap(regressionMd, 'epic-007');
+    // Every entry in the map must be a genuine path (has / or known extension).
+    const nonPath = map.filter(
+      (e) => !e.path.includes('/') && !/\.(ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|sql|sh|css|html)$/i.test(e.path)
+    );
+    assert.equal(nonPath.length, 0, `Expected 0 non-path entries, got: ${JSON.stringify(nonPath)}`);
+    // The previously-false bare words must be absent.
+    assert.ok(!map.some((e) => e.path === 'computeOverlaps'), 'computeOverlaps must not appear');
+    assert.ok(!map.some((e) => e.path === 'loom'), 'loom must not appear');
+    assert.ok(!map.some((e) => e.path === 'Makefile'), 'Makefile must not appear');
+    assert.ok(!map.some((e) => e.path === 'foo'), 'foo must not appear');
+  });
+
+  it('still reports a genuinely shared path-shaped file — advisory must not go dark [AC5]', () => {
+    // Two epics each own the same real path; computeOverlaps must surface it.
+    const targetMd =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n' +
+      '| --- | --- |\n' +
+      '| story-007-001 | packages/loom-core/src/real.ts |\n';
+    const otherMd =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n' +
+      '| --- | --- |\n' +
+      '| story-008-001 | packages/loom-core/src/real.ts |\n';
+
+    const target = parseOwnershipMap(targetMd, 'epic-007');
+    const others = new Map([['epic-008', parseOwnershipMap(otherMd, 'epic-008')]]);
+    const overlaps = computeOverlaps(target, others);
+
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].path, 'packages/loom-core/src/real.ts');
+    assert.ok(overlaps[0].owners.length >= 2, 'shared path must have >= 2 owners');
+
+    const advisory = renderOverlapAdvisory(overlaps);
+    assert.ok(Array.isArray(advisory), 'renderOverlapAdvisory must return string[]');
+    assert.ok(advisory.length > 0, 'advisory must not be empty for a real overlap');
+    assert.ok(
+      advisory.some((line) => line.includes('packages/loom-core/src/real.ts')),
+      'advisory output must contain the shared path'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Advisory-only: renderOverlapAdvisory never throws or blocks [AC3]
+// ---------------------------------------------------------------------------
+
+describe('advisory-only: renderOverlapAdvisory returns strings and never blocks [AC3]', () => {
+  it('returns an empty array when there are no overlaps', () => {
+    const result = renderOverlapAdvisory([]);
+    assert.deepEqual(result, []);
+  });
+
+  it('returns string[] for overlaps without throwing or exiting', () => {
+    const overlaps = [
+      { path: 'src/shared.ts', owners: [{ epicId: 'epic-001', storyId: 'story-001-001' }, { epicId: 'epic-002' }] },
+    ];
+    let result: string[];
+    assert.doesNotThrow(() => {
+      result = renderOverlapAdvisory(overlaps);
+    });
+    assert.ok(Array.isArray(result!));
+    assert.ok(result!.every((line) => typeof line === 'string'));
+    assert.ok(result!.some((line) => line.includes('src/shared.ts')));
+    // The advisory copy must frame this as non-blocking.
+    assert.ok(
+      result!.some((line) => line.toLowerCase().includes('advisory') || line.toLowerCase().includes('not a conflict')),
+      'advisory output must include non-blocking framing'
+    );
   });
 });
