@@ -20,13 +20,11 @@ work in isolated git worktrees. Every action is policy-gated and
 audit-logged. You stay in control via two human touchpoints: the brief
 and the plan approval.
 
-Two interfaces over the same engine:
+One interface over the engine:
 
 - **CLI (primary)** — drive loom by running `loom …` commands; every read
   command supports `--json`. Each invocation loads fresh, so there is no
   persistent server to watch or to silently run stale code after an upgrade.
-- **MCP (optional)** — `loom serve` exposes the same operations as tools for
-  Claude Code / Cursor. Opt in with `loom init --mcp`; no longer the default.
 
 ---
 
@@ -214,7 +212,6 @@ operator-facing `loom` CLI.
 
 | Capability | How to use | Notes |
 |---|---|---|
-| **MCP server (optional)** | `loom serve` / `loom init --mcp` | Stdio MCP transport exposing the same operations as tools. **Opt-in** — `loom init` no longer writes `.mcp.json` by default; pass `--mcp` (Claude Code) or `--cursor` (Cursor) to wire it. A long-lived `loom serve` loads `dist` once at startup, so it can run stale code after an upgrade — the CLI is the primary surface; prefer running `loom` commands directly. |
 | **Provision approved MCP servers for workers** | `loom mcp add <name>` / `policy.mcp.registry` | **Exclusive allowlist — this is a behavior change.** A worker now sees *exactly* the servers in `policy.mcp.registry` and nothing else: claude-code workers get the registry servers only (enforced structurally via `--strict-mcp-config --mcp-config <worktree>/.cursor/mcp.json`), and cursor-cli workers get the registry servers only — the loom self-server is **not** injected into cursor worktrees. Cursor workers read operator guidance via `loom pull-guidance <story-id>` or by reading `.loom/guidance/<story-id>.md` directly (routed off MCP; see `loom pull-guidance`). **Operator-facing break: servers inherited from your personal `~/.cursor/mcp.json` no longer load in worker sessions.** A worker that used to rely on a globally-configured server will no longer see it — **migrate by registering it explicitly with `loom mcp add <name>`** so it lands in the worktree allowlist. cursor-cli enforcement is best-effort, not structural: `cursor-agent` has no `claude`-style strict flag, so loom enumerates the visible servers per worktree and headlessly disables every non-allowlisted one (per-project, durable, never touching your global config), recording any it cannot disable — plus the inherent setup→spawn race window — in the `worker_mcp_servers` audit row. That residual strictness gap and the out-of-scope upstream `--strict-mcp-config`-equivalent ask are documented in [`docs/research/cursor-mcp-strictness.md`](research/cursor-mcp-strictness.md). |
 | **First-class Claude Code support** | Automatic via `.mcp.json` | Tools surface as `mcp__loom__*` in Claude Code. |
 | **First-class Cursor support** | Automatic via `.cursor/mcp.json` | Same tools available to Cursor's chat / background agents. |

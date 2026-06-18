@@ -48,7 +48,7 @@ describe('loom serve removal (story-003-001)', () => {
     assert.ok(status !== 0, `Expected non-zero exit for unknown command "serve", got ${status}`);
     const combined = stdout + stderr;
     assert.ok(
-      !combined.includes('Error:') || !combined.includes('at '),
+      !combined.includes('\n    at '),
       'Expected no stack trace in output'
     );
   });
@@ -67,7 +67,7 @@ describe('loom serve removal (story-003-001)', () => {
   });
 
   it('packages/loom-mcp directory no longer exists', () => {
-    const mcpPkg = path.resolve(__dirname, '../../../../../loom-mcp');
+    const mcpPkg = path.resolve(__dirname, '../../../loom-mcp');
     assert.ok(
       !fs.existsSync(mcpPkg),
       `Expected packages/loom-mcp to be deleted, but it still exists at ${mcpPkg}`
