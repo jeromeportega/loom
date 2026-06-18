@@ -41,6 +41,8 @@ beforeEach(() => {
   gitc(['config', 'user.email', 'test@loom.dev']);
   gitc(['config', 'user.name', 'Loom Test']);
   gitc(['config', 'commit.gpgsign', 'false']);
+  // node_modules/ is gitignored in real repos; ensure() creates symlinks there.
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules/\n');
   fs.writeFileSync(path.join(repo, 'README.md'), '# test\n');
   gitc(['add', '.']);
   gitc(['commit', '-q', '-m', 'initial']);
