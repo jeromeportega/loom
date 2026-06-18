@@ -16,7 +16,7 @@
   "files": ["dist"],
   "engines": { "node": ">=20" },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc && chmod +x dist/index.js dist/loom-bench.js",
     "test": "node --test $(find dist -path '*__tests__*' -name '*.test.js')",
     "dev": "tsc --watch"
   },
