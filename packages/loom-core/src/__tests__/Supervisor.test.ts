@@ -2602,9 +2602,9 @@ describe('Supervisor — finalizeAndGateDone: publish_pending routing (story-005
     assert.equal(epic?.status, 'publish_pending', 'epic must land in publish_pending');
     assert.equal(epic?.finalize_ref, 'loom/finalize/epic-001-abc1234', 'finalize_ref must be recorded');
     assert.match(epic?.publish_note ?? '', /non-fast-forward/, 'publish_note must be recorded');
-    // fail() sets status='failed' and writes an error field; neither must happen.
-    assert.notEqual(epic?.status, 'failed', 'fail() must NOT be called on publish_pending');
-    assert.notEqual(epic?.status, 'done', 'done must NOT be set on publish_pending');
+    // publishPending() must clear finalize_phase — the epic must not be stranded
+    // with an active finalize_phase alongside publish_pending status.
+    assert.equal(epic?.finalize_phase ?? null, null, 'finalize_phase must be cleared on publish_pending');
     assert.equal(epic?.error ?? null, null, 'error must not be set by fail()');
   });
 
