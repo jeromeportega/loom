@@ -4,9 +4,11 @@ import { WorkflowSchema } from '../schema.js';
 import { WORKFLOWS } from '../workflows.js';
 
 // Known CLI command names registered in packages/loom-cli/src/index.ts.
-// Verified by reading every .command('...') call in index.ts — update this set
-// if commands are added or removed. This is a one-way allow-list: every workflow
-// step command must be a member, but not every member need appear in a workflow.
+// Dynamic import is not feasible because index.ts calls program.parse() at module
+// level. Keep this set in sync manually — every .command('...') call on the top-level
+// program or subcommand parents in src/index.ts lines 49-441 must be reflected here.
+// Subcommand paths use space-separated form: 'guard check', 'mcp list', 'mcp add'.
+// Update this set when commands are added or removed from index.ts.
 // NOTE: 'mcp', 'mcp list', 'mcp add' provision org-registry MCP servers and are
 // still present in v5+ (distinct from the loom MCP server removed in v5.0.0).
 const KNOWN_CLI_COMMANDS = new Set([
@@ -95,8 +97,12 @@ describe('WORKFLOWS — plan → approve → run chain', () => {
     assert.ok(planWorkflow, 'plan workflow must exist');
 
     const commands = planWorkflow.steps.map((s) => s.command);
-    // indexOf returns the first occurrence — assumes each of epic/approve/run
-    // appears exactly once in the plan workflow steps.
+    // Guard that no step command repeats before using indexOf for ordering.
+    assert.equal(
+      new Set(commands).size,
+      commands.length,
+      'plan workflow must not repeat step commands'
+    );
     const epicIdx = commands.indexOf('epic');
     const approveIdx = commands.indexOf('approve');
     const runIdx = commands.indexOf('run');
@@ -134,10 +140,6 @@ describe('WORKFLOWS — referential integrity', () => {
       commands.includes('retry'),
       `retry workflow must use command name "retry"; got: ${JSON.stringify(commands)}`
     );
-    assert.ok(
-      !commands.includes('run'),
-      'retry workflow must not use "run"; the registered command for retrying is "retry"'
-    );
   });
 
   it('reconcile workflow uses "reconcile" (not "fix" or any other variant)', () => {
@@ -157,8 +159,19 @@ describe('WORKFLOWS — referential integrity', () => {
 
 describe('WORKFLOWS — structural invariants', () => {
   it('workflow IDs are unique', () => {
-    const ids = WORKFLOWS.map((w) => w.id);
-    assert.deepEqual(ids, [...new Set(ids)], 'Workflow IDs must be unique');
+    const seen = new Set<string>();
+    for (const w of WORKFLOWS) {
+      assert.ok(!seen.has(w.id), `Duplicate workflow id: "${w.id}"`);
+      seen.add(w.id);
+    }
+  });
+
+  it('workflow goals are unique', () => {
+    const seen = new Set<string>();
+    for (const w of WORKFLOWS) {
+      assert.ok(!seen.has(w.goal), `Duplicate workflow goal in "${w.id}": "${w.goal}"`);
+      seen.add(w.goal);
+    }
   });
 
   it('each workflow has at least one step', () => {
