@@ -2586,7 +2586,7 @@ describe('Supervisor — finalizeAndGateDone: publish_pending routing (story-005
     } as unknown as EpicFinalizer;
   }
 
-  it('publish_pending result: epic lands in publish_pending, not failed or done [AC1]', async () => {
+  it('publish_pending result: epic lands in publish_pending, not failed or done; Supervisor does NOT call fail() [AC1]', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
     const db = openDatabase(path.join(repo, '.loom'));
 
@@ -2602,25 +2602,9 @@ describe('Supervisor — finalizeAndGateDone: publish_pending routing (story-005
     assert.equal(epic?.status, 'publish_pending', 'epic must land in publish_pending');
     assert.equal(epic?.finalize_ref, 'loom/finalize/epic-001-abc1234', 'finalize_ref must be recorded');
     assert.match(epic?.publish_note ?? '', /non-fast-forward/, 'publish_note must be recorded');
-  });
-
-  it('publish_pending result: Supervisor does NOT call fail() [AC1]', async () => {
-    seedEpic('epic-001', [story('story-001-001')]);
-    const db = openDatabase(path.join(repo, '.loom'));
-
-    await new Supervisor({
-      projectRoot: repo,
-      db,
-      worker: committingWorker(),
-      maxConcurrent: 1,
-      epicFinalizer: fakePublishPendingFinalizer(db),
-    }).run();
-
-    const epic = new EpicStore(db).get('epic-001');
-    // fail() sets status='failed' and clears finalize_phase; neither happened.
+    // fail() sets status='failed' and writes an error field; neither must happen.
     assert.notEqual(epic?.status, 'failed', 'fail() must NOT be called on publish_pending');
     assert.notEqual(epic?.status, 'done', 'done must NOT be set on publish_pending');
-    // fail() writes an error field; a publish_pending epic must have no error set.
     assert.equal(epic?.error ?? null, null, 'error must not be set by fail()');
   });
 
@@ -2704,16 +2688,18 @@ describe('Supervisor — finalizeAndGateDone: publish_pending routing (story-005
     assert.equal(worker2.assignments.length, 0, 'no stories dispatched for a publish_pending epic');
   });
 
-  it('no force-push flag appears in git args during publish_pending transition [AC3]', async () => {
-    // The Supervisor itself issues no git commands in finalizeAndGateDone when
-    // publish_pending is returned — the early-return fires before any git call.
-    // This test confirms the Supervisor branch is clean: the epic status changes
-    // to publish_pending and the run completes without any force-push attempt.
+  it('no force-push attempted during publish_pending transition [AC3]', async () => {
+    // AC3 guarantee: the Supervisor issues NO git commands at all on the
+    // publish_pending branch — the early-return fires before any git call could
+    // run. Force-push prevention at the push layer is verified in the
+    // EpicFinalizer unit tests (EpicFinalizerLifecycle.test.ts).
+    //
+    // This test confirms the Supervisor-side invariant: after a publish_pending
+    // result the epic is in the recoverable state and the run completed cleanly
+    // without the Supervisor attempting any git operations of its own.
     seedEpic('epic-001', [story('story-001-001')]);
     const db = openDatabase(path.join(repo, '.loom'));
 
-    // Count git operations by wrapping the worker — a force push in the
-    // Supervisor branch (not the finalizer) would show up in `git log --all`.
     const refsBefore = execFileSync('git', ['for-each-ref', '--format=%(refname)'], {
       cwd: repo,
       encoding: 'utf8',
@@ -2727,21 +2713,23 @@ describe('Supervisor — finalizeAndGateDone: publish_pending routing (story-005
       epicFinalizer: fakePublishPendingFinalizer(db),
     }).run();
 
-    // The loom/finalize/* ref is written by fakePublishPendingFinalizer (store
-    // only, not git), so the local ref list must be unchanged by the Supervisor.
+    // The Supervisor's publish_pending branch issues no git commands, so the
+    // only new refs are the worker's story branch — no loom/finalize/* git
+    // push, no epic/<id> push, and no force-flag ref.
     const refsAfter = execFileSync('git', ['for-each-ref', '--format=%(refname)'], {
       cwd: repo,
       encoding: 'utf8',
     }).trim();
-
-    // The only refs created are story/story-001-001 and potentially epic/... —
-    // none of them should include '--force' (a push flag, not a ref name, but
-    // we assert the git ref namespace has no surprising changes).
     const newRefs = refsAfter
       .split('\n')
       .filter((r) => r && !refsBefore.split('\n').includes(r));
-    const noForcePush = !newRefs.some((r) => r.includes('force') || r.includes('FORCE'));
-    assert.ok(noForcePush, `unexpected force-push refs: ${newRefs.join(', ')}`);
+
+    // The Supervisor must not have pushed any loom/finalize or epic refs —
+    // those belong exclusively to the finalizer and publisher respectively.
+    const supervisorPushed = newRefs.some(
+      (r) => r.startsWith('refs/heads/loom/finalize/') || r.startsWith('refs/heads/epic/')
+    );
+    assert.ok(!supervisorPushed, `Supervisor must not push refs on publish_pending; found: ${newRefs.join(', ')}`);
 
     assert.equal(new EpicStore(db).get('epic-001')?.status, 'publish_pending');
   });

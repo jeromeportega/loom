@@ -640,7 +640,16 @@ export class Supervisor {
       return;
     }
 
-    if (fin.status === 'publish_pending') return; // finalizer already wrote state — do NOT fail() or done()
+    if (fin.status === 'publish_pending') {
+      this.audit.record({
+        agent_id: undefined,
+        action: 'epic_publish_pending',
+        command: epicId,
+        allowed: true,
+        detail: { note: fin.note },
+      });
+      return; // finalizer already wrote state — do NOT fail() or done()
+    }
 
     if (fin.status === 'failed') {
       // ADR-2: a finalize failure is a terminal infra failure. Record the
