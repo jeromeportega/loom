@@ -149,7 +149,7 @@ loom/
 │   │   │   └── types.ts         # Shared interfaces (AgentStatus, PolicyResult, etc.)
 │   │   └── package.json
 │   │
-│   ├── loom-cli/               # CLI entry point (loom command)
+│   └── loom-cli/               # CLI entry point (loom command)
 │   │   ├── src/
 │   │   │   ├── commands/
 │   │   │   │   ├── init.ts      # loom init
@@ -161,18 +161,6 @@ loom/
 │   │   │   ├── templates/       # CLAUDE.md, policy.yaml, mcp.json templates
 │   │   │   └── index.ts
 │   │   └── package.json
-│   │
-│   └── loom-mcp/               # MCP server (loom serve / npx loom-mcp)
-│       ├── src/
-│       │   ├── server.ts        # MCP server setup, tool registration
-│       │   └── tools/           # One file per MCP tool
-│       │       ├── startEpic.ts
-│       │       ├── approveplan.ts
-│       │       ├── getStatus.ts
-│       │       ├── auditLog.ts
-│       │       ├── listSkills.ts
-│       │       └── policyCheck.ts
-│       └── package.json
 │
 ├── skills/                      # Built-in loom skills (agentskills.io format)
 │   ├── loom-guardrails/        # Guardrail policy summary for agents

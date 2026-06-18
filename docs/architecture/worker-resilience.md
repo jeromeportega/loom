@@ -135,7 +135,7 @@ hazards make the naive path unsafe, both now closed.
 
 ### Per-epic dispatch lease (`LeaseStore`)
 
-The MCP server (`loom serve`), the web dashboard, and `loom run` can all
+The web dashboard and `loom run` can both
 dispatch. Without coordination, two of them could dispatch the *same* epic's
 stories into the *same* idempotent worktree at once. `Supervisor.run()` now
 acquires a `loom_lease` row (`packages/loom-core/src/state/LeaseStore.ts`)
