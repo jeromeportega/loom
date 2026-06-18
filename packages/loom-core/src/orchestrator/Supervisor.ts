@@ -223,6 +223,14 @@ export interface SupervisorOptions {
    * sleeps. Has no effect for the claude-code backend.
    */
   spawnStagger?: SpawnStagger;
+  /**
+   * The requested model id for worker agents (epic-013). Written to agents.model
+   * at dispatch time (phase 1 — requested model). The ClaudeCodeWorker upgrades
+   * this to the actual executed model via WorkerResult.model once the system/init
+   * stream event arrives (phase 2 — executed model). Backends that don't emit
+   * system/init (cursor-cli) keep the requested value as the final record.
+   */
+  workerModel?: string;
 }
 
 export interface SupervisorResult {
@@ -1435,6 +1443,11 @@ export class Supervisor {
       branch_name: wt.branch,
       started_at: new Date().toISOString(),
     });
+    // Phase 1 — record requested model at dispatch time (epic-013). The
+    // system/init stream event (phase 2) upgrades this to executed model.
+    if (this.opts.workerModel) {
+      this.agents.setModel(task.agentId, this.opts.workerModel);
+    }
     this.audit.record({
       agent_id: task.agentId,
       action: 'dispatch',
@@ -2082,6 +2095,10 @@ export class Supervisor {
         cost_usd: result.usage.costUsd,
         request_count: result.usage.requestCount,
       });
+    }
+    // Phase 2 — upgrade to executed model from system/init stream event (epic-013).
+    if (result.model) {
+      this.agents.setModel(task.agentId, result.model);
     }
     if (result.budgetExhausted) {
       this.audit.record({

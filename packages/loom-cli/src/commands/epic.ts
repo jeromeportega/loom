@@ -224,6 +224,8 @@ export async function runEpic(
   console.log(`  Architecture:  ${rel(projectRoot, result.architecturePath)}`);
   console.log('');
   for (const epicId of result.epicIds) {
+    // Record the planning model for observability (epic-013).
+    store.setPlannerModel(epicId, modelFor(policy, 'planning'));
     console.log(`  ${epicId}`);
   }
   console.log('');

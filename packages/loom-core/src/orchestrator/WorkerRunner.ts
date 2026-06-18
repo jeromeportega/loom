@@ -215,6 +215,14 @@ export interface WorkerResult {
    * by the signal ledger (and, later, the cost-tier gating).
    */
   selfAssessment?: SelfAssessment;
+  /**
+   * Executed model id from the worker's system/init stream event (epic-013).
+   * Set when the backend emits a system/init line with a model field; absent
+   * for backends that do not (cursor-cli) or when the worker dies before init.
+   * The Supervisor writes this to agents.model, upgrading the requested-model
+   * value written at agent-create time.
+   */
+  model?: string;
 }
 
 /**

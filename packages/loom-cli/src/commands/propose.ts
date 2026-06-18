@@ -125,6 +125,11 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
     }
 
     if (result.ok) {
+      // Record planning model for observability (epic-013). `model` is '' on
+      // the test seam path where llm is null, so guard before writing.
+      if (model) {
+        epicStore.setPlannerModel(result.epicId, model);
+      }
       if (opts.json) {
         console.log(JSON.stringify({ ok: true, epicId: result.epicId }));
         return;

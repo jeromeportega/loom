@@ -451,6 +451,11 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     refreshIntegratorPolicy: () => ({
       testCommand: PolicyEngine.load(loomDir).policyData.agents.test_command,
     }),
+    // Requested worker model for agents.model phase-1 attribution (epic-013).
+    workerModel:
+      policy.agents.worker_backend === 'cursor-cli'
+        ? policy.agents.cursor_model
+        : policy.agents.model,
   });
 
   const target = epicIds.length > 0 ? epicIds.join(', ') : 'all approved epics';

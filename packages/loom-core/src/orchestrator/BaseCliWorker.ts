@@ -294,6 +294,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
     assistantText?: string;
     usage?: WorkerUsage;
     traces?: Array<{ kind: string; subject?: string; rationale: string }>;
+    /** Executed model id from the system/init event (epic-013, story-013-002). */
+    model?: string;
   } {
     return { humanText: line, assistantText: line };
   }
@@ -452,6 +454,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
       budgetExhausted?: boolean;
       attemptClass: AttemptClass;
       signature?: InfraSignature;
+      /** Executed model id from the system/init event (epic-013). */
+      model?: string;
     }
   > {
     const { clock, jitter } = this.createInfraRetrySources();
@@ -507,6 +511,9 @@ export abstract class BaseCliWorker implements WorkerRunner {
     // counted once downstream.
     const proc = await this.spawnWithInfraRetry(assignment, prompt);
     let logTail = tail(proc.output, LOG_TAIL_CHARS);
+    // Executed model id from the implement spawn's system/init event (epic-013).
+    // Propagated to WorkerResult so the Supervisor can upgrade agents.model.
+    const executedModel = proc.model;
 
     // Parse the worker's self-assessment marker before any early return.
     // Prefer the decoded assistant text — a stream-json backend's raw `output`
@@ -518,7 +525,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
       : undefined;
 
     const implementFailure = this.terminalFailureResult(assignment, proc, logTail);
-    if (implementFailure) return implementFailure;
+    if (implementFailure) return { ...implementFailure, ...(executedModel ? { model: executedModel } : {}) };
 
     const commitCount = this.countCommits(assignment);
     if (commitCount === 0) {
@@ -548,6 +555,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
           logTail,
           ...(this.accumulatedUsage ? { usage: this.accumulatedUsage } : {}),
           ...(selfAssessment ? { selfAssessment } : {}),
+          ...(executedModel ? { model: executedModel } : {}),
         };
       }
       return {
@@ -556,6 +564,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
         summary: `Worker exited with code ${proc.code} and made no commits.`,
         logTail,
         ...(this.accumulatedUsage ? { usage: this.accumulatedUsage } : {}),
+        ...(executedModel ? { model: executedModel } : {}),
       };
     }
 
@@ -581,7 +590,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
       const verifyProc = await this.spawnAgent(assignment, verifyPrompt);
       logTail = tail(verifyProc.output, LOG_TAIL_CHARS);
       const verifyFailure = this.terminalFailureResult(assignment, verifyProc, logTail);
-      if (verifyFailure) return verifyFailure;
+      if (verifyFailure) return { ...verifyFailure, ...(executedModel ? { model: executedModel } : {}) };
       this.checkpointUncommitted(assignment, 'verify-phase');
       assignment.onPhaseBoundary?.({
         phase: 'verify',
@@ -604,6 +613,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
       review,
       ...(this.accumulatedUsage ? { usage: this.accumulatedUsage } : {}),
       ...(selfAssessment ? { selfAssessment } : {}),
+      ...(executedModel ? { model: executedModel } : {}),
     };
   }
 
@@ -1004,6 +1014,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
        * path even when its bare outcome wouldn't otherwise classify as infra.
        */
       suspendDetected?: boolean;
+      /** Executed model id from the system/init stream event (epic-013). */
+      model?: string;
     }
   > {
     const { worktreePath: cwd, onOutput, onPid, onTrace } = assignment;
@@ -1035,6 +1047,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
       // re-arm from resume); the flag lets `spawnWithInfraRetry` route a worker
       // that DID die around the sleep through the shared infra-retry path.
       let suspendDetected = false;
+      // Executed model id from the system/init stream event (epic-013).
+      let executedModel: string | undefined;
       let settled = false;
       // Loudness gate (story-006-002 / ADR-2): set the instant the child emits
       // its first stdout/stderr byte. A worker that spoke and then exited
@@ -1129,6 +1143,10 @@ export abstract class BaseCliWorker implements WorkerRunner {
               onTrace(t);
             }
           }
+          // Capture the executed model id from the system/init event (epic-013).
+          if (parsed.model !== undefined && executedModel === undefined) {
+            executedModel = parsed.model;
+          }
           // Streaming-input backends keep stdin open until the agent
           // emits its terminal event. Closing stdin tells the held-open
           // session to flush + exit (otherwise the subprocess would
@@ -1172,6 +1190,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
           spawnError: err.message,
           producedOutput,
           suspendDetected,
+          model: executedModel,
         });
       });
       child.on('close', (code) => {
@@ -1195,7 +1214,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
         closeStdinIfOpen();
         channel.close();
         onPid?.(null);
-        resolve({ code, output, assistantText: assistantText || undefined, timedOut, timeoutReason, budgetExhausted, producedOutput, suspendDetected });
+        resolve({ code, output, assistantText: assistantText || undefined, timedOut, timeoutReason, budgetExhausted, producedOutput, suspendDetected, model: executedModel });
       });
 
       // Initial prompt write. `formatInitialPrompt` is identity for
