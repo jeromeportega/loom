@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runInit } from './commands/init.js';
@@ -28,6 +28,8 @@ import { runTraces } from './commands/traces.js';
 import { runAudit } from './commands/audit.js';
 import { runAutonomy } from './commands/autonomy.js';
 import { runProjects } from './commands/projects.js';
+import { runPullGuidance } from './commands/pullGuidance.js';
+import { runProject } from './commands/project.js';
 
 // Read the version from this package's package.json at runtime so
 // `loom --version` stays automatically in sync with the published
@@ -117,6 +119,7 @@ program
   .option('--all', 'Aggregate status across every registered loom project')
   .option('--archived', 'Include archived runs (hidden by default)')
   .option('--json', 'Emit a machine-readable JSON payload (one row per story, retries under history[])')
+  .option('--project <root>', 'Target the named registered project (absolute path)')
   .action(
     (opts: {
       watch?: boolean;
@@ -124,6 +127,7 @@ program
       all?: boolean;
       archived?: boolean;
       json?: boolean;
+      project?: string;
     }) => {
       runStatus({
         watch: opts.watch,
@@ -131,6 +135,7 @@ program
         all: opts.all,
         archived: opts.archived,
         json: opts.json,
+        project: opts.project,
       });
     }
   );
@@ -217,8 +222,9 @@ program
     '--clean',
     'Tear down the story\'s worktree + branch (and those stacked on it) so it re-runs from scratch instead of resuming'
   )
-  .action(async (storyId: string, opts: { clean?: boolean }) => {
-    await runRetry(storyId, { clean: opts.clean });
+  .option('--reason <text>', 'Optional explanation recorded with the retry in the audit log')
+  .action(async (storyId: string, opts: { clean?: boolean; reason?: string }) => {
+    await runRetry(storyId, { clean: opts.clean, reason: opts.reason });
   });
 
 // ─── loom web ───────────────────────────────────────────────────────────────
@@ -235,10 +241,12 @@ program
 // ─── loom stop ──────────────────────────────────────────────────────────────
 program
   .command('stop')
-  .description('Halt the supervisor (no args), or SIGTERM specific worker(s) by story id')
+  .description('Halt the supervisor (no args), SIGTERM specific worker(s) by story id, or stop all workers in one epic with --epic')
   .argument('[story-ids...]', 'Story ids to stop individually; omit to halt the whole run')
-  .action((storyIds: string[]) => {
-    runStop(storyIds);
+  .option('--epic <epic-id>', 'Stop every running worker in this epic only (leaves other epics running)')
+  .option('--reason <text>', 'Optional explanation recorded in the audit log (defaults to "cli")')
+  .action((storyIds: string[], opts: { epic?: string; reason?: string }) => {
+    runStop(storyIds, opts);
   });
 
 // ─── loom guide ─────────────────────────────────────────────────────────────
@@ -352,6 +360,26 @@ program
     runProjects({ json: opts.json });
   });
 
+// ─── loom pull-guidance ──────────────────────────────────────────────────────
+program
+  .command('pull-guidance')
+  .description('Print new operator guidance for a story since the last pull (worker read path)')
+  .argument('<story-id>', 'Story id (e.g. story-001-003)')
+  .option('--json', 'Emit JSON: { content, has_more }')
+  .action((storyId: string, opts: { json?: boolean }) => {
+    runPullGuidance(storyId, { json: opts.json });
+  });
+
+// ─── loom project ─────────────────────────────────────────────────────────────
+program
+  .command('project')
+  .description('Show a registered project and its latest epic')
+  .argument('<project-root>', 'Absolute or relative path to the project root')
+  .option('--json', 'Emit JSON: { project, latest_epic? }')
+  .action((projectRoot: string, opts: { json?: boolean }) => {
+    runProject(projectRoot, { json: opts.json });
+  });
+
 // ─── loom mcp ───────────────────────────────────────────────────────────────
 const mcp = program
   .command('mcp')
@@ -377,8 +405,9 @@ program
   .command('scan')
   .description('Run signal scanners and produce a ranked opportunity board (one LLM call)')
   .option('--json', 'Emit structured JSON output')
-  .action(async (opts: { json?: boolean }) => {
-    await runScanCommand({ json: opts.json });
+  .option('--project <root>', 'Target the named registered project (absolute path)')
+  .action(async (opts: { json?: boolean; project?: string }) => {
+    await runScanCommand({ json: opts.json, project: opts.project });
   });
 
 // ─── loom opportunities ─────────────────────────────────────────────────────
@@ -394,8 +423,21 @@ program
 program
   .command('propose')
   .description('Propose the next epic from top-ranked lessons + open opportunities (one LLM call)')
-  .action(async () => {
-    await runPropose();
+  .option('--top-lessons <n>', 'Number of top lessons to include in the proposal', (v: string) => {
+    if (!/^\d+$/.test(v.trim())) throw new InvalidArgumentError('Must be a positive integer');
+    const n = parseInt(v, 10);
+    if (n < 1) throw new InvalidArgumentError('Must be a positive integer');
+    return n;
+  })
+  .option('--top-opps <n>', 'Number of top opportunities to include in the proposal', (v: string) => {
+    if (!/^\d+$/.test(v.trim())) throw new InvalidArgumentError('Must be a positive integer');
+    const n = parseInt(v, 10);
+    if (n < 1) throw new InvalidArgumentError('Must be a positive integer');
+    return n;
+  })
+  .option('--json', 'Emit machine-readable JSON output ({ ok, epicId? } or { ok, critique })')
+  .action(async (opts: { topLessons?: number; topOpps?: number; json?: boolean }) => {
+    await runPropose({ topLessons: opts.topLessons, topOpps: opts.topOpps, json: opts.json });
   });
 
 // ─── loom serve ─────────────────────────────────────────────────────────────

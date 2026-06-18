@@ -22,7 +22,7 @@ import {
   validateCursorModels,
   registerReviewerSkills,
 } from '@loom-ai/core';
-import type { WorkerEvent, SkillEvent, McpJsonEntry } from '@loom-ai/core';
+import type { WorkerEvent, SkillEvent } from '@loom-ai/core';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
 import { printOverlapAdvisory } from '../crossEpicOverlap.js';
 
@@ -401,22 +401,9 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     });
   }
 
-  // loom's own MCP server entry, threaded into worker worktree configs by the
-  // Supervisor — but only for the cursor-cli backend (ADR-3). Only loom-cli
-  // knows where the loom executable lives (`process.argv[1]`, resolving even
-  // through the npm bin symlink), so core never computes this (ADR-5). It is
-  // built unconditionally here; the per-backend include decision is the
-  // Supervisor's (claude-code workers get registry servers only).
-  const loomServerEntry: McpJsonEntry = {
-    command: 'node',
-    args: [process.argv[1], 'serve'],
-    env: {},
-  };
-
   const supervisor = new Supervisor({
     projectRoot,
     db,
-    loomServerEntry,
     worker: createWorker({
       backend: policy.agents.worker_backend,
       allowedRemotes: policy.git.allowed_remotes,

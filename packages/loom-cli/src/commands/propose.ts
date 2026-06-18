@@ -27,6 +27,12 @@ export interface ProposeOptions {
   _db?: Database.Database;
   /** Test seam — override project root (bypasses process.cwd()). */
   _projectRoot?: string;
+  /** Number of top lessons to include (mirrors loom_propose top_lessons). */
+  topLessons?: number;
+  /** Number of top opportunities to include (mirrors loom_propose top_opps). */
+  topOpps?: number;
+  /** Emit machine-readable JSON output instead of human text. */
+  json?: boolean;
 }
 
 /**
@@ -57,7 +63,8 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
   } else {
     if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
       console.error('loom is not initialized in this directory. Run `loom init` first.');
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     // Single policy load — reused for both DB setup and LLM creation.
     const policy = PolicyEngine.load(loomDir).policyData;
@@ -71,7 +78,7 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
       } catch (err) {
         db.close();
         console.error((err as Error).message);
-        process.exit(1);
+        process.exitCode = 1;
         return;
       }
     }
@@ -92,28 +99,35 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
       opts._planner ??
       new Planner({ projectRoot, llm: llm!, model, db });
 
-    if (!opts._refiner) {
+    if (!opts._refiner && !opts.json) {
       console.log('\n  Proposing next epic — ranking lessons + opportunities…\n');
     }
 
     let result;
     try {
-      result = await proposeNextEpic({
-        lessonStore,
-        opportunityStore,
-        refiner,
-        planner,
-        epicStore,
-        audit,
-        minBriefQualityScore,
-      });
+      result = await proposeNextEpic(
+        {
+          lessonStore,
+          opportunityStore,
+          refiner,
+          planner,
+          epicStore,
+          audit,
+          minBriefQualityScore,
+        },
+        { topLessons: opts.topLessons, topOpps: opts.topOpps }
+      );
     } catch (err) {
       console.error('\n  Proposal failed:', (err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
       return;
     }
 
     if (result.ok) {
+      if (opts.json) {
+        console.log(JSON.stringify({ ok: true, epicId: result.epicId }));
+        return;
+      }
       console.log(`  Proposed epic: ${result.epicId}`);
       console.log('');
       console.log('  Review the plan, then:');
@@ -121,6 +135,11 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
       console.log(`    loom reject  ${result.epicId}  reject it`);
       console.log('');
     } else {
+      if (opts.json) {
+        console.log(JSON.stringify({ ok: false, critique: result.critique }));
+        process.exitCode = 1;
+        return;
+      }
       console.error('  Proposal did not pass the brief quality gate.');
       console.error(`  Score: ${result.critique.quality_score}/10`);
       const c = result.critique.critique;
@@ -140,7 +159,8 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
           console.error(`    • ${q}`);
         }
       }
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   } finally {
     if (ownDb && db) db.close();
