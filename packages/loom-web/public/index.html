@@ -431,6 +431,7 @@
             <td>
               <span class="agent-status ${a.status}" data-status="${esc(a.id)}">${esc(a.status)}</span>
               ${a.stall_reason ? `<span class="stall-badge" title="Worker approaching/hitting its ${esc(a.stall_reason)} deadline">⚠ ${esc(a.stall_reason)}</span>` : ''}
+              <div style="color:#8b949e;font-size:11px;margin-top:2px;">${esc(a.model ?? 'unknown')}</div>
               ${a.worktree_path ? `<div class="worktree" title="${esc(a.worktree_path)}"><code>${esc(a.branch_name ?? a.worktree_path)}</code></div>` : ''}
               ${a.status === 'running' ? `
                 <div class="row-actions" style="margin-top:6px;">
