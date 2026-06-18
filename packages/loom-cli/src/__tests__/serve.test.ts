@@ -12,9 +12,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import fs from 'node:fs';
+import { isTracked } from './helpers/git.js';
 
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
+// __dirname = packages/loom-cli/dist/__tests__
+const REPO_ROOT = path.resolve(__dirname, '../../../..');
 
 function loom(args: string[]): { stdout: string; stderr: string; status: number } {
   const result = spawnSync(process.execPath, [LOOM_CLI, ...args], {
@@ -66,11 +68,10 @@ describe('loom serve removal (story-003-001)', () => {
     assert.equal(status, 0, '--version should exit 0 — dangling @loom-ai/mcp import would throw');
   });
 
-  it('packages/loom-mcp directory no longer exists', () => {
-    const mcpPkg = path.resolve(__dirname, '../../../loom-mcp');
+  it('packages/loom-mcp is no longer tracked in version control (ADR-3)', () => {
     assert.ok(
-      !fs.existsSync(mcpPkg),
-      `Expected packages/loom-mcp to be deleted, but it still exists at ${mcpPkg}`
+      !isTracked(REPO_ROOT, 'packages/loom-mcp'),
+      'Expected packages/loom-mcp to have no tracked files in git'
     );
   });
 });
