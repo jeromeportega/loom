@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BaseCliWorker, type CliWorkerOptions } from './BaseCliWorker.js';
+import { BaseCliWorker, mergeWorkerUsage, type CliWorkerOptions } from './BaseCliWorker.js';
 import type { WorkerAssignment, WorkerUsage } from './WorkerRunner.js';
 import {
   type WorkerInputChannel,
@@ -52,6 +52,14 @@ const DEFAULT_ARGS = [
 export class ClaudeCodeWorker extends BaseCliWorker {
   private bin: string;
   private args: string[];
+  /**
+   * Running sum of token usage across all `assistant` events in the current
+   * stream. `assistant` events carry per-turn deltas (not cumulative), so we
+   * accumulate here and return the running total so `applySessionUsage`'s
+   * REPLACE semantics are correct. Reset on `system/init` (fresh spawn) and
+   * consumed + reset on `result` (end of spawn).
+   */
+  private streamUsageAccum: WorkerUsage | undefined = undefined;
 
   constructor(opts: ClaudeCodeWorkerOptions = {}) {
     super(opts);
@@ -193,25 +201,30 @@ export class ClaudeCodeWorker extends BaseCliWorker {
     const type = typeof obj.type === 'string' ? obj.type : '';
 
     if (type === 'result') {
-      const usage = parseUsage(obj.usage);
       const cost = typeof obj.total_cost_usd === 'number' ? obj.total_cost_usd : undefined;
+      // num_turns is the real turn count emitted by the claude stream-json result event.
+      const numTurns = typeof obj.num_turns === 'number' ? obj.num_turns : undefined;
       const resultText = typeof obj.result === 'string' ? obj.result.trim() : '';
-      const human = resultText ? `(result) ${truncate(resultText, 200)}` : undefined;
-      // Attribute 1 LLM session/request to this worker spawn. Claude
-      // stream-json doesn't expose an internal request count, so this is the
-      // session-level estimate; it's still the right grain for budgeting and
-      // a per-request-billed cursor backend would override with the real
-      // count from its JSON output.
-      const usageWithCount = usage
+
+      // streamUsageAccum is the cumulative sum of all assistant-event deltas seen
+      // in this stream — the authoritative token total. result.usage carries only
+      // the FINAL TURN's delta (under-counts multi-turn sessions). Fall back to
+      // result.usage only when no assistant events were received (single-turn or
+      // partial stream).
+      const finalAccum = this.streamUsageAccum;
+      this.streamUsageAccum = undefined;
+      const tokenBase = finalAccum ?? parseUsage(obj.usage);
+
+      const usage = tokenBase
         ? {
-            ...usage,
-            requestCount: 1,
+            ...tokenBase,
             ...(cost !== undefined ? { costUsd: cost } : {}),
+            ...(numTurns !== undefined ? { requestCount: numTurns } : {}),
           }
         : undefined;
       return {
-        ...(human ? { humanText: human } : {}),
-        ...(usageWithCount ? { usage: usageWithCount } : {}),
+        ...(resultText ? { humanText: `(result) ${truncate(resultText, 200)}` } : {}),
+        ...(usage ? { usage } : {}),
       };
     }
 
@@ -248,19 +261,30 @@ export class ClaudeCodeWorker extends BaseCliWorker {
         }
       }
       const text = textParts.join(' ');
-      const usage = parseUsage(message?.usage);
+      const turnUsage = parseUsage(message?.usage);
+      // Accumulate per-turn deltas into streamUsageAccum and return the running
+      // cumulative total. applySessionUsage uses REPLACE semantics — correct when
+      // the value it receives IS the running cumulative total for this spawn.
+      if (turnUsage) {
+        this.streamUsageAccum = this.streamUsageAccum
+          ? mergeWorkerUsage(this.streamUsageAccum, turnUsage)
+          : turnUsage;
+      }
       return {
         ...(text ? { humanText: truncate(text, 400) } : {}),
         // Untruncated text for self-assessment marker parsing (B1) — humanText
         // is capped at 400 chars and could cut the trailing marker.
         ...(text ? { assistantText: text } : {}),
-        ...(usage ? { usage } : {}),
+        ...(this.streamUsageAccum ? { usage: this.streamUsageAccum } : {}),
         ...(traces.length > 0 ? { traces } : {}),
       };
     }
 
     if (type === 'system' && obj.subtype === 'init') {
       const m = typeof obj.model === 'string' ? obj.model : undefined;
+      // Reset accumulator at the start of each spawn session so prior-spawn
+      // data never bleeds into this stream's token total.
+      this.streamUsageAccum = undefined;
       return {
         humanText: `(starting ${m ?? 'claude'})`,
         ...(m !== undefined ? { model: m } : {}),
