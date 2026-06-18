@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PolicyEngine } from '@loom-ai/core';
-import { runRelease } from '../commands/release.js';
+import { runRelease, type ReleaseCommandOptions } from '../commands/release.js';
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────────
 
@@ -45,7 +45,7 @@ interface Captured {
   exitCode: number | null;
 }
 
-function capture(fn: () => void): Captured {
+async function capture(fn: () => void | Promise<void>): Promise<Captured> {
   const origExit = process.exit as (code?: number) => never;
   const origLog = console.log;
   const origErr = console.error;
@@ -61,7 +61,7 @@ function capture(fn: () => void): Captured {
   console.error = (...args: unknown[]) => errors.push(args.map(String).join(' '));
 
   try {
-    fn();
+    await fn();
   } catch (e) {
     if (!(e instanceof Error && e.message.startsWith('process.exit'))) throw e;
   } finally {
@@ -82,55 +82,85 @@ function makeSeams(version: string) {
   const ver = version.startsWith('v') ? version.slice(1) : version;
   const branch = `release/v${ver}`;
 
+  const opts: ReleaseCommandOptions = {
+    _runBump: (v: string, cwd: string) => { bumpCalls.push({ version: v, cwd }); },
+    _git: (cwd: string, args: string[]) => {
+      gitCalls.push({ cwd, args });
+      return { ok: true, output: '' };
+    },
+    _gh: (args: string[], cwd: string) => {
+      ghCalls.push({ args, cwd });
+      return `https://github.com/org/repo/pull/1`;
+    },
+  };
+
   return {
     bumpCalls,
     gitCalls,
     ghCalls,
-    opts: {
-      _runBump: (v: string, cwd: string) => { bumpCalls.push({ version: v, cwd }); },
-      _git: (cwd: string, args: string[]) => {
-        gitCalls.push({ cwd, args });
-        return { ok: true, output: '' };
-      },
-      _gh: (args: string[], cwd: string) => {
-        ghCalls.push({ args, cwd });
-        return `https://github.com/org/repo/pull/1`;
-      },
-    },
+    // branch exposed so tests can reference it without recomputing
+    branch,
+    opts,
   };
 }
 
 // ─── [AC1] Bump script invocation ────────────────────────────────────────────
 
 describe('runRelease — bump script invocation [AC1]', () => {
-  it('calls _runBump with the normalized version (no leading v)', () => {
+  it('calls _runBump with the normalized version (no leading v)', async () => {
     const { bumpCalls, opts } = makeSeams('1.2.3');
-    capture(() => runRelease('1.2.3', opts));
+    await capture(() => runRelease('1.2.3', opts));
     assert.equal(bumpCalls.length, 1, 'bump called exactly once');
     assert.equal(bumpCalls[0].version, '1.2.3');
   });
 
-  it('strips leading v before passing to bump script', () => {
+  it('strips leading v before passing to bump script', async () => {
     const { bumpCalls, opts } = makeSeams('v2.0.0');
-    capture(() => runRelease('v2.0.0', opts));
+    await capture(() => runRelease('v2.0.0', opts));
     assert.equal(bumpCalls[0].version, '2.0.0', 'leading v stripped');
   });
 
-  it('exits 1 when bump script throws', () => {
+  it('exits 1 when bump script throws', async () => {
     const { opts } = makeSeams('1.2.3');
     opts._runBump = () => { throw new Error('semver invalid'); };
-    const { exitCode, errors } = capture(() => runRelease('1.2.3', opts));
+    const { exitCode, errors } = await capture(() => runRelease('1.2.3', opts));
     assert.equal(exitCode, 1);
     assert.ok(errors.some((e) => /bump-versions/i.test(e)), 'error mentions bump-versions');
+  });
+});
+
+// ─── Semver validation ────────────────────────────────────────────────────────
+
+describe('runRelease — semver validation', () => {
+  it('exits 1 for non-semver input, does not call bump', async () => {
+    let bumpCalled = false;
+    const { opts } = makeSeams('1.2.3');
+    opts._runBump = () => { bumpCalled = true; };
+    const { exitCode, errors } = await capture(() => runRelease('latest', opts));
+    assert.equal(exitCode, 1);
+    assert.equal(bumpCalled, false, 'bump must not be called with invalid semver');
+    assert.ok(errors.some((e) => /semver/i.test(e)), 'error mentions semver');
+  });
+
+  it('exits 1 for empty string', async () => {
+    const { opts } = makeSeams('1.2.3');
+    const { exitCode } = await capture(() => runRelease('', opts));
+    assert.equal(exitCode, 1);
+  });
+
+  it('accepts pre-release semver (e.g. 1.2.3-alpha.1)', async () => {
+    const { bumpCalls, opts } = makeSeams('1.2.3-alpha.1');
+    await capture(() => runRelease('1.2.3-alpha.1', opts));
+    assert.equal(bumpCalls[0].version, '1.2.3-alpha.1');
   });
 });
 
 // ─── [AC2/AC3] Branch + PR shape ─────────────────────────────────────────────
 
 describe('runRelease — branch and PR shape [AC2, AC3]', () => {
-  it('creates branch release/v<version>', () => {
+  it('creates branch release/v<version>', async () => {
     const { gitCalls, opts } = makeSeams('1.2.3');
-    capture(() => runRelease('1.2.3', opts));
+    await capture(() => runRelease('1.2.3', opts));
     const checkout = gitCalls.find(
       (c) => c.args[0] === 'checkout' && c.args.includes('-b')
     );
@@ -141,20 +171,39 @@ describe('runRelease — branch and PR shape [AC2, AC3]', () => {
     );
   });
 
-  it('commits with message "chore(release): v<version>"', () => {
+  it('stages version-bump files with git add before committing', async () => {
     const { gitCalls, opts } = makeSeams('1.2.3');
-    capture(() => runRelease('1.2.3', opts));
+    await capture(() => runRelease('1.2.3', opts));
+    const add = gitCalls.find((c) => c.args[0] === 'add');
+    assert.ok(add, 'git add called');
+    assert.ok(add.args.includes('--'), '-- separator present');
+    assert.ok(add.args.includes('package.json'), 'root package.json staged');
+    assert.ok(
+      add.args.includes('packages/*/package.json'),
+      'workspace package.json glob staged'
+    );
+    // git add must precede git commit
+    const addIdx = gitCalls.findIndex((c) => c.args[0] === 'add');
+    const commitIdx = gitCalls.findIndex((c) => c.args[0] === 'commit');
+    assert.ok(addIdx < commitIdx, 'git add comes before git commit');
+  });
+
+  it('commits with message "chore(release): v<version>" using -m (not -am)', async () => {
+    const { gitCalls, opts } = makeSeams('1.2.3');
+    await capture(() => runRelease('1.2.3', opts));
     const commit = gitCalls.find((c) => c.args[0] === 'commit');
     assert.ok(commit, 'git commit called');
     assert.ok(
       commit.args.includes('chore(release): v1.2.3'),
       `commit message not found, args: ${commit.args.join(' ')}`
     );
+    assert.ok(!commit.args.includes('-am'), 'must not use -am (stages only explicit files)');
+    assert.ok(!commit.args.includes('-a'), 'must not use -a flag');
   });
 
-  it('pushes release/v<version> with -u origin', () => {
+  it('pushes release/v<version> with -u origin', async () => {
     const { gitCalls, opts } = makeSeams('1.2.3');
-    capture(() => runRelease('1.2.3', opts));
+    await capture(() => runRelease('1.2.3', opts));
     const push = gitCalls.find((c) => c.args[0] === 'push');
     assert.ok(push, 'git push called');
     assert.ok(push.args.includes('-u'), '-u flag present');
@@ -165,9 +214,9 @@ describe('runRelease — branch and PR shape [AC2, AC3]', () => {
     );
   });
 
-  it('opens PR with --head release/v<version> --base main --title chore(release): v<version>', () => {
+  it('opens PR with --head release/v<version> --base main --title --body', async () => {
     const { ghCalls, opts } = makeSeams('1.2.3');
-    capture(() => runRelease('1.2.3', opts));
+    await capture(() => runRelease('1.2.3', opts));
     assert.equal(ghCalls.length, 1, 'gh called exactly once');
     const args = ghCalls[0].args;
     assert.ok(args.includes('pr'), 'gh pr subcommand');
@@ -179,21 +228,22 @@ describe('runRelease — branch and PR shape [AC2, AC3]', () => {
     const titleIdx = args.indexOf('--title');
     assert.ok(titleIdx >= 0, '--title flag present');
     assert.equal(args[titleIdx + 1], 'chore(release): v1.2.3', '--title value correct');
+    assert.ok(args.includes('--body'), '--body flag present');
   });
 
-  it('prints the PR URL in output', () => {
+  it('prints the PR URL in output', async () => {
     const { opts } = makeSeams('1.2.3');
-    const { logs } = capture(() => runRelease('1.2.3', opts));
+    const { logs } = await capture(() => runRelease('1.2.3', opts));
     assert.ok(logs.some((l) => l.includes('https://github.com/org/repo/pull/1')), 'PR URL printed');
   });
 
-  it('exits 0 (no process.exit) on success', () => {
+  it('exits 0 (no process.exit) on success', async () => {
     const { opts } = makeSeams('1.2.3');
-    const { exitCode } = capture(() => runRelease('1.2.3', opts));
+    const { exitCode } = await capture(() => runRelease('1.2.3', opts));
     assert.equal(exitCode, null, 'no process.exit on success');
   });
 
-  it('exits 1 when git checkout fails', () => {
+  it('exits 1 when git checkout fails', async () => {
     const { opts } = makeSeams('1.2.3');
     let checkoutCalled = false;
     opts._git = (cwd, args) => {
@@ -203,28 +253,58 @@ describe('runRelease — branch and PR shape [AC2, AC3]', () => {
       }
       return { ok: true, output: '' };
     };
-    const { exitCode } = capture(() => runRelease('1.2.3', opts));
+    const { exitCode } = await capture(() => runRelease('1.2.3', opts));
     assert.ok(checkoutCalled, 'checkout was attempted');
     assert.equal(exitCode, 1);
   });
 
-  it('exits 1 when git push fails', () => {
+  it('exits 1 when git add fails', async () => {
+    const { opts } = makeSeams('1.2.3');
+    opts._git = (cwd, args) => {
+      if (args[0] === 'add') return { ok: false, output: 'git add error' };
+      return { ok: true, output: '' };
+    };
+    const { exitCode, errors } = await capture(() => runRelease('1.2.3', opts));
+    assert.equal(exitCode, 1);
+    assert.ok(errors.some((e) => /stage/i.test(e)), 'error mentions staging');
+  });
+
+  it('exits 1 when git commit fails (e.g. nothing to commit)', async () => {
+    const { opts } = makeSeams('1.2.3');
+    opts._git = (cwd, args) => {
+      if (args[0] === 'commit') return { ok: false, output: 'nothing to commit' };
+      return { ok: true, output: '' };
+    };
+    const { exitCode, errors } = await capture(() => runRelease('1.2.3', opts));
+    assert.equal(exitCode, 1);
+    assert.ok(errors.some((e) => /commit/i.test(e)), 'error mentions commit');
+  });
+
+  it('exits 1 when git push fails', async () => {
     const { opts } = makeSeams('1.2.3');
     opts._git = (cwd, args) => {
       if (args[0] === 'push') return { ok: false, output: 'no remote' };
       return { ok: true, output: '' };
     };
-    const { exitCode } = capture(() => runRelease('1.2.3', opts));
+    const { exitCode } = await capture(() => runRelease('1.2.3', opts));
     assert.equal(exitCode, 1);
+  });
+
+  it('exits 1 when gh returns undefined (PR creation fails)', async () => {
+    const { opts } = makeSeams('1.2.3');
+    opts._gh = () => undefined;
+    const { exitCode, errors } = await capture(() => runRelease('1.2.3', opts));
+    assert.equal(exitCode, 1);
+    assert.ok(errors.some((e) => /pr/i.test(e)), 'error mentions PR');
   });
 });
 
 // ─── [AC2/AC3] Never pushes main ──────────────────────────────────────────────
 
 describe('runRelease — never pushes main [AC2, AC3]', () => {
-  it('no push refspec is "main"', () => {
+  it('no push refspec is "main"', async () => {
     const { gitCalls, opts } = makeSeams('1.2.3');
-    capture(() => runRelease('1.2.3', opts));
+    await capture(() => runRelease('1.2.3', opts));
     const pushes = gitCalls.filter((c) => c.args[0] === 'push');
     for (const push of pushes) {
       assert.ok(
@@ -241,9 +321,9 @@ describe('runRelease — never pushes main [AC2, AC3]', () => {
     }
   });
 
-  it('only one push is made, targeting release/v<version>', () => {
+  it('only one push is made, targeting release/v<version>', async () => {
     const { gitCalls, opts } = makeSeams('3.0.1');
-    capture(() => runRelease('3.0.1', opts));
+    await capture(() => runRelease('3.0.1', opts));
     const pushes = gitCalls.filter((c) => c.args[0] === 'push');
     assert.equal(pushes.length, 1, 'exactly one git push');
     assert.ok(pushes[0].args.includes('release/v3.0.1'), 'push targets release/v3.0.1');
@@ -255,9 +335,9 @@ describe('runRelease — never pushes main [AC2, AC3]', () => {
 describe('runRelease — guard-clean [AC4]', () => {
   const engine = new PolicyEngine(PolicyEngine.defaultPolicy());
 
-  it('all git invocations pass PolicyEngine.check()', () => {
+  it('all git invocations pass PolicyEngine.check()', async () => {
     const { gitCalls, opts } = makeSeams('1.2.3');
-    capture(() => runRelease('1.2.3', opts));
+    await capture(() => runRelease('1.2.3', opts));
 
     for (const { args } of gitCalls) {
       // Reconstruct the command string PolicyEngine would evaluate.
@@ -272,9 +352,9 @@ describe('runRelease — guard-clean [AC4]', () => {
     }
   });
 
-  it('no git invocation contains --force or --force-with-lease', () => {
+  it('no git invocation contains --force or --force-with-lease', async () => {
     const { gitCalls, opts } = makeSeams('1.2.3');
-    capture(() => runRelease('1.2.3', opts));
+    await capture(() => runRelease('1.2.3', opts));
 
     const forbidden = ['--force', '--force-with-lease'];
     for (const { args } of gitCalls) {

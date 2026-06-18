@@ -25,6 +25,13 @@ export function runRelease(version: string, opts: ReleaseCommandOptions = {}): v
 
   // Normalize: strip leading 'v' so internal logic always works with bare semver.
   const ver = version.startsWith('v') ? version.slice(1) : version;
+
+  // Validate semver before running any git operations or the bump script.
+  if (!/^\d+\.\d+\.\d+(-[\w.]+)?(\+[\w.]+)?$/.test(ver)) {
+    console.error('  Invalid version — must be semver, e.g. 1.2.3');
+    process.exit(1);
+  }
+
   const branch = `release/v${ver}`;
   const commitMsg = `chore(release): v${ver}`;
 
@@ -48,8 +55,16 @@ export function runRelease(version: string, opts: ReleaseCommandOptions = {}): v
     process.exit(1);
   }
 
-  // 3. Commit all changed files (version bumps).
-  const commitResult = runGit(projectRoot, ['commit', '-am', commitMsg]);
+  // 3a. Stage only the version-bump files — root and workspace package.json files.
+  //     Git expands the glob pathspec packages/*/package.json itself (no shell).
+  const addResult = runGit(projectRoot, ['add', '--', 'package.json', 'packages/*/package.json']);
+  if (!addResult.ok) {
+    console.error(`  Failed to stage version-bump files: ${addResult.output}`);
+    process.exit(1);
+  }
+
+  // 3b. Commit staged changes only — no -a flag so unrelated dirty files are excluded.
+  const commitResult = runGit(projectRoot, ['commit', '-m', commitMsg]);
   if (!commitResult.ok) {
     console.error(`  Failed to commit: ${commitResult.output}`);
     process.exit(1);
@@ -63,13 +78,21 @@ export function runRelease(version: string, opts: ReleaseCommandOptions = {}): v
   }
 
   // 5. Open the PR against main.
-  const prArgs = ['pr', 'create', '--head', branch, '--base', 'main', '--title', commitMsg];
+  const prArgs = [
+    'pr', 'create',
+    '--head', branch,
+    '--base', 'main',
+    '--title', commitMsg,
+    '--body', 'Automated release PR — bumps all workspace package versions. Merge this PR, then tag the merge commit.',
+  ];
   const prUrl = runGh(prArgs, projectRoot);
+  if (!prUrl) {
+    console.error('  Failed to open PR — run `gh pr create` manually or check gh auth.');
+    process.exit(1);
+  }
 
   console.log('');
-  if (prUrl) {
-    console.log(`  PR: ${prUrl}`);
-  }
+  console.log(`  PR: ${prUrl}`);
   console.log(`  Release ${ver} pushed as ${branch}. Merge the PR, then tag the merge commit.`);
   console.log('');
 }
@@ -91,7 +114,8 @@ function defaultRunGh(args: string[], cwd: string): string | undefined {
     }).trim();
     const lines = output.split('\n').filter(Boolean);
     return lines[lines.length - 1] || undefined;
-  } catch {
+  } catch (err) {
+    console.error('  gh error:', err instanceof Error ? err.message : String(err));
     return undefined;
   }
 }
@@ -123,12 +147,16 @@ export const spec: CommandDescription = {
   ],
   exitCodes: [
     { code: 0, meaning: 'Release branch pushed and PR opened' },
-    { code: 1, meaning: 'Bump script failed, git branch creation failed, or push failed' },
+    { code: 1, meaning: 'Invalid semver, bump script failed, git operation failed, or gh PR creation failed' },
   ],
   errors: [
+    'Invalid semver version string',
     'bump-versions.mjs not found or exited non-zero',
     'git checkout -b failed (branch already exists)',
+    'git add failed (unexpected git error)',
+    'git commit failed (nothing to commit or other error)',
     'git push failed (no remote configured or authentication error)',
+    'gh pr create failed (missing auth token or gh not installed)',
   ],
   relationships: { prerequisites: [], nextSteps: [] },
 };
