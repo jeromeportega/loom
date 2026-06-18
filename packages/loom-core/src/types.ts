@@ -38,6 +38,10 @@ export const EpicStatusSchema = z.enum([
   // The EpicFinalizer is folding the story branches into epic/<id>, running
   // the gate, and opening the epic PR. finalize_phase carries the live step.
   'finalizing',
+  // Work complete but publish step remains (e.g. push was rejected, remote
+  // disallowed, or PR-open failed). Recoverable, non-terminal. Resolved by
+  // `loom publish <epic-id>`. DB-only — never a plan-time status.
+  'publish_pending',
   // Terminal infra/runtime failure (finalize blew up, push was rejected, etc).
   // Distinct from the human 'rejected' verdict; `error` carries the message.
   // DB-only — not a plan-time status, so it stays out of EpicYamlSchema.
@@ -183,6 +187,17 @@ export interface EpicRecord {
   paused_at: string | null;
   /** The story_id after which the epic paused in checkpoint mode. */
   paused_after_story: string | null;
+  /**
+   * The finalizer-owned ref that was pushed (e.g. `loom/finalize/<id>-<sha>`).
+   * Set by publishPending(); read by EpicPublisher to locate the branch for
+   * `gh pr create`. NULL until the finalizer records a publish-pending transition.
+   */
+  finalize_ref: string | null;
+  /**
+   * Human-readable reason the publish step is pending (push rejected, remote
+   * disallowed, PR-open failure, etc). Set alongside finalize_ref; NULL otherwise.
+   */
+  publish_note: string | null;
 }
 
 export interface AuditLogEntry {

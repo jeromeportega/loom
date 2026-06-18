@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -346,6 +346,15 @@ export function runMigrations(db: Database.Database): void {
   // v18: proposed_by — NULL = human-initiated, 'loom' = self-proposed (FR-10)
   if (!epicCols.some((c) => c.name === 'proposed_by')) {
     db.exec('ALTER TABLE epics ADD COLUMN proposed_by TEXT');
+  }
+  // v19: publish_pending lifecycle support. finalize_ref holds the
+  // finalizer-owned git ref pushed before the PR step failed; publish_note
+  // carries the human-readable reason. Additive only — no UPDATE/backfill.
+  if (!epicCols.some((c) => c.name === 'finalize_ref')) {
+    db.exec('ALTER TABLE epics ADD COLUMN finalize_ref TEXT');
+  }
+  if (!epicCols.some((c) => c.name === 'publish_note')) {
+    db.exec('ALTER TABLE epics ADD COLUMN publish_note TEXT');
   }
 
   const row = db

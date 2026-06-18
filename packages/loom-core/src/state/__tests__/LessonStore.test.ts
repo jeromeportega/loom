@@ -174,13 +174,13 @@ describe('LessonStore — schema shape', () => {
     assert.ok(indexExists(db, 'idx_lessons_category'), 'idx_lessons_category must exist');
   });
 
-  it('SCHEMA_VERSION constant equals 18', () => {
-    assert.equal(SCHEMA_VERSION, 18);
+  it('SCHEMA_VERSION constant equals 19', () => {
+    assert.equal(SCHEMA_VERSION, 19);
   });
 
-  it('fresh DB schema_version row is 18', () => {
+  it('fresh DB schema_version row is 19', () => {
     const db = createDatabase(':memory:');
-    assert.equal(schemaVersion(db), 18);
+    assert.equal(schemaVersion(db), 19);
   });
 });
 
@@ -196,7 +196,7 @@ describe('LessonStore — migration idempotency', () => {
         .get() as { n: number }
     ).n;
     assert.equal(count, 1, 'lessons table must appear exactly once');
-    assert.equal(schemaVersion(db), 18, 'schema_version stays at 18');
+    assert.equal(schemaVersion(db), 19, 'schema_version stays at 19');
   });
 });
 
@@ -214,7 +214,7 @@ describe('LessonStore — pre-v18 upgrade', () => {
     assert.ok(tableExists(db, 'lessons'), 'lessons table must be created by migration');
     assert.ok(indexExists(db, 'idx_lessons_epic'));
     assert.ok(indexExists(db, 'idx_lessons_category'));
-    assert.equal(schemaVersion(db), 18, 'version bumped to 18');
+    assert.equal(schemaVersion(db), 19, 'version bumped to 19');
 
     // Pre-existing data survived intact
     const epic = db
