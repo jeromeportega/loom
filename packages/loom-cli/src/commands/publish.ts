@@ -8,15 +8,6 @@ export interface PublishCommandOptions {
   _openPr?: (input: { branch: string }) => string | undefined;
 }
 
-/**
- * `loom publish <epic-id>` — open the PR from a publish_pending epic's
- * already-pushed finalizer ref and flip status to done.
- *
- * Distinct from `loom reconcile`: reconcile verifies an *already-merged* epic
- * that loom missed; publish opens the PR for an epic whose finalizer pushed the
- * branch but the PR step failed. The two commands have mutually exclusive
- * preconditions and must never overlap.
- */
 export function runPublish(epicId: string, opts: PublishCommandOptions = {}): void {
   const projectRoot = process.cwd();
   const loomDir = path.join(projectRoot, '.loom');
@@ -36,10 +27,10 @@ export function runPublish(epicId: string, opts: PublishCommandOptions = {}): vo
 
   console.log('');
   if (result.status === 'refused') {
-    console.log(`  ${result.note}`);
+    console.error(`  ${result.note}`);
     process.exit(1);
   } else if (result.status === 'failed') {
-    console.log(`  ${result.note}`);
+    console.error(`  ${result.note}`);
     process.exit(1);
   } else if (result.status === 'published') {
     if (result.prUrl) {
@@ -76,5 +67,5 @@ export const spec: CommandDescription = {
     'gh pr create failed',
     'loom is not initialized — run `loom init` first',
   ],
-  relationships: { prerequisites: ['run'], nextSteps: ['status', 'archive'] },
+  relationships: { prerequisites: ['run'], nextSteps: ['status', 'diff'] },
 };
