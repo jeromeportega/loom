@@ -294,10 +294,9 @@ describe('Supervisor.dispatch — worker MCP materialization', () => {
     assert.equal(detail.configPath, path.join('.cursor', 'mcp.json'));
   });
 
-  it('cursor-cli without loomServerEntry → loom absent, third-party retained (story-002-005 AC#2+#3)', async () => {
-    // Simulates the Phase-1 removal: run.ts no longer passes loomServerEntry,
-    // so Supervisor receives undefined and must NOT write a loom entry.
-    // Third-party registry servers must still appear unchanged (AC#3).
+  it('cursor-cli backend: only policy-registry servers materialised into worktree config (no loom entry)', async () => {
+    // loomServerEntry was removed entirely from MaterializeOptions; Supervisor no longer
+    // has any code path to inject a loom server. Third-party registry servers must appear unchanged.
     writeServer('jira-mcp', STDIO_SERVER);
     writePolicy({
       agents: { worker_backend: 'cursor-cli' },

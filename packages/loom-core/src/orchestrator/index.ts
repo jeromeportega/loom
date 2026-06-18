@@ -51,6 +51,7 @@ export {
   parseOwnershipMap,
   loadOwnershipMap,
   normalizePath,
+  KNOWN_EXT,
   computeOverlaps,
   renderOverlapAdvisory,
 } from './ContractOwnership.js';
