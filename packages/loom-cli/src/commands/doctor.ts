@@ -2,11 +2,15 @@ import type { CommandDescription } from '../describe/schema.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { ZodError } from 'zod';
 import {
   loadMachineConfig,
   defaultMachineConfigPath,
   loomHome,
   PolicyEngine,
+  PolicyValidationError,
+  describePolicyIssues,
+  formatPolicyError,
   validateCursorModels,
 } from '@loom-ai/core';
 import { gateCommandCheck } from './doctorGateCheck.js';
@@ -54,6 +58,41 @@ export function cursorModelCheck(
         : `"${policy.agents.cursor_model}" is a valid Cursor model`,
     required: invalid,
   };
+}
+
+/**
+ * `loom doctor` check for .loom/policy.yaml validation.
+ * Returns a failed check with structured detail when the policy contains invalid knobs,
+ * using the shared FR-1 render path so detail cannot drift from the load-path message.
+ * A valid policy yields a passing check; an invalid one yields `required: true` so
+ * doctor's existing non-zero exit fires without a new exit path.
+ */
+export function policyValidationCheck(projectRoot: string): Check {
+  const policyPath = path.join(projectRoot, '.loom', 'policy.yaml');
+  try {
+    PolicyEngine.load(path.join(projectRoot, '.loom'));
+    return { name: 'policy', ok: true, required: true, detail: 'policy.yaml is valid' };
+  } catch (e) {
+    if (e instanceof PolicyValidationError) {
+      return {
+        name: 'policy',
+        ok: false,
+        required: true,
+        detail: formatPolicyError(e.policyPath, e.issues),
+      };
+    }
+    if (e instanceof ZodError) {
+      // Handles the current code path before PolicyEngine wraps ZodError in PolicyValidationError
+      const issues = describePolicyIssues(e);
+      return {
+        name: 'policy',
+        ok: false,
+        required: true,
+        detail: formatPolicyError(policyPath, issues),
+      };
+    }
+    throw e;
+  }
 }
 
 /** Returns the first line of `<bin> <args>` output, or null if the binary is absent. */
@@ -128,6 +167,12 @@ export function runDoctor(): void {
   // when the configured id is a boundary-prefix alias (FR-1(b)) — both stay
   // exit 0. See {@link cursorModelCheck} for the render.
   if (initialized) {
+    try {
+      checks.push(policyValidationCheck(process.cwd()));
+    } catch {
+      // IO/parse errors — not surfaced here
+    }
+
     try {
       const check = cursorModelCheck(process.cwd());
       if (check) checks.push(check);
