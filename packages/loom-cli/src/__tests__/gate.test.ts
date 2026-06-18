@@ -119,13 +119,16 @@ describe('loom epic', () => {
     // Confirm the policy schema refuses the removed anthropic-api backend
     // before any LLM client is constructed.
     const policyPath = path.join(tmpDir, '.loom', 'policy.yaml');
-    const policy = fs
-      .readFileSync(policyPath, 'utf8')
-      .replace('llm_backend: "claude-cli"', 'llm_backend: "anthropic-api"');
+    const original = fs.readFileSync(policyPath, 'utf8');
+    const policy = original.replace('llm_backend: "claude-cli"', 'llm_backend: "anthropic-api"');
     fs.writeFileSync(policyPath, policy);
 
-    const result = loom('epic "Build a small demo feature for the policy validation test."');
-    assert.equal(result.status, 1);
+    try {
+      const result = loom('epic "Build a small demo feature for the policy validation test."');
+      assert.equal(result.status, 1);
+    } finally {
+      fs.writeFileSync(policyPath, original);
+    }
   });
 });
 
