@@ -46,21 +46,22 @@ export function runRelease(version: string, opts: ReleaseCommandOptions = {}): v
     process.exit(1);
   }
 
-  // 1b. Refresh the lockfile to reflect the bumped versions (ADR-5).
+  // 2. Create the release branch before refreshing the lockfile so any mutation is
+  //    isolated to this branch, not the caller's working branch.
+  const checkoutResult = runGit(projectRoot, ['checkout', '-b', branch]);
+  if (!checkoutResult.ok) {
+    console.error(`  Failed to create branch ${branch}: ${checkoutResult.output}`);
+    process.exit(1);
+  }
+
+  // 2b. Refresh the lockfile to reflect the bumped versions.
   //     --package-lock-only rewrites package-lock.json without touching node_modules.
   //     Release is already an online operation (opens a PR via gh), so registry access is accepted.
   try {
     runNpmInstall(projectRoot);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`  npm install --package-lock-only failed: ${msg}`);
-    process.exit(1);
-  }
-
-  // 2. Create the release branch.
-  const checkoutResult = runGit(projectRoot, ['checkout', '-b', branch]);
-  if (!checkoutResult.ok) {
-    console.error(`  Failed to create branch ${branch}: ${checkoutResult.output}`);
+    console.error(`  Lockfile refresh failed — run \`npm install --package-lock-only\` manually and retry: ${msg}`);
     process.exit(1);
   }
 

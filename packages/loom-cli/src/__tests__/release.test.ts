@@ -423,30 +423,36 @@ describe('runRelease — guard-clean [AC4]', () => {
 // ─── [AC1] Lockfile refresh — order and seam ─────────────────────────────────
 
 describe('runRelease — lockfile refresh step [AC1]', () => {
-  it('calls _runNpmInstall AFTER _runBump and BEFORE git commit', async () => {
+  it('calls _runNpmInstall AFTER git checkout and BEFORE git commit (scoped to release branch)', async () => {
     const callOrder: string[] = [];
     const { opts } = makeSeams('1.2.3');
     opts._runBump = () => { callOrder.push('bump'); };
     opts._runNpmInstall = () => { callOrder.push('npm-install'); };
     opts._git = (cwd, args) => {
+      if (args[0] === 'checkout') callOrder.push('checkout');
       if (args[0] === 'commit') callOrder.push('commit');
       return { ok: true, output: '' };
     };
     await capture(() => runRelease('1.2.3', opts));
     const bumpIdx = callOrder.indexOf('bump');
+    const checkoutIdx = callOrder.indexOf('checkout');
     const npmIdx = callOrder.indexOf('npm-install');
     const commitIdx = callOrder.indexOf('commit');
     assert.ok(bumpIdx >= 0, 'bump was called');
+    assert.ok(checkoutIdx >= 0, 'checkout was called');
     assert.ok(npmIdx >= 0, 'npm-install was called');
     assert.ok(commitIdx >= 0, 'commit was called');
-    assert.ok(bumpIdx < npmIdx, 'npm install called AFTER bump');
+    assert.ok(bumpIdx < checkoutIdx, 'bump called BEFORE checkout');
+    assert.ok(checkoutIdx < npmIdx, 'npm install called AFTER checkout (lockfile mutated on release branch, not caller branch)');
     assert.ok(npmIdx < commitIdx, 'npm install called BEFORE commit');
   });
 
-  it('calls _runNpmInstall exactly once per release', async () => {
+  it('calls _runNpmInstall exactly once with the correct cwd (project root)', async () => {
     const { npmInstallCalls, opts } = makeSeams('1.2.3');
+    const projectRoot = process.cwd();
     await capture(() => runRelease('1.2.3', opts));
     assert.equal(npmInstallCalls.length, 1, 'npm install called exactly once');
+    assert.equal(npmInstallCalls[0].cwd, projectRoot, 'npm install runs in project root');
   });
 
   it('exits 1 when _runNpmInstall throws', async () => {
@@ -454,7 +460,7 @@ describe('runRelease — lockfile refresh step [AC1]', () => {
     opts._runNpmInstall = () => { throw new Error('network unavailable'); };
     const { exitCode, errors } = await capture(() => runRelease('1.2.3', opts));
     assert.equal(exitCode, 1);
-    assert.ok(errors.some((e) => /package-lock-only/i.test(e)), 'error mentions package-lock-only');
+    assert.ok(errors.some((e) => /lockfile refresh/i.test(e)), 'error mentions lockfile refresh');
   });
 
   it('_runNpmInstall is not called when semver validation fails', async () => {
@@ -550,6 +556,14 @@ describe('runRelease — no lockfile drift [AC3]', () => {
 
 describe('runRelease — lockfile integration [AC1, controlled fixture]', () => {
   it('package-lock.json reflects bumped version after npm install --package-lock-only', () => {
+    // npm 7+ required: workspace support and lockfileVersion 2+ are not available in npm 6.
+    const npmVer = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim();
+    const npmMajor = parseInt(npmVer.split('.')[0], 10);
+    if (npmMajor < 7) {
+      console.log(`  Skipping: npm ${npmVer} < 7 — workspace lockfile support requires npm 7+`);
+      return;
+    }
+
     const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-lockfile-int-'));
     try {
       // Minimal workspace fixture: root + one workspace package, no external deps.
@@ -590,8 +604,8 @@ describe('runRelease — lockfile integration [AC1, controlled fixture]', () => 
 
       const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
 
-      // lockfileVersion 3 is required (npm 7+).
-      assert.equal(lock.lockfileVersion, 3, 'lockfileVersion must be 3');
+      // lockfileVersion 2+ expected (npm 7 may emit v2 or v3 depending on version).
+      assert.ok(lock.lockfileVersion >= 2, `lockfileVersion must be 2+ (npm 7+), got: ${lock.lockfileVersion}`);
 
       // Root package version updated.
       assert.equal(lock.packages[''].version, '2.0.0', 'root version updated in lockfile');
