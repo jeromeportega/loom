@@ -7,10 +7,13 @@
  *   3. No npm deprecate/unpublish/dist-tag step was added (ADR-006).
  *   4. No GitHub Actions workflow publishes @loom-ai/mcp.
  */
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { isTracked } from './helpers/git.js';
 
 // __dirname = packages/loom-cli/dist/__tests__
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
@@ -57,11 +60,10 @@ describe('mcp workspace scrub (story-003-004)', () => {
     );
   });
 
-  it('packages/loom-mcp directory no longer exists on disk', () => {
-    const mcpPkgDir = path.join(REPO_ROOT, 'packages', 'loom-mcp');
+  it('packages/loom-mcp is no longer tracked in version control (ADR-3)', () => {
     assert.ok(
-      !fs.existsSync(mcpPkgDir),
-      'packages/loom-mcp directory still exists — workspaces glob "packages/*" would still resolve it'
+      !isTracked(REPO_ROOT, 'packages/loom-mcp'),
+      'packages/loom-mcp still has tracked files — workspaces glob "packages/*" would still resolve it'
     );
   });
 
@@ -112,5 +114,47 @@ describe('mcp workspace scrub (story-003-004)', () => {
         `${file} still references @loom-ai/mcp — remove the mcp publish step`
       );
     }
+  });
+});
+
+describe('isTracked helper (story-008-002)', () => {
+  let tmpRepo: string;
+
+  before(() => {
+    tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-git-test-'));
+    execFileSync('git', ['init'], { cwd: tmpRepo });
+    execFileSync('git', ['config', 'user.email', 'test@loom.ai'], { cwd: tmpRepo });
+    execFileSync('git', ['config', 'user.name', 'Loom Test'], { cwd: tmpRepo });
+  });
+
+  after(() => {
+    fs.rmSync(tmpRepo, { recursive: true, force: true });
+  });
+
+  it('AC1: returns false for a path that is neither on disk nor tracked', () => {
+    assert.equal(isTracked(tmpRepo, 'packages/loom-mcp'), false);
+  });
+
+  it('AC2: returns false for an untracked path even when build artifacts exist on disk', () => {
+    const distDir = path.join(tmpRepo, 'packages', 'loom-mcp', 'dist');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'index.js'), 'module.exports = {}');
+    assert.equal(
+      isTracked(tmpRepo, 'packages/loom-mcp'),
+      false,
+      'untracked build artifacts on disk must not trigger the removal guard'
+    );
+  });
+
+  it('AC3: returns true when any file under the path is committed to git', () => {
+    const pkgDir = path.join(tmpRepo, 'packages', 'loom-mcp');
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), '{"name":"@loom-ai/mcp"}');
+    execFileSync('git', ['add', '.'], { cwd: tmpRepo });
+    execFileSync('git', ['commit', '-m', 'track loom-mcp'], { cwd: tmpRepo });
+    assert.equal(
+      isTracked(tmpRepo, 'packages/loom-mcp'),
+      true,
+      'a tracked file under packages/loom-mcp must fail the removal guard'
+    );
   });
 });
