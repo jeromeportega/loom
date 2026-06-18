@@ -15,6 +15,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -76,6 +77,7 @@ async function capture(fn: () => void | Promise<void>): Promise<Captured> {
 /** Builds seams that record all invocations and always succeed. */
 function makeSeams(version: string) {
   const bumpCalls: Array<{ version: string; cwd: string }> = [];
+  const npmInstallCalls: Array<{ cwd: string }> = [];
   const gitCalls: Array<{ cwd: string; args: string[] }> = [];
   const ghCalls: Array<{ args: string[]; cwd: string }> = [];
 
@@ -84,6 +86,7 @@ function makeSeams(version: string) {
 
   const opts: ReleaseCommandOptions = {
     _runBump: (v: string, cwd: string) => { bumpCalls.push({ version: v, cwd }); },
+    _runNpmInstall: (cwd: string) => { npmInstallCalls.push({ cwd }); },
     _git: (cwd: string, args: string[]) => {
       gitCalls.push({ cwd, args });
       return { ok: true, output: '' };
@@ -96,6 +99,7 @@ function makeSeams(version: string) {
 
   return {
     bumpCalls,
+    npmInstallCalls,
     gitCalls,
     ghCalls,
     // branch exposed so tests can reference it without recomputing
@@ -413,5 +417,199 @@ describe('runRelease — guard-clean [AC4]', () => {
     const result = engine.check(raw);
     assert.equal(result.allowed, false, '--force-with-lease must be blocked');
     assert.equal(result.rule, 'git.forbidden_flags');
+  });
+});
+
+// ─── [AC1] Lockfile refresh — order and seam ─────────────────────────────────
+
+describe('runRelease — lockfile refresh step [AC1]', () => {
+  it('calls _runNpmInstall AFTER _runBump and BEFORE git commit', async () => {
+    const callOrder: string[] = [];
+    const { opts } = makeSeams('1.2.3');
+    opts._runBump = () => { callOrder.push('bump'); };
+    opts._runNpmInstall = () => { callOrder.push('npm-install'); };
+    opts._git = (cwd, args) => {
+      if (args[0] === 'commit') callOrder.push('commit');
+      return { ok: true, output: '' };
+    };
+    await capture(() => runRelease('1.2.3', opts));
+    const bumpIdx = callOrder.indexOf('bump');
+    const npmIdx = callOrder.indexOf('npm-install');
+    const commitIdx = callOrder.indexOf('commit');
+    assert.ok(bumpIdx >= 0, 'bump was called');
+    assert.ok(npmIdx >= 0, 'npm-install was called');
+    assert.ok(commitIdx >= 0, 'commit was called');
+    assert.ok(bumpIdx < npmIdx, 'npm install called AFTER bump');
+    assert.ok(npmIdx < commitIdx, 'npm install called BEFORE commit');
+  });
+
+  it('calls _runNpmInstall exactly once per release', async () => {
+    const { npmInstallCalls, opts } = makeSeams('1.2.3');
+    await capture(() => runRelease('1.2.3', opts));
+    assert.equal(npmInstallCalls.length, 1, 'npm install called exactly once');
+  });
+
+  it('exits 1 when _runNpmInstall throws', async () => {
+    const { opts } = makeSeams('1.2.3');
+    opts._runNpmInstall = () => { throw new Error('network unavailable'); };
+    const { exitCode, errors } = await capture(() => runRelease('1.2.3', opts));
+    assert.equal(exitCode, 1);
+    assert.ok(errors.some((e) => /package-lock-only/i.test(e)), 'error mentions package-lock-only');
+  });
+
+  it('_runNpmInstall is not called when semver validation fails', async () => {
+    let npmCalled = false;
+    const { opts } = makeSeams('1.2.3');
+    opts._runNpmInstall = () => { npmCalled = true; };
+    await capture(() => runRelease('invalid', opts));
+    assert.equal(npmCalled, false, 'npm install must not be called for invalid semver');
+  });
+
+  it('_runNpmInstall is not called when bump fails', async () => {
+    let npmCalled = false;
+    const { opts } = makeSeams('1.2.3');
+    opts._runBump = () => { throw new Error('bump failed'); };
+    opts._runNpmInstall = () => { npmCalled = true; };
+    await capture(() => runRelease('1.2.3', opts));
+    assert.equal(npmCalled, false, 'npm install must not be called when bump fails');
+  });
+
+  it('boundary: runs npm install even when bump is a no-op (versions already match)', async () => {
+    let npmCalled = false;
+    const { opts } = makeSeams('1.2.3');
+    opts._runBump = () => { /* no-op: already at target version */ };
+    opts._runNpmInstall = () => { npmCalled = true; };
+    await capture(() => runRelease('1.2.3', opts));
+    assert.ok(npmCalled, 'npm install runs even when bump is a no-op');
+  });
+});
+
+// ─── [AC2] Lockfile staged in release commit ─────────────────────────────────
+
+describe('runRelease — lockfile staged in release commit [AC2]', () => {
+  it('includes package-lock.json in git add pathspec', async () => {
+    const { gitCalls, opts } = makeSeams('1.2.3');
+    await capture(() => runRelease('1.2.3', opts));
+    const add = gitCalls.find((c) => c.args[0] === 'add');
+    assert.ok(add, 'git add called');
+    assert.ok(
+      add.args.includes('package-lock.json'),
+      `package-lock.json not in git add args: ${add.args.join(' ')}`
+    );
+  });
+
+  it('package-lock.json is staged in the same git add call as package.json files', async () => {
+    const { gitCalls, opts } = makeSeams('1.2.3');
+    await capture(() => runRelease('1.2.3', opts));
+    const addCalls = gitCalls.filter((c) => c.args[0] === 'add');
+    assert.equal(addCalls.length, 1, 'exactly one git add call');
+    const [add] = addCalls;
+    assert.ok(add.args.includes('package.json'), 'root package.json staged');
+    assert.ok(add.args.includes('packages/*/package.json'), 'workspace package.json glob staged');
+    assert.ok(add.args.includes('package-lock.json'), 'package-lock.json staged');
+  });
+
+  it('git add with package-lock.json comes before git commit', async () => {
+    const { gitCalls, opts } = makeSeams('1.2.3');
+    await capture(() => runRelease('1.2.3', opts));
+    const addIdx = gitCalls.findIndex((c) => c.args[0] === 'add' && c.args.includes('package-lock.json'));
+    const commitIdx = gitCalls.findIndex((c) => c.args[0] === 'commit');
+    assert.ok(addIdx >= 0, 'git add with package-lock.json was called');
+    assert.ok(commitIdx >= 0, 'git commit was called');
+    assert.ok(addIdx < commitIdx, 'git add (with lockfile) precedes git commit');
+  });
+});
+
+// ─── [AC3] No spurious drift — clean tree after release ──────────────────────
+
+describe('runRelease — no lockfile drift [AC3]', () => {
+  it('only the three expected pathspecs are in git add (no extra files staged)', async () => {
+    const { gitCalls, opts } = makeSeams('1.2.3');
+    await capture(() => runRelease('1.2.3', opts));
+    const add = gitCalls.find((c) => c.args[0] === 'add');
+    assert.ok(add, 'git add called');
+    const dashIdx = add.args.indexOf('--');
+    assert.ok(dashIdx >= 0, '-- separator in git add');
+    const pathspecs = add.args.slice(dashIdx + 1);
+    const expected = new Set(['package.json', 'packages/*/package.json', 'package-lock.json']);
+    assert.equal(pathspecs.length, 3, `expected 3 pathspecs, got: ${pathspecs.join(', ')}`);
+    for (const p of pathspecs) {
+      assert.ok(expected.has(p), `unexpected pathspec staged: ${p}`);
+    }
+  });
+
+  it('does not call git add more than once (no duplicate staging passes)', async () => {
+    const { gitCalls, opts } = makeSeams('1.2.3');
+    await capture(() => runRelease('1.2.3', opts));
+    const adds = gitCalls.filter((c) => c.args[0] === 'add');
+    assert.equal(adds.length, 1, 'exactly one git add — no duplicate staging that would cause drift');
+  });
+});
+
+// ─── Integration: lockfile reflects bumped versions ──────────────────────────
+
+describe('runRelease — lockfile integration [AC1, controlled fixture]', () => {
+  it('package-lock.json reflects bumped version after npm install --package-lock-only', () => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-lockfile-int-'));
+    try {
+      // Minimal workspace fixture: root + one workspace package, no external deps.
+      // npm resolves workspace packages locally — no registry access needed.
+      const rootPkg = {
+        name: 'test-ws-root',
+        version: '1.0.0',
+        private: true,
+        workspaces: ['packages/*'],
+      };
+      fs.writeFileSync(path.join(fixtureDir, 'package.json'), JSON.stringify(rootPkg, null, 2));
+      fs.mkdirSync(path.join(fixtureDir, 'packages', 'pkg-a'), { recursive: true });
+      const pkgA = { name: '@test/pkg-a', version: '1.0.0', private: true };
+      fs.writeFileSync(
+        path.join(fixtureDir, 'packages', 'pkg-a', 'package.json'),
+        JSON.stringify(pkgA, null, 2)
+      );
+
+      // Generate initial lockfile.
+      execFileSync('npm', ['install', '--package-lock-only'], { cwd: fixtureDir, stdio: 'pipe' });
+      const lockPath = path.join(fixtureDir, 'package-lock.json');
+      assert.ok(fs.existsSync(lockPath), 'initial package-lock.json created');
+
+      // Simulate bump-versions.mjs: bump both packages to 2.0.0.
+      rootPkg.version = '2.0.0';
+      fs.writeFileSync(path.join(fixtureDir, 'package.json'), JSON.stringify(rootPkg, null, 2));
+      pkgA.version = '2.0.0';
+      fs.writeFileSync(
+        path.join(fixtureDir, 'packages', 'pkg-a', 'package.json'),
+        JSON.stringify(pkgA, null, 2)
+      );
+
+      const nodeModulesPath = path.join(fixtureDir, 'node_modules');
+      const nodeModulesBefore = fs.existsSync(nodeModulesPath);
+
+      // Refresh lockfile — this is the production step being tested.
+      execFileSync('npm', ['install', '--package-lock-only'], { cwd: fixtureDir, stdio: 'pipe' });
+
+      const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+
+      // lockfileVersion 3 is required (npm 7+).
+      assert.equal(lock.lockfileVersion, 3, 'lockfileVersion must be 3');
+
+      // Root package version updated.
+      assert.equal(lock.packages[''].version, '2.0.0', 'root version updated in lockfile');
+
+      // Workspace pkg-a version updated.
+      const pkgAEntry = lock.packages['packages/pkg-a'];
+      assert.ok(pkgAEntry, 'pkg-a entry exists in lockfile');
+      assert.equal(pkgAEntry.version, '2.0.0', 'pkg-a version updated in lockfile');
+
+      // node_modules must not have been created by --package-lock-only.
+      if (!nodeModulesBefore) {
+        assert.ok(
+          !fs.existsSync(nodeModulesPath),
+          'node_modules must not be created by --package-lock-only'
+        );
+      }
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
   });
 });
