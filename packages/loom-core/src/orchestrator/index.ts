@@ -126,3 +126,4 @@ export type { HeuristicInput } from './signalLedger.js';
 export { SignalLedger } from './signalStore.js';
 export { renderBuildSignalAnalysis } from './signalRender.js';
 export type { SignalRenderInput } from './signalRender.js';
+export { oneLine, displayModel } from './renderUtils.js';

@@ -684,6 +684,7 @@ function toAgentSummary(
     worktree_path: a.worktree_path,
     branch_name: a.branch_name,
     stall_reason: a.status === 'running' ? stallReasonFor(audit, a.id) : null,
+    model: a.model ?? null,
   };
 }
 

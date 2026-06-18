@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { createDatabase, runMigrations } from '../Database.js';
+import { createDatabase, runMigrations, SCHEMA_VERSION } from '../Database.js';
 import { EpicStore } from '../EpicStore.js';
 import {
   AutonomyLevelSchema,
@@ -78,8 +78,8 @@ describe('v14 → v15 migration', () => {
 
     runMigrations(db);
 
-    // Version bumped to current (v19 includes all prior columns plus publish-pending columns).
-    assert.equal(schemaVersion(db), 19);
+    // Version bumped to current schema version.
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
 
     // The three v15 columns now exist.
     const after = epicColumns(db);
@@ -116,7 +116,7 @@ describe('v14 → v15 migration', () => {
     runMigrations(db);
     // Second run against the current schema must be a no-op, not an error.
     assert.doesNotThrow(() => runMigrations(db));
-    assert.equal(schemaVersion(db), 19);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
 
     // The guarded blocks must not have added duplicate columns.
     const cols = epicColumns(db);
@@ -135,7 +135,7 @@ describe('v14 → v15 migration', () => {
     const dbPath = path.join(tmpDir, 'fresh.db');
     const db = createDatabase(dbPath);
 
-    assert.equal(schemaVersion(db), 19);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
     const cols = epicColumns(db);
     assert.ok(cols.includes('finalize_phase'));
     assert.ok(cols.includes('epic_pr_url'));
@@ -314,7 +314,7 @@ describe('v15 → v16 migration (autonomy / checkpoint-pause)', () => {
 
     runMigrations(db);
 
-    assert.equal(schemaVersion(db), 19);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
     const after = epicColumns(db);
     assert.ok(after.includes('autonomy_level'));
     assert.ok(after.includes('paused_at'));
@@ -339,7 +339,7 @@ describe('v15 → v16 migration (autonomy / checkpoint-pause)', () => {
 
     runMigrations(db);
     assert.doesNotThrow(() => runMigrations(db));
-    assert.equal(schemaVersion(db), 19);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
 
     const cols = epicColumns(db);
     const count = (name: string) => cols.filter((c) => c === name).length;
@@ -354,7 +354,7 @@ describe('v15 → v16 migration (autonomy / checkpoint-pause)', () => {
     const dbPath = path.join(tmpDir, 'fresh-v16.db');
     const db = createDatabase(dbPath);
 
-    assert.equal(schemaVersion(db), 19);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
     const cols = epicColumns(db);
     assert.ok(cols.includes('autonomy_level'));
     assert.ok(cols.includes('paused_at'));
@@ -459,8 +459,8 @@ describe('v18 → v19 migration (publish_pending lifecycle, AC2, AC3, AC4)', () 
 
     runMigrations(db);
 
-    // Schema bumped to v19.
-    assert.equal(schemaVersion(db), 19, 'SCHEMA_VERSION should be 19 after migration (AC2)');
+    // Schema bumped to current SCHEMA_VERSION.
+    assert.equal(schemaVersion(db), SCHEMA_VERSION, `SCHEMA_VERSION should be ${SCHEMA_VERSION} after migration (AC2)`);
 
     // Both new columns now exist.
     const after = epicColumns(db);
@@ -500,11 +500,11 @@ describe('v18 → v19 migration (publish_pending lifecycle, AC2, AC3, AC4)', () 
     const db = seedV18Db(dbPath);
 
     runMigrations(db);
-    assert.equal(schemaVersion(db), 19);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
 
     // Second run must not throw, must not double-add columns, and version stays 19.
     assert.doesNotThrow(() => runMigrations(db));
-    assert.equal(schemaVersion(db), 19);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
 
     const cols = epicColumns(db);
     const count = (name: string) => cols.filter((c) => c === name).length;

@@ -8,6 +8,7 @@ import {
   AuditLog,
   ProjectRegistry,
   deriveBlocked,
+  displayModel,
 } from '@loom-ai/core';
 
 /** Audit actions that mark a worker as approaching/hitting a deadline. */
@@ -346,7 +347,8 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
         const stallTag = stall ? `  ⚠ ${stall}` : '';
         const attempts = agentStore.listHistoryByStory(agent.story_id).length;
         const retryTag = attempts > 1 ? `  (retry ${attempts - 1})` : '';
-        console.log(`      ${si} ${label}${elapsed}${stallTag}${retryTag}${pr}`);
+        const modelTag = `  [${displayModel(agent.model)}]`;
+        console.log(`      ${si} ${label}${elapsed}${stallTag}${retryTag}${modelTag}${pr}`);
         if (agent.branch_name && agent.status !== 'done') {
           console.log(`           ${agent.branch_name}`);
         }

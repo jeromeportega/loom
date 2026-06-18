@@ -10,6 +10,8 @@ interface ParsedLine {
   humanText?: string;
   usage?: unknown;
   traces?: Array<{ kind: string; subject?: string; rationale: string }>;
+  /** Executed model id from the system/init event (epic-013). */
+  model?: string;
 }
 function parseLine(line: string): ParsedLine {
   const worker = new ClaudeCodeWorker();
@@ -83,6 +85,14 @@ describe('ClaudeCodeWorker.parseStreamLine — stream-json (Epic 16 story-016-00
     const parsed = parseLine(line);
     assert.match(parsed.humanText ?? '', /claude-sonnet-4-6/);
     assert.equal(parsed.usage, undefined);
+    // epic-013: executed model id is surfaced for agents.model attribution.
+    assert.equal(parsed.model, 'claude-sonnet-4-6');
+  });
+
+  it('returns model: undefined for non-init system events', () => {
+    const line = JSON.stringify({ type: 'system', subtype: 'other' });
+    const parsed = parseLine(line);
+    assert.equal(parsed.model, undefined);
   });
 
   it('passes a non-JSON line through as humanText (defensive fallback)', () => {

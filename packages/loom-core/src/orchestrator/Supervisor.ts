@@ -223,6 +223,14 @@ export interface SupervisorOptions {
    * sleeps. Has no effect for the claude-code backend.
    */
   spawnStagger?: SpawnStagger;
+  /**
+   * The requested model id for worker agents. Written to agents.model at
+   * dispatch time so every row is populated from the start. The ClaudeCodeWorker
+   * upgrades this to the executed model via WorkerResult.model once the
+   * system/init event arrives; backends that don't emit system/init (cursor-cli)
+   * keep the requested value as the final record.
+   */
+  workerModel?: string;
 }
 
 export interface SupervisorResult {
@@ -1435,6 +1443,11 @@ export class Supervisor {
       branch_name: wt.branch,
       started_at: new Date().toISOString(),
     });
+    // Seed agents.model with the requested model now; overwritten by the executed
+    // model once the system/init stream event arrives (see applyResult).
+    if (this.opts.workerModel) {
+      this.agents.setModel(task.agentId, this.opts.workerModel);
+    }
     this.audit.record({
       agent_id: task.agentId,
       action: 'dispatch',
@@ -2082,6 +2095,10 @@ export class Supervisor {
         cost_usd: result.usage.costUsd,
         request_count: result.usage.requestCount,
       });
+    }
+    // Overwrite with the executed model when the system/init event provided one.
+    if (result.model) {
+      this.agents.setModel(task.agentId, result.model);
     }
     if (result.budgetExhausted) {
       this.audit.record({

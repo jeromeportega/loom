@@ -177,6 +177,8 @@ export class ClaudeCodeWorker extends BaseCliWorker {
     humanText?: string;
     usage?: WorkerUsage;
     traces?: Array<{ kind: string; subject?: string; rationale: string }>;
+    /** Executed model id from the system/init event; undefined for non-emitting backends. */
+    model?: string;
   } {
     let event: unknown;
     try {
@@ -258,7 +260,11 @@ export class ClaudeCodeWorker extends BaseCliWorker {
     }
 
     if (type === 'system' && obj.subtype === 'init') {
-      return { humanText: `(starting ${typeof obj.model === 'string' ? obj.model : 'claude'})` };
+      const m = typeof obj.model === 'string' ? obj.model : undefined;
+      return {
+        humanText: `(starting ${m ?? 'claude'})`,
+        ...(m !== undefined ? { model: m } : {}),
+      };
     }
 
     if (type === 'user') {

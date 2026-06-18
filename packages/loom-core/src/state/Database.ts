@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -355,6 +355,16 @@ export function runMigrations(db: Database.Database): void {
   }
   if (!epicCols.some((c) => c.name === 'publish_note')) {
     db.exec('ALTER TABLE epics ADD COLUMN publish_note TEXT');
+  }
+  // v20: model attribution. agents.model = the executed model id from the
+  // worker's system/init stream event; epics.planner_model = the resolved
+  // planning_model. Both are additive-only — pre-migration rows stay NULL
+  // and must never be backfilled (NFR-1).
+  if (!agentCols.some((c) => c.name === 'model')) {
+    db.exec('ALTER TABLE agents ADD COLUMN model TEXT');
+  }
+  if (!epicCols.some((c) => c.name === 'planner_model')) {
+    db.exec('ALTER TABLE epics ADD COLUMN planner_model TEXT');
   }
 
   const row = db

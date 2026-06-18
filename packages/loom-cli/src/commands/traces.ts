@@ -1,7 +1,7 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, DecisionTraceStore } from '@loom-ai/core';
+import { openDatabase, DecisionTraceStore, AgentStore, displayModel } from '@loom-ai/core';
 
 export interface TracesOptions {
   story?: string;
@@ -37,8 +37,23 @@ export function runTraces(opts: TracesOptions = {}): void {
       ? store.getByStory(opts.story, opts.limit ?? 500)
       : store.getByEpic(opts.epic as string, opts.limit ?? 2000);
 
+  // Build a model lookup map from agent records so each trace can display
+  // the agent's resolved model id (or 'unknown' for pre-migration rows).
+  const agents = new AgentStore(db);
+  const modelByAgentId = new Map<string, string | null>();
+  for (const t of traces) {
+    if (t.agent_id && !modelByAgentId.has(t.agent_id)) {
+      const agent = agents.get(t.agent_id);
+      modelByAgentId.set(t.agent_id, agent?.model ?? null);
+    }
+  }
+
   if (opts.json) {
-    console.log(JSON.stringify({ traces }, null, 2));
+    const enriched = traces.map((t) => ({
+      ...t,
+      model: displayModel(t.agent_id ? modelByAgentId.get(t.agent_id) : null),
+    }));
+    console.log(JSON.stringify({ traces: enriched }, null, 2));
     return;
   }
 
@@ -49,7 +64,8 @@ export function runTraces(opts: TracesOptions = {}): void {
 
   for (const t of traces) {
     const subject = t.subject ? ` ${t.subject}` : '';
-    console.log(`  ${t.timestamp}  [${t.kind}]${subject}`);
+    const model = displayModel(t.agent_id ? modelByAgentId.get(t.agent_id) : null);
+    console.log(`  ${t.timestamp}  [${t.kind}]${subject}  (${model})`);
     if (t.rationale) {
       console.log(`      ${t.rationale.replace(/\n/g, '\n      ')}`);
     }
