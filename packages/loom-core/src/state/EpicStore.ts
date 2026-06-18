@@ -425,15 +425,18 @@ export class EpicStore {
   }
 
   /**
-   * Persists the rolling planning-output tail (bounded to <=4096 chars).
-   * Called by PlanningOutputSink on its periodic flush timer and on stop.
-   * Readable post-planning by the web dashboard tick() and `loom status`.
+   * Persists the rolling planning-output tail (bounded to <=4096 chars,
+   * matching PlanningOutputSink.LIVE_TAIL_CHARS). The defensive slice here
+   * guards against direct callers (tests, future CLI commands) that bypass
+   * the sink's own cap (ADR-005).
    */
   updatePlanningLogTail(id: string, logTail: string): void {
+    const TAIL_CAP = 4096;
+    const bounded = logTail.length > TAIL_CAP ? logTail.slice(-TAIL_CAP) : logTail;
     this.db
       .prepare(
         `UPDATE epics SET planning_log_tail = ?, updated_at = ? WHERE id = ?`
       )
-      .run(logTail, new Date().toISOString(), id);
+      .run(bounded, new Date().toISOString(), id);
   }
 }

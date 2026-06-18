@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { flattenMessages, extractApiErrorStatus, parseClaudeJson } from '../llm/ClaudeCliClient.js';
+import { flattenMessages, extractApiErrorStatus, parseClaudeJson, ClaudeCliClient } from '../llm/ClaudeCliClient.js';
 import type { LLMRequest, LLMResponse } from '../llm/LLMClient.js';
 import { EMPTY_USAGE } from '../llm/LLMClient.js';
 
@@ -241,10 +241,7 @@ describe('ClaudeCliClient buffered path regression guard (AC1)', () => {
 
 describe('ClaudeCliClient session auth env-hygiene (AC4)', () => {
   it('ClaudeCliClient can be constructed with sessionAuth=true (compile-time + runtime)', () => {
-    // Import dynamically to avoid needing a real 'claude' binary
-    const { ClaudeCliClient } = require('../llm/ClaudeCliClient.js') as {
-      ClaudeCliClient: new (opts?: { sessionAuth?: boolean }) => object;
-    };
+    // The constructor does not spawn any process, so no real 'claude' binary is needed.
     assert.doesNotThrow(() => new ClaudeCliClient({ sessionAuth: true }));
     assert.doesNotThrow(() => new ClaudeCliClient({ sessionAuth: false }));
     assert.doesNotThrow(() => new ClaudeCliClient({}));
@@ -252,10 +249,6 @@ describe('ClaudeCliClient session auth env-hygiene (AC4)', () => {
 
   it("'session' strips ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the spawned env", () => {
     // Access private spawnEnv() via any-cast — private is compile-time only in JS.
-    const { ClaudeCliClient } = require('../llm/ClaudeCliClient.js') as {
-      ClaudeCliClient: new (opts?: { sessionAuth?: boolean }) => { [key: string]: unknown };
-    };
-
     const priorKey = process.env.ANTHROPIC_API_KEY;
     const priorToken = process.env.ANTHROPIC_AUTH_TOKEN;
     try {
@@ -281,8 +274,12 @@ describe('ClaudeCliClient session auth env-hygiene (AC4)', () => {
       const inheritEnv = (inheritClient as any).spawnEnv() as NodeJS.ProcessEnv;
       assert.equal(inheritEnv.ANTHROPIC_API_KEY, 'sk-ant-test-key',
         'sessionAuth=false must leave ANTHROPIC_API_KEY intact');
-      assert.equal(inheritEnv, process.env,
-        "sessionAuth=false must return process.env reference unchanged");
+      assert.equal(inheritEnv.ANTHROPIC_AUTH_TOKEN, 'tok-test',
+        'sessionAuth=false must leave ANTHROPIC_AUTH_TOKEN intact');
+      // spawnEnv() always returns a shallow copy (not the live reference) to prevent
+      // mutation from contaminating the global process environment.
+      assert.notEqual(inheritEnv, process.env,
+        'sessionAuth=false must return a copy, not the process.env reference');
     } finally {
       if (priorKey === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = priorKey;

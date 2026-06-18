@@ -49,6 +49,12 @@ export class PlanningOutputSink {
    * Called once per streamed text delta from an LLM call. Redacts secrets
    * before buffering and before emitting the PlanningEvent — all downstream
    * consumers (the DB column, SSE, verbose terminal) receive clean text.
+   *
+   * CONTRACT: `setPhase()` must be called before any `handleChunk()` call.
+   * Chunks that arrive before the first `setPhase()` are written to the
+   * rolling buffer (and thus the DB tail) but do NOT emit an `output`
+   * PlanningEvent. In the current Planner flow the window is zero lines
+   * (setPhase is called before each agent run), so this is not reachable.
    */
   handleChunk(chunk: string): void {
     const redacted = redactSecrets(chunk);

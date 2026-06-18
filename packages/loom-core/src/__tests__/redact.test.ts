@@ -64,4 +64,26 @@ describe('redactSecrets (util/redact.ts)', () => {
     assert.ok(out.includes('sk-ant-[REDACTED]'));
     assert.ok(out.includes('ghp_[REDACTED]'));
   });
+
+  it('[AC4] GitHub other tokens preserve token-type prefix in placeholder', () => {
+    // Each token type must produce a type-specific placeholder so incident
+    // responders can identify which credential family to rotate.
+    const oauthTok = 'gho_' + 'A'.repeat(25);
+    const userTok = 'ghu_' + 'B'.repeat(25);
+    const serverTok = 'ghs_' + 'C'.repeat(25);
+    const actionTok = 'ghf_' + 'D'.repeat(25);
+
+    assert.equal(redactSecrets(`tok=${oauthTok}`), 'tok=gho_[REDACTED]');
+    assert.equal(redactSecrets(`tok=${userTok}`), 'tok=ghu_[REDACTED]');
+    assert.equal(redactSecrets(`tok=${serverTok}`), 'tok=ghs_[REDACTED]');
+    assert.equal(redactSecrets(`tok=${actionTok}`), 'tok=ghf_[REDACTED]');
+  });
+
+  it('[AC4] GITHUB_OTHER redaction is idempotent (placeholder never re-matches)', () => {
+    const tok = 'gho_' + 'A'.repeat(25);
+    const once = redactSecrets(tok);
+    const twice = redactSecrets(once);
+    assert.equal(once, twice, 'second pass must produce same result as first');
+    assert.equal(once, 'gho_[REDACTED]');
+  });
 });

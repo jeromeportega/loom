@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { EMPTY_USAGE } from './LLMClient.js';
 import type { LLMClient, LLMRequest, LLMResponse, LLMMessage, LLMUsage } from './LLMClient.js';
+import { redactSecrets } from '../util/redact.js';
 
 export interface ClaudeCliClientOptions {
   /** Binary to invoke. Default: "claude". */
@@ -130,7 +131,7 @@ export class ClaudeCliClient implements LLMClient {
           continue;
         }
         throw new Error(
-          `claude CLI exited ${proc.code}: ${(proc.lastLine ?? '').slice(0, 500)}`
+          `claude CLI exited ${proc.code}: ${redactSecrets((proc.lastLine ?? '').slice(0, 500))}`
         );
       }
       return proc.response;
@@ -143,7 +144,7 @@ export class ClaudeCliClient implements LLMClient {
 
   /** Returns the env to pass to the subprocess. Strips API keys when sessionAuth=true. */
   private spawnEnv(): NodeJS.ProcessEnv {
-    if (!this.sessionAuth) return process.env;
+    if (!this.sessionAuth) return { ...process.env };
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_AUTH_TOKEN;
@@ -299,7 +300,7 @@ export class ClaudeCliClient implements LLMClient {
         clearTimeout(timer);
         resolve({
           code: null,
-          response: { text: accText || stderrBuf, usage, model, stopReason: 'end_turn' },
+          response: { text: accText || redactSecrets(stderrBuf), usage, model, stopReason: 'end_turn' },
           success: false,
           timedOut,
           spawnError: err.message,
@@ -315,7 +316,7 @@ export class ClaudeCliClient implements LLMClient {
         if (stdoutBuf.trim()) processLine(stdoutBuf);
         resolve({
           code,
-          response: { text: accText || stderrBuf, usage, model, stopReason: 'end_turn' },
+          response: { text: accText || redactSecrets(stderrBuf), usage, model, stopReason: 'end_turn' },
           success,
           timedOut,
           lastLine: lastLine || stderrBuf,

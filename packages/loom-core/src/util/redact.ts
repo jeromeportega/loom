@@ -4,8 +4,10 @@
 const SK_ANT = /sk-ant-[A-Za-z0-9_\-]{10,}/g;
 const GITHUB_PAT_FINEGRAINED = /github_pat_[A-Za-z0-9_]{20,}/g;
 const GITHUB_PAT_CLASSIC = /ghp_[A-Za-z0-9]{20,}/g;
-// OAuth (gho_), user-to-server (ghu_), server-to-server (ghs_), fine-grained (ghf_)
-const GITHUB_OTHER = /gh[oushf]_[A-Za-z0-9]{20,}/g;
+// OAuth (gho_), user-to-server (ghu_), server-to-server (ghs_), fine-grained actions (ghf_).
+// Uses a capture group so the placeholder preserves the token-type prefix — incident
+// responders can identify which credential family to rotate.
+const GITHUB_OTHER = /gh([ousf])_[A-Za-z0-9]{20,}/g;
 
 /**
  * Replaces known secret patterns in `chunk` with inert placeholders.
@@ -19,5 +21,5 @@ export function redactSecrets(chunk: string): string {
     .replace(SK_ANT, 'sk-ant-[REDACTED]')
     .replace(GITHUB_PAT_FINEGRAINED, 'github_pat_[REDACTED]')
     .replace(GITHUB_PAT_CLASSIC, 'ghp_[REDACTED]')
-    .replace(GITHUB_OTHER, 'ghs_[REDACTED]');
+    .replace(GITHUB_OTHER, (_m, c: string) => `gh${c}_[REDACTED]`);
 }

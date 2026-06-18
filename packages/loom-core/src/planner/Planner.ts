@@ -135,7 +135,10 @@ export class Planner {
     // wrap is transparent — no agent needs to be modified.
     const wrappedLlm: LLMClient = {
       complete: (req) =>
-        this.opts.llm.complete({ ...req, onText: (d) => sink.handleChunk(d) }),
+        this.opts.llm.complete({
+          ...req,
+          onText: (d) => { req.onText?.(d); sink.handleChunk(d); },
+        }),
     };
 
     const ctx: PlannerContext = {
