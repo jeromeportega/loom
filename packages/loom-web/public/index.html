@@ -747,7 +747,7 @@
               if (badge) {
                 const label = e.status === 'planning' && e.planning_phase
                   ? `planning · ${e.planning_phase}`
-                  : e.status.replace('_', ' ');
+                  : (STATUS_LABELS[e.status] || e.status.replace('_', ' '));
                 badge.textContent = label;
                 const pulse = e.status === 'planning' || e.status === 'in_progress' ? ' pulse' : '';
                 badge.className = `epic-status ${e.status}${pulse}`;
