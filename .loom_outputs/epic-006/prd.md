@@ -1,40 +1,56 @@
-# Remove BMAD Scaffolding — Loom Prunes Its Own Vendored Skills
+# Robust Epic Finalization and Guard-Compatible Release Flow
 
 ## Overview
 
-Loom's repository carries ~44 vendored `bmad-*` skills in each of two IDE-command directories (`.agents/skills/` and `.claude/skills/`), a holdover from when loom planned via a third-party (BMAD) workflow. Loom now plans and builds itself with its own personas (`packages/loom-core/personas/`) and five ported, loom-native review/verify skills under `skills/`; the autonomous worker pipeline never loads the IDE-command directories. This epic dogfoods loom to prune its own scaffolding: delete every `bmad-*` directory from both IDE-command folders, preserve all `loom-*` commands and loom-native skills/personas, reconcile the `docs/` tree so nothing references a removed skill, and ship one clean PR with no source or behavior changes to loom-core/cli/mcp/web.
+Loom currently conflates infrastructure and publish friction with genuine failure: a fully-completed, gate-green epic can be marked `failed` when its finalize push is rejected as non-fast-forward (force push being correctly blocked by the guard), and there is no recovery command to rescue it. Separately, loom's own protected-branch guard blocks the operator from cutting a records-only version release, so the documented release flow cannot run inside a loom-governed repo. This PRD makes finalization and release **publish-failure tolerant without weakening any guard**: finalize pushes to a fresh, finalizer-owned ref; publish-pending work lands in a recoverable non-terminal state; an operator command drives stranded green epics to `done`; and a guard-compatible release path ships version bumps through a PR.
 
 ## Goals
 
-1. **Leaner, legible skill surface** — `.agents/skills/` and `.claude/skills/` contain only `loom-*` entries; zero `bmad-*` directories remain in either folder.
-2. **Docs consistency** — `git grep -i bmad` over `docs/` returns nothing that references a removed skill.
-3. **No regression in autonomous capability** — `npm run build` and `npm run test` are green across all workspace packages; no test references a removed bmad skill.
-4. **Documented decision** — one clean PR whose body explains the 5-of-44 ported rationale and confirms the removal drops manual IDE commands, not autonomous capability.
+1. **A gate-green epic never reports as `failed` due to publish friction.** Metric: a finalize push that would be non-fast-forward instead succeeds to a fresh finalizer-owned ref and opens the PR, with **zero force pushes**; 100% of done-and-gate-green epics land in `done` or a recoverable state, never terminal `failed`.
+2. **Operators can recover a stranded green epic with one command.** Metric: a single recovery command takes a publish-pending epic to `done`, opening the PR from the gate-green branch and recording the epic PR URL.
+3. **Records-only releases ship inside a loom repo under the guard.** Metric: a version release completes with **zero hand-made release branches** and **zero direct pushes to `main`**, running under the protected-branch guard.
+4. **The lifecycle tells the truth about what went wrong.** Metric: `failed` is reserved for genuine infrastructure failure and `rejected` for human decisions; the new publish-pending state is distinct, labeled, and never assigned to in-flight epics by migration.
 
 ## User Stories
 
-- **Must** — As a loom maintainer, I want the vendored `bmad-*` directories gone so the repo's skill surface is unambiguously loom-native and lighter to maintain.
-- **Must** — As a new contributor or evaluator, I want docs that reference only skills that still exist, so loom's actual architecture is legible at a glance.
-- **Should** — As a reviewer of the PR, I want the rationale (5 ported, ~39 removed manual IDE commands) stated explicitly, so the loss of IDE slash commands is a documented decision, not a surprise.
+- **As a loom operator,** I want a gate-green epic whose publish step fails to land in a clearly-labeled recoverable state, so that I know the work is done and only publishing remains. *(Must)*
+- **As a loom operator,** I want a recovery command that drives a stranded green epic to `done`, so that I don't have to hand-craft branches or re-run an entire epic. *(Must)*
+- **As a loom operator,** I want to cut a records-only version release through a PR rather than a blocked push to `main`, so that the release ships inside a loom repo without fighting the guard. *(Must)*
+- **As a loom maintainer dogfooding loom,** I want status surfaces to distinguish "work complete / publish pending" from real failure, so that the lifecycle reflects what actually happened. *(Should)*
+- **As an operator following the docs,** I want the releasing runbook to match the implemented flow, so that the written process actually works inside a loom repo. *(Should)*
 
 ## Functional Requirements
 
-- **FR-1** — Delete every `bmad-*` directory under `.agents/skills/` (~44).
-- **FR-2** — Delete every `bmad-*` directory under `.claude/skills/` (~44).
-- **FR-3** — Preserve every `loom-*` slash command in both directories (`loom-approve`, `loom-epic`, `loom-status`, `loom-ux-designer`, and any others); make no change under `skills/` or `packages/loom-core/personas/`.
-- **FR-4** — Grep the `docs/` tree for `bmad` and update every hit so no document references a removed skill. Known references include `docs/architecture/index.md`, `docs/reviews/epic-2-review.md`, `docs/testing/runbook.md`, `docs/operations/bootstrap.md`, `docs/research/live-agent-guidance.md`, and `docs/capabilities.md`.
-- **FR-5** — In `docs/capabilities.md`, remove rows for vendored BMAD skills and make no other edits to that page.
-- **FR-6** — Run a repo-wide `git grep -i bmad` (beyond `docs/`) and update any `loom-*` command, code comment, README, config, or CI reference that names a removed skill; deletion of a directory alone is insufficient if a `loom-*` internal still references it.
-- **FR-7** — Confirm via grep across the test tree that no test, fixture, or snapshot references a removed bmad skill; do not rely on a green run alone.
-- **FR-8** — Deliver as a single PR whose body states that only 5 of ~44 skills were ported (the review/verify skills) and that the removed ~39 were operator-facing IDE slash commands never used by loom's autonomous pipeline.
+- **FR-1** `EpicFinalizer` pushes the integrated epic branch to a **fresh, uniquely-named finalizer-owned ref**; it never reuses a ref that rolling integration may have touched.
+- **FR-2** The finalizer-owned ref name is **deterministic and collision-proof** across retries and concurrent epics (e.g., epic-id plus a finalize suffix).
+- **FR-3** Finalization **never issues a force push** under any condition; a non-fast-forward situation is resolved by the fresh ref (FR-1), not by overriding the remote.
+- **FR-4** When all stories are `done` and the integration gate passed but push/PR fails, the epic enters a **new recoverable, non-terminal state** that is distinct from both terminal `failed` and `rejected`.
+- **FR-5** Status output for a recoverable epic surfaces a **clear "work complete / publish pending" label**, not a failure indication.
+- **FR-6** An **operator recovery command** drives such an epic to `done` by: opening the PR from the already-integrated, gate-green branch; recording the epic PR URL; and flipping the epic state to `done`.
+- **FR-7** The recovery command is **distinguishable to the operator from `reconcile`**, and existing `reconcile` (gate-blocked) behavior is unchanged.
+- **FR-8** Introducing the new state must **not misclassify epics already in flight**; persisted state and any state-machine guards handle the new state additively.
+- **FR-9** A **guard-compatible release path** cuts a records-only version release by: bumping the version via the **existing versioning script**; opening a **release PR** (no direct push to `main`); and pushing the tag after merge.
+- **FR-10** The release path runs **under the protected-branch guard** with no hand-made release branch and no blocked push to `main`; tag-ref push is confirmed permitted by the guard (or the operator step to push it is defined).
+- **FR-11** `docs/capabilities.md` and the **releasing runbook** are updated in the same PR to reflect any new CLI command/policy knob and the implemented release flow.
+
+## Non-Functional Requirements
+
+- **NFR-1** The protected-branch guard and force-push prohibition remain **fully in force for worker agents**; nothing here loosens what workers may do.
+- **NFR-2** **No force push anywhere** in any new or modified flow.
+- **NFR-3** The honest lifecycle distinction is preserved: `failed` = real infrastructure failure, `rejected` = human decision; the new recoverable state must not blur these.
+- **NFR-4** **Integration gate behavior is unchanged.**
 
 ## Epics
 
-- **epic-001 — Remove BMAD scaffolding and reconcile docs.** One cohesive deletion-plus-docs change; the brief describes a single shipping unit (one clean PR).
+This brief addresses **two separately-deliverable failures** with two independently-shippable solutions, so it breaks into two epics:
+
+- **epic-001 — Collision-free finalization, recoverable lifecycle state, and operator recovery command.** Covers FR-1 through FR-8 and NFR-1 through NFR-4. Resolves Failure 1 (a green epic stranded as `failed`).
+- **epic-002 — Guard-compatible release flow and documentation parity.** Covers FR-9 through FR-11. Resolves Failure 2 (releases can't run inside a loom repo). Independently deliverable: records-only releases occur on their own cadence, decoupled from epics.
 
 ## Out of Scope
 
-- Any source or behavior change to loom-core, loom-cli, loom-mcp, or loom-web.
-- Removing or altering `packages/loom-core/personas/` or the five ported `skills/` (adversarial-review, edge-case-hunter, failure-investigator, lesson-extractor, doc-distiller).
-- Porting any additional bmad skills — the decision stands that 5 ported skills are enough.
-- Splitting the work across multiple PRs.
+- Garbage-collection / cleanup policy for stale finalizer-owned branches (revisit only if trivial).
+- Any change to integration-gate logic or behavior.
+- Loosening protected-branch or force-push restrictions for worker agents.
+- Release types beyond the records-only version bump (e.g., multi-package or non-records releases).
+- Coupling the version bump into an epic PR (the standalone release path is chosen instead).

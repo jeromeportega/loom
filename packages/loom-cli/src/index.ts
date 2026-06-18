@@ -15,6 +15,7 @@ import { runStop, spec as stopSpec } from './commands/stop.js';
 import { runRevert, spec as revertSpec } from './commands/revert.js';
 import { runReconcile, spec as reconcileSpec } from './commands/reconcile.js';
 import { runPublish, spec as publishSpec } from './commands/publish.js';
+import { runRelease, spec as releaseSpec } from './commands/release.js';
 import { runGuide, spec as guideSpec } from './commands/guide.js';
 import { runMcpList, runMcpAdd, specList as mcpListSpec, specAdd as mcpAddSpec } from './commands/mcp.js';
 import { runDoctor, spec as doctorSpec } from './commands/doctor.js';
@@ -227,6 +228,12 @@ applySpec(program.command('reconcile'), reconcileSpec)
 applySpec(program.command('publish'), publishSpec)
   .action((epicId: string) => {
     runPublish(epicId);
+  });
+
+// ─── loom release ────────────────────────────────────────────────────────────
+applySpec(program.command('release'), releaseSpec)
+  .action((version: string) => {
+    runRelease(version);
   });
 
 // ─── loom diff ────────────────────────────────────────────────────────────
