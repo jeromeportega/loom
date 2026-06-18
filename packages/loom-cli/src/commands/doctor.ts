@@ -60,15 +60,8 @@ export function cursorModelCheck(
   };
 }
 
-/**
- * `loom doctor` check for .loom/policy.yaml validation.
- * Returns a failed check with structured detail when the policy contains invalid knobs,
- * using the shared FR-1 render path so detail cannot drift from the load-path message.
- * A valid policy yields a passing check; an invalid one yields `required: true` so
- * doctor's existing non-zero exit fires without a new exit path.
- */
+// Validates .loom/policy.yaml; required:true so doctor's existing exit fires on failure.
 export function policyValidationCheck(projectRoot: string): Check {
-  const policyPath = path.join(projectRoot, '.loom', 'policy.yaml');
   try {
     PolicyEngine.load(path.join(projectRoot, '.loom'));
     return { name: 'policy', ok: true, required: true, detail: 'policy.yaml is valid' };
@@ -82,7 +75,8 @@ export function policyValidationCheck(projectRoot: string): Check {
       };
     }
     if (e instanceof ZodError) {
-      // Handles the current code path before PolicyEngine wraps ZodError in PolicyValidationError
+      // PolicyEngine throws raw ZodError until story-011-002 lands; remove this branch after.
+      const policyPath = path.join(projectRoot, '.loom', 'policy.yaml');
       const issues = describePolicyIssues(e);
       return {
         name: 'policy',
@@ -169,8 +163,8 @@ export function runDoctor(): void {
   if (initialized) {
     try {
       checks.push(policyValidationCheck(process.cwd()));
-    } catch {
-      // IO/parse errors — not surfaced here
+    } catch (e) {
+      checks.push({ name: 'policy', ok: false, required: true, detail: e instanceof Error ? e.message : String(e) });
     }
 
     try {

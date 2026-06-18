@@ -1,11 +1,6 @@
-/**
- * Tests for the policy-validation check added to `loom doctor` (story-011-003).
- * Unit tests call `policyValidationCheck` directly; subprocess tests assert the
- * exit code and rendered output of `loom doctor` against a live temp directory.
- */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,7 +21,7 @@ function capture(
   cwd: string
 ): { stdout: string; stderr: string; status: number } {
   try {
-    const stdout = execSync(`node "${LOOM_CLI}" ${args.join(' ')}`, {
+    const stdout = execFileSync('node', [LOOM_CLI, ...args], {
       cwd,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
