@@ -41,10 +41,9 @@ export function parseDocumentedTokens(markdown: string, kind: 'command' | 'knob'
   }
 
   const region = markdown.slice(startIdx + startMarker.length, endIdx);
-  // Create a fresh regex per call — avoids shared-lastIndex state with the /g flag.
   const re =
     kind === 'command'
-      ? /`loom ([^`]+)`/g
+      ? /`loom (\S[^`]*)`/g
       : /`policy\.([^`]+)`/g;
 
   const tokens = new Set<Token>();
@@ -69,7 +68,14 @@ export function checkCapabilitiesCoverage(opts?: {
 }): CoverageReport {
   const root = opts?.root ?? repoRoot();
   const capPath = join(root, 'docs', 'capabilities.md');
-  const markdown = readFileSync(capPath, 'utf8');
+  let markdown: string;
+  try {
+    markdown = readFileSync(capPath, 'utf8');
+  } catch (err) {
+    throw new Error(
+      `coverage-check: cannot read ${capPath} — ${(err as NodeJS.ErrnoException).message}`
+    );
+  }
 
   const liveCommands = operatorCommands(opts?.program);
   const liveKnobs = operatorKnobs(join(root, 'schemas', 'policy.schema.yaml'));
