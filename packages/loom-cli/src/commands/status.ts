@@ -26,7 +26,10 @@ const STATUS_ICONS: Record<string, string> = {
   rejected: '✗ ',
   in_progress: '🔄',
   finalizing: '🚀',
+  publish_pending: '📦',
 };
+
+const PUBLISH_PENDING_LABEL = 'work complete · publish pending';
 
 /**
  * The live phase suffix for an epic, mirroring the ADR-1 symmetry between the
@@ -284,8 +287,10 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
       // ADR-1 symmetric overlay: show the live planning/finalize phase next to
       // the status instead of the opaque `(planning…)` placeholder title.
       const phase = epicPhaseSuffix(epic);
+      const statusLabel =
+        epic.status === 'publish_pending' ? PUBLISH_PENDING_LABEL : epic.status;
       console.log(
-        `\n   ${icon} Epic ${epic.id}: ${epic.title}  [${epic.status}${phase}]${archivedTag}`
+        `\n   ${icon} Epic ${epic.id}: ${epic.title}  [${statusLabel}${phase}]${archivedTag}`
       );
 
       if (epic.epic_pr_url) {
@@ -293,6 +298,9 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
       }
       if (epic.status === 'failed' && epic.error) {
         console.log(`        error: ${epic.error}`);
+      }
+      if (epic.status === 'publish_pending' && epic.publish_note) {
+        console.log(`        note: ${epic.publish_note}`);
       }
       if (deriveBlocked(epic)) {
         console.log(`        blocked: integration_gate`);

@@ -15,7 +15,7 @@ describe('Database migration v17/v18', () => {
     const row = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(row.version, 18);
+    assert.equal(row.version, 19);
 
     const tbl = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='signals'")
@@ -117,7 +117,7 @@ describe('Database migration v17/v18', () => {
     const ver = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(ver.version, 18);
+    assert.equal(ver.version, 19);
 
     const tbl = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='signals'")
@@ -139,7 +139,7 @@ describe('Database migration v17/v18', () => {
     const ver = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(ver.version, 18);
+    assert.equal(ver.version, 19);
   });
 });
 

@@ -379,4 +379,38 @@ export class EpicStore {
       .prepare('UPDATE epics SET proposed_by = ?, updated_at = ? WHERE id = ?')
       .run(proposedBy, new Date().toISOString(), epicId);
   }
+
+  // ─── Publish-pending lifecycle (v19, epic-005 story-005-002) ─────────────
+
+  /**
+   * Transitions the epic to the recoverable `publish_pending` state after the
+   * finalizer successfully pushed the branch but the PR step failed. Mirrors the
+   * shape of `fail()` and `recordPrUrl()` — one atomic write covering the status
+   * change, the finalizer-owned ref, and the human-readable reason. The
+   * finalize_phase overlay is cleared because the finalize run is no longer
+   * in flight; it will be resolved by `loom publish`.
+   *
+   * Called exclusively by the EpicFinalizer; never triggered by migration.
+   */
+  publishPending(id: string, finalizeRef: string, note: string): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET status = 'publish_pending', finalize_ref = ?,
+                          publish_note = ?, finalize_phase = NULL,
+                          updated_at = ? WHERE id = ?`
+      )
+      .run(finalizeRef, note, new Date().toISOString(), id);
+  }
+
+  /**
+   * Records the finalizer-owned ref alone, without changing status. Used when
+   * the finalizer pushes the branch and needs to persist the ref before
+   * attempting to open the PR (so the ref is durable even if the PR step
+   * fails and triggers a `publishPending` write).
+   */
+  recordFinalizeRef(id: string, ref: string): void {
+    this.db
+      .prepare('UPDATE epics SET finalize_ref = ?, updated_at = ? WHERE id = ?')
+      .run(ref, new Date().toISOString(), id);
+  }
 }

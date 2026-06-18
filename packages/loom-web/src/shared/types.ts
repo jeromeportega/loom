@@ -15,6 +15,7 @@ export interface EpicStatus {
     | 'approved'
     | 'in_progress'
     | 'finalizing'
+    | 'publish_pending'
     | 'failed'
     | 'done'
     | 'rejected';

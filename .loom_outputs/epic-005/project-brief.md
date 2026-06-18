@@ -1,69 +1,64 @@
-# Loom Flywheel — Self-Learning from Finished Epics
+# Robust Epic Finalization and Guard-Compatible Release Flow
 
 ## The Problem
 
-Loom completes epics but learns nothing from them. Every finished epic leaves behind rich telemetry — decision traces, review summaries, retry and handoff history, audit logs — yet that signal evaporates the moment an epic reaches terminal state. The next epic starts as naive as the last. Improvement today requires a human to run retrospectives manually, read the telemetry, and hand-feed insights back into worker context. For a capped-usage, high-autonomy operator, that human-in-the-loop retrospective is exactly the kind of recurring toil loom exists to eliminate.
+Loom can complete all the hard work of an epic — every story done, the integration gate green — and still report the epic as a **failure** because of a publish-step mishap. Two failures were observed while dogfooding loom on itself:
 
-Two prior capabilities set the stage but stop short: v3.0 Signal Scout added *discovery* (signals → opportunities → gated scoping), and epic-001 shipped a `lesson-extractor` skill — but only as a callable stub with no real handler. The learning loop is wired but dead.
+1. **A green epic stranded as failed.** During rolling integration, the remote epic branch diverged from the local one. When `EpicFinalizer` tried to push the integrated branch, the push was rejected as non-fast-forward; force push is (correctly) blocked by the policy guard; loom then marked the entire epic `failed`. A complete, gate-green epic was reported as a failure — and there is **no recovery command**: `reconcile` only targets in-progress, gate-blocked epics; `retry` is per-story; there is no re-finalize action.
+
+2. **Releases can't run inside a loom repo.** Cutting a records-only version release requires pushing the bump commit to `main`. Loom's own protected-branch guard blocks that push for everyone, including the operator. The documented release flow cannot run; a hand-made release branch and PR is the only path.
+
+The unifying failure mode: **infrastructure/publish friction is being conflated with genuine failure**, and the operator has no clean path through either case.
 
 ## Target Users
 
-- **Primary — the loom operator** (Jerome / any solo-or-small-team maintainer running loom on their own repo). Wants each completed epic to make the next one measurably better without manually running retros, while retaining a hard approval gate before any proposed work executes.
-- **Secondary — future loom workers.** They are the *consumers* of learning: applicable lessons must reach their assembled prompts so they avoid repeating prior mistakes.
-- **Anti-persona — the operator who wants an autonomous daemon.** Flywheel deliberately does **not** serve anyone seeking a self-triggering, self-approving, self-executing system. Every proposal and policy change is a suggestion that waits for an explicit human decision.
+- **Primary — the loom operator** running epics and cutting releases inside a loom-governed repo. They need a green epic to reach `done`, and a release to ship, without fighting the guard or hand-crafting branches.
+- **Secondary — loom maintainers dogfooding loom on itself**, who hit these exact failures and need the lifecycle to tell the truth about what actually went wrong.
+- **Anti-persona — the worker agent.** Nothing here loosens what workers may do. The protected-branch guard and force-push prohibition remain fully in force for them.
 
 ## Proposed Solution
 
-Close the self-improvement loop in three stages, each reusing existing loom machinery rather than inventing new seams:
+Make finalization and release **publish-failure tolerant** without weakening any guard:
 
-1. **Auto-retrospective.** On epic completion (`done` *or* `failed`), loom gathers that epic's telemetry, makes one batched `lesson-extractor` LLM call, and persists structured lessons to a new `lessons` table. The retro is best-effort — it can never block or fail the epic's finalization.
-2. **Lesson application.** Applicable lessons are injected into future workers' prompts through the existing operator-guidance / context-notes seam, and recorded on the lesson as applied. A second mode writes policy *suggestions* (humans change policy — loom never auto-applies).
-3. **Self-proposal.** On explicit operator action only, loom combines its top-ranked lessons with top open opportunities into a brief, runs it through the existing brief gate and planner, and lands a real `planned` + `manual` epic in the decision inbox — marked as proposed by loom, frozen until a human approves.
-
-A read-only **flywheel view** in mission control surfaces lessons learned (and where each was applied) plus current self-proposals.
-
-The unifying principle: **loom learns and suggests; humans decide and execute.** No scheduler, no auto-trigger, no auto-apply, no self-execution.
+- Finalize to a **fresh, finalizer-owned branch ref** so the PR always opens from a clean branch that rolling integration never touched — eliminating the non-fast-forward collision at its source.
+- Introduce a **recoverable, non-terminal epic state** for "work complete, only publish remains," distinct from terminal `failed`.
+- Give the operator a **recovery command** that drives such an epic to `done`.
+- Provide a **guard-compatible release path** so version releases ship through a PR rather than a direct push to `main`.
 
 ## Key Capabilities
 
-1. **Real lesson extraction** — make `lesson-extractor` a genuine LLM-backed handler (mirroring the reviewer-skill factory pattern), loading SKILL.md as a cached system prefix, sending epic telemetry as the user message, parsing to the existing `Lesson` schema.
-2. **Auto-retro on terminal state** — hook the EpicFinalizer/Supervisor finalize path; one batched call per retro; persist lessons via a new `LessonStore`.
-3. **Lesson persistence** — schema v18 `lessons` table (epic_id, category, observation, root_cause, general_rule, evidence, applied_as, applied_ref, created_at), additive and backward-compatible.
-4. **Guidance injection** — at least one persisted lesson demonstrably reaches a later worker's assembled prompt via the existing guidance/context seam.
-5. **Policy suggestion mode** — a recorded suggestion artifact/audit row that never mutates policy.
-6. **Explicit self-proposal** — `proposeNextEpic()` exposed via CLI (`loom propose`), a mission-control button, and an MCP tool, producing a gated `planned` + `manual` epic.
-7. **Flywheel view** — `GET /api/lessons` (federated, read-only) plus a board rendering lessons and self-proposals, with an empty state.
+1. **Collision-free finalize push.** `EpicFinalizer` pushes the integrated epic branch to a fresh, uniquely named ref it owns — never reusing a ref rolling integration may have diverged. No force push, ever.
+2. **Recoverable lifecycle state.** When all stories are done and the gate passed but push/PR fails, the epic lands in a clearly labeled recoverable state, not terminal `failed`.
+3. **Honest status surfaces.** Status output communicates that the work is complete and only the publish step remains.
+4. **Operator recovery command.** A way to drive a stranded green epic to `done` after the fact — open the PR from the already-integrated, gate-green branch, record the epic PR URL, flip the epic to `done`.
+5. **Guard-compatible release.** Cut a records-only version release without a hand-made release branch or a blocked push to `main`.
+6. **Documentation parity.** The releasing runbook documents the chosen flow so the written process actually works inside a loom repo.
 
 ## Constraints
 
-- **Reuse over reinvention** (verified on main): `lesson-extractor` skill, `Lesson` schema (`findings/lesson.ts`), decision-traces / review-summary / handoff / audit-log telemetry sources, Planner + BriefRefiner + EpicStore lifecycle, `OpportunityStore`, the guidance/context-notes injection seam, and the `SkillGenerator`/`SkillJudge` path. Do not redefine these.
-- **Reviewer-bug regression guard:** handler-owned fields (e.g. `source`) MUST be injected *before* the zod parse. The reviewer handler validated before stamping and every finding failed — do not repeat.
-- **Finalize is sacred:** auto-retro must never block or fail epic completion. LLM unavailable or malformed → one repair attempt, then skip-with-audit-note.
-- **Cost discipline:** exactly one batched LLM call per retro and per proposal (capped-usage operator). LLM is injectable and stubbed in tests.
-- **Gating is non-negotiable:** proposed epics MUST be `planned` + `manual`; policy suggestions never auto-apply; no scheduler/daemon/auto-trigger/auto-execute anywhere.
-- **Schema:** bump `Database.ts` `SCHEMA_VERSION` 17 → 18, idempotent `CREATE TABLE IF NOT EXISTS`; pre-v18 DBs auto-create.
-- **Testing/web invariants:** every new web route covered by a real-`createApp` test (the epic-003 orphaned-route lesson); all new mutations token-gated and audit-logged.
-- **Docs:** update `docs/capabilities.md` (add flywheel/lessons surfaces; move any relevant "what loom does NOT do" entry). `npm run build` + `npm run test` green across all workspaces.
-
-### Scope guardrail (this is the v4.0 *stretch* epic)
-
-If a time/cost ceiling is hit, ship in strict priority and stop: (1) auto-retro + lessons persistence → (2) guidance injection → (3) self-proposal → (4) flywheel view. Items 1–2 alone demonstrate "loom learns."
-
-**Explicitly out of scope:** auto-applying policy changes; auto-triggering self-proposal or any scheduler; auto-executing proposed epics; model-level/fine-tuning learning (this is file/db/skill/prompt-level only); perfect lesson quality (loop existing end-to-end beats lesson polish).
+- **Do not weaken the protected-branch guard for worker agents.**
+- **No force push anywhere.**
+- **Preserve the honest lifecycle distinction:** `failed` = real infrastructure failure; `rejected` = human decision. The new recoverable state must not blur these.
+- **Integration gate behavior is unchanged.**
+- **Do not break existing `reconcile` behavior** for the gate-blocked case.
+- Reuse the existing versioning script for any version bump.
+- Per repo policy, any user-visible CLI command or policy knob added here must be reflected in `docs/capabilities.md` in the same PR.
 
 ## Risks and Open Questions
 
-- **Lesson relevance matching.** Capability #4 hinges on deciding *which* lessons apply to *which* future worker. The brief specifies matching a lesson's `general_rule` to an epic/story area but not the matching mechanism. `[ASSUMPTION]` a simple area/category keyword match suffices for v4.0; semantic matching is out of scope. The PM/architect should pin this down — it is the riskiest under-specified seam.
-- **Lesson ranking for self-proposal.** "Top-ranked lessons" and "top open opportunities" need a defined ordering. `[ASSUMPTION]` recency + category frequency is acceptable for v4.0; no scoring model implied.
-- **Retro telemetry completeness.** A `failed` epic may have sparse or malformed telemetry. The skip-with-audit path covers LLM failure, but `[ASSUMPTION]` an epic with zero usable telemetry should produce zero lessons cleanly (not an error) — confirm the empty-input contract.
-- **Lesson table growth / dedup.** No dedup or retention policy is specified. `[ASSUMPTION]` unbounded append is acceptable at v4.0 scale; flag if the flywheel view becomes noisy.
-- **"At least one MORE application mode."** Policy-suggestion is the required second mode; skill-generation is explicitly optional/stretch. Confirm policy-suggestion alone satisfies the success bar.
+- **Recovery surface — extend `reconcile` vs. add a `finalize` command.** The brief permits either. `[ASSUMPTION]` A dedicated `loom finalize` (or `reconcile --finalize`) reads more clearly than overloading `reconcile`, which today means "unblock a gate-blocked epic." Final choice deferred to the PM/architect, but the two recovery semantics should stay distinguishable to the operator.
+- **Release approach — fold-into-epic-PR vs. dedicated `loom release` command.** The brief requires choosing exactly one. `[ASSUMPTION]` A standalone `loom release` (bump via the existing script → open release PR → push tag after merge) is more broadly useful than coupling the version bump to an epic PR, since records-only releases occur independently of epics. Decision owned by PM/architect.
+- **Tag push after merge.** A guard-compatible release still needs the post-merge tag push to succeed; confirm tag refs are not caught by the protected-branch guard, or define how the operator pushes the tag. `[ASSUMPTION]` Tag pushes are permitted by the guard; verify before relying on it.
+- **Naming scheme for finalizer-owned refs.** Must be collision-proof across retries and concurrent epics; needs a deterministic, conflict-free convention. `[ASSUMPTION]` An epic-id-plus-finalize-suffix ref is sufficient.
+- **State-name and migration.** Introducing a new lifecycle state may touch stored epic state, status rendering, and any state machine guards; existing epics in flight must not be misclassified.
+- **Stale finalizer branches.** Fresh-ref-per-finalize may accumulate abandoned branches; cleanup policy is an open question (out of scope unless trivial).
 
 ## Success Criteria
 
-- `lesson-extractor` is a real LLM-backed handler (stubbed in tests) that parses lessons, with handler-owned fields injected before parse — proven by a regression test using a field-less model response.
-- On an epic reaching `done`/`failed`, an auto-retro persists ≥1 lesson to the `lessons` table from that epic's real telemetry (test with stubbed LLM + seeded telemetry), and finalize never fails due to the retro.
-- At least one persisted lesson is injected into a subsequent worker's assembled prompt via the guidance/context seam (test). A `policy_suggestion` lesson records a suggestion without changing policy.
-- `proposeNextEpic()` (explicit trigger) produces a real `planned` + `manual` epic marked `proposed_by='loom'`, passes the brief gate, surfaces in `GET /api/inbox`, and stays `planned` until explicit approval (test). A structural test proves no auto-trigger/auto-approve path exists.
-- `GET /api/lessons` serves the flywheel data (real-`createApp` test); the board renders lessons + self-proposals with an empty state.
-- `docs/capabilities.md` updated; `npm run build` + `npm run test` green across all workspaces.
+1. A finalize whose epic-branch push would be non-fast-forward instead pushes to a fresh finalizer-owned ref and opens the PR successfully — **with no force push**.
+2. An epic that is fully done and gate-green but cannot complete the publish step lands in a **recoverable, non-terminal state with a clear label**, not the terminal `failed` used for genuine failures; status surfaces show work complete / publish pending.
+3. An **operator command** takes such an epic to `done` by opening the PR from the gate-green epic branch and recording the epic PR URL.
+4. Cutting a **records-only version release no longer requires a hand-made release branch**, and the release runs under the protected-branch guard.
+5. The **releasing runbook** documents a flow that works inside a loom repo and matches the implemented approach.
+6. Existing `reconcile` (gate-blocked) behavior and the `failed`/`rejected` distinction are preserved.
+7. **The full build and test suite pass.**

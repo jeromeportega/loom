@@ -78,8 +78,8 @@ describe('v14 → v15 migration', () => {
 
     runMigrations(db);
 
-    // Version bumped to current (v17 includes all prior columns plus signals/opportunities).
-    assert.equal(schemaVersion(db), 18);
+    // Version bumped to current (v19 includes all prior columns plus publish-pending columns).
+    assert.equal(schemaVersion(db), 19);
 
     // The three v15 columns now exist.
     const after = epicColumns(db);
@@ -116,7 +116,7 @@ describe('v14 → v15 migration', () => {
     runMigrations(db);
     // Second run against the current schema must be a no-op, not an error.
     assert.doesNotThrow(() => runMigrations(db));
-    assert.equal(schemaVersion(db), 18);
+    assert.equal(schemaVersion(db), 19);
 
     // The guarded blocks must not have added duplicate columns.
     const cols = epicColumns(db);
@@ -135,7 +135,7 @@ describe('v14 → v15 migration', () => {
     const dbPath = path.join(tmpDir, 'fresh.db');
     const db = createDatabase(dbPath);
 
-    assert.equal(schemaVersion(db), 18);
+    assert.equal(schemaVersion(db), 19);
     const cols = epicColumns(db);
     assert.ok(cols.includes('finalize_phase'));
     assert.ok(cols.includes('epic_pr_url'));
@@ -144,6 +144,8 @@ describe('v14 → v15 migration', () => {
     assert.ok(cols.includes('paused_at'));
     assert.ok(cols.includes('paused_after_story'));
     assert.ok(cols.includes('proposed_by'));
+    assert.ok(cols.includes('finalize_ref'));
+    assert.ok(cols.includes('publish_note'));
 
     db.close();
   });
@@ -153,6 +155,16 @@ describe('EpicStatusSchema (DB runtime enum)', () => {
   it('parses the new finalizing and failed statuses', () => {
     assert.equal(EpicStatusSchema.parse('finalizing'), 'finalizing');
     assert.equal(EpicStatusSchema.parse('failed'), 'failed');
+  });
+
+  it('parses publish_pending as a valid DB-only status (AC1)', () => {
+    assert.equal(EpicStatusSchema.parse('publish_pending'), 'publish_pending');
+  });
+
+  it('publish_pending is distinct from failed and rejected (AC1)', () => {
+    const pp = EpicStatusSchema.parse('publish_pending');
+    assert.notEqual(pp, 'failed');
+    assert.notEqual(pp, 'rejected');
   });
 
   it('still accepts the existing statuses', () => {
@@ -180,6 +192,10 @@ describe('EpicYamlSchema.status (plan-time enum, ADR-4: failed is DB-only)', () 
 
   it("rejects 'finalizing' too — also DB-only", () => {
     assert.throws(() => EpicYamlSchema.shape.status.parse('finalizing'));
+  });
+
+  it("rejects 'publish_pending' — DB-only, never a plan-time status (AC1, AC4)", () => {
+    assert.throws(() => EpicYamlSchema.shape.status.parse('publish_pending'));
   });
 
   it('still accepts only the plan-time statuses', () => {
@@ -298,7 +314,7 @@ describe('v15 → v16 migration (autonomy / checkpoint-pause)', () => {
 
     runMigrations(db);
 
-    assert.equal(schemaVersion(db), 18);
+    assert.equal(schemaVersion(db), 19);
     const after = epicColumns(db);
     assert.ok(after.includes('autonomy_level'));
     assert.ok(after.includes('paused_at'));
@@ -323,7 +339,7 @@ describe('v15 → v16 migration (autonomy / checkpoint-pause)', () => {
 
     runMigrations(db);
     assert.doesNotThrow(() => runMigrations(db));
-    assert.equal(schemaVersion(db), 18);
+    assert.equal(schemaVersion(db), 19);
 
     const cols = epicColumns(db);
     const count = (name: string) => cols.filter((c) => c === name).length;
@@ -338,7 +354,7 @@ describe('v15 → v16 migration (autonomy / checkpoint-pause)', () => {
     const dbPath = path.join(tmpDir, 'fresh-v16.db');
     const db = createDatabase(dbPath);
 
-    assert.equal(schemaVersion(db), 18);
+    assert.equal(schemaVersion(db), 19);
     const cols = epicColumns(db);
     assert.ok(cols.includes('autonomy_level'));
     assert.ok(cols.includes('paused_at'));
@@ -370,5 +386,173 @@ describe('AutonomyLevelSchema', () => {
     assert.throws(() => AutonomyLevelSchema.parse('auto'));
     assert.throws(() => AutonomyLevelSchema.parse(''));
     assert.throws(() => AutonomyLevelSchema.parse('MANUAL'));
+  });
+});
+
+// ─── v18 → v19 migration (publish_pending lifecycle support) ─────────────────
+
+/**
+ * Seeds a minimal v18 DB: epics table with all columns present at v18 but
+ * WITHOUT finalize_ref / publish_note, four pre-existing rows in distinct
+ * statuses (failed, rejected, finalizing, in_progress), schema_version=18.
+ */
+function seedV18Db(dbPath: string): Database.Database {
+  const db = new Database(dbPath);
+  db.exec(`
+    CREATE TABLE schema_version (version INTEGER NOT NULL);
+    CREATE TABLE epics (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'planned',
+      brief_path TEXT,
+      prd_path TEXT,
+      yaml_path TEXT,
+      reason TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      planner_tokens_input INTEGER,
+      planner_tokens_output INTEGER,
+      planner_tokens_cached INTEGER,
+      planner_ms INTEGER,
+      base_sha TEXT,
+      archived_at DATETIME,
+      user_brief TEXT,
+      planning_phase TEXT,
+      planner_request_count INTEGER,
+      policy_snapshot TEXT,
+      finalize_phase TEXT,
+      epic_pr_url TEXT,
+      error TEXT,
+      autonomy_level TEXT NOT NULL DEFAULT 'manual',
+      paused_at DATETIME,
+      paused_after_story TEXT,
+      proposed_by TEXT
+    );
+  `);
+  db.prepare('INSERT INTO schema_version (version) VALUES (18)').run();
+  // Four rows in the statuses the test plan specifies.
+  const rows: Array<[string, string, string]> = [
+    ['epic-v18-failed',      'Failed run',     'failed'],
+    ['epic-v18-rejected',    'Rejected plan',  'rejected'],
+    ['epic-v18-finalizing',  'Finalizing now', 'finalizing'],
+    ['epic-v18-in-progress', 'Active epic',    'in_progress'],
+  ];
+  const insert = db.prepare(
+    `INSERT INTO epics (id, title, status) VALUES (?, ?, ?)`
+  );
+  for (const [id, title, status] of rows) {
+    insert.run(id, title, status);
+  }
+  return db;
+}
+
+describe('v18 → v19 migration (publish_pending lifecycle, AC2, AC3, AC4)', () => {
+  it('applies additively — new columns exist and pre-existing rows are untouched (AC3)', () => {
+    const dbPath = path.join(tmpDir, 'v18.db');
+    const db = seedV18Db(dbPath);
+
+    // Precondition: v18 DB lacks the new columns.
+    assert.equal(schemaVersion(db), 18);
+    const before = epicColumns(db);
+    assert.ok(!before.includes('finalize_ref'), 'finalize_ref absent at v18');
+    assert.ok(!before.includes('publish_note'), 'publish_note absent at v18');
+
+    runMigrations(db);
+
+    // Schema bumped to v19.
+    assert.equal(schemaVersion(db), 19, 'SCHEMA_VERSION should be 19 after migration (AC2)');
+
+    // Both new columns now exist.
+    const after = epicColumns(db);
+    assert.ok(after.includes('finalize_ref'), 'finalize_ref added by v19 migration');
+    assert.ok(after.includes('publish_note'), 'publish_note added by v19 migration');
+
+    // Every pre-existing row has NULL for the new columns — no UPDATE/backfill ran.
+    const all = db.prepare('SELECT id, status, finalize_ref, publish_note FROM epics').all() as
+      Array<{ id: string; status: string; finalize_ref: string | null; publish_note: string | null }>;
+    assert.equal(all.length, 4, 'all four seed rows survived');
+    for (const row of all) {
+      assert.equal(row.finalize_ref, null, `finalize_ref NULL on ${row.id}`);
+      assert.equal(row.publish_note, null, `publish_note NULL on ${row.id}`);
+    }
+
+    db.close();
+  });
+
+  it('failed and rejected rows keep their status byte-for-byte — semantics preserved (AC4)', () => {
+    const dbPath = path.join(tmpDir, 'v18-semantics.db');
+    const db = seedV18Db(dbPath);
+    runMigrations(db);
+
+    const get = (id: string) =>
+      db.prepare('SELECT status FROM epics WHERE id = ?').get(id) as { status: string };
+
+    assert.equal(get('epic-v18-failed').status,      'failed',      'failed row unchanged');
+    assert.equal(get('epic-v18-rejected').status,    'rejected',    'rejected row unchanged');
+    assert.equal(get('epic-v18-finalizing').status,  'finalizing',  'finalizing row unchanged');
+    assert.equal(get('epic-v18-in-progress').status, 'in_progress', 'in_progress row unchanged');
+
+    db.close();
+  });
+
+  it('is idempotent — running runMigrations again on a v19 DB is a no-op (AC2)', () => {
+    const dbPath = path.join(tmpDir, 'v18-idempotent.db');
+    const db = seedV18Db(dbPath);
+
+    runMigrations(db);
+    assert.equal(schemaVersion(db), 19);
+
+    // Second run must not throw, must not double-add columns, and version stays 19.
+    assert.doesNotThrow(() => runMigrations(db));
+    assert.equal(schemaVersion(db), 19);
+
+    const cols = epicColumns(db);
+    const count = (name: string) => cols.filter((c) => c === name).length;
+    assert.equal(count('finalize_ref'), 1, 'finalize_ref appears exactly once');
+    assert.equal(count('publish_note'), 1, 'publish_note appears exactly once');
+
+    db.close();
+  });
+
+  it('EpicStore.publishPending writes status, finalize_ref, publish_note atomically', () => {
+    const dbPath = path.join(tmpDir, 'v18-publishPending.db');
+    const db = createDatabase(dbPath);
+    const store = new EpicStore(db);
+
+    store.create('epic-pp-001', 'Publish-pending test epic');
+    store.beginFinalizing('epic-pp-001', 'pushing');
+
+    const ref = 'loom/finalize/epic-pp-001-1a2b3c4';
+    const note = 'remote rejected push: not a fast-forward';
+    store.publishPending('epic-pp-001', ref, note);
+
+    const rec = store.get('epic-pp-001')!;
+    assert.equal(rec.status, 'publish_pending');
+    assert.equal(rec.finalize_ref, ref);
+    assert.equal(rec.publish_note, note);
+    // finalize_phase is cleared — the run is no longer in flight.
+    assert.equal(rec.finalize_phase, null);
+
+    db.close();
+  });
+
+  it('EpicStore.recordFinalizeRef writes only finalize_ref without changing status', () => {
+    const dbPath = path.join(tmpDir, 'v18-recordRef.db');
+    const db = createDatabase(dbPath);
+    const store = new EpicStore(db);
+
+    store.create('epic-pp-002', 'Record finalize ref test');
+    store.beginFinalizing('epic-pp-002', 'pushing');
+
+    const ref = 'loom/finalize/epic-pp-002-deadbeef';
+    store.recordFinalizeRef('epic-pp-002', ref);
+
+    const rec = store.get('epic-pp-002')!;
+    // Status stays finalizing — only the ref was recorded.
+    assert.equal(rec.status, 'finalizing');
+    assert.equal(rec.finalize_ref, ref);
+    assert.equal(rec.publish_note, null);
+
+    db.close();
   });
 });

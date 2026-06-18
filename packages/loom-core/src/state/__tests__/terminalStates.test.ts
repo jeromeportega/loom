@@ -313,3 +313,77 @@ function stubWorktrees(): WorktreeManager {
   };
   return stub as unknown as WorktreeManager;
 }
+
+describe('publish_pending is non-terminal and distinct from failed/rejected', () => {
+  it('an epic set to publish_pending is not failed or rejected, and reads back intact', () => {
+    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const store = new EpicStore(db);
+
+    store.beginPlanning('epic-pp-100', 'an epic that ran but push failed');
+    // Simulate the EpicFinalizer driving through to finalizing, then calling publishPending.
+    store.beginFinalizing('epic-pp-100', 'pushing');
+    store.publishPending(
+      'epic-pp-100',
+      'loom/finalize/epic-pp-100-cafebabe',
+      'remote rejected push: not a fast-forward'
+    );
+
+    const row = store.get('epic-pp-100')!;
+    assert.equal(row.status, 'publish_pending', 'status is publish_pending');
+    assert.notEqual(row.status, 'failed',   'not failed — this is recoverable, not an infra crash');
+    assert.notEqual(row.status, 'rejected', 'not rejected — no human decision involved');
+    assert.equal(row.finalize_ref, 'loom/finalize/epic-pp-100-cafebabe');
+    assert.equal(row.publish_note, 'remote rejected push: not a fast-forward');
+    assert.equal(row.finalize_phase, null, 'finalize_phase cleared — run is no longer in flight');
+    // No error field — this is not an infra failure.
+    assert.equal(row.error, null, 'error is null — publish_pending is not an infra crash');
+
+    // The row does NOT appear in failed or rejected lists.
+    assert.equal(store.listByStatus('failed').length,   0, 'not in failed list');
+    assert.equal(store.listByStatus('rejected').length, 0, 'not in rejected list');
+    // It DOES appear in publish_pending list.
+    const pending = store.listByStatus('publish_pending');
+    assert.equal(pending.length, 1, 'appears in publish_pending list');
+    assert.equal(pending[0].id, 'epic-pp-100');
+
+    db.close();
+  });
+
+  it('failed and rejected semantics are preserved alongside publish_pending (AC4)', () => {
+    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const store = new EpicStore(db);
+
+    // Infrastructure failure path → failed.
+    store.beginPlanning('epic-fail-200', 'infra crash test');
+    store.fail('epic-fail-200', 'finalize blew up');
+
+    // Human decision path → rejected.
+    store.beginPlanning('epic-reject-200', 'human reject test');
+    store.updateStatus('epic-reject-200', 'rejected', 'out of scope this quarter');
+
+    // Publish-pending path → recoverable.
+    store.beginPlanning('epic-pp-200', 'publish-pending test');
+    store.beginFinalizing('epic-pp-200', 'pushing');
+    store.publishPending('epic-pp-200', 'loom/finalize/epic-pp-200-0000001', 'PR-open failed');
+
+    const failed   = store.get('epic-fail-200')!;
+    const rejected = store.get('epic-reject-200')!;
+    const pending  = store.get('epic-pp-200')!;
+
+    // Each reads back as the exact status it was set to.
+    assert.equal(failed.status,   'failed');
+    assert.equal(rejected.status, 'rejected');
+    assert.equal(pending.status,  'publish_pending');
+
+    // The three are mutually exclusive.
+    assert.notEqual(failed.status,   rejected.status);
+    assert.notEqual(failed.status,   pending.status);
+    assert.notEqual(rejected.status, pending.status);
+
+    // `failed` carries the infra error; `publish_pending` does not.
+    assert.ok(failed.error, 'failed row has an error message');
+    assert.equal(pending.error, null, 'publish_pending has no error — it is not an infra crash');
+
+    db.close();
+  });
+});

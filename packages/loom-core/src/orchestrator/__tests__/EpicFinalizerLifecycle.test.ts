@@ -403,9 +403,10 @@ describe('story-005-002 — finalize phase overlay + done-requires-PR-URL invari
     assert.equal(epic?.finalize_phase, null, 'skipped never enters the finalize overlay');
   });
 
-  // (7) failed (gh pr create throws) → fail(id, message): status='failed' with
-  // a non-empty error and finalize_phase cleared.
-  it('failed (push fails): fail() records a non-empty error and clears the phase', async () => {
+  // (7) push fails → publish_pending: the epic is left in 'finalizing' with the
+  //     push-failure message in reason. The phase stays at 'pushing' (not cleared).
+  //     No error field — this is a recoverable state, not a terminal infra failure.
+  it('push fails: epic lands finalizing (publish_pending), reason records the message', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
     addAllowedRemote();
     const db = openDatabase(path.join(repo, '.loom'));
@@ -423,41 +424,45 @@ describe('story-005-002 — finalize phase overlay + done-requires-PR-URL invari
     }).run();
 
     const epic = new EpicStore(db).get('epic-001');
-    assert.equal(epic?.status, 'failed');
-    assert.ok((epic?.error ?? '').length > 0, 'a failed epic carries a retrievable error');
-    assert.match(epic?.error ?? '', /push failed/i);
-    assert.equal(epic?.finalize_phase, null, 'fail() clears the live finalize_phase');
+    assert.equal(epic?.status, 'finalizing', 'push failure leaves epic recoverable (not failed)');
+    assert.equal(epic?.error ?? null, null, 'publish_pending path does not set error');
+    assert.match(epic?.reason ?? '', /push failed/i, 'reason carries the push failure message');
+    assert.equal(epic?.finalize_phase, 'pushing', 'phase stays at pushing (not cleared)');
     assert.equal(epic?.epic_pr_url, null);
   });
 
-  it('failed (gh pr create throws): fail() records the error after the push succeeds', async () => {
+  // (8) gh pr create throws → publish_pending: push succeeded but PR open failed.
+  //     Epic is left recoverable in 'finalizing'; operator runs `loom publish`.
+  it('gh pr create throws: epic lands finalizing (publish_pending), reason references loom publish', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
     addAllowedRemote();
     const db = openDatabase(path.join(repo, '.loom'));
 
-    // Push succeeds, but opening the PR throws. The finalizer returns the
-    // pushed-but-no-PR fallback (a PR-less terminal state, NOT failed), so the
-    // epic must NOT be 'done' and NOT 'failed' — it landed terminal non-done.
-    const epic0 = await (async () => {
-      await new Supervisor({
-        projectRoot: repo,
-        db,
-        worker: committingWorker(),
-        maxConcurrent: 1,
-        epicFinalizer: new EpicFinalizer(
-          finalizerOpts(db, {
-            openPr: () => {
-              throw new Error('gh exploded');
-            },
-          })
-        ),
-      }).run();
-      return new EpicStore(db).get('epic-001');
-    })();
+    // Push succeeds but opening the PR throws. The finalizer records the pushed
+    // ref and returns publish_pending — the epic must NOT be 'done' or 'failed'.
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: committingWorker(),
+      maxConcurrent: 1,
+      epicFinalizer: new EpicFinalizer(
+        finalizerOpts(db, {
+          openPr: () => {
+            throw new Error('gh exploded');
+          },
+        })
+      ),
+    }).run();
 
+    const epic0 = new EpicStore(db).get('epic-001');
     assert.notEqual(epic0?.status, 'done', 'a PR that fails to open must not be done');
+    assert.notEqual(epic0?.status, 'failed', 'publish_pending is recoverable — not failed');
     assert.equal(epic0?.epic_pr_url, null);
-    assert.match(epic0?.reason ?? '', /open the PR manually/i);
+    assert.match(
+      epic0?.reason ?? '',
+      /loom publish/i,
+      'reason must reference the loom publish recovery command'
+    );
   });
 
   // (8) Crash-between-writes — failure after recordPrUrl but before the done
@@ -567,5 +572,199 @@ describe('story-005-002 — finalize phase overlay + done-requires-PR-URL invari
     }).run();
 
     assert.equal(new EpicStore(db).get('epic-001')?.status, 'done');
+  });
+});
+
+describe('story-005-001 — finalizer-owned ref push target', () => {
+  // (1) The push target is a fresh loom/finalize/* ref, never epic/*.
+  //     The --head for gh pr create must use the same fresh ref.
+  it('push goes to loom/finalize/* ref, not epic/*; --head matches push ref', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    addAllowedRemote();
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    const pushedBranches: string[] = [];
+    const openedBranches: string[] = [];
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: committingWorker(),
+      maxConcurrent: 1,
+      epicFinalizer: new EpicFinalizer(
+        finalizerOpts(db, {
+          pushBranch: (remote, branch) => {
+            pushedBranches.push(branch);
+            return { ok: true, output: 'pushed' };
+          },
+          openPr: ({ branch }) => {
+            openedBranches.push(branch);
+            return 'https://example.com/acme/loom/pull/42';
+          },
+        })
+      ),
+    }).run();
+
+    assert.equal(pushedBranches.length, 1, 'exactly one push issued');
+    assert.equal(openedBranches.length, 1, 'exactly one PR opened');
+
+    const pushedRef = pushedBranches[0];
+    const prHeadRef = openedBranches[0];
+
+    // Push must use a loom/finalize/* ref, NEVER epic/*.
+    assert.ok(
+      pushedRef.startsWith('loom/finalize/'),
+      `push ref must start with loom/finalize/: got "${pushedRef}"`
+    );
+    assert.ok(
+      !pushedRef.startsWith('epic/'),
+      `push ref must NOT start with epic/: got "${pushedRef}"`
+    );
+
+    // gh pr create --head must use the same fresh ref.
+    assert.equal(prHeadRef, pushedRef, '--head must match the push ref');
+
+    // Ref must follow the loom/finalize/<epicId>-<7charsha> pattern.
+    assert.match(
+      pushedRef,
+      /^loom\/finalize\/epic-001-[0-9a-f]{7}$/,
+      `ref must match loom/finalize/<epicId>-<7charsha>: got "${pushedRef}"`
+    );
+  });
+
+  // (2) Non-fast-forward survival: the remote's epic/<id> ref has diverged (a
+  //     push to it would be non-fast-forward), but the finalizer pushes to the
+  //     fresh loom/finalize/* ref which is a brand-new ref on the remote —
+  //     always a fast-forward. finalize proceeds to open a PR with no retry.
+  it('non-fast-forward survival: push to fresh ref succeeds even when epic/<id> diverged', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    addAllowedRemote();
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    // Simulate a diverged remote: create an orphan commit and point
+    // refs/remotes/origin/epic/epic-001 at it. A push to epic/<id> would be
+    // rejected as non-fast-forward; the finalizer must avoid that ref entirely.
+    const orphanSha = execFileSync(
+      'git',
+      ['commit-tree', '-m', 'orphan on remote', gitc(['rev-parse', 'HEAD^{tree}'])],
+      { cwd: repo, encoding: 'utf8' }
+    ).trim();
+    gitc(['update-ref', 'refs/remotes/origin/epic/epic-001', orphanSha]);
+
+    let pushCount = 0;
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: committingWorker(),
+      maxConcurrent: 1,
+      epicFinalizer: new EpicFinalizer(
+        finalizerOpts(db, {
+          // The push stub simulates the remote accepting the fresh loom/finalize/*
+          // ref (new ref — never a non-fast-forward), while the diverged
+          // refs/remotes/origin/epic/epic-001 above would have been rejected.
+          pushBranch: (_remote, branch) => {
+            pushCount++;
+            assert.ok(
+              branch.startsWith('loom/finalize/'),
+              `push must go to fresh loom/finalize/* ref, not epic/<id>: got "${branch}"`
+            );
+            return { ok: true, output: 'pushed' };
+          },
+        })
+      ),
+    }).run();
+
+    assert.equal(pushCount, 1, 'exactly one push issued — no retry');
+    const epic = new EpicStore(db).get('epic-001');
+    assert.equal(epic?.status, 'done', 'finalize proceeds to done after successful push');
+    assert.notEqual(epic?.epic_pr_url, null, 'PR URL was recorded');
+  });
+
+  // (3) No force flags: no --force or --force-with-lease in any captured push call.
+  //
+  // Structural guarantee: the non-stub gitSafe path calls
+  //   gitSafe(cwd, ['push', remote, `${epicBranch}:${finalRef}`])
+  // — no --force or --force-with-lease flag is present. This stub-based test
+  // catches the complementary case: a force flag accidentally injected into the
+  // ref arg itself (which is what `pushBranch` captures). It cannot catch a
+  // flag added directly to the gitSafe args array on the non-stub path; that
+  // invariant is structural (inspect EpicFinalizer.ts push call directly).
+  it('no --force or --force-with-lease in any push invocation', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    addAllowedRemote();
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    const allPushedRefs: string[] = [];
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: committingWorker(),
+      maxConcurrent: 1,
+      epicFinalizer: new EpicFinalizer(
+        finalizerOpts(db, {
+          pushBranch: (_remote, branch) => {
+            allPushedRefs.push(branch);
+            return { ok: true, output: 'pushed' };
+          },
+        })
+      ),
+    }).run();
+
+    for (const ref of allPushedRefs) {
+      assert.ok(!ref.includes('--force'), `force flag must not appear in push ref arg: "${ref}"`);
+      assert.ok(
+        !ref.includes('--force-with-lease'),
+        `force-with-lease must not appear in push ref arg: "${ref}"`
+      );
+    }
+    assert.ok(allPushedRefs.length > 0, 'at least one push must have been issued');
+  });
+
+  // (4) Determinism: the pushed ref embeds the integrated HEAD SHA, so the same
+  //     integrated tree always produces the same ref name (retry is idempotent).
+  it('pushed ref is deterministic — encodes the integrated HEAD sha', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    addAllowedRemote();
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    const agents = new AgentStore(db);
+    const a = agents.create('epic-001', 'story-001-001', 'one');
+    agents.updateStatus(a.id, 'done');
+    gitc(['branch', 'story/story-001-001']);
+    gitc(['checkout', '-q', 'story/story-001-001']);
+    gitc(['commit', '--allow-empty', '-q', '-m', 'story work']);
+    gitc(['checkout', '-q', '-']);
+    new EpicStore(db).updateBaseSha('epic-001', gitc(['rev-parse', 'HEAD']));
+
+    const pushedRefs: string[] = [];
+
+    await new EpicFinalizer(
+      finalizerOpts(db, {
+        pushBranch: (_r, b) => { pushedRefs.push(b); return { ok: true, output: 'ok' }; },
+        openPr: () => 'https://example.com/acme/loom/pull/1',
+      })
+    ).finalize('epic-001');
+
+    assert.equal(pushedRefs.length, 1, 'exactly one push');
+    const pushedRef = pushedRefs[0];
+
+    // The ref encodes the integrated HEAD: loom/finalize/<epicId>-<head7>.
+    // Extract the 7-char sha from the pushed ref and verify it matches the
+    // actual HEAD of epic/epic-001 after the merge.
+    const match = pushedRef.match(/^loom\/finalize\/epic-001-([0-9a-f]{7})$/);
+    assert.ok(match, `pushed ref must match pattern: got "${pushedRef}"`);
+    const head7InRef = match[1];
+
+    // Read the actual HEAD sha of epic/<id> from git.
+    const actualHead = gitc(['rev-parse', 'epic/epic-001']);
+    const actualHead7 = actualHead.slice(0, 7);
+
+    assert.equal(
+      head7InRef,
+      actualHead7,
+      `ref must encode the actual integrated HEAD: expected ${actualHead7}, got ${head7InRef}`
+    );
   });
 });
