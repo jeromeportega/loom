@@ -9,7 +9,7 @@
   "types": "dist/server/index.d.ts",
   "type": "commonjs",
   "scripts": {
-    "build": "tsc && npm run copy:public",
+    "build": "rm -rf dist && tsc && npm run copy:public",
     "copy:public": "mkdir -p dist/public && cp -R public/. dist/public/",
     "dev": "tsc --watch",
     "test": "node --test $(find dist -path '*__tests__*' -name '*.test.js')"
