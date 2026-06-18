@@ -114,6 +114,12 @@ export type {
   ReconcileStatus,
   ReconcileRefusalReason,
 } from './EpicReconciler.js';
+export { EpicPublisher } from './EpicPublisher.js';
+export type {
+  EpicPublisherOptions,
+  PublishResult,
+  PublishStatus,
+} from './EpicPublisher.js';
 export { computeHeuristics, buildStorySignals } from './signalLedger.js';
 export type { HeuristicInput } from './signalLedger.js';
 export { SignalLedger } from './signalStore.js';
