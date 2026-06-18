@@ -399,13 +399,15 @@ program
   .command('propose')
   .description('Propose the next epic from top-ranked lessons + open opportunities (one LLM call)')
   .option('--top-lessons <n>', 'Number of top lessons to include in the proposal', (v: string) => {
+    if (!/^\d+$/.test(v.trim())) throw new InvalidArgumentError('Must be a positive integer');
     const n = parseInt(v, 10);
-    if (!Number.isInteger(n) || n < 1) throw new InvalidArgumentError('Must be a positive integer');
+    if (n < 1) throw new InvalidArgumentError('Must be a positive integer');
     return n;
   })
   .option('--top-opps <n>', 'Number of top opportunities to include in the proposal', (v: string) => {
+    if (!/^\d+$/.test(v.trim())) throw new InvalidArgumentError('Must be a positive integer');
     const n = parseInt(v, 10);
-    if (!Number.isInteger(n) || n < 1) throw new InvalidArgumentError('Must be a positive integer');
+    if (n < 1) throw new InvalidArgumentError('Must be a positive integer');
     return n;
   })
   .option('--json', 'Emit machine-readable JSON output ({ ok, epicId? } or { ok, critique })')

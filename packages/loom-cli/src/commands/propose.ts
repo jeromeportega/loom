@@ -63,7 +63,8 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
   } else {
     if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
       console.error('loom is not initialized in this directory. Run `loom init` first.');
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     // Single policy load — reused for both DB setup and LLM creation.
     const policy = PolicyEngine.load(loomDir).policyData;
@@ -77,7 +78,7 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
       } catch (err) {
         db.close();
         console.error((err as Error).message);
-        process.exit(1);
+        process.exitCode = 1;
         return;
       }
     }
@@ -118,7 +119,7 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
       );
     } catch (err) {
       console.error('\n  Proposal failed:', (err as Error).message);
-      process.exit(1);
+      process.exitCode = 1;
       return;
     }
 
@@ -136,7 +137,7 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
     } else {
       if (opts.json) {
         console.log(JSON.stringify({ ok: false, critique: result.critique }));
-        process.exit(1);
+        process.exitCode = 1;
         return;
       }
       console.error('  Proposal did not pass the brief quality gate.');
@@ -158,7 +159,8 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
           console.error(`    • ${q}`);
         }
       }
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   } finally {
     if (ownDb && db) db.close();
