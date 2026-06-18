@@ -1,26 +1,32 @@
 import type { GateVerdict, BriefRefinement } from '@loom-ai/core';
 
 /**
- * The pass-with-clarifications notice printed on exit 3.
- * Clarifications are listed as OPTIONAL; the --force flag is mentioned.
- * Story-012-002 owns this file and will replace the stub body with final copy.
+ * The PASSED-with-clarifications notice. Clarifications listed as OPTIONAL;
+ * embeds the literal force flag "--force" and is visibly distinct from the
+ * below-threshold console.error rejection block. Returns the string; the
+ * caller prints it to stdout.
  */
 export function formatClarificationsNotice(
   verdict: GateVerdict,
   refinement: Pick<BriefRefinement, 'questions' | 'refined_brief'>,
 ): string {
-  // TODO(story-012-002): render refinement.refined_brief as the suggested brief block.
   const lines: string[] = [
     '',
-    `  Brief scored ${verdict.quality_score}/10 (>= ${verdict.threshold}) — ready with optional clarifications.`,
+    `  PASSED-with-clarifications  (${verdict.quality_score}/10 >= ${verdict.threshold})`,
+    '',
+    '  The brief scored above the quality threshold. You can proceed to planning.',
   ];
+
   if (refinement.questions.length > 0) {
     lines.push('');
-    lines.push('  Optional clarifications (address these for a cleaner plan):');
+    lines.push('  OPTIONAL — addressing these makes the plan sharper:');
     for (const q of refinement.questions) lines.push(`    • ${q}`);
   }
+
   lines.push('');
-  lines.push('  Re-run `loom epic "<brief>" --force` to plan as-is.');
+  lines.push('  To plan as-is:     loom epic "<brief>" --force');
+  lines.push('  Or tighten the brief and re-run to resolve these clarifications.');
   lines.push('');
+
   return lines.join('\n');
 }
