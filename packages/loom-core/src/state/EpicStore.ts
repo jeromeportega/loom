@@ -423,4 +423,17 @@ export class EpicStore {
       .prepare('UPDATE epics SET planner_model = ?, updated_at = ? WHERE id = ?')
       .run(model, new Date().toISOString(), epicId);
   }
+
+  /**
+   * Persists the rolling planning-output tail (bounded to <=4096 chars).
+   * Called by PlanningOutputSink on its periodic flush timer and on stop.
+   * Readable post-planning by the web dashboard tick() and `loom status`.
+   */
+  updatePlanningLogTail(id: string, logTail: string): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET planning_log_tail = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(logTail, new Date().toISOString(), id);
+  }
 }

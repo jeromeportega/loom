@@ -11,6 +11,8 @@ import { ArchitectAgent } from './ArchitectAgent.js';
 import { QAAgent } from './QAAgent.js';
 import { SharedContract } from '../orchestrator/SharedContract.js';
 import { epicId, epicNumber, planningRelPaths } from './paths.js';
+import { PlanningOutputSink } from './PlanningOutputSink.js';
+import type { PlanningEvent } from './PlanningEvent.js';
 
 export interface PlanResult {
   runId: string;
@@ -45,6 +47,13 @@ export interface PlannerOptions {
    * after the Architect to enrich every story with a risk-based test plan.
    */
   qaPlanning?: boolean;
+  /**
+   * Optional lifecycle sink for planning output. When set, receives
+   * already-redacted text chunks and phase-transition events as each persona
+   * runs. Used by the CLI (--verbose flag) and the web dashboard (SSE feed).
+   * Absent = capture still happens (tail is written to DB), no in-process fan-out.
+   */
+  onPlanningEvent?: (e: PlanningEvent) => void;
 }
 
 /**
@@ -116,9 +125,22 @@ export class Planner {
     }
     const startNum = epicNumber(runId);
 
+    // Create a planning output sink that captures streamed text, redacts
+    // secrets, and flushes to epics.planning_log_tail on the periodic timer.
+    // This happens regardless of onPlanningEvent — the tail is always durable.
+    const sink = new PlanningOutputSink(runId, epicStore, this.opts.onPlanningEvent);
+
+    // Wrap the LLM so every complete() call injects onText into the request.
+    // Agents use ctx.llm and never call this.opts.llm directly, so the
+    // wrap is transparent — no agent needs to be modified.
+    const wrappedLlm: LLMClient = {
+      complete: (req) =>
+        this.opts.llm.complete({ ...req, onText: (d) => sink.handleChunk(d) }),
+    };
+
     const ctx: PlannerContext = {
       projectRoot: this.opts.projectRoot,
-      llm: this.opts.llm,
+      llm: wrappedLlm,
       model: this.opts.model,
       runId,
       skills: this.selectSkills(brief),
@@ -128,18 +150,22 @@ export class Planner {
     const rel = planningRelPaths(runId);
     let usage: LLMUsage = { ...EMPTY_USAGE };
 
+    sink.start();
     try {
       // ─── Analyst: brief -> project-brief.md ───────────────────────────
+      sink.setPhase('analyst');
       const analyst = await new AnalystAgent(ctx).run(brief);
       usage = addUsage(usage, analyst.usage);
       epicStore.updatePlanningPhase(runId, 'pm');
 
       // ─── PM: brief -> prd.md + epic YAMLs ─────────────────────────────
+      sink.setPhase('pm');
       const pm = await new PMAgent(ctx).run(analyst.briefContent, startNum);
       usage = addUsage(usage, pm.usage);
       epicStore.updatePlanningPhase(runId, 'architect');
 
       // ─── Architect: prd + epics -> architecture.md + enriched epics ───
+      sink.setPhase('architect');
       const architect = await new ArchitectAgent(ctx).run(pm.prdContent, pm.epics);
       usage = addUsage(usage, architect.usage);
 
@@ -178,6 +204,8 @@ export class Planner {
         // Best-effort cleanup; rethrow the original error regardless.
       }
       throw err;
+    } finally {
+      sink.stop();
     }
   }
 
