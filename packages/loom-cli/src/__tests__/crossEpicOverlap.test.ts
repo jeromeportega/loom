@@ -213,6 +213,186 @@ describe('printOverlapAdvisory — dependency-injected', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Source-selection: prefer contract ownership table; free-text fallback [story-016-002]
+// ---------------------------------------------------------------------------
+
+/** Minimal contract markdown with an ownership table. */
+function contractWithTable(rows: Array<[string, string]>): string {
+  const rowMd = rows.map(([owner, p]) => `| ${owner} | \`${p}\` |`).join('\n');
+  return (
+    `# Contract\n\n` +
+    `## File & module ownership map\n\n` +
+    `| Story | Owns |\n| --- | --- |\n${rowMd}\n`
+  );
+}
+
+describe('source-selection — preferred path: contract ownership table [AC1][AC3]', () => {
+  function capture(): { lines: string[]; print: (l: string) => void } {
+    const lines: string[] = [];
+    return { lines, print: (l) => lines.push(l) };
+  }
+
+  it('derives claimed-files set from the ownership table and carries storyId attribution [AC1]', () => {
+    const targetBody = contractWithTable([['story-016-001', 'packages/loom-core/src/foo.ts']]);
+    const otherBody = contractWithTable([['story-999-001', 'packages/loom-core/src/foo.ts']]);
+
+    const { lines, print } = capture();
+    printOverlapAdvisory('/proj', 'epic-016', {
+      readContract: (_, id) => {
+        if (id === 'epic-016') return targetBody;
+        if (id === 'epic-999') return otherBody;
+        return null;
+      },
+      listInFlightEpicIds: () => ['epic-016', 'epic-999'],
+      print,
+    });
+
+    const joined = lines.join('\n');
+    assert.match(joined, /packages\/loom-core\/src\/foo\.ts/);
+    assert.match(joined, /epic-016 \/ story-016-001/, 'target storyId must be attributed');
+    assert.match(joined, /epic-999 \/ story-999-001/, 'other storyId must be attributed');
+    assert.match(joined, /lexical path match only/i);
+  });
+
+  it('works with no per-story schema field — the table IS the declaration [AC3]', () => {
+    // Confirms: no StorySchema field needed; table rows are the structured declaration.
+    const body = contractWithTable([['story-016-002', 'packages/loom-cli/src/crossEpicOverlap.ts']]);
+
+    const { lines, print } = capture();
+    printOverlapAdvisory('/proj', 'epic-016', {
+      readContract: (_, id) => {
+        if (id === 'epic-016') return body;
+        if (id === 'epic-999') return contractWithTable([['story-999-001', 'packages/loom-cli/src/crossEpicOverlap.ts']]);
+        return null;
+      },
+      listInFlightEpicIds: () => ['epic-016', 'epic-999'],
+      print,
+    });
+
+    assert.ok(lines.some((l) => l.includes('packages/loom-cli/src/crossEpicOverlap.ts')));
+    assert.ok(lines.some((l) => l.includes('story-016-002')));
+  });
+
+  it('malformed/partial table rows are silently skipped; valid rows still report [AC2/robustness]', () => {
+    const body =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n| --- | --- |\n' +
+      '| bad row without path column |\n' + // single cell — skipped
+      '| story-016-001 | packages/loom-core/src/good.ts |\n' + // valid
+      '|  | packages/loom-core/src/orphan.ts |\n'; // empty owner — skipped
+
+    const otherBody = contractWithTable([['story-999-001', 'packages/loom-core/src/good.ts']]);
+
+    const { lines, print } = capture();
+    assert.doesNotThrow(() =>
+      printOverlapAdvisory('/proj', 'epic-016', {
+        readContract: (_, id) => {
+          if (id === 'epic-016') return body;
+          if (id === 'epic-999') return otherBody;
+          return null;
+        },
+        listInFlightEpicIds: () => ['epic-016', 'epic-999'],
+        print,
+      })
+    );
+
+    // The valid row's path is reported; orphan is absent (empty owner, skipped).
+    assert.ok(lines.some((l) => l.includes('packages/loom-core/src/good.ts')));
+    assert.ok(!lines.some((l) => l.includes('orphan')));
+  });
+
+  it('a genuinely shared path declared in both tables is reported with storyId on both sides [AC4]', () => {
+    const shared = 'packages/shared/shared-module.ts';
+    const targetBody = contractWithTable([['story-016-001', shared]]);
+    const otherBody = contractWithTable([['story-999-001', shared]]);
+
+    const { lines, print } = capture();
+    printOverlapAdvisory('/proj', 'epic-016', {
+      readContract: (_, id) => {
+        if (id === 'epic-016') return targetBody;
+        if (id === 'epic-999') return otherBody;
+        return null;
+      },
+      listInFlightEpicIds: () => ['epic-016', 'epic-999'],
+      print,
+    });
+
+    const joined = lines.join('\n');
+    assert.match(joined, /packages\/shared\/shared-module\.ts/);
+    assert.match(joined, /epic-016 \/ story-016-001/);
+    assert.match(joined, /epic-999 \/ story-999-001/);
+  });
+});
+
+describe('source-selection — free-text fallback: only path-shaped tokens emitted [AC2]', () => {
+  function capture(): { lines: string[]; print: (l: string) => void } {
+    const lines: string[] = [];
+    return { lines, print: (l) => lines.push(l) };
+  }
+
+  it('bare words and code fragments in free text are excluded from the fallback result [AC2]', () => {
+    // Contract body with NO ownership table — fallback kicks in.
+    const body =
+      '# Contract\n\n' +
+      'This epic uses computeOverlaps, loom, and ${VAR}.\n' +
+      'It also touches packages/loom-core/src/real.ts.\n' +
+      'References foo() and an extensionless Makefile.\n';
+
+    const { lines, print } = capture();
+    printOverlapAdvisory('/proj', 'epic-016', {
+      readContract: (_, id) => (id === 'epic-016' || id === 'epic-999') ? body : null,
+      listInFlightEpicIds: () => ['epic-016', 'epic-999'],
+      print,
+    });
+
+    const joined = lines.join('\n');
+    // The real path from free text should be detected as an overlap.
+    assert.match(joined, /packages\/loom-core\/src\/real\.ts/);
+    // Every path entry in the advisory (4-space indent) must be path-shaped — no bare words.
+    const pathLines = lines.filter((l) => /^\s{4}\S/.test(l)); // indented path-entry lines
+    for (const pl of pathLines) {
+      const entry = pl.trim();
+      const isPathShaped = entry.includes('/') ||
+        /\.(ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|sql|sh|css|html)$/i.test(entry);
+      assert.ok(isPathShaped, `advisory path entry "${entry}" is not path-shaped — bare words must be excluded`);
+    }
+  });
+
+  it('fallback is not triggered when the ownership table has at least one valid row', () => {
+    // A body that has BOTH an ownership table (one valid path) AND additional
+    // paths in the prose. Only the table path should appear.
+    const tableBody =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n| --- | --- |\n' +
+      '| story-016-001 | packages/loom-core/src/table-path.ts |\n\n' +
+      'Also see packages/loom-core/src/prose-path.ts for context.\n';
+
+    const otherBody = contractWithTable([
+      ['story-999-001', 'packages/loom-core/src/table-path.ts'],
+      ['story-999-001', 'packages/loom-core/src/prose-path.ts'],
+    ]);
+
+    const { lines, print } = capture();
+    printOverlapAdvisory('/proj', 'epic-016', {
+      readContract: (_, id) => {
+        if (id === 'epic-016') return tableBody;
+        if (id === 'epic-999') return otherBody;
+        return null;
+      },
+      listInFlightEpicIds: () => ['epic-016', 'epic-999'],
+      print,
+    });
+
+    const joined = lines.join('\n');
+    // Table path is in the overlap.
+    assert.match(joined, /packages\/loom-core\/src\/table-path\.ts/);
+    // Prose path did NOT come from the target (fallback was not triggered),
+    // so it should not appear as an overlap from the target side.
+    assert.doesNotMatch(joined, /packages\/loom-core\/src\/prose-path\.ts/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Light integration: the advisory prints at approve AND at dispatch, and
 // approval/dispatch still succeed (never blocked).
 // ---------------------------------------------------------------------------

@@ -50,6 +50,7 @@ export { SharedContract } from './SharedContract.js';
 export {
   parseOwnershipMap,
   loadOwnershipMap,
+  normalizePath,
   computeOverlaps,
   renderOverlapAdvisory,
 } from './ContractOwnership.js';
