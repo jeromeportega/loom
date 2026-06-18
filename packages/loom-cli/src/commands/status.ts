@@ -458,4 +458,5 @@ export const spec: CommandDescription = {
   ],
   errors: ['--project and --all are mutually exclusive', 'Project not registered — run `loom init` first'],
   relationships: { prerequisites: ['init'], nextSteps: ['run', 'approve', 'retry', 'stop'] },
+  aliases: ['st'],
 };

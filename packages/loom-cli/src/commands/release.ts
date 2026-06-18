@@ -134,6 +134,7 @@ function defaultRunGh(args: string[], cwd: string): string | undefined {
 
 export const spec: CommandDescription = {
   name: 'release',
+  audience: 'internal',
   summary: 'Bump versions and open a release PR against main',
   whenToUse:
     'Use to cut a guard-compatible release: bumps all workspace versions via bump-versions.mjs, creates release/v<version>, commits, pushes, and opens a PR against main. Never pushes main directly. Post-merge step (operator): git tag v<version> <merge-sha> && git push origin v<version>.',

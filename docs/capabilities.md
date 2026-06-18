@@ -100,7 +100,7 @@ One interface over the engine:
 | **Story-scoped audit log** | `loom audit --story <id>` | Matches every retry attempt of a story (`agent_id LIKE 'agent-<storyId>-%'`) AND rolling-integrator rows keyed on `command=<storyId>`. |
 | **Late-bound policy re-read** | Automatic | At `EpicFinalizer.finalize()` entry, late-bound fields (`git.allowed_remotes`, `agents.test_command`, `integration_gate`, `push_gate`, `pr_attribution`) are re-read from `.loom/policy.yaml` so mid-run edits actually take effect — and an `epic_policy_rebound` audit row records exactly what changed. The full policy snapshot taken at `loom approve` is also persisted on `epics.policy_snapshot` for forensics. |
 | **Planning-artifact review in the dashboard** | Open a `planned` epic in `loom web` | Brief / PRD / architecture / epic.yaml render inline above the Approve button. |
-| **Status from CLI** | `loom status [--watch] [--epic <id>] [--all] [--archived] [--project <root>]` | At-a-glance epic + story status. Renders the full honest lifecycle: a `finalizing` epic shows its live `finalize_phase` (`finalizing (gate)`, etc.) and a `planning` epic shows its `planning_phase` (`planning (architect)`, etc.); a `failed` epic prints its `error` message; the epic PR URL of record (`epic_pr_url`) is printed once a per-epic PR is opened. **Derived placeholder title at submission time:** the instant a brief is submitted, the reserved epic row is durably written with a placeholder title derived from the brief (its first Markdown heading, else the brief's first 60 characters) so `loom status` / `loom web` can show what kicked off a job before the ~5-minute Analyst → PM → Architect chain finishes; the planner's real title later replaces it through the existing completion seam. `--all` aggregates across every loom-init'ed repo on the machine. `--archived` also shows archived runs (hidden by default). `--project <root>` scopes the output to a single named registered project (overrides `--all`; mutually exclusive with it). |
+| **Status from CLI** | `loom status [--watch] [--epic <id>] [--all] [--archived] [--project <root>]` | At-a-glance epic + story status. Renders the full honest lifecycle: a `finalizing` epic shows its live `finalize_phase` (`finalizing (gate)`, etc.) and a `planning` epic shows its `planning_phase` (`planning (architect)`, etc.); a `failed` epic prints its `error` message; the epic PR URL of record (`epic_pr_url`) is printed once a per-epic PR is opened. **Derived placeholder title at submission time:** the instant a brief is submitted, the reserved epic row is durably written with a placeholder title derived from the brief (its first Markdown heading, else the brief's first 60 characters) so `loom status` / `loom web` can show what kicked off a job before the ~5-minute Analyst → PM → Architect chain finishes; the planner's real title later replaces it through the existing completion seam. `--all` aggregates across every loom-init'ed repo on the machine. `--archived` also shows archived runs (hidden by default). `--project <root>` scopes the output to a single named registered project (overrides `--all`; mutually exclusive with it). `loom st` is a registered alias for `loom status`. |
 | **Archive a run** | `loom archive <epic-id>` / Archive button in `loom web` | Hides a finished/abandoned run from the default `loom status` and web list (and skips it in supervisor selection) so your working set stays scoped to what you still care about. Non-destructive — the epic, its agents, and its audit trail are preserved; run `loom unarchive <epic-id>` to restore. Audit-logged. |
 | **Cross-repo web view** | `loom web` (any repo) | List view aggregates epics from every registered project, grouped by project name. |
 | **Per-story signal ledger** | `.loom/signals/<story-id>.md` (observe-only) | Generated at story completion: cost tier, review steps, and heuristics (diff_lines, diff_files, tests_green_first_try, risky_paths_touched). **Observe-only — the ledger does NOT influence execution** (NFR-1); loom reads signals back only for rendering the PR body section. Covered by the existing `.loom/` gitignore (never committed). The same signals are also written durably to `audit_log` (`action='story_signals'`), readable via `loom audit`. |
@@ -213,7 +213,7 @@ operator-facing `loom` CLI.
 | Capability | How to use | Notes |
 |---|---|---|
 | **Provision approved MCP servers for workers** | `loom mcp add <name>` / `policy.mcp.registry` | **Exclusive allowlist — this is a behavior change.** A worker now sees *exactly* the servers in `policy.mcp.registry` and nothing else: claude-code workers get the registry servers only (enforced structurally via `--strict-mcp-config --mcp-config <worktree>/.cursor/mcp.json`), and cursor-cli workers get the registry servers only — the loom self-server is **not** injected into cursor worktrees. Cursor workers read operator guidance via `loom pull-guidance <story-id>` or by reading `.loom/guidance/<story-id>.md` directly (routed off MCP; see `loom pull-guidance`). **Operator-facing break: servers inherited from your personal `~/.cursor/mcp.json` no longer load in worker sessions.** A worker that used to rely on a globally-configured server will no longer see it — **migrate by registering it explicitly with `loom mcp add <name>`** so it lands in the worktree allowlist. cursor-cli enforcement is best-effort, not structural: `cursor-agent` has no `claude`-style strict flag, so loom enumerates the visible servers per worktree and headlessly disables every non-allowlisted one (per-project, durable, never touching your global config), recording any it cannot disable — plus the inherent setup→spawn race window — in the `worker_mcp_servers` audit row. That residual strictness gap and the out-of-scope upstream `--strict-mcp-config`-equivalent ask are documented in [`docs/research/cursor-mcp-strictness.md`](research/cursor-mcp-strictness.md). |
-| **Prerequisites probe** | `loom doctor` | Checks Node version, git, claude CLI, gh CLI, cursor-agent CLI; warns if `loom` is not on PATH. When a `cursor-cli` backend is configured, also validates `agents.cursor_model` against `cursor-agent --list-models` — fails with the complete valid-model list on an invalid id, warns (never fails) when the probe can't run offline; the same check runs at the start of `loom epic` / `loom run` and exits before any LLM pass. **Alias→advisory tier:** when `cursor_model` is not an exact id but a `-`-boundary prefix of exactly one listed id (e.g. `claude-opus-4-8` for `claude-opus-4-8-high`), the check still passes but emits an *advisory* — a warning, never a failure — recommending you pin the explicit suffixed id; doctor renders it as a non-required Check and `loom epic` / `loom run` warn without exiting. Also runs an advisory integration-gate-command preflight: it resolves the command the gate would run (`policy.agents.test_command`, else auto-detected) and reports whether it's viable in a bare integration worktree — advisory only, it never flips doctor's exit code. `loom doctor --dry-run-gate` is the explicit opt-in that actually executes that gate command once in a throwaway worktree and prints the outcome; `loom doctor --cross-epic-gate` (optionally narrowed by `--epics <a,b>`) merges every open `epic/*` branch into a throwaway union worktree and runs the suite once, reporting per-pair conflicts or the union suite result without mutating any real branch; plain `loom doctor`, `loom epic`, and `loom run` never run either. |
+| **Prerequisites probe** | `loom doctor` | Checks Node version, git, claude CLI, gh CLI, cursor-agent CLI; warns if `loom` is not on PATH. When a `cursor-cli` backend is configured, also validates `agents.cursor_model` against `cursor-agent --list-models` — fails with the complete valid-model list on an invalid id, warns (never fails) when the probe can't run offline; the same check runs at the start of `loom epic` / `loom run` and exits before any LLM pass. **Alias→advisory tier:** when `cursor_model` is not an exact id but a `-`-boundary prefix of exactly one listed id (e.g. `claude-opus-4-8` for `claude-opus-4-8-high`), the check still passes but emits an *advisory* — a warning, never a failure — recommending you pin the explicit suffixed id; doctor renders it as a non-required Check and `loom epic` / `loom run` warn without exiting. Also runs an advisory integration-gate-command preflight: it resolves the command the gate would run (`policy.agents.test_command`, else auto-detected) and reports whether it's viable in a bare integration worktree — advisory only, it never flips doctor's exit code. `loom doctor --dry-run-gate` is the explicit opt-in that actually executes that gate command once in a throwaway worktree and prints the outcome; `loom doctor --cross-epic-gate` (optionally narrowed by `--epics <a,b>`) merges every open `epic/*` branch into a throwaway union worktree and runs the suite once, reporting per-pair conflicts or the union suite result without mutating any real branch; plain `loom doctor`, `loom epic`, and `loom run` never run either. `loom doctor --capabilities` runs the documentation drift check — verifies that every operator command and policy knob is documented in `docs/capabilities.md`; emits missing and phantom token lists on drift and exits non-zero; the check is skipped gracefully if `docs/capabilities.md` is unreadable or the CLI surface cannot be enumerated. |
 | **Init in any repo** | `loom init [--cursor]` | Writes `.loom/policy.yaml`, the SQLite DB, and the guard hook. `--cursor` writes the Cursor rules config. Always (re)writes `.loom/policy.example.yaml` (living docs) and reports any policy knobs missing from your `policy.yaml` — the same notice `loom doctor` prints. As of v0.5.0 also writes/merges `.vscode/settings.json` excludes for `.loom/worktrees/**` and `.loom/integration/**` so Cursor/VS Code stops indexing every story worktree (the "too many active changes" warning during multi-epic runs). Registers the repo in `~/.loom/projects.json`. |
 | **Cut a release** | `loom release <version>` | Bumps all workspace `package.json` versions via `scripts/bump-versions.mjs`, creates `release/v<version>`, commits `chore(release): v<version>`, pushes the branch, and opens a PR against `main`. **Never pushes `main` directly** — always a PR-merge step. **Guard-compatible:** `release/v*` is not a protected branch and no `--force` flag is used. Post-merge operator step: `git tag v<version> <merge-sha> && git push origin v<version>`. |
 
@@ -249,8 +249,6 @@ Setting expectations honestly:
   registry, not Homebrew.
 - **Bedrock backend.** The `LLMClient` interface is ready, but the
   Bedrock-specific request shape + IAM auth hasn't shipped.
-- **Mid-spawn agent guidance on the `anthropic-api` backend.** Tracked
-  as a follow-up.
 - **`loom uninstall`.** Tracked as alpha-blocking A4 in the Jira slate.
 
 ---
@@ -275,6 +273,82 @@ but they're a per-release event log; this page is the always-current
 truth.
 
 ---
+
+<!-- coverage:command:start -->
+`loom approve`
+`loom archive`
+`loom artifacts`
+`loom audit`
+`loom autonomy`
+`loom diff`
+`loom doctor`
+`loom epic`
+`loom guard check`
+`loom guide`
+`loom init`
+`loom mcp add`
+`loom mcp list`
+`loom opportunities`
+`loom project`
+`loom projects`
+`loom propose`
+`loom pull-guidance`
+`loom reconcile`
+`loom reject`
+`loom retry`
+`loom revert`
+`loom review`
+`loom run`
+`loom scan`
+`loom st`
+`loom status`
+`loom stop`
+`loom traces`
+`loom unarchive`
+`loom web`
+<!-- coverage:command:end -->
+
+<!-- coverage:knob:start -->
+`policy.agents.budget_tokens_per_story`
+`policy.agents.context_notes`
+`policy.agents.cursor_model`
+`policy.agents.handoff`
+`policy.agents.integration_branch`
+`policy.agents.integration_gate`
+`policy.agents.integrator`
+`policy.agents.llm_backend`
+`policy.agents.max_concurrent`
+`policy.agents.min_brief_quality_score`
+`policy.agents.model`
+`policy.agents.phases`
+`policy.agents.planning_model`
+`policy.agents.pr_strategy`
+`policy.agents.prune_orphan_worktrees`
+`policy.agents.qa_planning`
+`policy.agents.require_human_pr_merge`
+`policy.agents.review_timeout_minutes`
+`policy.agents.shared_contract`
+`policy.agents.skill_demote_failure_ratio`
+`policy.agents.skill_demote_min_samples`
+`policy.agents.skill_gen_model`
+`policy.agents.skill_judge_min_score`
+`policy.agents.skill_promote_after`
+`policy.agents.story_absolute_cap_minutes`
+`policy.agents.story_stall_minutes`
+`policy.agents.story_timeout_multipliers.large`
+`policy.agents.story_timeout_multipliers.medium`
+`policy.agents.story_timeout_multipliers.small`
+`policy.agents.story_timeout_multipliers.trivial`
+`policy.agents.test_command`
+`policy.agents.worker_backend`
+`policy.agents.worktree_isolation`
+`policy.filesystem.allowed_write_root`
+`policy.filesystem.protected_paths`
+`policy.git.agents_must_use_pr`
+`policy.git.allowed_remotes`
+`policy.git.forbidden_flags`
+`policy.git.protected_branches`
+<!-- coverage:knob:end -->
 
 *Single source of truth for what loom does. Edit in
 `docs/capabilities.md`. Linked from README, getting-started, and CLAUDE.md.*

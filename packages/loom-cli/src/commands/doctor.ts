@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ZodError } from 'zod';
+import type { Command } from 'commander';
 import {
   loadMachineConfig,
   defaultMachineConfigPath,
@@ -15,6 +16,7 @@ import {
 } from '@loom-ai/core';
 import { gateCommandCheck } from './doctorGateCheck.js';
 import { reportPolicyDrift } from './init.js';
+import { checkCapabilitiesCoverage } from '../describe/coverage-check.js';
 
 interface Check {
   name: string;
@@ -86,6 +88,35 @@ export function policyValidationCheck(projectRoot: string): Check {
       };
     }
     throw e;
+  }
+}
+
+/**
+ * `loom doctor --capabilities` — best-effort drift check for docs/capabilities.md.
+ * Delegates entirely to checkCapabilitiesCoverage and emits the result as a single
+ * doctor check. Best-effort: required is always false; the FR-5 test suite is the
+ * binding requirement (ADR-2).
+ */
+export function runCapabilitiesMode(opts?: { program?: Command; root?: string }): void {
+  console.log('\n  loom doctor --capabilities\n');
+  try {
+    const report = checkCapabilitiesCoverage(opts);
+    const mark = report.ok ? 'ok  ' : 'warn';
+    console.log(
+      `  [${mark}] capabilities coverage: ${report.ok ? 'all operator commands and knobs are documented' : 'drift detected'}`
+    );
+    for (const msg of report.messages) {
+      console.log(`         ${msg}`);
+    }
+    console.log('');
+    if (report.ok) {
+      console.log('  Capabilities page is current.\n');
+    } else {
+      console.log('  Capabilities page may be out of date — update docs/capabilities.md.\n');
+    }
+  } catch (err) {
+    console.log(`  [warn] capabilities coverage: check skipped (${(err as Error).message})`);
+    console.log('');
   }
 }
 
@@ -218,18 +249,20 @@ export function runDoctor(): void {
 export const spec: CommandDescription = {
   name: 'doctor',
   summary: 'Check prerequisites and report what is missing',
-  whenToUse: 'Run after installing loom to verify Node, git, claude CLI, and gh are present and correctly configured. Use --dry-run-gate or --cross-epic-gate for deeper validation.',
+  whenToUse: 'Run after installing loom to verify Node, git, claude CLI, and gh are present and correctly configured. Use --dry-run-gate or --cross-epic-gate for deeper validation. Use --capabilities to check whether docs/capabilities.md is current.',
   arguments: [],
   options: [
     { name: '--dry-run-gate', type: 'boolean', description: 'Execute the integration gate once in a throwaway worktree and report the outcome', changesOutputShape: false },
     { name: '--cross-epic-gate', type: 'boolean', description: 'Merge every open epic branch into a throwaway union worktree and run the suite once', changesOutputShape: false },
     { name: '--epics', type: 'string', description: 'Comma-separated epic ids to restrict --cross-epic-gate to (default: every epic/* branch)', changesOutputShape: false },
+    { name: '--capabilities', type: 'boolean', description: 'Check whether docs/capabilities.md covers all live CLI commands and policy knobs', changesOutputShape: false },
   ],
   output: { text: 'Checklist of prerequisites with pass/fail/warn status' },
   examples: [
     { command: 'loom doctor', description: 'Check all prerequisites' },
     { command: 'loom doctor --dry-run-gate', description: 'Also run the integration gate in a throwaway worktree' },
     { command: 'loom doctor --cross-epic-gate --epics epic-001,epic-002', description: 'Check for cross-epic merge conflicts' },
+    { command: 'loom doctor --capabilities', description: 'Check whether docs/capabilities.md covers the live CLI surface' },
   ],
   exitCodes: [
     { code: 0, meaning: 'All checks passed or warnings only' },
