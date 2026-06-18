@@ -53,12 +53,12 @@ describe('loom serve removal (story-003-001)', () => {
     );
   });
 
-  it('loom serve produces a one-line unknown-command message, not a stack trace', () => {
+  it('loom serve produces an unknown-command message, not a stack trace', () => {
     const { stdout, stderr } = loom(['serve']);
     const combined = (stdout + stderr).trim();
-    // Commander emits a short "error: unknown command 'serve'" — no multi-line stack
-    const lines = combined.split('\n').filter((l) => l.trim().length > 0);
-    assert.ok(lines.length <= 3, `Expected at most 3 lines of output, got:\n${combined}`);
+    // Commander emits "error: unknown command 'serve'" — verify the message and no stack trace
+    assert.match(combined, /unknown command ['"]?serve['"]?/i);
+    assert.ok(!combined.includes('\n    at '), 'Expected no stack trace in output');
   });
 
   it('loom --version starts cleanly (CLI boots without dangling import)', () => {

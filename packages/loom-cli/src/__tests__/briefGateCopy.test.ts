@@ -23,7 +23,7 @@ const UNIQUE_PHRASES = [CANNOT_BYPASS, UNBYPASSABLE];
 
 // Files that carry user-facing copy about the brief-quality gate. None of
 // them may describe the gate as impossible to override.
-// Note: packages/loom-mcp/src/tools/registry.ts was deleted in epic-003 (story-003-001).
+// File deleted when loom-mcp package was removed.
 const GATE_COPY_FILES = [
   'packages/loom-cli/src/commands/init.ts',
   'docs/capabilities.md',
