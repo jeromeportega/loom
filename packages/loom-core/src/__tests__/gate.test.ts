@@ -25,6 +25,15 @@ describe('evaluateBriefGate', () => {
     assert.equal(v.pass, false);
   });
 
+  it('minScore=0, ready: false → pass-with-clarifications, not below-threshold', () => {
+    // Operators who set min_brief_quality_score: 0 as a no-threshold mode still
+    // see exit 3 (not exit 1) when the refiner returns ready: false.
+    const v = evaluateBriefGate({ ready: false, quality_score: 0 }, 0);
+    assert.equal(v.outcome, 'pass-with-clarifications');
+    assert.equal(v.pass, false);
+    assert.notEqual(v.outcome, 'below-threshold');
+  });
+
   it('passes when ready with score 0 at threshold 0', () => {
     const v = evaluateBriefGate({ ready: true, quality_score: 0 }, 0);
     assert.equal(v.pass, true);

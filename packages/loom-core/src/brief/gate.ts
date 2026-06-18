@@ -1,7 +1,11 @@
 import type { BriefRefinement } from './types.js';
 
-/** Discriminant for the three-way brief-quality gate decision. */
-export type GateOutcome =
+/**
+ * Discriminant for the three-way brief-quality gate decision.
+ * Named BriefGateOutcome to avoid collision with IntegrationGate.GateOutcome
+ * in the root barrel (both packages export via export *).
+ */
+export type BriefGateOutcome =
   | 'pass-clean'               // quality_score >= threshold && ready === true
   | 'pass-with-clarifications' // quality_score >= threshold && ready === false
   | 'below-threshold';         // quality_score <  threshold
@@ -13,7 +17,7 @@ export type GateOutcome =
  */
 export interface GateVerdict {
   /** Three-way discriminant — the definitive routing signal for callers. */
-  outcome: GateOutcome;
+  outcome: BriefGateOutcome;
   /** Back-compat: equals (outcome === 'pass-clean'). */
   pass: boolean;
   /** Echoed for reporting. */
@@ -38,7 +42,7 @@ export function evaluateBriefGate(
   refinement: Pick<BriefRefinement, 'ready' | 'quality_score'>,
   minScore: number
 ): GateVerdict {
-  let outcome: GateOutcome;
+  let outcome: BriefGateOutcome;
   if (refinement.quality_score < minScore) {
     outcome = 'below-threshold';
   } else if (refinement.ready === true) {

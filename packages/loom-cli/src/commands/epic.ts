@@ -180,11 +180,8 @@ export async function runEpic(
         return;
       }
       case 'pass-with-clarifications':
-        console.log(formatClarificationsNotice(verdict, refinement));
-        store.reject(
-          reservedId,
-          `brief gate: ${refinement.quality_score}/10 — passed with clarifications (exit 3)`
-        );
+        console.error(formatClarificationsNotice(verdict, refinement));
+        store.reject(reservedId, 'brief gate: passed with clarifications');
         process.exit(3);
         return;
       case 'pass-clean':
@@ -304,7 +301,6 @@ export const spec: CommandDescription = {
   exitCodes: [
     { code: 0, meaning: 'Epic planned successfully' },
     { code: 1, meaning: 'loom not initialized, brief quality gate failed, or LLM error' },
-    { code: 2, meaning: 'reserved — blocked-with-feedback in guard.ts; not used here' },
     { code: 3, meaning: 'Brief passed with optional clarifications — re-run with --force to plan as-is' },
   ],
   errors: ['loom is not initialized — run `loom init` first', 'Brief quality score too low — revise or use --force', 'ANTHROPIC_API_KEY not set'],
