@@ -12,8 +12,9 @@ export function oneLine(s: string, max: number): string {
 
 /**
  * Return the model id for display. NULL, undefined, or empty string all
- * render as the literal 'unknown' — never a guessed or policy-default value.
- * Only the model id string is returned; no keys, endpoints, or credentials.
+ * render as the literal 'unknown' — including pre-migration rows whose model
+ * was never recorded. Never reveals credentials, endpoints, or other secrets —
+ * only the bare model id string.
  */
 export function displayModel(model: string | null | undefined): string {
   return model || 'unknown';
