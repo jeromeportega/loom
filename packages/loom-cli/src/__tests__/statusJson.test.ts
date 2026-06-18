@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createDatabase, EpicStore, AgentStore } from '@loom-ai/core';
+import { createDatabase, EpicStore, AgentStore, ProjectRegistry } from '@loom-ai/core';
 import { runStatus } from '../commands/status.js';
 
 let repo: string;
@@ -20,6 +20,31 @@ afterEach(() => {
   process.chdir(prevCwd);
   fs.rmSync(repo, { recursive: true, force: true });
 });
+
+/** Extended capture that also tracks stderr and process.exitCode. */
+function captureStatusFull(options: Parameters<typeof runStatus>[0]): {
+  stdout: string;
+  stderr: string;
+  exitCode: number | string | undefined;
+} {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  const origExitCode = process.exitCode;
+  process.exitCode = undefined;
+  console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
+  console.error = (...args: unknown[]) => errors.push(args.map(String).join(' '));
+  try {
+    runStatus(options);
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+  }
+  const code = process.exitCode;
+  process.exitCode = origExitCode;
+  return { stdout: logs.join('\n'), stderr: errors.join('\n'), exitCode: code };
+}
 
 /** Captures everything `runStatus` writes to stdout and returns it joined. */
 function captureStatus(options: Parameters<typeof runStatus>[0]): string {
@@ -103,5 +128,126 @@ describe('loom status --json — retry-row collapse', () => {
     const row = payload.epics[0].stories[0];
     assert.equal(row.id, 'story-001-001');
     assert.equal(row.history, undefined, 'no history array when there was no retry');
+  });
+});
+
+describe('loom status --project <root>', () => {
+  it('scopes JSON output to the named project and excludes other projects', () => {
+    // project B is repo (also CWD). Create project A as a separate dir.
+    const projectA = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-proj-a-'));
+    fs.mkdirSync(path.join(projectA, '.loom'), { recursive: true });
+    const loomHome = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-home-'));
+    const prevLoomHome = process.env.LOOM_HOME;
+    process.env.LOOM_HOME = loomHome;
+
+    try {
+      // Seed project A with a unique epic
+      const dbA = createDatabase(path.join(projectA, '.loom', 'loom.db'));
+      new EpicStore(dbA).create('epic-a01', 'Epic A — only in project A');
+      dbA.close();
+
+      // Seed project B (repo/CWD) with a different epic
+      const dbB = createDatabase(path.join(repo, '.loom', 'loom.db'));
+      new EpicStore(dbB).create('epic-b01', 'Epic B — only in project B');
+      dbB.close();
+
+      // Register both
+      const registry = new ProjectRegistry();
+      registry.register(projectA);
+      registry.register(repo);
+
+      const { stdout } = captureStatusFull({ project: projectA, json: true });
+      const payload = JSON.parse(stdout) as { epics: { id: string; title: string }[] };
+
+      assert.ok(payload.epics.some((e) => e.id === 'epic-a01'), 'project A epic must appear');
+      assert.ok(!payload.epics.some((e) => e.id === 'epic-b01'), 'project B epic must NOT appear');
+    } finally {
+      process.env.LOOM_HOME = prevLoomHome;
+      fs.rmSync(projectA, { recursive: true, force: true });
+      fs.rmSync(loomHome, { recursive: true, force: true });
+    }
+  });
+
+  it('human output includes only the named project', () => {
+    const projectA = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-proj-a2-'));
+    fs.mkdirSync(path.join(projectA, '.loom'), { recursive: true });
+    const loomHome = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-home2-'));
+    const prevLoomHome = process.env.LOOM_HOME;
+    process.env.LOOM_HOME = loomHome;
+
+    try {
+      const dbA = createDatabase(path.join(projectA, '.loom', 'loom.db'));
+      new EpicStore(dbA).create('epic-a02', 'Alpha Epic');
+      dbA.close();
+
+      const dbB = createDatabase(path.join(repo, '.loom', 'loom.db'));
+      new EpicStore(dbB).create('epic-b02', 'Beta Epic');
+      dbB.close();
+
+      const registry = new ProjectRegistry();
+      registry.register(projectA);
+      registry.register(repo);
+
+      const { stdout } = captureStatusFull({ project: projectA });
+      assert.ok(stdout.includes('Alpha Epic'), 'project A epic title must appear');
+      assert.ok(!stdout.includes('Beta Epic'), 'project B epic title must NOT appear');
+    } finally {
+      process.env.LOOM_HOME = prevLoomHome;
+      fs.rmSync(projectA, { recursive: true, force: true });
+      fs.rmSync(loomHome, { recursive: true, force: true });
+    }
+  });
+
+  it('sets exitCode=1 and prints error when project is not registered', () => {
+    const loomHome = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-home3-'));
+    const prevLoomHome = process.env.LOOM_HOME;
+    process.env.LOOM_HOME = loomHome;
+
+    try {
+      const { exitCode, stderr } = captureStatusFull({ project: '/tmp/not-a-registered-project' });
+      assert.equal(exitCode, 1, 'exitCode must be 1 for unregistered project');
+      assert.ok(/not registered/i.test(stderr), `stderr must mention "not registered": ${stderr}`);
+    } finally {
+      process.env.LOOM_HOME = prevLoomHome;
+      fs.rmSync(loomHome, { recursive: true, force: true });
+    }
+  });
+
+  it('--json --project <unregistered>: emits nothing to stdout (no fake empty payload)', () => {
+    const loomHome = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-home4-'));
+    const prevLoomHome = process.env.LOOM_HOME;
+    process.env.LOOM_HOME = loomHome;
+
+    try {
+      const { stdout, exitCode } = captureStatusFull({
+        project: '/tmp/not-a-registered-project',
+        json: true,
+      });
+      assert.equal(exitCode, 1, 'exitCode must be 1 for unregistered project');
+      // Before the fix, stdout was '{"epics":[]}' which is indistinguishable from
+      // a registered project with no epics. After the fix, stdout must be empty.
+      assert.equal(stdout.trim(), '', `stdout must be empty for unregistered project with --json; got: ${stdout}`);
+    } finally {
+      process.env.LOOM_HOME = prevLoomHome;
+      fs.rmSync(loomHome, { recursive: true, force: true });
+    }
+  });
+
+  it('--project and --all together: sets exitCode=1 with error message', () => {
+    const loomHome = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-home5-'));
+    const prevLoomHome = process.env.LOOM_HOME;
+    process.env.LOOM_HOME = loomHome;
+
+    try {
+      const { exitCode, stderr } = captureStatusFull({ project: repo, all: true });
+      assert.equal(exitCode, 1, 'exitCode must be 1 for mutually exclusive flags');
+      assert.ok(
+        /mutually exclusive/i.test(stderr),
+        `stderr must mention "mutually exclusive": ${stderr}`
+      );
+    } finally {
+      process.env.LOOM_HOME = prevLoomHome;
+      fs.rmSync(loomHome, { recursive: true, force: true });
+    }
   });
 });

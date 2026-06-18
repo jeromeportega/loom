@@ -57,15 +57,45 @@ export interface StatusOptions {
   archived?: boolean;
   /** Emit a machine-readable JSON payload instead of the human tree. */
   json?: boolean;
+  /** Target the named registered project (absolute path). */
+  project?: string;
 }
 
 export function runStatus(options: StatusOptions): void {
+  if (options.project && options.all) {
+    console.error('--project and --all are mutually exclusive');
+    process.exitCode = 1;
+    return;
+  }
+
+  // Validate --project once here so both the --json path and render() share the same check
+  // and buildJsonStatus stays side-effect-free.
+  let projectLoomDir: string | undefined;
+  if (options.project) {
+    const resolved = path.resolve(options.project);
+    const entry = new ProjectRegistry().list().find((p) => p.root === resolved);
+    if (!entry) {
+      console.error(`Project not registered: ${resolved}`);
+      process.exitCode = 1;
+      return;
+    }
+    projectLoomDir = path.join(resolved, '.loom');
+  }
+
   if (options.json) {
-    console.log(JSON.stringify(buildJsonStatus(options), null, 2));
+    const status = buildJsonStatus(options, projectLoomDir);
+    console.log(JSON.stringify(status, null, 2));
     return;
   }
 
   function render(): void {
+    if (projectLoomDir) {
+      const resolved = path.resolve(options.project!);
+      console.log(`\n━━ ${path.basename(resolved)}  (${resolved})`);
+      renderLoomDir(projectLoomDir, options.epicId, options.archived);
+      console.log('');
+      return;
+    }
     if (options.all) {
       const projects = new ProjectRegistry().list();
       if (projects.length === 0) {
@@ -89,6 +119,10 @@ export function runStatus(options: StatusOptions): void {
     const interval = setInterval(() => {
       console.clear();
       render();
+      if (process.exitCode) {
+        clearInterval(interval);
+        return;
+      }
       if (allTerminal(options)) {
         clearInterval(interval);
         console.log('All stories reached terminal status. Exiting watch.');
@@ -139,10 +173,15 @@ interface JsonStatus {
  * `loom_get_status` payload uses — so `--json` yields exactly one row per
  * story (old attempts in `history[]`), never a duplicate blocked+done pair.
  */
-function buildJsonStatus(options: StatusOptions): JsonStatus {
-  const loomDirs = options.all
-    ? new ProjectRegistry().list().map((p) => path.join(p.root, '.loom'))
-    : [path.join(process.cwd(), '.loom')];
+function buildJsonStatus(options: StatusOptions, projectLoomDir?: string): JsonStatus {
+  let loomDirs: string[];
+  if (projectLoomDir) {
+    loomDirs = [projectLoomDir];
+  } else {
+    loomDirs = options.all
+      ? new ProjectRegistry().list().map((p) => path.join(p.root, '.loom'))
+      : [path.join(process.cwd(), '.loom')];
+  }
 
   const epics: JsonEpic[] = [];
   for (const loomDir of loomDirs) {
@@ -310,9 +349,17 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
 }
 
 function allTerminal(options: StatusOptions): boolean {
-  const loomDirs = options.all
-    ? new ProjectRegistry().list().map((p) => path.join(p.root, '.loom'))
-    : [path.join(process.cwd(), '.loom')];
+  let loomDirs: string[];
+  if (options.project) {
+    const resolved = path.resolve(options.project);
+    const entry = new ProjectRegistry().list().find((p) => p.root === resolved);
+    if (!entry) return true; // unregistered — treat as terminal so watch loop exits (render already errored)
+    loomDirs = [path.join(resolved, '.loom')];
+  } else {
+    loomDirs = options.all
+      ? new ProjectRegistry().list().map((p) => path.join(p.root, '.loom'))
+      : [path.join(process.cwd(), '.loom')];
+  }
   if (loomDirs.length === 0) return true;
   return loomDirs.every((dir) => loomDirTerminal(dir, options.epicId));
 }

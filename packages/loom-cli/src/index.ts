@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runInit } from './commands/init.js';
@@ -119,6 +119,7 @@ program
   .option('--all', 'Aggregate status across every registered loom project')
   .option('--archived', 'Include archived runs (hidden by default)')
   .option('--json', 'Emit a machine-readable JSON payload (one row per story, retries under history[])')
+  .option('--project <root>', 'Target the named registered project (absolute path)')
   .action(
     (opts: {
       watch?: boolean;
@@ -126,6 +127,7 @@ program
       all?: boolean;
       archived?: boolean;
       json?: boolean;
+      project?: string;
     }) => {
       runStatus({
         watch: opts.watch,
@@ -133,6 +135,7 @@ program
         all: opts.all,
         archived: opts.archived,
         json: opts.json,
+        project: opts.project,
       });
     }
   );
@@ -402,8 +405,9 @@ program
   .command('scan')
   .description('Run signal scanners and produce a ranked opportunity board (one LLM call)')
   .option('--json', 'Emit structured JSON output')
-  .action(async (opts: { json?: boolean }) => {
-    await runScanCommand({ json: opts.json });
+  .option('--project <root>', 'Target the named registered project (absolute path)')
+  .action(async (opts: { json?: boolean; project?: string }) => {
+    await runScanCommand({ json: opts.json, project: opts.project });
   });
 
 // ─── loom opportunities ─────────────────────────────────────────────────────
@@ -419,8 +423,21 @@ program
 program
   .command('propose')
   .description('Propose the next epic from top-ranked lessons + open opportunities (one LLM call)')
-  .action(async () => {
-    await runPropose();
+  .option('--top-lessons <n>', 'Number of top lessons to include in the proposal', (v: string) => {
+    if (!/^\d+$/.test(v.trim())) throw new InvalidArgumentError('Must be a positive integer');
+    const n = parseInt(v, 10);
+    if (n < 1) throw new InvalidArgumentError('Must be a positive integer');
+    return n;
+  })
+  .option('--top-opps <n>', 'Number of top opportunities to include in the proposal', (v: string) => {
+    if (!/^\d+$/.test(v.trim())) throw new InvalidArgumentError('Must be a positive integer');
+    const n = parseInt(v, 10);
+    if (n < 1) throw new InvalidArgumentError('Must be a positive integer');
+    return n;
+  })
+  .option('--json', 'Emit machine-readable JSON output ({ ok, epicId? } or { ok, critique })')
+  .action(async (opts: { topLessons?: number; topOpps?: number; json?: boolean }) => {
+    await runPropose({ topLessons: opts.topLessons, topOpps: opts.topOpps, json: opts.json });
   });
 
 // ─── loom serve ─────────────────────────────────────────────────────────────
