@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { openDatabase, EpicStore, PolicyEngine } from '@loom-ai/core';
@@ -149,3 +150,50 @@ function openLoom(): { db: ReturnType<typeof openDatabase>; loomDir: string } {
   }
   return { db: openDatabase(loomDir), loomDir };
 }
+
+export const spec: CommandDescription = {
+  name: 'approve',
+  summary: 'Approve planned epic(s) and release them for execution',
+  whenToUse: 'Use after reviewing the planning artifacts to release an epic for worker dispatch. Pass no id to approve all planned epics.',
+  arguments: [
+    { name: 'epic-id', type: 'string', required: false, description: 'Epic to approve; omit to approve all planned epics' },
+  ],
+  options: [
+    { name: '--run', type: 'boolean', description: 'After approving, immediately dispatch workers (requires an explicit epic id)', changesOutputShape: false },
+  ],
+  output: { text: 'Confirmation of which epics were approved and next steps' },
+  examples: [
+    { command: 'loom approve epic-001', description: 'Approve epic-001 for execution' },
+    { command: 'loom approve', description: 'Approve all planned epics' },
+    { command: 'loom approve epic-001 --run', description: 'Approve and immediately start workers' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Epic(s) approved successfully' },
+    { code: 1, meaning: 'Epic not found, wrong status, or --run without explicit id' },
+  ],
+  errors: ['Epic not found', 'Epic is not in planned status', '--run requires an explicit epic-id argument', 'loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['epic'], nextSteps: ['run', 'status'] },
+};
+
+export const specReject: CommandDescription = {
+  name: 'reject',
+  summary: 'Reject a planned epic',
+  whenToUse: 'Use when a planned epic should not proceed. Records the rejection in the audit log.',
+  arguments: [
+    { name: 'epic-id', type: 'string', required: true, description: 'Epic to reject' },
+  ],
+  options: [
+    { name: '--reason', type: 'string', description: 'Why the epic is being rejected', changesOutputShape: false },
+  ],
+  output: { text: 'Confirmation that the epic was rejected' },
+  examples: [
+    { command: 'loom reject epic-001', description: 'Reject epic-001' },
+    { command: 'loom reject epic-001 --reason "Scope too large"', description: 'Reject with an explanation' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Epic rejected successfully' },
+    { code: 1, meaning: 'Epic not found or loom not initialized' },
+  ],
+  errors: ['Epic not found', 'loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['epic'], nextSteps: ['epic', 'status'] },
+};

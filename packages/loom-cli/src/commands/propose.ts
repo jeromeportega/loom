@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -166,3 +167,30 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
     if (ownDb && db) db.close();
   }
 }
+
+export const spec: CommandDescription = {
+  name: 'propose',
+  summary: 'Propose the next epic from top lessons and opportunities',
+  whenToUse: 'Use when you want loom to suggest what to build next based on accumulated lessons and open opportunities. Exactly one LLM call; outputs a brief that feeds `loom epic`.',
+  arguments: [],
+  options: [
+    { name: '--top-lessons', type: 'number', description: 'Number of top lessons to include in the proposal (default: all)', changesOutputShape: false },
+    { name: '--top-opps', type: 'number', description: 'Number of top opportunities to include in the proposal (default: all)', changesOutputShape: false },
+    { name: '--json', type: 'boolean', description: 'Emit machine-readable JSON: { ok, epicId? } or { ok, critique }', changesOutputShape: true },
+  ],
+  output: {
+    text: 'Proposed epic id and next steps, or critique if the proposal failed the quality gate',
+    json: { supported: true, shape: '{ ok: boolean, epicId?: string, critique?: object }' },
+  },
+  examples: [
+    { command: 'loom propose', description: 'Let loom propose the next epic from lessons and opportunities' },
+    { command: 'loom propose --top-lessons 5 --top-opps 3', description: 'Limit to top 5 lessons and 3 opportunities' },
+    { command: 'loom propose --json', description: 'Emit the proposal result as JSON' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Proposal created and passed the quality gate' },
+    { code: 1, meaning: 'Proposal failed the quality gate or LLM error' },
+  ],
+  errors: ['loom is not initialized — run `loom init` first', 'Proposal failed the brief quality gate', 'ANTHROPIC_API_KEY not set'],
+  relationships: { prerequisites: ['init', 'scan'], nextSteps: ['epic', 'approve'] },
+};

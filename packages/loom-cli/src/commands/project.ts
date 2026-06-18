@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ProjectRegistry, createDatabase, EpicStore } from '@loom-ai/core';
@@ -62,3 +63,29 @@ export function runProject(projectRoot: string, opts: ProjectOptions = {}): void
     console.log(`  latest epic:  (none)`);
   }
 }
+
+export const spec: CommandDescription = {
+  name: 'project',
+  summary: 'Show a registered project and its latest epic',
+  whenToUse: 'Use to inspect a specific registered loom project by path. Mirrors loom_get_project from the MCP surface.',
+  arguments: [
+    { name: 'project-root', type: 'string', required: true, description: 'Absolute or relative path to the project root' },
+  ],
+  options: [
+    { name: '--json', type: 'boolean', description: 'Emit JSON: { project, latest_epic? }', changesOutputShape: true },
+  ],
+  output: {
+    text: 'Project root, name, and latest epic with status',
+    json: { supported: true, shape: '{ project: { root, name }, latest_epic?: { id, status, title } }' },
+  },
+  examples: [
+    { command: 'loom project /path/to/repo', description: 'Show project details and latest epic' },
+    { command: 'loom project . --json', description: 'Emit project details as JSON' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Project details shown' },
+    { code: 1, meaning: 'Project not registered with loom' },
+  ],
+  errors: ['Project is not registered — run `loom init` in that directory first'],
+  relationships: { prerequisites: ['init'], nextSteps: ['status', 'projects'] },
+};

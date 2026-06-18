@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import { ProjectRegistry } from '@loom-ai/core';
 
 export interface ProjectsOptions {
@@ -25,3 +26,26 @@ export function runProjects(opts: ProjectsOptions = {}): void {
     console.log(`  ${p.root}`);
   }
 }
+
+export const spec: CommandDescription = {
+  name: 'projects',
+  summary: 'List loom-initialized repos on this machine',
+  whenToUse: 'Use to see all repos that have been initialized with `loom init` on this machine.',
+  arguments: [],
+  options: [
+    { name: '--json', type: 'boolean', description: 'Emit JSON: { projects: [...] }', changesOutputShape: true },
+  ],
+  output: {
+    text: 'List of project root paths registered with loom',
+    json: { supported: true, shape: '{ projects: { root: string }[] }' },
+  },
+  examples: [
+    { command: 'loom projects', description: 'List all registered loom projects' },
+    { command: 'loom projects --json', description: 'Emit the project list as JSON' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Projects listed successfully' },
+  ],
+  errors: [],
+  relationships: { prerequisites: [], nextSteps: ['project', 'status'] },
+};

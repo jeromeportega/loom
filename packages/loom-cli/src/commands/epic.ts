@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -272,3 +273,26 @@ function firstCritiqueLine(refinement: {
     refinement.questions[0];
   return first ?? 'brief scored below the quality threshold';
 }
+
+export const spec: CommandDescription = {
+  name: 'epic',
+  summary: 'Plan an epic from a brief using the Analyst→PM→Architect pipeline',
+  whenToUse: 'Use when you have a clear feature idea to plan. Pass a one-paragraph brief; loom runs the planning pipeline and outputs a structured epic YAML.',
+  arguments: [
+    { name: 'brief', type: 'string', required: true, description: 'One paragraph describing what to build' },
+  ],
+  options: [
+    { name: '--force', type: 'boolean', description: 'Skip the brief-quality gate for this invocation (critique still produced and audit-logged)', changesOutputShape: false },
+  ],
+  output: { text: 'Epic id and summary of planned stories after the planning pipeline completes' },
+  examples: [
+    { command: 'loom epic "Add OAuth2 login with GitHub"', description: 'Plan a new epic from a brief' },
+    { command: 'loom epic "Refactor auth module" --force', description: 'Plan without the brief quality gate' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Epic planned successfully' },
+    { code: 1, meaning: 'loom not initialized, brief quality gate failed, or LLM error' },
+  ],
+  errors: ['loom is not initialized — run `loom init` first', 'Brief quality score too low — revise or use --force', 'ANTHROPIC_API_KEY not set'],
+  relationships: { prerequisites: ['init'], nextSteps: ['approve', 'artifacts', 'status'] },
+};

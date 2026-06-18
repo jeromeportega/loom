@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { openDatabase, EpicStore, AuditLog } from '@loom-ai/core';
@@ -60,3 +61,43 @@ function openLoom(): { db: ReturnType<typeof openDatabase>; loomDir: string } {
   }
   return { db: openDatabase(loomDir), loomDir };
 }
+
+export const spec: CommandDescription = {
+  name: 'archive',
+  summary: 'Hide an epic run from default views (non-destructive)',
+  whenToUse: 'Use after a completed or abandoned epic to declutter `loom status` and the web dashboard without deleting data.',
+  arguments: [
+    { name: 'epic-id', type: 'string', required: true, description: 'Epic to archive (e.g. epic-001)' },
+  ],
+  options: [],
+  output: { text: 'Confirmation message that the epic was archived' },
+  examples: [
+    { command: 'loom archive epic-001', description: 'Archive epic-001 so it is hidden from default views' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Archived successfully' },
+    { code: 1, meaning: 'Epic not found or loom not initialized' },
+  ],
+  errors: ['Epic not found', 'loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['init', 'run'], nextSteps: ['unarchive', 'status'] },
+};
+
+export const specUnarchive: CommandDescription = {
+  name: 'unarchive',
+  summary: 'Restore an archived epic run to default views',
+  whenToUse: 'Use to bring back an epic previously hidden with `loom archive`.',
+  arguments: [
+    { name: 'epic-id', type: 'string', required: true, description: 'Epic to unarchive (e.g. epic-001)' },
+  ],
+  options: [],
+  output: { text: 'Confirmation message that the epic was unarchived' },
+  examples: [
+    { command: 'loom unarchive epic-001', description: 'Restore epic-001 to default views' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Unarchived successfully' },
+    { code: 1, meaning: 'Epic not found or loom not initialized' },
+  ],
+  errors: ['Epic not found', 'loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['archive'], nextSteps: ['status'] },
+};

@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -172,3 +173,53 @@ export function runOpportunitiesCommand(opts: { json?: boolean } = {}): void {
   console.log(`\n  Opportunity board (${opportunities.length} total):\n`);
   printBoard(opportunities);
 }
+
+export const spec: CommandDescription = {
+  name: 'scan',
+  summary: 'Scan for opportunities and produce a ranked board',
+  whenToUse: 'Use to discover technical debt, test gaps, and improvement opportunities in the current project. Makes one LLM call; stores results for `loom opportunities` and `loom propose`.',
+  arguments: [],
+  options: [
+    { name: '--json', type: 'boolean', description: 'Emit structured JSON output', changesOutputShape: true },
+    { name: '--project', type: 'string', description: 'Target the named registered project (absolute path)', changesOutputShape: false },
+  ],
+  output: {
+    text: 'Ranked opportunity board with descriptions and scores',
+    json: { supported: true, shape: '{ opportunities: OpportunityRecord[] }' },
+  },
+  examples: [
+    { command: 'loom scan', description: 'Scan the current project for opportunities' },
+    { command: 'loom scan --json', description: 'Emit scan results as JSON' },
+    { command: 'loom scan --project /path/to/repo', description: 'Scan a specific registered project' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Scan completed and board produced' },
+    { code: 1, meaning: 'loom not initialized, project not found, or LLM error' },
+  ],
+  errors: ['loom is not initialized — run `loom init` first', 'Project not registered', 'ANTHROPIC_API_KEY not set'],
+  relationships: { prerequisites: ['init'], nextSteps: ['opportunities', 'propose'] },
+};
+
+export const specOpportunities: CommandDescription = {
+  name: 'opportunities',
+  summary: 'Show the current opportunity board (no new scan)',
+  whenToUse: 'Use after `loom scan` to view the stored opportunity board without making another LLM call.',
+  arguments: [],
+  options: [
+    { name: '--json', type: 'boolean', description: 'Emit structured JSON output', changesOutputShape: true },
+  ],
+  output: {
+    text: 'Ranked opportunity board from the most recent scan',
+    json: { supported: true, shape: '{ opportunities: OpportunityRecord[] }' },
+  },
+  examples: [
+    { command: 'loom opportunities', description: 'Show the current opportunity board' },
+    { command: 'loom opportunities --json', description: 'Emit the board as JSON' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Board shown successfully' },
+    { code: 1, meaning: 'loom not initialized' },
+  ],
+  errors: ['loom is not initialized — run `loom init` first', 'No scan results — run `loom scan` first'],
+  relationships: { prerequisites: ['scan'], nextSteps: ['propose', 'epic'] },
+};

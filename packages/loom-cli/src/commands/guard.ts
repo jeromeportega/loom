@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import path from 'node:path';
 import { PolicyEngine, openDatabase, AuditLog } from '@loom-ai/core';
 
@@ -122,3 +123,43 @@ function readStdin(): Promise<string> {
     process.stdin.on('error', () => resolve(''));
   });
 }
+
+export const specCheck: CommandDescription = {
+  name: 'guard check',
+  summary: 'Check whether a command is allowed by policy',
+  whenToUse: 'Use manually to test whether a specific shell command would be blocked by loom policy before running it.',
+  arguments: [],
+  options: [
+    { name: '--command', type: 'string', description: 'The shell command to validate against policy', changesOutputShape: false },
+  ],
+  output: { text: 'Exit 0 if allowed; non-zero with JSON reason if blocked' },
+  examples: [
+    { command: 'loom guard check --command "git push --force"', description: 'Check whether force-push is allowed' },
+    { command: 'loom guard check --command "rm -rf /"', description: 'Check a destructive command' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Command is allowed by policy' },
+    { code: 1, meaning: 'Command is blocked (generic)' },
+    { code: 2, meaning: 'Command is blocked; feedback shown to Claude Code' },
+  ],
+  errors: ['loom policy file not found — run `loom init` first'],
+  relationships: { prerequisites: ['init'], nextSteps: [] },
+};
+
+export const specHook: CommandDescription = {
+  name: 'guard hook',
+  summary: 'Enforce policy on PreToolUse events from Claude Code hooks',
+  whenToUse: 'Used automatically by the .claude/settings.json PreToolUse hook; not for direct human use.',
+  arguments: [],
+  options: [],
+  output: { text: 'Exit 0 to allow; exit 2 with stderr message to block and show feedback to Claude' },
+  examples: [
+    { command: 'echo \'{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /"}}\' | loom guard hook', description: 'Simulate a hook event (internal use)' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Tool call allowed by policy' },
+    { code: 2, meaning: 'Tool call blocked; reason shown to Claude Code' },
+  ],
+  errors: ['Malformed JSON input — non-JSON input is allowed through'],
+  relationships: { prerequisites: ['init'], nextSteps: [] },
+};

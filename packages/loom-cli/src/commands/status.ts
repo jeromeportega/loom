@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -417,3 +418,34 @@ function elapsedStr(startedAt: string): string {
   if (m < 60) return `${m}m ${s % 60}s`;
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
+
+export const spec: CommandDescription = {
+  name: 'status',
+  summary: 'Show epic and story status with PR links',
+  whenToUse: 'The primary observability command. Use to check which epics and stories are running, blocked, done, or failed. Add --watch for a live-refreshing view.',
+  arguments: [],
+  options: [
+    { name: '--watch', type: 'boolean', description: 'Refresh every 10s until all stories reach terminal status', changesOutputShape: false },
+    { name: '--epic', type: 'string', description: 'Show only this epic', changesOutputShape: false },
+    { name: '--all', type: 'boolean', description: 'Aggregate status across every registered loom project', changesOutputShape: false },
+    { name: '--archived', type: 'boolean', description: 'Include archived runs (hidden by default)', changesOutputShape: false },
+    { name: '--json', type: 'boolean', description: 'Emit machine-readable JSON payload', changesOutputShape: true },
+    { name: '--project', type: 'string', description: 'Target the named registered project (absolute path)', changesOutputShape: false },
+  ],
+  output: {
+    text: 'Human-readable tree of epics and stories with status icons and PR links',
+    json: { supported: true, shape: '{ epics: { id, title, status, stories: { id, title, status, pr_url?, history? }[] }[] }' },
+  },
+  examples: [
+    { command: 'loom status', description: 'Show all epics in the current project' },
+    { command: 'loom status --json', description: 'Emit machine-readable JSON' },
+    { command: 'loom status --watch', description: 'Auto-refresh every 10 seconds' },
+    { command: 'loom status --all', description: 'Show status for all registered projects' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Status shown successfully' },
+    { code: 1, meaning: 'Project not registered or --project/--all conflict' },
+  ],
+  errors: ['--project and --all are mutually exclusive', 'Project not registered — run `loom init` first'],
+  relationships: { prerequisites: ['init'], nextSteps: ['run', 'approve', 'retry', 'stop'] },
+};
