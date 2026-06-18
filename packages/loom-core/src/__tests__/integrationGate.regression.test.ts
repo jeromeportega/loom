@@ -1,8 +1,8 @@
 /**
- * Regression: cross-package API-addition scenario
+ * Acceptance spec for linkWorkspaceDeps — cross-package API-addition scenario.
  *
- * Exercises the REAL IntegrationBranch / IntegrationGate path (including
- * the linkWorkspaceDeps fix from story-007-001).  The fixture repo mimics
+ * Exercises the REAL IntegrationBranch / IntegrationGate path INCLUDING the
+ * linkWorkspaceDeps preflight from story-007-001.  The fixture repo mimics
  * the loom monorepo layout:
  *
  *   packages/loom-core — the dependency (@loom-ai/core)
@@ -13,7 +13,7 @@
  * integration worktree is created at `<repo>/.loom/integration/<epic>`,
  * physically *inside* the parent repo, so without a local dep-link Node.js
  * resolution climbs up and lands on the parent's stale module — the real
- * defect precondition.  With `linkWorkspaceDeps` in place, the worktree-local
+ * defect precondition.  With `linkWorkspaceDeps` in place the worktree-local
  * node_modules intercepts the climb and points at the freshly merged packages.
  *
  * Four test cases cover all four acceptance criteria:
@@ -40,10 +40,14 @@ const EPIC = 'epic-reg-001';
  * Gate command: loads loom-web from the worktree and calls .run().
  * In Node.js eval mode, require('./...') resolves from process.cwd(),
  * which IntegrationGate sets to the integration worktree root.
- * The bare @loom-ai/core import inside loom-web resolves from
- * <worktree>/packages/loom-web/src/, walking up through node_modules.
+ * The @loom-ai/core import inside loom-web starts resolution from
+ * <worktree>/packages/loom-web/src/ and walks up through node_modules:
+ *   - WITH dep-link: stops at <worktree>/node_modules/@loom-ai/core
+ *     (symlink to ../../packages/loom-core — the worktree's fresh copy).
+ *   - WITHOUT dep-link: climbs past the worktree boundary and resolves to
+ *     <parent-repo>/node_modules/@loom-ai/core (the stale copy).
  */
-const GATE_CMD = `node -e "require('./packages/loom-web/src/index.js').run()"`;
+const GATE_CMD = "node -e \"require('./packages/loom-web/src/index.js').run()\"";
 
 // ---- git helper -------------------------------------------------------
 
@@ -90,7 +94,7 @@ function writeInitialPackages(repo: string): void {
  * will resolve @loom-ai/core to the parent's stale packages if no local
  * dep-link is in place.
  */
-function createParentRepo(): { repo: string; base: string } {
+function createParentRepo(): { repo: string; base: string; branch: string } {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'loom-reg-')));
 
   gitc(['init', '-q'], repo);
@@ -103,6 +107,8 @@ function createParentRepo(): { repo: string; base: string } {
   gitc(['add', '.'], repo);
   gitc(['commit', '-q', '-m', 'initial'], repo);
   const base = gitc(['rev-parse', 'HEAD'], repo);
+  // Capture the initial branch name (varies by git config: main or master).
+  const branch = gitc(['rev-parse', '--abbrev-ref', 'HEAD'], repo);
 
   // Simulate the stale npm-workspaces install: parent node_modules points at
   // THIS checkout's packages, which do NOT have newMethod yet.
@@ -111,14 +117,14 @@ function createParentRepo(): { repo: string; base: string } {
   fs.symlinkSync('../../packages/loom-core', path.join(scopeDir, 'core'));
   fs.symlinkSync('../../packages/loom-web', path.join(scopeDir, 'web'));
 
-  return { repo, base };
+  return { repo, base, branch };
 }
 
 /**
  * story-a: adds newMethod() to loom-core.
  * This is the "story A adds a method to the dependency" part of the scenario.
  */
-function createStoryA(repo: string, base: string): void {
+function createStoryA(repo: string, base: string, returnBranch: string): void {
   gitc(['checkout', '-q', '-b', 'story/story-a', base], repo);
   fs.writeFileSync(
     path.join(repo, 'packages', 'loom-core', 'src', 'index.js'),
@@ -126,7 +132,9 @@ function createStoryA(repo: string, base: string): void {
   );
   gitc(['add', '.'], repo);
   gitc(['commit', '-q', '-m', 'story-a: add newMethod to loom-core'], repo);
-  gitc(['checkout', '-q', base], repo);
+  // Return to a named branch rather than a detached-HEAD SHA so the main
+  // worktree is in a well-defined state when ensure() creates the integration worktree.
+  gitc(['checkout', '-q', returnBranch], repo);
 }
 
 /**
@@ -134,7 +142,7 @@ function createStoryA(repo: string, base: string): void {
  * Calling this method requires that loom-core exports newMethod — which only
  * exists on the WORKTREE's freshly merged packages, not on the parent's stale ones.
  */
-function createStoryB(repo: string, base: string): void {
+function createStoryB(repo: string, base: string, returnBranch: string): void {
   gitc(['checkout', '-q', '-b', 'story/story-b', base], repo);
   fs.writeFileSync(
     path.join(repo, 'packages', 'loom-web', 'src', 'index.js'),
@@ -142,7 +150,7 @@ function createStoryB(repo: string, base: string): void {
   );
   gitc(['add', '.'], repo);
   gitc(['commit', '-q', '-m', 'story-b: call newMethod from loom-web'], repo);
-  gitc(['checkout', '-q', base], repo);
+  gitc(['checkout', '-q', returnBranch], repo);
 }
 
 // ---- Suite -----------------------------------------------------------
@@ -150,11 +158,12 @@ function createStoryB(repo: string, base: string): void {
 describe('IntegrationGate regression — cross-package API-addition scenario', () => {
   let repo: string;
   let base: string;
+  let branch: string;
 
   beforeEach(() => {
-    ({ repo, base } = createParentRepo());
-    createStoryA(repo, base);
-    createStoryB(repo, base);
+    ({ repo, base, branch } = createParentRepo());
+    createStoryA(repo, base, branch);
+    createStoryB(repo, base, branch);
   });
 
   afterEach(() => {
@@ -240,7 +249,7 @@ describe('IntegrationGate regression — cross-package API-addition scenario', (
     );
     gitc(['add', '.'], repo);
     gitc(['commit', '-q', '-m', 'story-c: genuine regression — calls non-existent method'], repo);
-    gitc(['checkout', '-q', base], repo);
+    gitc(['checkout', '-q', branch], repo);
 
     // Use REAL linkWorkspaceDeps — dep-link is in place.
     const ib = new IntegrationBranch(repo);
@@ -251,6 +260,7 @@ describe('IntegrationGate regression — cross-package API-addition scenario', (
     const gate = new IntegrationGate({ testCommand: GATE_CMD });
     const outcome = await gate.run({ projectRoot: info.path });
 
+    assert.equal(outcome.ran, true, 'gate command must have run — guardrail must not short-circuit');
     assert.equal(
       outcome.ok,
       false,
@@ -273,6 +283,10 @@ describe('IntegrationGate regression — cross-package API-addition scenario', (
     // story-b was dropped from the integration (conflict / amputation).
     const outcome = await gate.run({ projectRoot: info.path, conflicted: ['story-b'] });
 
+    // The test command itself must have passed (greet() still works) — the gate
+    // must fail solely because of the amputation, not because the command failed.
+    assert.equal(outcome.ran, true, 'gate command must have run');
+    assert.equal(outcome.exitCode, 0, 'test command must pass so only amputation drives ok:false');
     assert.equal(
       outcome.ok,
       false,
