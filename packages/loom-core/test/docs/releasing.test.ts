@@ -3,17 +3,28 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// 12 levels is enough to reach the monorepo root from any nested test dir
 const MAX_ANCESTOR_DEPTH = 12;
 
-function findDoc(relative: string): string {
+// Walk up from __dirname until we find the monorepo root (the directory that
+// contains both packages/loom-core and packages/loom-cli). This is explicit
+// about what "root" means rather than relying on the doc path coincidentally
+// matching at the right ancestor level.
+function findRepoRoot(): string {
   let dir = __dirname;
   for (let i = 0; i < MAX_ANCESTOR_DEPTH; i++) {
-    const candidate = path.join(dir, relative);
-    if (fs.existsSync(candidate)) return candidate;
+    if (
+      fs.existsSync(path.join(dir, 'packages', 'loom-core')) &&
+      fs.existsSync(path.join(dir, 'packages', 'loom-cli'))
+    ) {
+      return dir;
+    }
     dir = path.dirname(dir);
   }
-  throw new Error(`could not locate ${relative}`);
+  throw new Error('could not locate monorepo root (packages/loom-core + packages/loom-cli not found)');
+}
+
+function findDoc(relative: string): string {
+  return path.join(findRepoRoot(), relative);
 }
 
 describe('docs/operations/releasing.md — guard-compatible release flow', () => {
@@ -54,9 +65,9 @@ describe('docs/operations/releasing.md — guard-compatible release flow', () =>
   });
 
   it('does NOT instruct committing the bump directly on main', () => {
-    // The old guard-blocked path was: "Commit the bump on `main`"
+    // The exact guard-blocked phrase the old runbook used.
     assert.ok(
-      !/commit.{0,40}on.{0,10}`?main`?/i.test(runbook),
+      !/Commit the bump on `main`|commit .{0,20} directly on `?main`?/i.test(runbook),
       'must not instruct committing the version bump directly on main'
     );
   });

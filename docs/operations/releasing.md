@@ -46,6 +46,12 @@ git pull origin main
 git status   # should show "nothing to commit, working tree clean"
 ```
 
+For Step 4 (npm publish) you also need an npm session:
+
+```bash
+npm whoami   # should show your npm username; run npm login if not authenticated
+```
+
 ### Step 1 — open the release PR
 
 ```bash
@@ -102,6 +108,12 @@ For example, if the merge SHA shown on GitHub was `a1b2c3d`:
 git fetch origin
 git tag v5.3.0 a1b2c3d
 git push origin v5.3.0
+```
+
+If you did not note the SHA during the merge, retrieve it with:
+
+```bash
+git fetch origin && git log --merges origin/main -1 --format=%H
 ```
 
 Tag pushes to `origin` pass the guard — `v<version>` is not a protected
