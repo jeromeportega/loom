@@ -2,13 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { openDatabase, ProjectRegistry, bundledSkillsDir, missingPolicyKeys } from '@loom-ai/core';
-import { upsertMcpServer } from './mcpConfig.js';
 
 const LOOM_DIR = '.loom';
 const CLAUDE_SETTINGS = '.claude/settings.json';
 const CLAUDE_SKILLS_DIR = '.claude/skills';
-const MCP_JSON = '.mcp.json';
-const CURSOR_MCP = '.cursor/mcp.json';
 const CURSOR_RULES_DIR = '.cursor/rules';
 const VSCODE_SETTINGS = '.vscode/settings.json';
 
@@ -21,7 +18,7 @@ function loomScriptPath(): string {
   return process.argv[1];
 }
 
-export function runInit(options: { cursor?: boolean; yes?: boolean; mcp?: boolean }): void {
+export function runInit(options: { cursor?: boolean; yes?: boolean }): void {
   const projectRoot = process.cwd();
   const loomDir = path.join(projectRoot, LOOM_DIR);
 
@@ -73,13 +70,7 @@ export function runInit(options: { cursor?: boolean; yes?: boolean; mcp?: boolea
   warnTrackedLocalFiles(projectRoot);
 
   // ─── Claude Code: hook, CLAUDE.md, slash commands ─────────────────────────
-  // The CLI is loom's primary surface. The persistent MCP server (`.mcp.json`)
-  // is opt-in via `loom init --mcp` — a long-lived `loom serve` loads dist once
-  // at startup, so it can silently run stale code after an upgrade.
   writeClaudeHook(projectRoot);
-  if (options.mcp) {
-    writeMcpJson(projectRoot);
-  }
   writeClaudeMd(projectRoot);
   writeSlashCommands(projectRoot);
   writeUxDesignerSlashCommand(projectRoot);
@@ -91,7 +82,7 @@ export function runInit(options: { cursor?: boolean; yes?: boolean; mcp?: boolea
   // warnings + indexing pressure on multi-epic runs.
   writeVscodeExcludes(projectRoot);
 
-  // ─── Cursor MCP config (optional) ────────────────────────────────────────
+  // ─── Cursor IDE rules (optional) ─────────────────────────────────────────
   if (options.cursor) {
     writeCursorConfig(projectRoot);
   }
@@ -148,26 +139,6 @@ function writeClaudeHook(projectRoot: string): void {
   } else {
     console.log('  exists   .claude/settings.json loom hook (skipped)');
   }
-}
-
-/** The loom MCP server entry — invoked by absolute path, no PATH dependency. */
-function loomMcpServerEntry(): { command: string; args: string[] } {
-  return { command: 'node', args: [loomScriptPath(), 'serve'] };
-}
-
-/** Adds the loom server to an mcp.json-style file via the shared helper. */
-function addLoomServer(mcpPath: string, label: string): void {
-  const result = upsertMcpServer(mcpPath, 'loom', loomMcpServerEntry());
-  console.log(
-    result === 'exists'
-      ? `  exists   ${label} loom entry (skipped)`
-      : `  ${result === 'created' ? 'created' : 'updated'}  ${label}`
-  );
-}
-
-/** Writes `.mcp.json` so Claude Code picks up the loom MCP server. */
-function writeMcpJson(projectRoot: string): void {
-  addLoomServer(path.join(projectRoot, MCP_JSON), '.mcp.json');
 }
 
 /** Writes a CLAUDE.md describing the loom workflow, if the repo has none. */
@@ -280,9 +251,6 @@ function writeVscodeExcludes(projectRoot: string): void {
 }
 
 function writeCursorConfig(projectRoot: string): void {
-  addLoomServer(path.join(projectRoot, CURSOR_MCP), '.cursor/mcp.json');
-
-  // Write Cursor rules file
   fs.mkdirSync(path.join(projectRoot, CURSOR_RULES_DIR), { recursive: true });
   const rulesPath = path.join(projectRoot, CURSOR_RULES_DIR, 'loom.mdc');
   if (!fs.existsSync(rulesPath)) {
@@ -443,9 +411,6 @@ for machine-readable output (no persistent server to watch).
 - \`loom review <story-id>\` — the reviewer verdict + summary.
 - \`loom artifacts <epic-id>\` — brief / PRD / architecture / epic YAML.
 - \`loom audit [--story <id>]\` / \`loom traces --story <id>\` — audit log + worker reasoning.
-
-An optional MCP server is still available (\`loom serve\` / \`loom init --mcp\`), but
-the CLI is the primary surface.
 
 ## Guardrails
 

@@ -74,14 +74,16 @@ describe('loom init', () => {
     assert.ok(policy.includes('protected_branches'));
   });
 
-  it('creates .cursor/mcp.json with --cursor flag', () => {
+  it('--cursor writes rules file only; does NOT create .cursor/mcp.json with a loom entry', () => {
     loom('init', '--cursor');
-    const mcpPath = path.join(tmpDir, '.cursor', 'mcp.json');
-    assert.ok(fs.existsSync(mcpPath));
-    const mcp = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as {
-      mcpServers?: { loom?: unknown };
-    };
-    assert.ok(mcp.mcpServers?.loom);
+    // The rules file is still written for Cursor IDE integration
+    const rulesPath = path.join(tmpDir, '.cursor', 'rules', 'loom.mdc');
+    assert.ok(fs.existsSync(rulesPath));
+    // loom init no longer writes a loom-server entry to .cursor/mcp.json
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.cursor', 'mcp.json')),
+      '--cursor must NOT create .cursor/mcp.json anymore'
+    );
   });
 
   it('creates .cursor/rules/loom.mdc with --cursor flag', () => {
@@ -102,20 +104,22 @@ describe('loom init', () => {
     assert.ok(cmd.startsWith('node '), 'hook should invoke node directly');
   });
 
-  it('writes .mcp.json only with the --mcp flag (opt-in; CLI is the primary surface)', () => {
-    // Default init no longer writes .mcp.json — the MCP server is opt-in.
+  it('--mcp flag is removed — exits non-zero as unknown option', () => {
+    // The loom-server MCP entry generator is gone; --mcp is no longer a valid flag.
+    const result = loom('init', '--mcp');
+    assert.notEqual(result.status, 0, '--mcp should be an unknown option');
     assert.ok(
       !fs.existsSync(path.join(tmpDir, '.mcp.json')),
-      'default `loom init` must NOT write .mcp.json'
+      '.mcp.json must NOT be created'
     );
-    // Opting in writes it, wired to the loom MCP server.
-    loom('init', '--mcp');
-    const mcp = JSON.parse(
-      fs.readFileSync(path.join(tmpDir, '.mcp.json'), 'utf8')
-    ) as { mcpServers: { loom?: { command: string; args: string[] } } };
-    assert.ok(mcp.mcpServers.loom);
-    assert.equal(mcp.mcpServers.loom.command, 'node');
-    assert.ok(mcp.mcpServers.loom.args.includes('serve'));
+  });
+
+  it('plain loom init never creates .mcp.json', () => {
+    loom('init');
+    assert.ok(
+      !fs.existsSync(path.join(tmpDir, '.mcp.json')),
+      'plain `loom init` must NOT write .mcp.json'
+    );
   });
 
   it('writes a CLAUDE.md describing the loom workflow', () => {
@@ -311,5 +315,92 @@ describe('loom guard check', () => {
   it('exits 0 for npm install', () => {
     const result = loomCmd('guard check --command "npm install"');
     assert.equal(result.status, 0);
+  });
+});
+
+// ─── Retain regression: loom mcp add/list ────────────────────────────────────
+// These tests verify the third-party worker-provisioning subsystem remains
+// intact after the loom-server mcpConfig generator is removed.
+describe('loom mcp retain regression', () => {
+  it('loom mcp list exits 0 and reports unconfigured registry (policy.mcp.registry unset)', () => {
+    const result = loom('mcp', 'list');
+    assert.equal(result.status, 0);
+    assert.ok(result.stdout.includes('No MCP registry configured'));
+  });
+
+  it('loom mcp list shows servers when policy.mcp.registry points at a valid registry', () => {
+    const registryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-reg-'));
+    try {
+      const serverDir = path.join(registryDir, 'servers', 'test-server');
+      fs.mkdirSync(serverDir, { recursive: true });
+      fs.writeFileSync(path.join(serverDir, 'server.json'), JSON.stringify({
+        name: 'test-server',
+        description: 'A test MCP server',
+        packages: [{
+          registry_type: 'npm',
+          identifier: '@test/mcp',
+          version: '1.0.0',
+          transport: { type: 'stdio' },
+          environment_variables: [],
+        }],
+      }));
+
+      const policyPath = path.join(tmpDir, '.loom', 'policy.yaml');
+      const policy = fs.readFileSync(policyPath, 'utf8');
+      fs.writeFileSync(policyPath, policy.replace('registry: ""', `registry: "${registryDir}"`));
+
+      const result = loom('mcp', 'list');
+      assert.equal(result.status, 0);
+      assert.ok(result.stdout.includes('test-server'));
+
+      // Restore policy after test
+      fs.writeFileSync(policyPath, policy);
+    } finally {
+      fs.rmSync(registryDir, { recursive: true, force: true });
+    }
+  });
+
+  it('loom mcp add writes the server entry to .mcp.json and .cursor/mcp.json', () => {
+    const registryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-reg-'));
+    try {
+      const serverDir = path.join(registryDir, 'servers', 'my-server');
+      fs.mkdirSync(serverDir, { recursive: true });
+      fs.writeFileSync(path.join(serverDir, 'server.json'), JSON.stringify({
+        name: 'my-server',
+        description: 'Test provisioning server',
+        packages: [{
+          registry_type: 'npm',
+          identifier: '@test/my-server',
+          version: '2.0.0',
+          transport: { type: 'stdio' },
+          environment_variables: [],
+        }],
+      }));
+
+      const policyPath = path.join(tmpDir, '.loom', 'policy.yaml');
+      const policy = fs.readFileSync(policyPath, 'utf8');
+      fs.writeFileSync(policyPath, policy.replace('registry: ""', `registry: "${registryDir}"`));
+
+      const result = loom('mcp', 'add', 'my-server');
+      assert.equal(result.status, 0, `loom mcp add should exit 0; stderr: ${result.stderr}`);
+
+      // .mcp.json must contain the server entry (no loom server — provisioning only)
+      const mcpJson = JSON.parse(
+        fs.readFileSync(path.join(tmpDir, '.mcp.json'), 'utf8')
+      ) as { mcpServers: Record<string, unknown> };
+      assert.ok(mcpJson.mcpServers['my-server'], 'third-party server must appear in .mcp.json');
+      assert.equal(mcpJson.mcpServers['loom'], undefined, 'loom self-server must NOT be added by mcp add');
+
+      // .cursor/mcp.json must also contain it
+      const cursorJson = JSON.parse(
+        fs.readFileSync(path.join(tmpDir, '.cursor', 'mcp.json'), 'utf8')
+      ) as { mcpServers: Record<string, unknown> };
+      assert.ok(cursorJson.mcpServers['my-server'], 'third-party server must appear in .cursor/mcp.json');
+
+      // Restore policy after test
+      fs.writeFileSync(policyPath, policy);
+    } finally {
+      fs.rmSync(registryDir, { recursive: true, force: true });
+    }
   });
 });

@@ -82,11 +82,10 @@ program
 // ─── loom init ─────────────────────────────────────────────────────────────
 program
   .command('init')
-  .description('Initialize loom in the current git repo (CLI-first; MCP server is opt-in)')
-  .option('--cursor', 'Also write .cursor/mcp.json and .cursor/rules/loom.mdc')
-  .option('--mcp', 'Also write .mcp.json so Claude Code connects the optional loom MCP server')
+  .description('Initialize loom in the current git repo')
+  .option('--cursor', 'Also write .cursor/rules/loom.mdc for Cursor IDE integration')
   .option('-y, --yes', 'Skip confirmation prompts')
-  .action((opts: { cursor?: boolean; yes?: boolean; mcp?: boolean }) => {
+  .action((opts: { cursor?: boolean; yes?: boolean }) => {
     runInit(opts);
   });
 
@@ -438,16 +437,6 @@ program
   .option('--json', 'Emit machine-readable JSON output ({ ok, epicId? } or { ok, critique })')
   .action(async (opts: { topLessons?: number; topOpps?: number; json?: boolean }) => {
     await runPropose({ topLessons: opts.topLessons, topOpps: opts.topOpps, json: opts.json });
-  });
-
-// ─── loom serve ─────────────────────────────────────────────────────────────
-program
-  .command('serve')
-  .description('Start the optional loom MCP server (stdio transport). The CLI is the primary surface; prefer running loom commands directly.')
-  .action(async () => {
-    // Dynamically import to keep CLI startup fast when MCP is not needed
-    const { startMcpServer } = await import('@loom-ai/mcp');
-    await startMcpServer();
   });
 
 program.parse();

@@ -6,9 +6,8 @@ This is the **loom** repository: an open-source, self-learning, multi-agent engi
 
 ```
 packages/loom-core/   — orchestration engine (planner, supervisor, guardrails, skills, state)
-packages/loom-cli/    — CLI commands — the PRIMARY loom surface (init, epic, approve, run, status, diff, review, artifacts, traces, audit, autonomy)
-packages/loom-mcp/    — optional MCP server for Claude Code / Cursor (opt in with `loom init --mcp`; the CLI is primary)
-packages/loom-web/    — local web dashboard (Express + vanilla JS frontend)
+packages/loom-cli/    — CLI commands — the usability surface (init, epic, approve, run, status, diff, review, artifacts, traces, audit, autonomy)
+packages/loom-web/    — local web dashboard — the observability surface (Express + vanilla JS frontend)
 skills/                — built-in loom skills (agentskills.io format)
 schemas/               — epic.schema.yaml, policy.schema.yaml
 docs/                  — MkDocs site (architecture, testing, runbooks)
@@ -32,7 +31,6 @@ npm install          # install all workspace packages
 npm run build        # build all packages
 npm run test         # run tests across all packages
 loom init           # (after build) initialize loom in a test repo
-loom serve          # start the MCP server
 ```
 
 ## Key Invariants

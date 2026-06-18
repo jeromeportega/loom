@@ -56,12 +56,11 @@ loom status
 ## How loom is built
 
 TypeScript monorepo: `loom-core` (orchestration), `loom-cli` (the `loom`
-command), `loom-mcp` (the MCP server — the primary loom surface),
-`loom-web` (local dashboard). SQLite for state
-(`.loom/loom.db`, auto-created — no DB server, no Docker). Worker agents are
-`claude` CLI sessions (or `cursor-agent`) in git worktrees. The skill system learns
-reusable patterns from completed work, gated by an eval harness and a
-candidate→active→disabled lifecycle.
+command — CLI is the usability surface), `loom-web` (local dashboard —
+the observability surface). SQLite for state (`.loom/loom.db`, auto-created — no
+DB server, no Docker). Worker agents are `claude` CLI sessions (or `cursor-agent`)
+in git worktrees. The skill system learns reusable patterns from completed work,
+gated by an eval harness and a candidate→active→disabled lifecycle.
 
 Beyond a single repo: `loom status --all` aggregates every loom repo on the
 machine, and a per-machine config can cap worker concurrency across all of
