@@ -216,7 +216,7 @@ export interface WorkerResult {
    */
   selfAssessment?: SelfAssessment;
   /**
-   * Executed model id from the worker's system/init stream event (epic-013).
+   * Executed model id from the worker's system/init stream event.
    * Set when the backend emits a system/init line with a model field; absent
    * for backends that do not (cursor-cli) or when the worker dies before init.
    * The Supervisor writes this to agents.model, upgrading the requested-model

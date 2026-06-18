@@ -177,7 +177,7 @@ export class ClaudeCodeWorker extends BaseCliWorker {
     humanText?: string;
     usage?: WorkerUsage;
     traces?: Array<{ kind: string; subject?: string; rationale: string }>;
-    /** Executed model id from the system/init stream event (epic-013). */
+    /** Executed model id from the system/init event; undefined for non-emitting backends. */
     model?: string;
   } {
     let event: unknown;

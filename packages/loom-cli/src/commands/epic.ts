@@ -223,9 +223,10 @@ export async function runEpic(
   console.log(`  PRD:           ${rel(projectRoot, result.prdPath)}`);
   console.log(`  Architecture:  ${rel(projectRoot, result.architecturePath)}`);
   console.log('');
+  const plannerModel = modelFor(policy, 'planning');
   for (const epicId of result.epicIds) {
-    // Record the planning model for observability (epic-013).
-    store.setPlannerModel(epicId, modelFor(policy, 'planning'));
+    // `model` is '' on the test-seam path where llm is null — guard before writing.
+    if (plannerModel) store.setPlannerModel(epicId, plannerModel);
     console.log(`  ${epicId}`);
   }
   console.log('');
