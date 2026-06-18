@@ -12,6 +12,97 @@ import {
 } from '../index.js';
 import type { IntegrationGate } from '../orchestrator/IntegrationGate.js';
 
+// ─── story-005-001: finalizeRef naming helper ──────────────────────────────
+// `finalizeRef` is private but is a pure function with no side effects.
+// We test it by accessing it through the class instance.
+
+describe('EpicFinalizer.finalizeRef — naming helper (story-005-001)', () => {
+  let loomDirForRefTests: string;
+  let dbForRefTests: ReturnType<typeof openDatabase>;
+
+  beforeEach(() => {
+    resetDatabaseForTest();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-ref-'));
+    loomDirForRefTests = path.join(tmp, '.loom');
+    fs.mkdirSync(loomDirForRefTests, { recursive: true });
+    dbForRefTests = openDatabase(loomDirForRefTests);
+  });
+
+  afterEach(() => {
+    resetDatabaseForTest();
+  });
+
+  function makeMinimalFinalizer(): EpicFinalizer {
+    return new EpicFinalizer({
+      projectRoot: loomDirForRefTests,
+      db: dbForRefTests,
+      allowedRemotes: [],
+      prStrategy: 'per-epic',
+    });
+  }
+
+  function callFinalizeRef(epicId: string, integratedHead: string): string {
+    const f = makeMinimalFinalizer();
+    return (f as unknown as { finalizeRef(a: string, b: string): string }).finalizeRef(
+      epicId,
+      integratedHead
+    );
+  }
+
+  it('returns the expected deterministic ref name with 7-char sha prefix', () => {
+    const ref = callFinalizeRef('epic-005', '1a2b3c4dabc1234');
+    assert.equal(ref, 'loom/finalize/epic-005-1a2b3c4');
+  });
+
+  it('slices exactly 7 chars regardless of sha length', () => {
+    assert.equal(
+      callFinalizeRef('epic-001', 'abcdef1234567890abcdef'),
+      'loom/finalize/epic-001-abcdef1'
+    );
+    assert.equal(
+      callFinalizeRef('epic-001', 'deadbeef'),
+      'loom/finalize/epic-001-deadbee'
+    );
+  });
+
+  it('determinism: identical (epicId, integratedHead) always produces the same ref', () => {
+    const head = 'deadbeef1234567abc';
+    const r1 = callFinalizeRef('epic-001', head);
+    const r2 = callFinalizeRef('epic-001', head);
+    assert.equal(r1, r2);
+  });
+
+  it('collision-proof: different epicId with the same head sha produces a different ref', () => {
+    const head = 'deadbeef1234567abc';
+    const r1 = callFinalizeRef('epic-001', head);
+    const r2 = callFinalizeRef('epic-002', head);
+    assert.notEqual(r1, r2);
+    assert.ok(r1.includes('epic-001'), `r1 embeds the epicId: ${r1}`);
+    assert.ok(r2.includes('epic-002'), `r2 embeds the epicId: ${r2}`);
+  });
+
+  it('collision-proof: same epic but different integratedHead sha produces a different ref', () => {
+    const r1 = callFinalizeRef('epic-001', 'aaaaaaa1234567abc');
+    const r2 = callFinalizeRef('epic-001', 'bbbbbbb1234567abc');
+    assert.notEqual(r1, r2);
+    assert.ok(r1.endsWith('-aaaaaaa'), `r1 embeds head slice: ${r1}`);
+    assert.ok(r2.endsWith('-bbbbbbb'), `r2 embeds head slice: ${r2}`);
+  });
+
+  it('collision-proof: two concurrent epics with equal sha never produce the same ref', () => {
+    const sameHead = 'c0ffee1234567abc';
+    assert.notEqual(
+      callFinalizeRef('epic-100', sameHead),
+      callFinalizeRef('epic-101', sameHead)
+    );
+  });
+
+  it('ref starts with loom/finalize/', () => {
+    const ref = callFinalizeRef('epic-007', '1234567abcdef');
+    assert.ok(ref.startsWith('loom/finalize/'), `expected loom/finalize/ prefix: ${ref}`);
+  });
+});
+
 let loomDir: string;
 
 beforeEach(() => {
