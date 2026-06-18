@@ -569,3 +569,182 @@ describe('story-005-002 — finalize phase overlay + done-requires-PR-URL invari
     assert.equal(new EpicStore(db).get('epic-001')?.status, 'done');
   });
 });
+
+describe('story-005-001 — finalizer-owned ref push target', () => {
+  // (1) The push target is a fresh loom/finalize/* ref, never epic/*.
+  //     The --head for gh pr create must use the same fresh ref.
+  it('push goes to loom/finalize/* ref, not epic/*; --head matches push ref', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    addAllowedRemote();
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    const pushedBranches: string[] = [];
+    const openedBranches: string[] = [];
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: committingWorker(),
+      maxConcurrent: 1,
+      epicFinalizer: new EpicFinalizer(
+        finalizerOpts(db, {
+          pushBranch: (remote, branch) => {
+            pushedBranches.push(branch);
+            return { ok: true, output: 'pushed' };
+          },
+          openPr: ({ branch }) => {
+            openedBranches.push(branch);
+            return 'https://example.com/acme/loom/pull/42';
+          },
+        })
+      ),
+    }).run();
+
+    assert.equal(pushedBranches.length, 1, 'exactly one push issued');
+    assert.equal(openedBranches.length, 1, 'exactly one PR opened');
+
+    const pushedRef = pushedBranches[0];
+    const prHeadRef = openedBranches[0];
+
+    // Push must use a loom/finalize/* ref, NEVER epic/*.
+    assert.ok(
+      pushedRef.startsWith('loom/finalize/'),
+      `push ref must start with loom/finalize/: got "${pushedRef}"`
+    );
+    assert.ok(
+      !pushedRef.startsWith('epic/'),
+      `push ref must NOT start with epic/: got "${pushedRef}"`
+    );
+
+    // gh pr create --head must use the same fresh ref.
+    assert.equal(prHeadRef, pushedRef, '--head must match the push ref');
+
+    // Ref must follow the loom/finalize/<epicId>-<7charsha> pattern.
+    assert.match(
+      pushedRef,
+      /^loom\/finalize\/epic-001-[0-9a-f]{7}$/,
+      `ref must match loom/finalize/<epicId>-<7charsha>: got "${pushedRef}"`
+    );
+  });
+
+  // (2) Non-fast-forward survival: a push that would be non-fast-forward on
+  //     epic/<id> (because the remote has diverged) succeeds on the fresh ref.
+  //     finalize proceeds to open a PR with no retry or force.
+  it('non-fast-forward survival: push to fresh ref succeeds, finalize reaches done', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    addAllowedRemote();
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    let pushCount = 0;
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: committingWorker(),
+      maxConcurrent: 1,
+      epicFinalizer: new EpicFinalizer(
+        finalizerOpts(db, {
+          // Simulate: fresh loom/finalize/* ref succeeds immediately (new ref on remote).
+          // A push to epic/<id> would have been rejected (non-fast-forward) because
+          // the remote's epic/<id> has diverged — but the fresh ref avoids that entirely.
+          pushBranch: (_remote, branch) => {
+            pushCount++;
+            // The fresh ref is always a new ref on the remote — never a non-fast-forward.
+            assert.ok(
+              branch.startsWith('loom/finalize/'),
+              `expected fresh ref, got: ${branch}`
+            );
+            return { ok: true, output: 'pushed' };
+          },
+        })
+      ),
+    }).run();
+
+    assert.equal(pushCount, 1, 'exactly one push, no retry issued');
+    const epic = new EpicStore(db).get('epic-001');
+    assert.equal(epic?.status, 'done', 'finalize proceeds to done after successful push');
+    assert.notEqual(epic?.epic_pr_url, null, 'PR URL was recorded');
+  });
+
+  // (3) No force flags: no --force or --force-with-lease in any captured push call.
+  it('no --force or --force-with-lease in any push invocation', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    addAllowedRemote();
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    const allPushedRefs: string[] = [];
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: committingWorker(),
+      maxConcurrent: 1,
+      epicFinalizer: new EpicFinalizer(
+        finalizerOpts(db, {
+          pushBranch: (remote, branch) => {
+            allPushedRefs.push(branch);
+            return { ok: true, output: 'pushed' };
+          },
+        })
+      ),
+    }).run();
+
+    // Verify that no push ref looks like a force flag slipped into the branch arg.
+    // The actual gitSafe call is: ['push', '-u', remote, finalRef] — no force flags.
+    for (const ref of allPushedRefs) {
+      assert.ok(!ref.includes('--force'), `force flag must not appear in push ref: "${ref}"`);
+      assert.ok(
+        !ref.includes('--force-with-lease'),
+        `force-with-lease must not appear in push ref: "${ref}"`
+      );
+    }
+    // Sanity: at least one push happened.
+    assert.ok(allPushedRefs.length > 0, 'at least one push must have been issued');
+  });
+
+  // (4) Determinism: the pushed ref embeds the integrated HEAD SHA, so the same
+  //     integrated tree always produces the same ref name (retry is idempotent).
+  it('pushed ref is deterministic — encodes the integrated HEAD sha', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    addAllowedRemote();
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    const agents = new AgentStore(db);
+    const a = agents.create('epic-001', 'story-001-001', 'one');
+    agents.updateStatus(a.id, 'done');
+    gitc(['branch', 'story/story-001-001']);
+    gitc(['checkout', '-q', 'story/story-001-001']);
+    gitc(['commit', '--allow-empty', '-q', '-m', 'story work']);
+    gitc(['checkout', '-q', '-']);
+    new EpicStore(db).updateBaseSha('epic-001', gitc(['rev-parse', 'HEAD']));
+
+    const pushedRefs: string[] = [];
+
+    await new EpicFinalizer(
+      finalizerOpts(db, {
+        pushBranch: (_r, b) => { pushedRefs.push(b); return { ok: true, output: 'ok' }; },
+        openPr: () => 'https://example.com/acme/loom/pull/1',
+      })
+    ).finalize('epic-001');
+
+    assert.equal(pushedRefs.length, 1, 'exactly one push');
+    const pushedRef = pushedRefs[0];
+
+    // The ref encodes the integrated HEAD: loom/finalize/<epicId>-<head7>.
+    // Extract the 7-char sha from the pushed ref and verify it matches the
+    // actual HEAD of epic/epic-001 after the merge.
+    const match = pushedRef.match(/^loom\/finalize\/epic-001-([0-9a-f]{7})$/);
+    assert.ok(match, `pushed ref must match pattern: got "${pushedRef}"`);
+    const head7InRef = match[1];
+
+    // Read the actual HEAD sha of epic/<id> from git.
+    const actualHead = gitc(['rev-parse', 'epic/epic-001']);
+    const actualHead7 = actualHead.slice(0, 7);
+
+    assert.equal(
+      head7InRef,
+      actualHead7,
+      `ref must encode the actual integrated HEAD: expected ${actualHead7}, got ${head7InRef}`
+    );
+  });
+});

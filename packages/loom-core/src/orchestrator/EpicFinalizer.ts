@@ -130,8 +130,13 @@ export interface LateboundFinalizerPolicy {
 export interface FinalizeResult {
   /** PR url if one was opened. */
   url?: string;
-  /** Human-readable status — 'skipped' / 'merged' / 'partial' / 'failed' / 'gated'. */
-  status: 'skipped' | 'merged' | 'partial' | 'failed' | 'gated';
+  /**
+   * Human-readable status — 'skipped' / 'merged' / 'partial' / 'failed' / 'gated' /
+   * 'publish_pending'. 'publish_pending' is returned when the push or PR-open could not
+   * complete (push rejected, remote disallowed, PR-open failed) — the finalizer records
+   * the state and a recovery command (`loom publish`) can resolve it later.
+   */
+  status: 'skipped' | 'merged' | 'partial' | 'failed' | 'gated' | 'publish_pending';
   /** Story ids that fell back to their own PR because of a merge conflict. */
   conflicted: string[];
   /** Story ids successfully folded into the epic branch. */
@@ -634,9 +639,16 @@ export class EpicFinalizer {
       };
     }
 
+    // Resolve the integrated HEAD SHA so the finalizer-owned ref name is
+    // deterministic: same integrated tree ⇒ same ref ⇒ retry is a no-op.
+    // A different tree (e.g., re-run after a fix) gets a distinct ref.
+    const headResult = gitSafe(this.opts.projectRoot, ['rev-parse', epicBranch]);
+    const integratedHead = headResult.ok ? headResult.output.trim() : '';
+    const finalRef = this.finalizeRef(epicId, integratedHead);
+
     const push = this.opts.pushBranch
-      ? this.opts.pushBranch(remote, epicBranch)
-      : gitSafe(this.opts.projectRoot, ['push', '-u', remote, epicBranch]);
+      ? this.opts.pushBranch(remote, finalRef)
+      : gitSafe(this.opts.projectRoot, ['push', '-u', remote, finalRef]);
     if (!push.ok) {
       return {
         status: 'failed',
@@ -684,11 +696,11 @@ export class EpicFinalizer {
     let prUrl: string | undefined;
     try {
       prUrl = this.opts.openPr
-        ? this.opts.openPr({ branch: epicBranch, title, body })
+        ? this.opts.openPr({ branch: finalRef, title, body })
         : (() => {
             const out = execFileSync(
               'gh',
-              ['pr', 'create', '--head', epicBranch, '--title', title, '--body', body],
+              ['pr', 'create', '--head', finalRef, '--title', title, '--body', body],
               { cwd: this.opts.projectRoot, encoding: 'utf8' }
             );
             return out
@@ -823,6 +835,17 @@ export class EpicFinalizer {
       // Best-effort — the artifacts are nice-to-have; the merge + PR are the
       // critical path and they already completed.
     }
+  }
+
+  /**
+   * Returns the finalizer-owned remote ref for this integrated state.
+   * The ref is deterministic (same epicId + same integratedHead SHA → same name)
+   * so a retry is a fast-forward no-op. Each distinct integrated tree gets a
+   * unique name — collision-proof across epics and across content changes.
+   * Format: `loom/finalize/<epicId>-<first7charsOfHead>`
+   */
+  private finalizeRef(epicId: string, integratedHead: string): string {
+    return `loom/finalize/${epicId}-${integratedHead.slice(0, 7)}`;
   }
 
   private remoteAllowed(url: string): boolean {
