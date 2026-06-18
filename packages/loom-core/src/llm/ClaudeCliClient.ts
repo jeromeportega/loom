@@ -1,12 +1,20 @@
 import { spawn } from 'node:child_process';
 import { EMPTY_USAGE } from './LLMClient.js';
-import type { LLMClient, LLMRequest, LLMResponse, LLMMessage } from './LLMClient.js';
+import type { LLMClient, LLMRequest, LLMResponse, LLMMessage, LLMUsage } from './LLMClient.js';
+import { redactSecrets } from '../util/redact.js';
 
 export interface ClaudeCliClientOptions {
   /** Binary to invoke. Default: "claude". */
   claudeBin?: string;
   /** Kill a call after this long. Default: 10 minutes. */
   timeoutMs?: number;
+  /**
+   * When true, strips ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the
+   * subprocess environment so the CLI falls back to the operator's `claude
+   * login` session rather than billing an inherited API key. Mirrors
+   * BaseCliWorker.workerAuth='session' for the planner subprocess (ADR-006).
+   */
+  sessionAuth?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -30,17 +38,32 @@ const BACKOFF_BASE_MS = 1000;
  * The `claude` CLI is single-shot, so a multi-turn LLMRequest is flattened
  * into one prompt. The subprocess invocation is an integration seam (it needs
  * a configured `claude` CLI); the prompt flattening is unit-tested.
+ *
+ * When `req.onText` is present, switches to `--output-format stream-json` and
+ * calls `onText` per assistant text delta while accumulating the full response.
+ * When absent, uses the original `--output-format json` buffered path.
  */
 export class ClaudeCliClient implements LLMClient {
   private bin: string;
   private timeoutMs: number;
+  private sessionAuth: boolean;
 
   constructor(opts: ClaudeCliClientOptions = {}) {
     this.bin = opts.claudeBin ?? 'claude';
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.sessionAuth = opts.sessionAuth ?? false;
   }
 
   async complete(req: LLMRequest): Promise<LLMResponse> {
+    if (req.onText) {
+      return this.completeStreaming(req);
+    }
+    return this.completeBuffered(req);
+  }
+
+  // ─── Buffered (original) path ─────────────────────────────────────────────
+
+  private async completeBuffered(req: LLMRequest): Promise<LLMResponse> {
     const systemText = req.system.map((b) => b.text).join('\n\n');
     const prompt = flattenMessages(req.messages);
 
@@ -52,8 +75,6 @@ export class ClaudeCliClient implements LLMClient {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const proc = await this.spawnClaude(args, prompt);
       if (proc.spawnError) {
-        // A spawn error means the binary isn't there / can't run — retrying
-        // doesn't help; surface the install guidance immediately.
         throw new Error(
           `Could not run the "${this.bin}" CLI: ${proc.spawnError}. ` +
             'Install Claude Code and run `claude` once to log in, or switch ' +
@@ -75,9 +96,59 @@ export class ClaudeCliClient implements LLMClient {
       return parseClaudeJson(proc.output, req.model);
     }
 
-    // Loop exit only on retry-exhaustion (every iteration either returns or
-    // throws); this line is here to satisfy the compiler.
     throw new Error('claude CLI: retries exhausted');
+  }
+
+  // ─── Streaming path (onText present) ─────────────────────────────────────
+
+  private async completeStreaming(req: LLMRequest): Promise<LLMResponse> {
+    const onText = req.onText!;
+    const systemText = req.system.map((b) => b.text).join('\n\n');
+    const prompt = flattenMessages(req.messages);
+
+    const args = ['-p', '--model', req.model, '--output-format', 'stream-json'];
+    if (systemText.length > 0) {
+      args.push('--append-system-prompt', systemText);
+    }
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const proc = await this.spawnClaudeStream(args, prompt, req.model, onText);
+      if (proc.spawnError) {
+        throw new Error(
+          `Could not run the "${this.bin}" CLI: ${proc.spawnError}. ` +
+            'Install Claude Code and run `claude` once to log in, or switch ' +
+            'policy.agents.llm_backend to "cursor-cli".'
+        );
+      }
+      if (proc.timedOut) {
+        throw new Error(`claude CLI timed out after ${this.timeoutMs}ms`);
+      }
+      if (!proc.success || proc.code !== 0) {
+        const status = extractApiErrorStatus(proc.lastLine ?? '');
+        if (status !== undefined && TRANSIENT_API_STATUSES.has(status) && attempt < MAX_RETRIES) {
+          const delayMs = BACKOFF_BASE_MS * Math.pow(2, attempt);
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        throw new Error(
+          `claude CLI exited ${proc.code}: ${redactSecrets((proc.lastLine ?? '').slice(0, 500))}`
+        );
+      }
+      return proc.response;
+    }
+
+    throw new Error('claude CLI: retries exhausted');
+  }
+
+  // ─── Subprocess helpers ───────────────────────────────────────────────────
+
+  /** Returns the env to pass to the subprocess. Strips API keys when sessionAuth=true. */
+  protected spawnEnv(): NodeJS.ProcessEnv {
+    if (!this.sessionAuth) return { ...process.env };
+    const env = { ...process.env };
+    delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+    return env;
   }
 
   private spawnClaude(
@@ -90,7 +161,7 @@ export class ClaudeCliClient implements LLMClient {
       let timedOut = false;
       let settled = false;
 
-      const child = spawn(this.bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(this.bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env: this.spawnEnv() });
       const timer = setTimeout(() => {
         timedOut = true;
         child.kill('SIGTERM');
@@ -110,6 +181,146 @@ export class ClaudeCliClient implements LLMClient {
         settled = true;
         clearTimeout(timer);
         resolve({ code, output: stdout || stderr, timedOut });
+      });
+
+      child.stdin.write(prompt);
+      child.stdin.end();
+    });
+  }
+
+  /**
+   * Streams `claude -p --output-format stream-json`. Parses line-delimited
+   * events and calls `onText` once per assistant text delta. The returned
+   * `response.text` equals the concatenation of all deltas.
+   */
+  private spawnClaudeStream(
+    args: string[],
+    prompt: string,
+    model: string,
+    onText: (delta: string) => void
+  ): Promise<{
+    code: number | null;
+    response: LLMResponse;
+    success: boolean;
+    timedOut: boolean;
+    spawnError?: string;
+    lastLine?: string;
+  }> {
+    return new Promise((resolve) => {
+      let accText = '';
+      let usage: LLMUsage = { ...EMPTY_USAGE, requestCount: 1 };
+      let success = false;
+      let timedOut = false;
+      let settled = false;
+      let stderrBuf = '';
+      let stdoutBuf = '';
+      let lastLine = '';
+
+      const child = spawn(this.bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env: this.spawnEnv() });
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGTERM');
+      }, this.timeoutMs);
+
+      const processLine = (line: string): void => {
+        if (!line.trim()) return;
+        lastLine = line;
+        try {
+          const event = JSON.parse(line) as {
+            type?: string;
+            text?: unknown;
+            result?: unknown;
+            is_error?: boolean;
+            total_cost_usd?: unknown;
+            usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
+            };
+            // assistant message format
+            message?: {
+              content?: Array<{ type: string; text?: string }>;
+              usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_read_input_tokens?: number;
+                cache_creation_input_tokens?: number;
+              };
+            };
+          };
+
+          if (event.type === 'text' && typeof event.text === 'string') {
+            // Simple text-delta format: {"type":"text","text":"..."}
+            onText(event.text);
+            accText += event.text;
+          } else if (event.type === 'assistant' && event.message?.content) {
+            // Assistant message format: content blocks with type='text'
+            for (const block of event.message.content) {
+              if (block.type === 'text' && typeof block.text === 'string') {
+                onText(block.text);
+                accText += block.text;
+              }
+            }
+          } else if (event.type === 'result') {
+            success = !event.is_error;
+            if (typeof event.result === 'string' && !accText) {
+              // Fallback: no deltas were emitted, use result text
+              accText = event.result;
+            }
+            if (event.usage) {
+              usage = {
+                inputTokens: event.usage.input_tokens ?? 0,
+                outputTokens: event.usage.output_tokens ?? 0,
+                cacheReadTokens: event.usage.cache_read_input_tokens ?? 0,
+                cacheCreationTokens: event.usage.cache_creation_input_tokens ?? 0,
+                requestCount: 1,
+                costUsd:
+                  typeof event.total_cost_usd === 'number' ? event.total_cost_usd : 0,
+              };
+            }
+          }
+        } catch {
+          // Non-JSON line — ignore; keep processing
+        }
+      };
+
+      child.stdout.on('data', (d) => {
+        stdoutBuf += d.toString();
+        const lines = stdoutBuf.split('\n');
+        stdoutBuf = lines.pop()!;
+        for (const line of lines) processLine(line);
+      });
+
+      child.stderr.on('data', (d) => (stderrBuf += d.toString()));
+
+      child.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({
+          code: null,
+          response: { text: accText || redactSecrets(stderrBuf), usage, model, stopReason: 'end_turn' },
+          success: false,
+          timedOut,
+          spawnError: err.message,
+          lastLine,
+        });
+      });
+
+      child.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        // Flush any remaining partial line
+        if (stdoutBuf.trim()) processLine(stdoutBuf);
+        resolve({
+          code,
+          response: { text: accText || redactSecrets(stderrBuf), usage, model, stopReason: 'end_turn' },
+          success,
+          timedOut,
+          lastLine: lastLine || stderrBuf,
+        });
       });
 
       child.stdin.write(prompt);

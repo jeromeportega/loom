@@ -209,6 +209,12 @@ export interface EpicRecord {
    * epics created before v20 (never backfilled — additive-only per NFR-1).
    */
   planner_model: string | null;
+  /**
+   * Rolling tail of planning persona stdout, bounded to <= 4096 chars. Set
+   * during planning and readable after planning completes. NULL until the
+   * planner emits its first text chunk (or on pre-migration rows).
+   */
+  planning_log_tail: string | null;
 }
 
 export interface AuditLogEntry {

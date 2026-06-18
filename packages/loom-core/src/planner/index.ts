@@ -21,3 +21,5 @@ export { extractJsonBlock, trimToFirstHeading } from './util.js';
 export { derivePlaceholderTitle } from './placeholderTitle.js';
 export { proposeNextEpic } from './proposeNextEpic.js';
 export type { ProposeDeps, EpicProposeResult } from './proposeNextEpic.js';
+export { PlanningOutputSink } from './PlanningOutputSink.js';
+export type { PlanningEvent } from './PlanningEvent.js';

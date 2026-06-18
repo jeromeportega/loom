@@ -7,6 +7,7 @@ import type {
   PlanningPhase,
 } from '../types.js';
 import { AutonomyLevelSchema } from '../types.js';
+import { LIVE_TAIL_CHARS } from '../planner/constants.js';
 
 export class EpicStore {
   constructor(private db: Database.Database) {}
@@ -422,5 +423,20 @@ export class EpicStore {
     this.db
       .prepare('UPDATE epics SET planner_model = ?, updated_at = ? WHERE id = ?')
       .run(model, new Date().toISOString(), epicId);
+  }
+
+  /**
+   * Persists the rolling planning-output tail (bounded to <=4096 chars,
+   * matching PlanningOutputSink.LIVE_TAIL_CHARS). The defensive slice here
+   * guards against direct callers (tests, future CLI commands) that bypass
+   * the sink's own cap (ADR-005).
+   */
+  updatePlanningLogTail(id: string, logTail: string): void {
+    const bounded = logTail.length > LIVE_TAIL_CHARS ? logTail.slice(-LIVE_TAIL_CHARS) : logTail;
+    this.db
+      .prepare(
+        `UPDATE epics SET planning_log_tail = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(bounded, new Date().toISOString(), id);
   }
 }

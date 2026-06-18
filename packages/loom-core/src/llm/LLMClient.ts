@@ -21,6 +21,13 @@ export interface LLMRequest {
   system: SystemBlock[];
   messages: LLMMessage[];
   maxTokens?: number;
+  /**
+   * When present, called once per streamed assistant text delta. Backends that
+   * support streaming (ClaudeCliClient) switch to `--output-format stream-json`
+   * and call this for each text chunk. Backends that do not support streaming
+   * (MockLLMClient, CursorCliClient) ignore this field and return final text.
+   */
+  onText?: (delta: string) => void;
 }
 
 export interface LLMUsage {
