@@ -31,6 +31,7 @@ import { runProjects, spec as projectsSpec } from './commands/projects.js';
 import { runPullGuidance, spec as pullGuidanceSpec } from './commands/pullGuidance.js';
 import { runProject, spec as projectSpec } from './commands/project.js';
 import { applySpec } from './describe/applySpec.js';
+import { registerDescribe } from './commands/describe.js';
 
 // Read the version from this package's package.json at runtime so
 // `loom --version` stays automatically in sync with the published
@@ -286,6 +287,7 @@ applySpec(program.command('project'), projectSpec)
   });
 
 // <register additional commands>
+registerDescribe(program);
 
 // ─── loom mcp ───────────────────────────────────────────────────────────────
 const mcp = program
