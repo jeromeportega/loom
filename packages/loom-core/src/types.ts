@@ -109,6 +109,12 @@ export interface AgentRecord {
    * status enum value — the sibling lifecycle epic owns `status`.
    */
   attempt_class: AttemptClass | null;
+  /**
+   * The model id the worker actually executed under, as reported by the
+   * system/init stream event. NULL for rows created before v20 (never
+   * backfilled — a plausible-but-wrong model is worse than unknown).
+   */
+  model: string | null;
 }
 
 export interface EpicRecord {
@@ -198,6 +204,11 @@ export interface EpicRecord {
    * disallowed, PR-open failure, etc). Set alongside finalize_ref; NULL otherwise.
    */
   publish_note: string | null;
+  /**
+   * The resolved model id used by the planner (Analyst+PM+Architect). NULL for
+   * epics created before v20 (never backfilled — additive-only per NFR-1).
+   */
+  planner_model: string | null;
 }
 
 export interface AuditLogEntry {

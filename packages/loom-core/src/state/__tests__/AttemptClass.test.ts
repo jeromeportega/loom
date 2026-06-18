@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDatabase, resetDatabaseForTest } from '../Database.js';
+import { openDatabase, resetDatabaseForTest, SCHEMA_VERSION } from '../Database.js';
 import { AgentStore } from '../AgentStore.js';
 import { AuditLog } from '../AuditLog.js';
 import { EpicStore } from '../EpicStore.js';
@@ -44,7 +44,7 @@ describe('v15 attempt_class migration', () => {
         version: number;
       }
     ).version;
-    assert.equal(version, 19, 'schema_version is at v19');
+    assert.equal(version, SCHEMA_VERSION, `schema_version is at v${SCHEMA_VERSION}`);
   });
 
   it('is idempotent — re-running migrations on a DB that already has the column is a no-op', () => {
@@ -118,8 +118,8 @@ describe('v15 attempt_class migration', () => {
           version: number;
         }
       ).version,
-      19,
-      'schema_version upgraded 14 → 19'
+      SCHEMA_VERSION,
+      `schema_version upgraded 14 → ${SCHEMA_VERSION}`
     );
     // The legacy row is preserved and reads back with a NULL classification.
     const legacy = new AgentStore(db).get('agent-legacy');

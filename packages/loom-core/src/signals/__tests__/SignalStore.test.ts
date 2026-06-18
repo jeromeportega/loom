@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
-import { createDatabase, runMigrations } from '../../state/Database.js';
+import { createDatabase, runMigrations, SCHEMA_VERSION } from '../../state/Database.js';
 import { SignalStore } from '../SignalStore.js';
 import { AuditLog } from '../../state/AuditLog.js';
 import type { Signal } from '../types.js';
@@ -15,7 +15,7 @@ describe('Database migration v17/v18', () => {
     const row = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(row.version, 19);
+    assert.equal(row.version, SCHEMA_VERSION);
 
     const tbl = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='signals'")
@@ -117,7 +117,7 @@ describe('Database migration v17/v18', () => {
     const ver = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(ver.version, 19);
+    assert.equal(ver.version, SCHEMA_VERSION);
 
     const tbl = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='signals'")
@@ -139,7 +139,7 @@ describe('Database migration v17/v18', () => {
     const ver = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(ver.version, 19);
+    assert.equal(ver.version, SCHEMA_VERSION);
   });
 });
 
