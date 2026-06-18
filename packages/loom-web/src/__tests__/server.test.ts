@@ -188,6 +188,29 @@ describe('loom-web — GET /api/epics/:id', () => {
     assert.equal(body.agents[0].pr_url, 'https://example.com/pr/1');
   });
 
+  it('[web seam] toAgentSummary surfaces model when set and null when absent (story-013-005)', async () => {
+    const epics = new EpicStore(db);
+    const agents = new AgentStore(db);
+    epics.create('epic-001', 'Model seam test');
+    const aWithModel = agents.create('epic-001', 'story-001-001', 'Has model');
+    agents.setModel(aWithModel.id, 'claude-sonnet-4-6');
+    const aNoModel = agents.create('epic-001', 'story-001-002', 'No model');
+
+    const res = await fetch(`${baseUrl}/api/epics/epic-001`, {
+      headers: { 'x-loom-token': 'test-token-123' },
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      agents: Array<{ story_id: string; model: string | null }>;
+    };
+    const withModel = body.agents.find((a) => a.story_id === 'story-001-001');
+    const noModel = body.agents.find((a) => a.story_id === 'story-001-002');
+    assert.ok(withModel, 'agent with model present in response');
+    assert.equal(withModel!.model, 'claude-sonnet-4-6', 'populated model surfaces through API');
+    assert.ok(noModel, 'agent without model present in response');
+    assert.equal(noModel!.model, null, 'NULL model surfaces as null through API');
+  });
+
   it('collapses retry attempts to one row per story_id (v0.5.0)', async () => {
     // The bug pre-v0.5.0: `/api/epics/:id` listed every agent row, so a
     // retried-blocked-then-done story showed twice — once as `blocked`
