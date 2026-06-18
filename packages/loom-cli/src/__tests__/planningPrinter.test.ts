@@ -8,25 +8,19 @@ import type { PlanningEvent } from '@loom-ai/core';
 
 /**
  * Intercepts process.stdout.write for the duration of the callback. Returns
- * the accumulated string of all write calls.
+ * the accumulated string of all write calls. Does NOT forward to the real
+ * terminal — tests only need the captured string.
  */
 function captureStdout(fn: () => void): string {
   const original = process.stdout.write.bind(process.stdout);
   let captured = '';
-  // Replace write with a function that matches the NodeJS.WritableStream signature
   const replacement = function (
     chunk: string | Uint8Array,
-    encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
-    cb?: (err?: Error | null) => void
+    _encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+    _cb?: (err?: Error | null) => void
   ): boolean {
     captured += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString();
-    if (typeof encodingOrCb === 'function') {
-      return original(chunk, encodingOrCb);
-    }
-    if (encodingOrCb !== undefined) {
-      return original(chunk, encodingOrCb, cb);
-    }
-    return original(chunk);
+    return true;
   };
   process.stdout.write = replacement as typeof process.stdout.write;
   try {
@@ -41,77 +35,137 @@ function captureStdout(fn: () => void): string {
 
 describe('makePlanningPrinter({ verbose: true })', () => {
   it('prints a complete-line output chunk immediately', () => {
-    const printer = makePlanningPrinter({ verbose: true });
+    const { handle } = makePlanningPrinter({ verbose: true });
     const out = captureStdout(() => {
-      printer({ type: 'output', phase: 'analyst', chunk: 'hello world\n' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'analyst', chunk: 'hello world\n' } satisfies PlanningEvent);
     });
     assert.equal(out, 'hello world\n');
   });
 
   it('buffers a partial line (no trailing newline) until the next chunk completes it', () => {
-    const printer = makePlanningPrinter({ verbose: true });
+    const { handle } = makePlanningPrinter({ verbose: true });
 
     const first = captureStdout(() => {
-      printer({ type: 'output', phase: 'analyst', chunk: 'par' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'analyst', chunk: 'par' } satisfies PlanningEvent);
     });
     assert.equal(first, '', 'partial chunk produces no output yet');
 
     const second = captureStdout(() => {
-      printer({ type: 'output', phase: 'analyst', chunk: 'tial\n' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'analyst', chunk: 'tial\n' } satisfies PlanningEvent);
     });
     assert.equal(second, 'partial\n', 'second chunk completes the line');
   });
 
   it('splits a chunk with multiple newlines into multiple lines', () => {
-    const printer = makePlanningPrinter({ verbose: true });
+    const { handle } = makePlanningPrinter({ verbose: true });
     const out = captureStdout(() => {
-      printer({ type: 'output', phase: 'pm', chunk: 'line1\nline2\nline3\n' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'pm', chunk: 'line1\nline2\nline3\n' } satisfies PlanningEvent);
     });
     assert.equal(out, 'line1\nline2\nline3\n');
   });
 
   it('prints a phase marker on a type: phase event', () => {
-    const printer = makePlanningPrinter({ verbose: true });
+    const { handle } = makePlanningPrinter({ verbose: true });
     const out = captureStdout(() => {
-      printer({ type: 'phase', phase: 'pm' } satisfies PlanningEvent);
+      handle({ type: 'phase', phase: 'pm' } satisfies PlanningEvent);
     });
     assert.match(out, /pm/, 'phase name appears in the marker');
     assert.match(out, /──/, 'marker separator appears');
   });
 
   it('flushes a partial line when a phase transition arrives', () => {
-    const printer = makePlanningPrinter({ verbose: true });
+    const { handle } = makePlanningPrinter({ verbose: true });
 
     captureStdout(() => {
-      printer({ type: 'output', phase: 'analyst', chunk: 'unfinished' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'analyst', chunk: 'unfinished' } satisfies PlanningEvent);
     });
 
     const out = captureStdout(() => {
-      printer({ type: 'phase', phase: 'pm' } satisfies PlanningEvent);
+      handle({ type: 'phase', phase: 'pm' } satisfies PlanningEvent);
     });
     assert.match(out, /unfinished/, 'partial line is flushed before the phase marker');
     assert.match(out, /pm/, 'phase marker follows the flushed line');
   });
 
   it('prints the exact chunk it receives (redacted source AC4 — printer is a pass-through)', () => {
-    const printer = makePlanningPrinter({ verbose: true });
+    // The core (PlanningOutputSink) applies redaction before firing onPlanningEvent.
+    // The printer is intentionally a pass-through — it must not re-redact.
+    const { handle } = makePlanningPrinter({ verbose: true });
     const redactedChunk = 'call me sk-ant-REDACTED at 5pm\n';
     const out = captureStdout(() => {
-      printer({ type: 'output', phase: 'architect', chunk: redactedChunk } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'architect', chunk: redactedChunk } satisfies PlanningEvent);
     });
     assert.equal(out, redactedChunk, 'printer emits the chunk verbatim without re-redacting');
   });
 
   it('handles a chunk delivered across exactly two calls (partial-line buffering)', () => {
-    const printer = makePlanningPrinter({ verbose: true });
+    const { handle } = makePlanningPrinter({ verbose: true });
 
     captureStdout(() => {
-      printer({ type: 'output', phase: 'analyst', chunk: 'half' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'analyst', chunk: 'half' } satisfies PlanningEvent);
     });
     const out = captureStdout(() => {
-      printer({ type: 'output', phase: 'analyst', chunk: '-line\n' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'analyst', chunk: '-line\n' } satisfies PlanningEvent);
     });
     assert.equal(out, 'half-line\n');
+  });
+
+  it('omits the leading newline before the very first phase marker', () => {
+    const { handle } = makePlanningPrinter({ verbose: true });
+    const out = captureStdout(() => {
+      handle({ type: 'phase', phase: 'analyst' } satisfies PlanningEvent);
+    });
+    assert.ok(!out.startsWith('\n'), 'first phase marker must not have a leading newline');
+    assert.match(out, /analyst/);
+  });
+
+  it('adds a leading newline before a subsequent phase marker', () => {
+    const { handle } = makePlanningPrinter({ verbose: true });
+    captureStdout(() => {
+      handle({ type: 'output', phase: 'analyst', chunk: 'text\n' } satisfies PlanningEvent);
+    });
+    const out = captureStdout(() => {
+      handle({ type: 'phase', phase: 'pm' } satisfies PlanningEvent);
+    });
+    assert.ok(out.startsWith('\n'), 'subsequent phase marker must be preceded by a newline');
+    assert.match(out, /pm/);
+  });
+});
+
+// ─── flush() (no partial line lost) ──────────────────────────────────────────
+
+describe('makePlanningPrinter flush()', () => {
+  it('flushes a buffered partial line that has no trailing newline', () => {
+    const { handle, flush } = makePlanningPrinter({ verbose: true });
+
+    captureStdout(() => {
+      handle({ type: 'output', phase: 'analyst', chunk: 'no newline at end' } satisfies PlanningEvent);
+    });
+
+    const out = captureStdout(() => flush());
+    assert.equal(out, 'no newline at end\n', 'flush() drains the partial line');
+  });
+
+  it('is a no-op when there is no buffered partial line', () => {
+    const { handle, flush } = makePlanningPrinter({ verbose: true });
+
+    captureStdout(() => {
+      handle({ type: 'output', phase: 'pm', chunk: 'complete\n' } satisfies PlanningEvent);
+    });
+
+    const out = captureStdout(() => flush());
+    assert.equal(out, '', 'flush() on empty buffer writes nothing');
+  });
+
+  it('is a no-op when verbose is false', () => {
+    const { handle, flush } = makePlanningPrinter({ verbose: false });
+
+    // Calling handle with content and flush on a silent printer must produce nothing
+    const out = captureStdout(() => {
+      handle({ type: 'output', phase: 'analyst', chunk: 'secret thoughts' } satisfies PlanningEvent);
+      flush();
+    });
+    assert.equal(out, '');
   });
 });
 
@@ -119,29 +173,29 @@ describe('makePlanningPrinter({ verbose: true })', () => {
 
 describe('makePlanningPrinter({ verbose: false })', () => {
   it('produces no output on type: output events', () => {
-    const printer = makePlanningPrinter({ verbose: false });
+    const { handle } = makePlanningPrinter({ verbose: false });
     const out = captureStdout(() => {
-      printer({ type: 'output', phase: 'analyst', chunk: 'secret persona thoughts\n' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'analyst', chunk: 'secret persona thoughts\n' } satisfies PlanningEvent);
     });
     assert.equal(out, '', 'non-verbose printer writes nothing');
   });
 
   it('produces no output on type: phase events', () => {
-    const printer = makePlanningPrinter({ verbose: false });
+    const { handle } = makePlanningPrinter({ verbose: false });
     const out = captureStdout(() => {
-      printer({ type: 'phase', phase: 'pm' } satisfies PlanningEvent);
+      handle({ type: 'phase', phase: 'pm' } satisfies PlanningEvent);
     });
     assert.equal(out, '', 'non-verbose printer writes nothing for phase transitions');
   });
 
   it('produces no output across a full sequence of events', () => {
-    const printer = makePlanningPrinter({ verbose: false });
+    const { handle } = makePlanningPrinter({ verbose: false });
     const out = captureStdout(() => {
-      printer({ type: 'phase', phase: 'analyst' } satisfies PlanningEvent);
-      printer({ type: 'output', phase: 'analyst', chunk: 'line1\n' } satisfies PlanningEvent);
-      printer({ type: 'output', phase: 'analyst', chunk: 'partial' } satisfies PlanningEvent);
-      printer({ type: 'phase', phase: 'pm' } satisfies PlanningEvent);
-      printer({ type: 'output', phase: 'pm', chunk: 'line2\n' } satisfies PlanningEvent);
+      handle({ type: 'phase', phase: 'analyst' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'analyst', chunk: 'line1\n' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'analyst', chunk: 'partial' } satisfies PlanningEvent);
+      handle({ type: 'phase', phase: 'pm' } satisfies PlanningEvent);
+      handle({ type: 'output', phase: 'pm', chunk: 'line2\n' } satisfies PlanningEvent);
     });
     assert.equal(out, '', 'concise default: no persona output escapes to the terminal');
   });

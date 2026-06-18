@@ -201,6 +201,9 @@ export async function runEpic(
   // which the PM expanded into more stories. Worker-time skill injection in
   // the Supervisor is unchanged — that is where skills add real value,
   // against actual code work.
+  // core (PlanningOutputSink) redacts secrets before firing onPlanningEvent —
+  // the printer is a pass-through and must never re-redact.
+  const printer = makePlanningPrinter({ verbose: opts.verbose === true });
   const planner = new Planner({
     projectRoot,
     llm,
@@ -208,7 +211,7 @@ export async function runEpic(
     db,
     sharedContract: policy.agents.shared_contract === 'on',
     qaPlanning: policy.agents.qa_planning === 'advisory',
-    onPlanningEvent: makePlanningPrinter({ verbose: opts.verbose === true }),
+    onPlanningEvent: printer.handle,
   });
 
   let result;
@@ -218,6 +221,8 @@ export async function runEpic(
     console.error('\n  Planning failed:', (err as Error).message);
     process.exit(1);
   }
+  // Drain any partial line not terminated by a newline in the final streamed chunk.
+  printer.flush();
 
   console.log('  Planning complete.\n');
   console.log(`  Run:           ${result.runId}`);
