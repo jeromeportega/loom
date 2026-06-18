@@ -25,7 +25,9 @@ export function formatClarificationsNotice(
 
   lines.push('');
   lines.push('  To plan as-is:     loom epic "<brief>" --force');
-  lines.push('  Or tighten the brief and re-run to resolve these clarifications.');
+  if (refinement.questions.length > 0) {
+    lines.push('  Or tighten the brief and re-run to resolve these clarifications.');
+  }
   lines.push('');
 
   return lines.join('\n');
