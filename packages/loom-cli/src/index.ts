@@ -18,7 +18,7 @@ import { runPublish, spec as publishSpec } from './commands/publish.js';
 import { runRelease, spec as releaseSpec } from './commands/release.js';
 import { runGuide, spec as guideSpec } from './commands/guide.js';
 import { runMcpList, runMcpAdd, specList as mcpListSpec, specAdd as mcpAddSpec } from './commands/mcp.js';
-import { runDoctor, spec as doctorSpec } from './commands/doctor.js';
+import { runDoctor, runCapabilitiesMode, spec as doctorSpec } from './commands/doctor.js';
 import { runScanCommand, runOpportunitiesCommand, spec as scanSpec, specOpportunities } from './commands/scan.js';
 import { runGateDryRunCommand } from './commands/doctorDryRunGate.js';
 import { runCrossEpicGateCommand } from './commands/doctorCrossEpicGate.js';
@@ -56,7 +56,7 @@ export function buildProgram(): Command {
 
   // ─── loom doctor ────────────────────────────────────────────────────────────
   applySpec(program.command('doctor'), doctorSpec)
-    .action(async (opts: { dryRunGate?: boolean; crossEpicGate?: boolean; epics?: string }) => {
+    .action(async (opts: { dryRunGate?: boolean; crossEpicGate?: boolean; epics?: string; capabilities?: boolean }) => {
       if (opts.crossEpicGate) {
         const epics = opts.epics
           ? opts.epics
@@ -69,6 +69,10 @@ export function buildProgram(): Command {
       }
       if (opts.dryRunGate) {
         await runGateDryRunCommand(process.cwd());
+        return;
+      }
+      if (opts.capabilities) {
+        runCapabilitiesMode({ program });
         return;
       }
       runDoctor();
