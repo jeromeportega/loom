@@ -5,16 +5,14 @@ import { pickPackage, toMcpJsonEntry, type McpJsonEntry } from './adapter.js';
 
 export interface MaterializeOptions {
   worktreePath: string;
-  /** null = policy.mcp.registry unset → empty/loom-only config. */
+  /** null = policy.mcp.registry unset → empty config. */
   registry: McpRegistry | null;
-  /** undefined = omit the loom server (ADR-3: only cursor-cli gets it). */
-  loomServerEntry?: McpJsonEntry;
 }
 
 export interface MaterializeResult {
   /** Absolute path of the written .cursor/mcp.json. */
   configPath: string;
-  /** Sorted server names; includes 'loom' iff loomServerEntry was given. */
+  /** Sorted server names. */
   serverNames: string[];
 }
 
@@ -24,12 +22,11 @@ interface GeneratedMcpConfig {
 
 /**
  * Writes a worktree-local `.cursor/mcp.json` whose servers are EXACTLY the
- * policy registry contents (plus the loom server iff `loomServerEntry` is
- * given). This is a whole-file overwrite — never a merge — so the generated
- * file is a pure function of the registry and re-dispatch is idempotent. We
- * deliberately do NOT reuse `upsertMcpServer`, which never clobbers; any
- * inherited `~/.cursor/mcp.json` servers are intentionally dropped (migration
- * path is `loom mcp add`).
+ * policy registry contents. This is a whole-file overwrite — never a merge —
+ * so the generated file is a pure function of the registry and re-dispatch is
+ * idempotent. We deliberately do NOT reuse `upsertMcpServer`, which never
+ * clobbers; any inherited `~/.cursor/mcp.json` servers are intentionally
+ * dropped (migration path is `loom mcp add`).
  *
  * Secret inputs stay as `${VAR}` references — `toMcpJsonEntry` never resolves
  * or inlines a value.
@@ -43,10 +40,6 @@ export function materializeWorktreeMcpConfig(
     const pkg = pickPackage(def);
     if (!pkg) continue; // no installable package — nothing to expose
     mcpServers[def.name] = toMcpJsonEntry(pkg);
-  }
-
-  if (opts.loomServerEntry) {
-    mcpServers.loom = opts.loomServerEntry;
   }
 
   const config: GeneratedMcpConfig = { mcpServers };

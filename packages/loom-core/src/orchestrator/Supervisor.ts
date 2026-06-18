@@ -25,7 +25,6 @@ import { PolicyEngine } from '../guardrails/index.js';
 import {
   McpRegistry,
   materializeWorktreeMcpConfig,
-  type McpJsonEntry,
 } from '../mcp/index.js';
 import { enforceCursorMcpAllowlist } from './CursorMcpEnforcer.js';
 import { WorktreeManager } from './WorktreeManager.js';
@@ -203,14 +202,6 @@ export interface SupervisorOptions {
    * retry. Set `false` to disable (e.g. when debugging a completed worktree).
    */
   pruneOrphans?: boolean;
-  /**
-   * The `.cursor/mcp.json` entry for loom's own MCP server, built in loom-cli
-   * (commands/run.ts) via `loomScriptPath()` — core cannot compute it (ADR-5).
-   * Threaded into the worktree config only for the cursor-cli backend, whose
-   * CursorAgentWorker.pullGuidanceHint() depends on the `loom_pull_guidance`
-   * tool (ADR-3). Unset = the loom server is never added to worker configs.
-   */
-  loomServerEntry?: McpJsonEntry;
   /**
    * Spawn stagger for concurrent cursor-agent workers (story-006-004). When the
    * cursor-cli backend fans out several workers at once they each rewrite
@@ -1389,20 +1380,13 @@ export class Supervisor {
     // ─── Worker MCP isolation (epic-002, dispatch ordering steps 2–4) ──────
     // Materialize a worktree-local `.cursor/mcp.json` exposing EXACTLY the
     // policy.mcp.registry servers (whole-file overwrite, never a merge). The
-    // loom server is included per-backend (ADR-3): cursor-cli gets it because
-    // CursorAgentWorker.pullGuidanceHint() relies on the `loom_pull_guidance`
-    // tool, whereas claude-code workers get registry servers only. The loom
-    // entry itself is built in loom-cli and threaded via SupervisorOptions —
-    // core never computes it (ADR-5). The cursor enforcer (step 3) disables
-    // any stray inherited servers headlessly; it is a no-op for claude-code,
-    // which gets strict isolation from the `--strict-mcp-config` spawn arg.
+    // cursor enforcer (step 3) disables any stray inherited servers headlessly;
+    // it is a no-op for claude-code, which gets strict isolation from the
+    // `--strict-mcp-config` spawn arg.
     const { backend, registry } = this.mcpContext();
-    const loomServerEntry =
-      backend === 'cursor-cli' ? this.opts.loomServerEntry : undefined;
     const mat = materializeWorktreeMcpConfig({
       worktreePath: wt.path,
       registry,
-      loomServerEntry,
     });
     const enf =
       backend === 'cursor-cli'
@@ -1419,7 +1403,6 @@ export class Supervisor {
         servers: mat.serverNames,
         backend,
         configPath: path.relative(wt.path, mat.configPath),
-        loomServerIncluded: loomServerEntry !== undefined,
         ...(enf ? { disabledServers: enf.disabled, gaps: enf.gaps } : {}),
       },
     });

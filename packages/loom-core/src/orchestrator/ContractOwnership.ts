@@ -148,15 +148,23 @@ function parseOwner(cell: string, epicId: string): { epicId: string; storyId?: s
   return undefined;
 }
 
+/** Extension allowlist for path-like token detection — exported so callers can import rather than duplicate. */
+export const KNOWN_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|sql|sh|css|html)$/i;
+
+/** True when a slash-normalised token looks like a file path. */
+function isPathLike(token: string): boolean {
+  return token.includes('/') || KNOWN_EXT.test(token);
+}
+
 /**
  * Normalizes a single path token from a cell:
  *  - strip surrounding backticks,
  *  - strip `(new)` / `(delete)` style parenthesized annotations,
  *  - keep only the leading path token (drop trailing prose after whitespace),
  *  - convert backslashes to POSIX separators and trim a leading `./`.
- * Returns '' when nothing path-like remains.
+ * Returns '' when nothing path-like remains (bare words, code fragments, etc.).
  */
-function normalizePath(token: string): string {
+export function normalizePath(token: string): string {
   let s = token.trim();
   // Strip parenthesized annotations anywhere: `foo.ts (new)`, `(delete) bar`.
   s = s.replace(/\([^)]*\)/g, ' ').trim();
@@ -166,11 +174,17 @@ function normalizePath(token: string): string {
   // Keep the first whitespace-delimited token; the rest is trailing prose
   // ("src/foo.ts the entry point" -> "src/foo.ts").
   const head = s.split(/\s+/)[0];
-  // Normalize separators to POSIX and drop a leading './'.
-  const posix = head.replace(/\\/g, '/').replace(/^\.\//, '');
+  // Normalize separators to POSIX; preserve a leading './' so that
+  // extensionless root files written as './Makefile' still pass the gate below.
+  const posix = head.replace(/\\/g, '/');
   // Reject tokens with no path content (pure punctuation left over).
   if (!/[A-Za-z0-9]/.test(posix)) return '';
-  return posix;
+  // Final gate: only include tokens that look like file paths (path separator
+  // or known source-file extension). A leading './' makes extensionless root
+  // files detectable; bare words and code fragments are excluded here.
+  if (!isPathLike(posix)) return '';
+  // Normalize away the leading './' for storage.
+  return posix.replace(/^\.\//, '');
 }
 
 // ---------------------------------------------------------------------------

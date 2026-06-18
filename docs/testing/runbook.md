@@ -1588,6 +1588,9 @@ hook (Epic 1) is the structural safety net inside each worktree.
 
 ## Epic 4 — MCP Server
 
+> **REMOVED — historical record.**  
+> The `loom serve` command and the `@loom-ai/mcp` package were removed in a subsequent epic. The section below is preserved for institutional memory only — none of the commands here are operational in the current codebase. See [`docs/dogfooding/mcp-removal-notes.md`](../dogfooding/mcp-removal-notes.md) for removal rationale and migration guidance.
+
 **What was delivered**: All 7 MCP tools are live and tested. The handlers were
 extracted from `server.ts` into a `tools/` module behind a `ToolContext` (injectable
 LLM and worker factories), so they are unit-testable without stdio, a real API key, or
