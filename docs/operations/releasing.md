@@ -30,22 +30,82 @@ visibility surface.
 
 ## Cutting a release
 
-1. Bump every workspace's `package.json` version (and the root, if any)
-   to the target version. `npm version <new-version> --workspaces` will
-   do them all at once.
-2. Commit the bump on `main`. Tag the commit:
-   `git tag v0.1.0 && git push origin v0.1.0`.
-3. Build and test from a clean checkout: `npm ci && npm run build && npm test`.
-4. Authenticate to npm (`npm login`) if you are not already.
-5. Publish each workspace in dependency order: `core` → `web` → `loom-ai`:
+Loom's guard blocks direct pushes to `main`, so releases use a PR-merge flow.
+The `loom release` command handles the branch, bump, commit, push, and PR in
+one step — this flow works inside any loom-managed repo without disabling
+guardrails.
 
-   ```bash
-   npm publish -w @loom-ai/core
-   npm publish -w @loom-ai/web
-   npm publish -w loom-ai
-   ```
+### Step 1 — open the release PR
 
-6. Verify with `npm view @loom-ai/core`.
+```bash
+loom release <version>
+```
+
+For example:
+
+```bash
+loom release 5.3.0
+# or
+loom release v5.3.0   # leading v is stripped automatically
+```
+
+`loom release` does exactly this, in order:
+
+1. Runs `scripts/bump-versions.mjs <version>` to bump every workspace
+   `package.json` (root + `packages/*/package.json`) to the target version.
+2. Creates a `release/v<version>` branch (e.g. `release/v5.3.0`).
+3. Stages only the bumped `package.json` files and commits
+   `chore(release): v<version>`.
+4. Pushes `release/v<version>` to `origin` (guard-compatible — not a
+   protected branch, no `--force` flag).
+5. Opens a PR against `main` titled `chore(release): v<version>`.
+
+The command prints the PR URL on success.
+
+### Step 2 — build, test, and merge
+
+Before merging the PR, verify from a clean checkout:
+
+```bash
+npm ci && npm run build && npm test
+```
+
+Merge the PR when green. Note the merge commit SHA — you need it in the next
+step.
+
+### Step 3 — tag the merge commit (post-merge operator step)
+
+After the PR is merged, tag the merge commit and push the tag:
+
+```bash
+git fetch origin
+git tag v<version> <merge-sha>
+git push origin v<version>
+```
+
+For example:
+
+```bash
+git fetch origin
+git tag v5.3.0 $(git rev-parse origin/main)
+git push origin v5.3.0
+```
+
+Tag pushes to `origin` pass the guard — `v<version>` is not a protected
+branch, and no `--force` flag is used.
+
+### Step 4 — npm publish
+
+Authenticate to npm (`npm login`) if you are not already, then publish each
+workspace in dependency order:
+
+```bash
+npm publish -w @loom-ai/core
+npm publish -w @loom-ai/web
+npm publish -w loom-ai
+```
+
+Verify with `npm view @loom-ai/core`.
 
 If publish fails partway (e.g. `core` published but `loom-ai` errored), do
 not retry the same version — bump to the next patch version and re-cut.
@@ -65,3 +125,12 @@ npm pack -w @loom-ai/core   # writes a .tgz; inspect what would be published
 The `files` field in each `package.json` controls what ships — only
 `dist/` (and `personas/` / `eval-cases/` for core) should be inside the
 tarball.
+
+---
+
+## Why a PR instead of a direct push?
+
+The loom guard (`loom guard hook`) blocks direct pushes to `main` and
+`master` — that path is reserved for PRs. `release/v*` branches are
+explicitly permitted, so the `loom release` flow works inside any
+loom-managed repo without touching policy.
