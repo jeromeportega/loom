@@ -111,6 +111,7 @@ One interface over the engine:
 | **"loom learned this run" CLI summary** | Automatic at end of `loom run` | When the self-learning loop generated, promoted, or demoted a skill during the run, the CLI prints a single block summarizing what changed. Silent when nothing changed. |
 | **Skill provenance on canary injections** | Automatic in `loom run` output | A candidate skill injected into a story prints `(from story-X)` — the story that originally produced it. Closes the loop visibly between "loom wrote a skill" and "loom used it." |
 | **Per-skill history timeline** | `loom skills history <name>` | Merges audit rows + injection records into one chronological timeline: `★` generated, `↻` lifecycle change, `·` injection with outcome. Track-record tail line. |
+| **Emit CLI manifest** | `loom describe` / `loom describe <command>` | Emits the full machine-readable CLI self-description manifest as JSON (`ManifestSchema`-valid: `loomVersion`, `source`, `commands[]`, `workflows[]`) or one command's `CommandDescription` by name (full path for subcommands: `"guard check"`, `"mcp add"`). Always JSON — no `--format` flag. Unknown command exits non-zero with a message to stderr. Existing `--help` output is unchanged. |
 
 ## Discovery
 

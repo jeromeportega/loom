@@ -26,6 +26,7 @@ import { spec as statusSpec } from '../commands/status.js';
 import { spec as stopSpec } from '../commands/stop.js';
 import { spec as tracesSpec } from '../commands/traces.js';
 import { spec as webSpec } from '../commands/web.js';
+import { spec as describeSpec } from '../commands/describe.js';
 // <command specs>
 
 /**
@@ -65,6 +66,7 @@ export function collectSpecs(): CommandDescription[] {
     stopSpec,
     tracesSpec,
     webSpec,
+    describeSpec,
     // <command specs>
   ];
 }
