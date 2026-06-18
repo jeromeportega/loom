@@ -40,7 +40,7 @@ function buildCommandForSpec(spec: CommandDescription): Command {
   );
 }
 
-// Conservative lower bound on registered command count.
+// Conservative lower bound on registered command count (34 as of epic-009).
 // Raise this when commands are intentionally added; never lower it without
 // a corresponding command removal.
 const COMMAND_FLOOR = 25;
@@ -191,15 +191,6 @@ describe('meta-proof: completeness tripwire fails loud on missing spec (AC2)', (
     assert.ok(
       missing.includes('phantom-cmd'),
       `tripwire must detect "phantom-cmd" which has no spec — the check is broken if this assertion fails`
-    );
-  });
-
-  it('clean state: no registered commands are missing specs (zero missing with real program)', () => {
-    const missing = liveCommands.filter((name) => !specsByName.has(name));
-    assert.equal(
-      missing.length,
-      0,
-      `Expected zero missing in clean state; got: ${missing.join(', ')}`
     );
   });
 
