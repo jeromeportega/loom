@@ -179,15 +179,20 @@ describe('IntegrationGate regression — cross-package API-addition scenario', (
     const info = ib.ensure(EPIC, base);
 
     // Merge both stories: story-a adds newMethod to core, story-b uses it.
-    ib.mergeStory(EPIC, 'story-a', 'Add newMethod to core');
-    ib.mergeStory(EPIC, 'story-b', 'Call newMethod from web');
+    assert.ok(ib.mergeStory(EPIC, 'story-a', 'Add newMethod to core').ok, 'fixture: story-a merge must succeed');
+    assert.ok(ib.mergeStory(EPIC, 'story-b', 'Call newMethod from web').ok, 'fixture: story-b merge must succeed');
 
     // linkWorkspaceDeps created <worktree>/node_modules/@loom-ai/core ->
     //   ../../packages/loom-core (the worktree's own fresh copy with newMethod).
+    const depLinkPath = path.join(info.path, 'node_modules', '@loom-ai', 'core');
+    assert.ok(
+      fs.existsSync(depLinkPath),
+      `dep-link must exist at ${depLinkPath}: linkWorkspaceDeps must have created the symlink`,
+    );
     assert.equal(
-      fs.lstatSync(path.join(info.path, 'node_modules', '@loom-ai', 'core')).isSymbolicLink(),
+      fs.lstatSync(depLinkPath).isSymbolicLink(),
       true,
-      'dep-link must exist: linkWorkspaceDeps must have created the symlink',
+      'dep-link must be a symlink, not a copy',
     );
 
     const gate = new IntegrationGate({ testCommand: GATE_CMD });
@@ -207,8 +212,8 @@ describe('IntegrationGate regression — cross-package API-addition scenario', (
     const ib = new IntegrationBranch(repo, { linkDeps: () => {} });
     const info = ib.ensure(EPIC, base);
 
-    ib.mergeStory(EPIC, 'story-a', 'Add newMethod to core');
-    ib.mergeStory(EPIC, 'story-b', 'Call newMethod from web');
+    assert.ok(ib.mergeStory(EPIC, 'story-a', 'Add newMethod to core').ok, 'fixture: story-a merge must succeed');
+    assert.ok(ib.mergeStory(EPIC, 'story-b', 'Call newMethod from web').ok, 'fixture: story-b merge must succeed');
 
     // AC3 — non-vacuity guard: assert the real defect precondition holds.
     const wtLocalLink = path.join(info.path, 'node_modules', '@loom-ai', 'core');
@@ -254,8 +259,8 @@ describe('IntegrationGate regression — cross-package API-addition scenario', (
     // Use REAL linkWorkspaceDeps — dep-link is in place.
     const ib = new IntegrationBranch(repo);
     const info = ib.ensure(EPIC, base);
-    ib.mergeStory(EPIC, 'story-a', 'Add newMethod to core');
-    ib.mergeStory(EPIC, 'story-c', 'Genuine regression');
+    assert.ok(ib.mergeStory(EPIC, 'story-a', 'Add newMethod to core').ok, 'fixture: story-a merge must succeed');
+    assert.ok(ib.mergeStory(EPIC, 'story-c', 'Genuine regression').ok, 'fixture: story-c merge must succeed');
 
     const gate = new IntegrationGate({ testCommand: GATE_CMD });
     const outcome = await gate.run({ projectRoot: info.path });
@@ -276,7 +281,7 @@ describe('IntegrationGate regression — cross-package API-addition scenario', (
     // story-b is NOT merged; we simulate it as conflicted/amputated.
     const ib = new IntegrationBranch(repo);
     const info = ib.ensure(EPIC, base);
-    ib.mergeStory(EPIC, 'story-a', 'Add newMethod to core');
+    assert.ok(ib.mergeStory(EPIC, 'story-a', 'Add newMethod to core').ok, 'fixture: story-a merge must succeed');
     // loom-web in the worktree still calls greet() (initial state, pre-story-b).
 
     const gate = new IntegrationGate({ testCommand: GATE_CMD });
