@@ -40,19 +40,19 @@ npm install && npm run build && npm link -w loom-ai
 Installing loom **globally** matters — worker agents call `loom` for their
 guardrail hook. `loom doctor` will warn if it's not on your PATH.
 
-## Two ways to drive loom
+## How to drive loom
 
-Loom speaks two interfaces over the same engine. **The CLI is the primary
-surface;** MCP is optional.
+Drive loom by running `loom …` commands. Every read command supports `--json`
+so an outer agent or script can drive loom by reading structured output — no
+persistent server required.
 
-| Surface | When | How |
-|---|---|---|
-| **CLI (primary)** | Default — scripts, automation, and outer-agent control | `loom epic`, `loom approve`, `loom run`, `loom status` (plus `diff`, `review`, `artifacts`, `traces`, `audit`, `autonomy`). Every read command supports `--json`. |
-| **MCP (optional)** | Conversational use from an IDE/agent client (Claude Code, Cursor) | Opt in with `loom init --mcp` (writes `.mcp.json`; `--cursor` writes `.cursor/mcp.json`). Then ask your client to call `loom_start_epic`, `loom_approve_plan`, `loom_get_status`, etc. |
-
-The walkthrough below uses the CLI; if you enabled MCP, every step has a
-direct tool equivalent (`loom_start_epic` for `loom epic`,
-`loom_approve_plan` for `loom approve`, and so on).
+```bash
+loom epic "<brief>"               # plan an epic
+loom approve <epic-id> --run      # approve and kick off loom run
+loom status --json                # poll progress + PR links
+loom diff <story|epic-id>         # inspect a story/epic diff
+loom review <story-id>            # the reviewer verdict
+```
 
 ## Your first epic, end to end
 
@@ -126,7 +126,7 @@ Tighten or loosen as you learn to trust the system:
 | `.loom/planning/<run>/` | In-progress planning artifacts | No (working dir) |
 | `.loom_outputs/<epic>/` | Delivered planning record (brief / PRD / architecture / epic.yaml) | **Yes** — committed on the epic branch |
 | `.claude/settings.json` | Guard hook config | Per-machine; regenerable via `loom init` |
-| `.mcp.json`, `.cursor/mcp.json` | MCP server config | Per-machine; regenerable |
+| `.cursor/mcp.json` | Cursor worker MCP provisioning config | Per-machine; regenerable |
 
 `loom init` writes a managed `.gitignore` block that handles this — don't
 hand-edit inside the markers.
