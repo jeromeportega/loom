@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -729,3 +730,25 @@ Never write to: ~/.ssh, ~/.aws, ~/.gnupg, /etc, /usr, .git
 
 When you add, remove, or meaningfully change a user-visible feature, update \`docs/capabilities.md\` in the same PR. That page is the single source of truth for what loom does today — GitHub release notes alone are insufficient. New CLI subcommand → add a row. New MCP tool → add a row noting both CLI and MCP forms. New user-visible policy knob → add a row. Capability previously listed under "What loom does NOT do" now ships → move it into the appropriate table and delete its NOT-do entry.
 `;
+
+export const spec: CommandDescription = {
+  name: 'init',
+  summary: 'Initialize loom in the current git repo',
+  whenToUse: 'Run once in a project root to create the .loom/ directory, policy.yaml, and Claude Code hooks. Safe to re-run; never overwrites an existing policy.yaml.',
+  arguments: [],
+  options: [
+    { name: '--cursor', type: 'boolean', description: 'Also write .cursor/rules/loom.mdc for Cursor IDE integration', changesOutputShape: false },
+    { name: '--yes', type: 'boolean', description: 'Skip confirmation prompts', changesOutputShape: false },
+  ],
+  output: { text: 'Progress messages for each file created and next steps' },
+  examples: [
+    { command: 'loom init', description: 'Initialize loom with interactive prompts' },
+    { command: 'loom init --cursor --yes', description: 'Initialize without prompts and add Cursor IDE support' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Initialized successfully' },
+    { code: 1, meaning: 'Not a git repository or initialization error' },
+  ],
+  errors: ['Not a git repository — run `git init` first'],
+  relationships: { prerequisites: [], nextSteps: ['doctor', 'epic'] },
+};

@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -107,3 +108,41 @@ export function runMcpAdd(name: string): void {
   }
   console.log('');
 }
+
+export const specList: CommandDescription = {
+  name: 'mcp list',
+  summary: 'List approved MCP servers from the configured registry',
+  whenToUse: 'Use to see which MCP servers are available in your org registry before adding one.',
+  arguments: [],
+  options: [],
+  output: { text: 'List of approved MCP server names with descriptions' },
+  examples: [
+    { command: 'loom mcp list', description: 'List all approved MCP servers in the registry' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Servers listed successfully' },
+    { code: 1, meaning: 'No registry configured or loom not initialized' },
+  ],
+  errors: ['No MCP registry configured — set policy.mcp.registry', 'loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['init'], nextSteps: ['mcp add'] },
+};
+
+export const specAdd: CommandDescription = {
+  name: 'mcp add',
+  summary: 'Add an approved MCP server to .mcp.json and .cursor/mcp.json',
+  whenToUse: 'Use to provision an approved MCP server from the org registry into the project.',
+  arguments: [
+    { name: 'name', type: 'string', required: true, description: 'Registry server name to add' },
+  ],
+  options: [],
+  output: { text: 'Confirmation of which config files were updated plus required secrets if any' },
+  examples: [
+    { command: 'loom mcp add my-server', description: 'Add the "my-server" MCP server to both .mcp.json and .cursor/mcp.json' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Server added (or already present) successfully' },
+    { code: 1, meaning: 'Server not found in registry or loom not initialized' },
+  ],
+  errors: ['MCP server not found in registry — try `loom mcp list`', 'No installable package for this server', 'loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['mcp list'], nextSteps: [] },
+};

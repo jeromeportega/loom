@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { OperatorGuidance, openDatabase } from '@loom-ai/core';
@@ -46,3 +47,29 @@ export function runGuide(storyId: string, message: string | undefined, opts: Gui
   console.log('  when policy.agents.operator_guidance=on. Set the flag in your');
   console.log("  project's .loom/policy.yaml to wire it up.");
 }
+
+export const spec: CommandDescription = {
+  name: 'guide',
+  summary: 'Append operator guidance for a running worker',
+  whenToUse: 'Use to send steering messages to a running worker story. The worker reads the guidance at story-start and on each revision when policy.agents.operator_guidance=on.',
+  arguments: [
+    { name: 'story-id', type: 'string', required: true, description: 'Story id (e.g. story-001-003)' },
+    { name: 'message', type: 'string', required: false, description: 'Free-form guidance text (omit when using --clear)' },
+  ],
+  options: [
+    { name: '--clear', type: 'boolean', description: 'Remove the guidance file for this story', changesOutputShape: false },
+    { name: '--author', type: 'string', description: 'Tag the entry with an author label (defaults to "operator")', changesOutputShape: false },
+  ],
+  output: { text: 'Confirmation that guidance was written or cleared' },
+  examples: [
+    { command: 'loom guide story-001-003 "Focus on the API layer first"', description: 'Send guidance to a running worker' },
+    { command: 'loom guide story-001-003 --clear', description: 'Clear all guidance for the story' },
+    { command: 'loom guide story-001-003 "Add more tests" --author alice', description: 'Send guidance tagged with author' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Guidance written or cleared successfully' },
+    { code: 1, meaning: 'Story not found or loom not initialized' },
+  ],
+  errors: ['Story not found', 'loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['run'], nextSteps: ['status', 'pull-guidance'] },
+};

@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -174,3 +175,27 @@ export function runDoctor(): void {
     console.log('  All checks passed — you are ready to go.\n');
   }
 }
+
+export const spec: CommandDescription = {
+  name: 'doctor',
+  summary: 'Check prerequisites and report what is missing',
+  whenToUse: 'Run after installing loom to verify Node, git, claude CLI, and gh are present and correctly configured. Use --dry-run-gate or --cross-epic-gate for deeper validation.',
+  arguments: [],
+  options: [
+    { name: '--dry-run-gate', type: 'boolean', description: 'Execute the integration gate once in a throwaway worktree and report the outcome', changesOutputShape: false },
+    { name: '--cross-epic-gate', type: 'boolean', description: 'Merge every open epic branch into a throwaway union worktree and run the suite once', changesOutputShape: false },
+    { name: '--epics', type: 'string', description: 'Comma-separated epic ids to restrict --cross-epic-gate to (default: every epic/* branch)', changesOutputShape: false },
+  ],
+  output: { text: 'Checklist of prerequisites with pass/fail/warn status' },
+  examples: [
+    { command: 'loom doctor', description: 'Check all prerequisites' },
+    { command: 'loom doctor --dry-run-gate', description: 'Also run the integration gate in a throwaway worktree' },
+    { command: 'loom doctor --cross-epic-gate --epics epic-001,epic-002', description: 'Check for cross-epic merge conflicts' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'All checks passed or warnings only' },
+    { code: 1, meaning: 'One or more required checks failed' },
+  ],
+  errors: ['Required tool not found — install it before running `loom run`'],
+  relationships: { prerequisites: [], nextSteps: ['init', 'run'] },
+};

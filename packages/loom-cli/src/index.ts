@@ -28,8 +28,9 @@ import { runTraces } from './commands/traces.js';
 import { runAudit } from './commands/audit.js';
 import { runAutonomy } from './commands/autonomy.js';
 import { runProjects } from './commands/projects.js';
-import { runPullGuidance } from './commands/pullGuidance.js';
-import { runProject } from './commands/project.js';
+import { runPullGuidance, spec as pullGuidanceSpec } from './commands/pullGuidance.js';
+import { runProject, spec as projectSpec } from './commands/project.js';
+import { applySpec } from './describe/applySpec.js';
 
 // Read the version from this package's package.json at runtime so
 // `loom --version` stays automatically in sync with the published
@@ -360,24 +361,18 @@ program
   });
 
 // ─── loom pull-guidance ──────────────────────────────────────────────────────
-program
-  .command('pull-guidance')
-  .description('Print new operator guidance for a story since the last pull (worker read path)')
-  .argument('<story-id>', 'Story id (e.g. story-001-003)')
-  .option('--json', 'Emit JSON: { content, has_more }')
+applySpec(program.command('pull-guidance'), pullGuidanceSpec)
   .action((storyId: string, opts: { json?: boolean }) => {
     runPullGuidance(storyId, { json: opts.json });
   });
 
 // ─── loom project ─────────────────────────────────────────────────────────────
-program
-  .command('project')
-  .description('Show a registered project and its latest epic')
-  .argument('<project-root>', 'Absolute or relative path to the project root')
-  .option('--json', 'Emit JSON: { project, latest_epic? }')
+applySpec(program.command('project'), projectSpec)
   .action((projectRoot: string, opts: { json?: boolean }) => {
     runProject(projectRoot, { json: opts.json });
   });
+
+// <register additional commands>
 
 // ─── loom mcp ───────────────────────────────────────────────────────────────
 const mcp = program

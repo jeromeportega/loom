@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -243,3 +244,28 @@ export async function runRetry(storyId: string, opts: RetryOptions = {}): Promis
   // exact dispatch wiring `loom run` uses) and dispatch just this story's epic.
   await runRun([prep.epicId!]);
 }
+
+export const spec: CommandDescription = {
+  name: 'retry',
+  summary: 'Reset a failed/blocked story and re-dispatch it',
+  whenToUse: 'Use when a story has failed or is blocked and you want to re-run it. Lease-aware: attaches to a live run if one exists, otherwise dispatches fresh. Grants a fresh auto-retry budget.',
+  arguments: [
+    { name: 'story-id', type: 'string', required: true, description: 'Story id to retry (e.g. story-001-003)' },
+  ],
+  options: [
+    { name: '--clean', type: 'boolean', description: 'Tear down the worktree and branch so the story re-runs from scratch instead of resuming', changesOutputShape: false },
+    { name: '--reason', type: 'string', description: 'Explanation recorded with the retry in the audit log', changesOutputShape: false },
+  ],
+  output: { text: 'Confirmation of the retry dispatch and the story branch' },
+  examples: [
+    { command: 'loom retry story-001-003', description: 'Retry a failed story, resuming from the last worktree state' },
+    { command: 'loom retry story-001-003 --clean', description: 'Retry from scratch by tearing down the worktree' },
+    { command: 'loom retry story-001-003 --reason "Fixed flaky dependency"', description: 'Retry with an audit note' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Story re-dispatched successfully' },
+    { code: 1, meaning: 'Story not found or loom not initialized' },
+  ],
+  errors: ['Story not found', 'loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['run'], nextSteps: ['status', 'stop'] },
+};
