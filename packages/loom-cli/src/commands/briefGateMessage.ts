@@ -9,6 +9,7 @@ export function formatClarificationsNotice(
   verdict: GateVerdict,
   refinement: Pick<BriefRefinement, 'questions' | 'refined_brief'>,
 ): string {
+  // TODO(story-012-002): render refinement.refined_brief as the suggested brief block.
   const lines: string[] = [
     '',
     `  Brief scored ${verdict.quality_score}/10 (>= ${verdict.threshold}) — ready with optional clarifications.`,

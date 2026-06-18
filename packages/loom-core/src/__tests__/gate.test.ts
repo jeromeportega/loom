@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateBriefGate } from '../brief/gate.js';
 
+const THRESHOLD = 6;
+
 describe('evaluateBriefGate', () => {
   it('passes when ready and score equals the threshold (>= is inclusive)', () => {
     const v = evaluateBriefGate({ ready: true, quality_score: 6 }, 6);
@@ -59,5 +61,55 @@ describe('evaluateBriefGate', () => {
         }
       }
     }
+  });
+});
+
+// ── Three-outcome routing ──────────────────────────────────────────────────────
+
+describe('evaluateBriefGate — outcome routing', () => {
+  it('score >= threshold AND ready: true → pass-clean, pass === true', () => {
+    const v = evaluateBriefGate({ ready: true, quality_score: 8 }, THRESHOLD);
+    assert.equal(v.outcome, 'pass-clean');
+    assert.equal(v.pass, true);
+  });
+
+  it('score >= threshold AND ready: false → pass-with-clarifications, pass === false', () => {
+    const v = evaluateBriefGate({ ready: false, quality_score: 8 }, THRESHOLD);
+    assert.equal(v.outcome, 'pass-with-clarifications');
+    assert.equal(v.pass, false);
+  });
+
+  it('score < threshold → below-threshold, pass === false', () => {
+    const v = evaluateBriefGate({ ready: true, quality_score: 4 }, THRESHOLD);
+    assert.equal(v.outcome, 'below-threshold');
+    assert.equal(v.pass, false);
+  });
+
+  it('score < threshold with ready: false → below-threshold (threshold wins)', () => {
+    const v = evaluateBriefGate({ ready: false, quality_score: 3 }, THRESHOLD);
+    assert.equal(v.outcome, 'below-threshold');
+    assert.equal(v.pass, false);
+  });
+});
+
+// ── Boundary: score exactly equal to threshold ─────────────────────────────────
+
+describe('evaluateBriefGate — boundary (score === threshold)', () => {
+  it('score EXACTLY equal to threshold AND ready: true → pass-clean (not below-threshold)', () => {
+    const v = evaluateBriefGate({ ready: true, quality_score: THRESHOLD }, THRESHOLD);
+    assert.equal(v.outcome, 'pass-clean');
+    assert.equal(v.pass, true);
+  });
+
+  it('score EXACTLY equal to threshold AND ready: false → pass-with-clarifications (not below-threshold)', () => {
+    const v = evaluateBriefGate({ ready: false, quality_score: THRESHOLD }, THRESHOLD);
+    assert.equal(v.outcome, 'pass-with-clarifications');
+    assert.equal(v.pass, false);
+    assert.notEqual(v.outcome, 'below-threshold');
+  });
+
+  it('score one below threshold → below-threshold regardless of ready', () => {
+    const v = evaluateBriefGate({ ready: true, quality_score: THRESHOLD - 1 }, THRESHOLD);
+    assert.equal(v.outcome, 'below-threshold');
   });
 });

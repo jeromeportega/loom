@@ -7,6 +7,7 @@ export type { BriefRefinerOptions } from './BriefRefiner.js';
 export type { BriefRefinement } from './types.js';
 export { evaluateBriefGate } from './gate.js';
 export type { GateVerdict } from './gate.js';
-// GateOutcome is not re-exported here: the name collides with the pre-existing
-// orchestrator/IntegrationGate.GateOutcome in the root barrel. Import it
-// directly from './gate.js' (or '@loom-ai/core/brief/gate.js') when needed.
+// Re-exported under a disambiguating alias: orchestrator/IntegrationGate already
+// exports a GateOutcome interface via the root barrel — using BriefGateOutcome
+// avoids the collision without forcing callers off the public API surface.
+export type { GateOutcome as BriefGateOutcome } from './gate.js';

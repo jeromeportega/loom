@@ -326,10 +326,10 @@ describe('three-outcome gate routing', () => {
     assert.notEqual(exitCode, 1);
     assert.notEqual(exitCode, 2);
 
-    // Planner never ran — no planned epic row
+    // Planner never ran — reserved row must be cleaned up (not left dangling)
     resetDatabaseForTest();
     const db = openDatabase(path.join(tmpDir, '.loom'));
-    assert.notEqual(new EpicStore(db).get('epic-001')?.status, 'planned', 'planner not invoked on exit 3');
+    assert.equal(new EpicStore(db).get('epic-001')?.status, 'rejected', 'row cleaned up on exit 3');
     resetDatabaseForTest();
   });
 
