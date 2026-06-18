@@ -44,6 +44,7 @@ export class MockWorkerRunner implements WorkerRunner {
         ...(fixed.review ? { review: fixed.review } : {}),
         ...(fixed.usage ? { usage: fixed.usage } : {}),
         ...(fixed.budgetExhausted ? { budgetExhausted: fixed.budgetExhausted } : {}),
+        ...(fixed.model ? { model: fixed.model } : {}),
       });
     }
   }
