@@ -43,7 +43,7 @@ function buildCommandForSpec(spec: CommandDescription): Command {
 // Conservative lower bound on registered command count (34 as of epic-009).
 // Raise this when commands are intentionally added; never lower it without
 // a corresponding command removal.
-const COMMAND_FLOOR = 25;
+const COMMAND_FLOOR = 30;
 
 // ---------------------------------------------------------------------------
 // Main suite — live-registry completeness check (non-circular).
@@ -98,6 +98,8 @@ describe('describe completeness: live registry vs spec inventory', () => {
   });
 
   it('would have caught the missing publish command — AC3 simulation', () => {
+    // Precondition: publish must be in the live registry for this simulation to be valid.
+    assert.ok(liveCommands.includes('publish'), 'precondition: publish must be in liveCommands for the AC3 simulation to be valid');
     // Simulate the prior defect: collectSpecs() did not include publishSpec.
     // The live program still registers publish. With the non-circular check the gap is visible.
     const specsWithoutPublish = new Map(specsByName);
