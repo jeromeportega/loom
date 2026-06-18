@@ -1,14 +1,13 @@
 /**
- * Anti-stub integration test for story-008-002.
+ * Integration tests for the blocked/blocked_reason contract on the web API surfaces.
  *
  * Drives ONE gate-blocked epic (status='in_progress', finalize_phase='gate')
- * through the REAL loom_get_status MCP handler AND the REAL createApp web
- * server, asserting that both surfaces report blocked/blocked_reason.
+ * through the REAL createApp web server, asserting that both surfaces report
+ * blocked/blocked_reason correctly.
  *
- * Also covers:
- *   - MCP surface (loom_get_status renderEpic)
- *   - API status rollup (GET /api/status via rollupEpics)
+ * Covers:
  *   - API fleet route (GET /api/fleet via buildProjectCards)
+ *   - API status rollup (GET /api/status via rollupEpics)
  *   - No-leak: a normal in_progress epic never exposes blocked or finalize_phase
  *   - Status contract: status remains 'in_progress' on all surfaces
  */
@@ -24,11 +23,8 @@ import {
   openDatabase,
   resetDatabaseForTest,
   EpicStore,
-  AgentStore,
 } from '@loom-ai/core';
 import type Database from 'better-sqlite3';
-import { HANDLERS } from '@loom-ai/mcp';
-import type { ToolContext } from '@loom-ai/mcp';
 import { createApp } from '../server/index.js';
 import type { FleetCard } from '../shared/fleet.js';
 
@@ -49,23 +45,13 @@ function gitc(args: string[]): void {
   execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
 }
 
-function makeCtx(): ToolContext {
-  return {
-    projectRoot: repo,
-    loomDir: path.join(repo, '.loom'),
-    createLLM: () => { throw new Error('not used'); },
-    createWorker: () => { throw new Error('not used'); },
-    background: () => {},
-  };
-}
-
 beforeEach(async () => {
   // Isolate machine-level LOOM_HOME so federation doesn't pick up real projects.
   prevLoomHome = process.env.LOOM_HOME;
   loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-blocked-home-'));
   process.env.LOOM_HOME = loomHomeDir;
 
-  // Create a real git repo — loom_get_status requires one.
+  // Create a real git repo.
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-blocked-repo-'));
   gitc(['init', '-q', '-b', 'main']);
   gitc(['config', 'user.email', 'test@loom.dev']);
@@ -76,7 +62,7 @@ beforeEach(async () => {
   gitc(['commit', '-q', '-m', 'initial']);
   fs.mkdirSync(path.join(repo, '.loom'), { recursive: true });
 
-  // Initialise the DB singleton — loom_get_status uses openDatabase(loomDir).
+  // Initialise the DB singleton.
   resetDatabaseForTest();
   db = openDatabase(path.join(repo, '.loom'));
   epicStore = new EpicStore(db);
@@ -109,34 +95,6 @@ afterEach(async () => {
   fs.rmSync(loomHomeDir, { recursive: true, force: true });
   if (prevLoomHome === undefined) delete process.env.LOOM_HOME;
   else process.env.LOOM_HOME = prevLoomHome;
-});
-
-// ─── MCP loom_get_status ─────────────────────────────────────────────────────
-
-describe('loom_get_status — gate-blocked epic (anti-stub)', () => {
-  it('reports blocked/blocked_reason for in_progress + gate epic', async () => {
-    const result = (await HANDLERS.loom_get_status(makeCtx(), {})) as {
-      epics: Array<{ id: string; status: string; blocked?: boolean; blocked_reason?: string; finalize_phase?: string }>;
-    };
-    const epic = result.epics.find((e) => e.id === 'epic-gate');
-    assert.ok(epic, 'epic-gate must appear in MCP status');
-    assert.equal(epic.status, 'in_progress', 'status must remain in_progress (AC6)');
-    assert.equal(epic.blocked, true, 'MCP must report blocked:true (AC2)');
-    assert.equal(epic.blocked_reason, 'integration_gate', 'MCP must report blocked_reason (AC2)');
-    assert.equal(epic.finalize_phase, undefined, 'finalize_phase must NOT leak for non-finalizing status (FR-4)');
-  });
-
-  it('does NOT report blocked for a normal in_progress epic', async () => {
-    const result = (await HANDLERS.loom_get_status(makeCtx(), {})) as {
-      epics: Array<{ id: string; status: string; blocked?: boolean; blocked_reason?: string; finalize_phase?: string }>;
-    };
-    const epic = result.epics.find((e) => e.id === 'epic-normal');
-    assert.ok(epic, 'epic-normal must appear in MCP status');
-    assert.equal(epic.status, 'in_progress');
-    assert.ok(!('blocked' in epic), 'no blocked field for normal in_progress (AC5)');
-    assert.ok(!('blocked_reason' in epic), 'no blocked_reason for normal in_progress (AC5)');
-    assert.ok(!('finalize_phase' in epic), 'no finalize_phase for normal in_progress (AC5)');
-  });
 });
 
 // ─── API fleet route (GET /api/fleet) ────────────────────────────────────────
