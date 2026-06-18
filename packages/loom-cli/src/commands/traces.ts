@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { openDatabase, DecisionTraceStore } from '@loom-ai/core';
@@ -54,3 +55,32 @@ export function runTraces(opts: TracesOptions = {}): void {
     }
   }
 }
+
+export const spec: CommandDescription = {
+  name: 'traces',
+  summary: 'Show captured worker reasoning (decision traces)',
+  whenToUse: 'Use to inspect the internal reasoning steps a worker recorded. Scope to exactly one of --story, --agent, or --epic for focused analysis.',
+  arguments: [],
+  options: [
+    { name: '--story', type: 'string', description: 'Story id to scope traces to', changesOutputShape: false },
+    { name: '--agent', type: 'string', description: 'Agent id to scope traces to', changesOutputShape: false },
+    { name: '--epic', type: 'string', description: 'Epic id to scope traces to', changesOutputShape: false },
+    { name: '--limit', type: 'number', description: 'Max rows to return', changesOutputShape: false },
+    { name: '--json', type: 'boolean', description: 'Emit JSON: { traces: [...] }', changesOutputShape: true },
+  ],
+  output: {
+    text: 'Formatted decision traces with timestamps and rationale',
+    json: { supported: true, shape: '{ traces: DecisionTrace[] }' },
+  },
+  examples: [
+    { command: 'loom traces --story story-001-003', description: 'Show all traces for story-001-003' },
+    { command: 'loom traces --epic epic-001 --json', description: 'Emit all traces for epic-001 as JSON' },
+    { command: 'loom traces --story story-001-003 --limit 10', description: 'Show the 10 most recent traces' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Traces shown successfully' },
+    { code: 1, meaning: 'loom not initialized' },
+  ],
+  errors: ['loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['init'], nextSteps: ['audit', 'status'] },
+};

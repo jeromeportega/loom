@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { openDatabase, EpicStore } from '@loom-ai/core';
@@ -87,3 +88,31 @@ export function runArtifacts(epicId: string, opts: ArtifactsOptions = {}): void 
   console.log('');
   console.log(`  --section <${SECTIONS.join('|')}> prints one body; --json returns all.`);
 }
+
+export const spec: CommandDescription = {
+  name: 'artifacts',
+  summary: "Show an epic's planning artifacts",
+  whenToUse: 'Use to inspect the brief, PRD, architecture note, and epic YAML produced by `loom epic` for a given epic.',
+  arguments: [
+    { name: 'epic-id', type: 'string', required: true, description: 'Epic id (e.g. epic-001)' },
+  ],
+  options: [
+    { name: '--section', type: 'enum', description: 'Print one body: brief | prd | architecture | epic_yaml', changesOutputShape: true },
+    { name: '--json', type: 'boolean', description: 'Emit JSON with paths and all artifact bodies', changesOutputShape: true },
+  ],
+  output: {
+    text: 'Formatted planning artifact sections',
+    json: { supported: true, shape: '{ brief, prd, architecture, epic_yaml, paths }' },
+  },
+  examples: [
+    { command: 'loom artifacts epic-001', description: 'Show all planning artifacts for epic-001' },
+    { command: 'loom artifacts epic-001 --section prd', description: 'Print only the PRD body' },
+    { command: 'loom artifacts epic-001 --json', description: 'Emit JSON with all artifact bodies and paths' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Artifacts printed successfully' },
+    { code: 1, meaning: 'Epic not found or loom not initialized' },
+  ],
+  errors: ['Epic not found', 'loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['epic', 'approve'], nextSteps: ['run', 'status'] },
+};

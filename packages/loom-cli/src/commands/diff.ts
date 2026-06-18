@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -105,3 +106,32 @@ export async function runDiff(id: string, opts: DiffOptions = {}): Promise<void>
     console.error(`  … truncated at ${maxBytes} bytes (total ${diff.length}). Raise with --max-bytes.`);
   }
 }
+
+export const spec: CommandDescription = {
+  name: 'diff',
+  summary: 'Show a story or epic diff (git diff base..branch)',
+  whenToUse: 'Use to inspect the exact changes a story or epic branch made, before or after review.',
+  arguments: [
+    { name: 'id', type: 'string', required: true, description: 'Story id (story-XXX-YYY) or epic id (epic-XXX)' },
+  ],
+  options: [
+    { name: '--max-bytes', type: 'number', description: 'Truncate the diff body at N bytes (default 200000)', changesOutputShape: false },
+    { name: '--no-stat', type: 'boolean', description: 'Omit the leading --stat summary', changesOutputShape: false },
+    { name: '--json', type: 'boolean', description: 'Emit JSON: { base, head, bytes, truncated, diff, stat }', changesOutputShape: true },
+  ],
+  output: {
+    text: 'Git diff output with optional stat summary',
+    json: { supported: true, shape: '{ base: string, head: string, bytes: number, truncated: boolean, diff: string, stat: string }' },
+  },
+  examples: [
+    { command: 'loom diff story-001-003', description: 'Show the diff for story-001-003' },
+    { command: 'loom diff epic-001 --json', description: 'Emit the epic diff as JSON' },
+    { command: 'loom diff story-001-003 --no-stat', description: 'Show diff without the file-change summary' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Diff printed successfully' },
+    { code: 1, meaning: 'Story or epic not found, or git error' },
+  ],
+  errors: ['Story or epic not found', 'git error — ensure the repo is initialized'],
+  relationships: { prerequisites: ['run'], nextSteps: ['review', 'status'] },
+};

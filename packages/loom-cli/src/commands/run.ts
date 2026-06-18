@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -543,3 +544,29 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   }
   console.log('');
 }
+
+export const spec: CommandDescription = {
+  name: 'run',
+  summary: 'Dispatch story agents for approved epics',
+  whenToUse: 'Use after approving an epic to start the supervisor and dispatch worker agents for each story. Omit epic ids to run all approved epics.',
+  arguments: [
+    { name: 'epic-ids', type: 'string', required: false, description: 'Specific epic ids to run; omit to run all approved epics' },
+  ],
+  options: [
+    { name: '--checkpoint', type: 'enum', description: 'Pause after the next "story" or "epic" boundary instead of running to completion', changesOutputShape: false },
+    { name: '--verbose', type: 'boolean', description: 'Stream live worker stdout/stderr to the terminal', changesOutputShape: false },
+  ],
+  output: { text: 'Real-time progress of story dispatch, completion, and PR links' },
+  examples: [
+    { command: 'loom run', description: 'Dispatch all approved epics' },
+    { command: 'loom run epic-001', description: 'Dispatch only epic-001' },
+    { command: 'loom run epic-001 --checkpoint story', description: 'Pause after each story completes' },
+    { command: 'loom run --verbose', description: 'Stream worker output to the terminal' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'All stories dispatched and completed' },
+    { code: 1, meaning: 'No approved epics, invalid arguments, or supervisor error' },
+  ],
+  errors: ['No approved epics to run', '--checkpoint must be "story" or "epic"', 'loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['approve'], nextSteps: ['status', 'stop', 'retry'] },
+};

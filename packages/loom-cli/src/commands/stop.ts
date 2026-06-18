@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -355,3 +356,29 @@ export function runStop(storyIds: string[] = [], opts?: { epic?: string; reason?
   }
   console.log(`\n  ${stopped} of ${storyIds.length} requested worker(s) stopped.\n`);
 }
+
+export const spec: CommandDescription = {
+  name: 'stop',
+  summary: 'Halt the supervisor or SIGTERM specific worker(s)',
+  whenToUse: 'Use to gracefully stop a running loom session. With no args, halts the supervisor after checkpointing in-flight worktrees. With story ids, stops specific workers. Use --epic to stop all workers in one epic.',
+  arguments: [
+    { name: 'story-ids', type: 'string', required: false, description: 'Story ids to stop individually; omit to halt the whole run' },
+  ],
+  options: [
+    { name: '--epic', type: 'string', description: 'Stop every running worker in this epic only (leaves other epics running)', changesOutputShape: false },
+    { name: '--reason', type: 'string', description: 'Explanation recorded in the audit log (defaults to "cli")', changesOutputShape: false },
+  ],
+  output: { text: 'Confirmation of SIGTERM sent to stopped workers or stop signal raised' },
+  examples: [
+    { command: 'loom stop', description: 'Halt the supervisor and checkpoint in-flight worktrees' },
+    { command: 'loom stop story-001-003', description: 'SIGTERM the worker for story-001-003' },
+    { command: 'loom stop --epic epic-001', description: 'Stop all workers in epic-001 only' },
+    { command: 'loom stop --reason "Emergency halt"', description: 'Halt with an audit note' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Stop signal raised or SIGTERM sent' },
+    { code: 1, meaning: 'loom not initialized or epic not found' },
+  ],
+  errors: ['loom is not initialized — run `loom init` first', 'Epic not found'],
+  relationships: { prerequisites: ['run'], nextSteps: ['status', 'retry', 'run'] },
+};

@@ -1,3 +1,4 @@
+import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
@@ -131,3 +132,27 @@ function openInBrowser(url: string): void {
     // Best-effort; the URL is printed regardless.
   }
 }
+
+export const spec: CommandDescription = {
+  name: 'web',
+  summary: 'Launch the loom web dashboard (localhost-only)',
+  whenToUse: 'Use to open the local observability dashboard in a browser. Starts an Express server with a random auth token; the URL is printed on startup.',
+  arguments: [],
+  options: [
+    { name: '--port', type: 'number', description: 'Port to bind (default: 8765, with free-port search if taken)', changesOutputShape: false },
+    { name: '--no-open', type: 'boolean', description: "Don't auto-open the browser after starting", changesOutputShape: false },
+    { name: '--read-only', type: 'boolean', description: 'Serve GET routes without authentication; mutations still require the write token', changesOutputShape: false },
+  ],
+  output: { text: 'Dashboard URL with auth token printed to stdout' },
+  examples: [
+    { command: 'loom web', description: 'Launch the dashboard and open it in the browser' },
+    { command: 'loom web --port 9000', description: 'Launch on port 9000' },
+    { command: 'loom web --no-open --read-only', description: 'Launch without opening a browser, in read-only mode' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Dashboard started successfully' },
+    { code: 1, meaning: 'Port binding failed or loom not initialized' },
+  ],
+  errors: ['loom is not initialized — run `loom init` first', 'Port already in use'],
+  relationships: { prerequisites: ['init'], nextSteps: [] },
+};
