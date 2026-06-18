@@ -8,6 +8,12 @@ import { PolicyEngine } from '../guardrails/PolicyEngine.js';
 // --force / --force-with-lease are forbidden, agents_must_use_pr is true).
 const engine = new PolicyEngine(PolicyEngine.defaultPolicy());
 
+// __dirname is available: loom-core is "type": "commonjs" (package.json).
+// Compiled output lands at packages/loom-core/dist/__tests__/; 4 levels up
+// reaches the repo root. The REPO_ROOT sanity check below detects if the
+// outDir ever changes, making the wrong path immediately obvious.
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
+
 // ─── release flow: tag push and release branch push are guard-permitted ────
 //
 // Regression: PolicyEngine.check() is unchanged — no new rule was added.
@@ -92,12 +98,28 @@ describe('PolicyEngine — release flow guard regression [story-006-002]', () =>
     assert.equal(r.rule, 'git.forbidden_flags');
   });
 
-  it('[AC3] git push --force origin main is blocked (force + protected branch — flag check fires first)', () => {
+  it('[AC3] git push --force-with-lease=HEAD origin v1.2.3 is blocked (=value form is normalised)', () => {
+    // checkGit normalises --flag=value → --flag before matching forbidden_flags,
+    // so --force-with-lease=HEAD is caught the same as --force-with-lease.
+    const r = engine.check('git push --force-with-lease=HEAD origin v1.2.3');
+    assert.equal(r.allowed, false);
+    assert.equal(r.rule, 'git.forbidden_flags');
+  });
+
+  it('[AC3] git push --force-with-lease=HEAD origin release/v1.2.3 is blocked', () => {
+    const r = engine.check('git push --force-with-lease=HEAD origin release/v1.2.3');
+    assert.equal(r.allowed, false);
+    assert.equal(r.rule, 'git.forbidden_flags');
+  });
+
+  it('[AC3] git push --force origin main is blocked (both force + protected-branch guards active)', () => {
     const r = engine.check('git push --force origin main');
     assert.equal(r.allowed, false);
-    // PolicyEngine evaluates forbidden_flags before protected_branches; the rule
-    // priority is a documented contract (flag checks precede branch checks in
-    // checkGit). Pinning it here ensures a refactor does not silently swap the order.
+    // Both the force-flag guard and the protected-branch guard would independently
+    // block this. PolicyEngine evaluates forbidden_flags first (checkGit order),
+    // so the rule is 'git.forbidden_flags'. This assertion is an implementation-
+    // stability pin per shared contract §10 — if evaluation order is deliberately
+    // changed in the future, update this assertion accordingly.
     assert.equal(r.rule, 'git.forbidden_flags');
   });
 });
@@ -113,20 +135,29 @@ describe('PolicyEngine — release flow guard regression [story-006-002]', () =>
 // present. It does NOT execute the release command.
 
 describe('release command — post-merge operator step is documented [DOC-AC1]', () => {
-  // Resolve from __dirname (CJS; compiled to packages/loom-core/dist/__tests__/).
-  // 4 levels up: dist/__tests__ → dist → loom-core → packages → repo root.
-  const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
+  // REPO_ROOT is declared at module scope above (4 levels up from dist/__tests__/).
+  // The before() hook verifies both the REPO_ROOT resolution (package.json check)
+  // and the existence of release.ts so test failures give clear diagnostics.
   const RELEASE_TS = path.join(REPO_ROOT, 'packages', 'loom-cli', 'src', 'commands', 'release.ts');
 
   let content = '';
 
   before(() => {
-    assert.ok(
-      fs.existsSync(RELEASE_TS),
-      `release.ts not found at ${RELEASE_TS} — check repo layout`,
-    );
+    // Sanity-check REPO_ROOT resolution before testing the file path.
+    const repoPackageJson = path.join(REPO_ROOT, 'package.json');
+    if (!fs.existsSync(repoPackageJson)) {
+      throw new Error(
+        `REPO_ROOT resolution is wrong — no package.json at ${REPO_ROOT}. ` +
+        `Verify __dirname depth (expected dist/__tests__ → dist → loom-core → packages → repo root).`,
+      );
+    }
+    if (!fs.existsSync(RELEASE_TS)) {
+      throw new Error(`release.ts not found at ${RELEASE_TS} — check repo layout`);
+    }
     content = fs.readFileSync(RELEASE_TS, 'utf8');
-    assert.ok(content.length > 0, 'release.ts must not be empty');
+    if (content.length === 0) {
+      throw new Error('release.ts must not be empty');
+    }
   });
 
   it('[DOC-AC1] release.ts documents the post-merge git tag step', () => {
@@ -138,7 +169,7 @@ describe('release command — post-merge operator step is documented [DOC-AC1]',
 
   it('[DOC-AC1] release.ts documents that the tag must point at the merged main commit (merge-sha)', () => {
     assert.ok(
-      /<merge-sha>/.test(content) || /merge.sha/i.test(content) || /merge commit/i.test(content),
+      /<merge-sha>/.test(content) || /merge[\s_-]sha/i.test(content) || /merge commit/i.test(content),
       'release.ts must document that the tag must point at the merged main commit',
     );
   });
