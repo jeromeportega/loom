@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { git, gitSafe, hasCommits } from './git.js';
+import { linkWorkspaceDeps as defaultLinkWorkspaceDeps } from './linkWorkspaceDeps.js';
 
 export interface IntegrationBranchInfo {
   /** The live integration branch, e.g. epic/epic-001. */
@@ -46,11 +47,18 @@ export interface MergeOutcome {
  * dispatch lease merges into `epic/<id>`, and it does so serially between
  * worker completions.
  */
+export interface IntegrationBranchOptions {
+  /** Injectable for testing; defaults to the real linkWorkspaceDeps. */
+  linkDeps?: (worktreeRoot: string) => void;
+}
+
 export class IntegrationBranch {
   private repoRoot: string;
+  private readonly linkDeps: (worktreeRoot: string) => void;
 
-  constructor(repoRoot: string) {
+  constructor(repoRoot: string, opts: IntegrationBranchOptions = {}) {
     this.repoRoot = fs.existsSync(repoRoot) ? fs.realpathSync(repoRoot) : repoRoot;
+    this.linkDeps = opts.linkDeps ?? defaultLinkWorkspaceDeps;
   }
 
   branchName(epicId: string): string {
@@ -156,6 +164,10 @@ export class IntegrationBranch {
         throw new Error(`Could not add integration worktree at ${wtPath}: ${add.output}`);
       }
     }
+
+    // Point @loom-ai/* at this worktree's own packages so the gate build resolves
+    // freshly built dist here, not the parent checkout's stale copy (ADR-1).
+    this.linkDeps(wtPath);
 
     return { branch, path: wtPath, tip: git(this.repoRoot, ['rev-parse', branch]) };
   }
