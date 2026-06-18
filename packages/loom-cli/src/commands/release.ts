@@ -1,0 +1,134 @@
+import type { CommandDescription } from '../describe/schema.js';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { gitSafe } from '@loom-ai/core';
+
+export interface ReleaseCommandOptions {
+  /** Test seam — injectable bump script runner. Production callers omit this. */
+  _runBump?: (version: string, cwd: string) => void;
+  /** Test seam — injectable git runner. Defaults to gitSafe. */
+  _git?: (cwd: string, args: string[]) => { ok: boolean; output: string };
+  /** Test seam — injectable gh runner. Returns captured output (e.g. PR URL). */
+  _gh?: (args: string[], cwd: string) => string | undefined;
+}
+
+/**
+ * `loom release <version>` — bump all workspace versions and open a release PR.
+ *
+ * Never pushes main directly. Creates release/v<version>, commits, pushes, and
+ * opens a PR against main. Safe under the protected-branch guard (release/v* is
+ * not a protected branch; no --force is used).
+ */
+export function runRelease(version: string, opts: ReleaseCommandOptions = {}): void {
+  const projectRoot = process.cwd();
+
+  // Normalize: strip leading 'v' so internal logic always works with bare semver.
+  const ver = version.startsWith('v') ? version.slice(1) : version;
+  const branch = `release/v${ver}`;
+  const commitMsg = `chore(release): v${ver}`;
+
+  const runBump = opts._runBump ?? defaultRunBump;
+  const runGit = opts._git ?? gitSafe;
+  const runGh = opts._gh ?? defaultRunGh;
+
+  // 1. Bump all workspace package.json versions via the existing script.
+  try {
+    runBump(ver, projectRoot);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`  bump-versions failed: ${msg}`);
+    process.exit(1);
+  }
+
+  // 2. Create the release branch.
+  const checkoutResult = runGit(projectRoot, ['checkout', '-b', branch]);
+  if (!checkoutResult.ok) {
+    console.error(`  Failed to create branch ${branch}: ${checkoutResult.output}`);
+    process.exit(1);
+  }
+
+  // 3. Commit all changed files (version bumps).
+  const commitResult = runGit(projectRoot, ['commit', '-am', commitMsg]);
+  if (!commitResult.ok) {
+    console.error(`  Failed to commit: ${commitResult.output}`);
+    process.exit(1);
+  }
+
+  // 4. Push the release branch. Never pushes main; release/v* passes the guard.
+  const pushResult = runGit(projectRoot, ['push', '-u', 'origin', branch]);
+  if (!pushResult.ok) {
+    console.error(`  Failed to push ${branch}: ${pushResult.output}`);
+    process.exit(1);
+  }
+
+  // 5. Open the PR against main.
+  const prArgs = ['pr', 'create', '--head', branch, '--base', 'main', '--title', commitMsg];
+  const prUrl = runGh(prArgs, projectRoot);
+
+  console.log('');
+  if (prUrl) {
+    console.log(`  PR: ${prUrl}`);
+  }
+  console.log(`  Release ${ver} pushed as ${branch}. Merge the PR, then tag the merge commit.`);
+  console.log('');
+}
+
+function defaultRunBump(version: string, cwd: string): void {
+  const scriptPath = path.join(cwd, 'scripts', 'bump-versions.mjs');
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error(`bump-versions script not found at ${scriptPath}`);
+  }
+  execFileSync('node', [scriptPath, version], { cwd, stdio: 'inherit' });
+}
+
+function defaultRunGh(args: string[], cwd: string): string | undefined {
+  try {
+    const output = execFileSync('gh', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    const lines = output.split('\n').filter(Boolean);
+    return lines[lines.length - 1] || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export const spec: CommandDescription = {
+  name: 'release',
+  summary: 'Bump versions and open a release PR against main',
+  whenToUse:
+    'Use to cut a guard-compatible release: bumps all workspace versions via bump-versions.mjs, creates release/v<version>, commits, pushes, and opens a PR against main. Never pushes main directly. Post-merge step (operator): git tag v<version> <merge-sha> && git push origin v<version>.',
+  arguments: [
+    {
+      name: 'version',
+      type: 'string',
+      required: true,
+      description: 'Semver to release (e.g. 1.2.3 or v1.2.3)',
+    },
+  ],
+  options: [],
+  output: { text: 'PR URL for the release branch' },
+  examples: [
+    {
+      command: 'loom release 1.2.3',
+      description: 'Bump to 1.2.3, push release/v1.2.3, open PR against main',
+    },
+    {
+      command: 'loom release v1.2.3',
+      description: 'Same as above (leading v is stripped)',
+    },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Release branch pushed and PR opened' },
+    { code: 1, meaning: 'Bump script failed, git branch creation failed, or push failed' },
+  ],
+  errors: [
+    'bump-versions.mjs not found or exited non-zero',
+    'git checkout -b failed (branch already exists)',
+    'git push failed (no remote configured or authentication error)',
+  ],
+  relationships: { prerequisites: [], nextSteps: [] },
+};
