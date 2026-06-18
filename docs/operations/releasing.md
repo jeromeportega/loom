@@ -35,6 +35,17 @@ The `loom release` command handles the branch, bump, commit, push, and PR in
 one step — this flow works inside any loom-managed repo without disabling
 guardrails.
 
+### Prerequisites
+
+Run from a clean `main` branch (nothing uncommitted, no untracked files
+that should not be in the release):
+
+```bash
+git checkout main
+git pull origin main
+git status   # should show "nothing to commit, working tree clean"
+```
+
 ### Step 1 — open the release PR
 
 ```bash
@@ -75,19 +86,21 @@ step.
 
 ### Step 3 — tag the merge commit (post-merge operator step)
 
-After the PR is merged, tag the merge commit and push the tag:
+After the PR is merged, tag the merge commit and push the tag. Use the
+SHA noted in Step 2 directly — do **not** resolve `origin/main` at tag
+time, since another commit could land between your merge and the `fetch`:
 
 ```bash
 git fetch origin
-git tag v<version> <merge-sha>
+git tag v<version> <merge-sha>   # <merge-sha> from the GitHub merge confirmation
 git push origin v<version>
 ```
 
-For example:
+For example, if the merge SHA shown on GitHub was `a1b2c3d`:
 
 ```bash
 git fetch origin
-git tag v5.3.0 $(git rev-parse origin/main)
+git tag v5.3.0 a1b2c3d
 git push origin v5.3.0
 ```
 

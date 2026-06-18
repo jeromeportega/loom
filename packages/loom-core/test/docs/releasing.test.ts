@@ -1,11 +1,14 @@
-import { describe, it } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// 12 levels is enough to reach the monorepo root from any nested test dir
+const MAX_ANCESTOR_DEPTH = 12;
+
 function findDoc(relative: string): string {
   let dir = __dirname;
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < MAX_ANCESTOR_DEPTH; i++) {
     const candidate = path.join(dir, relative);
     if (fs.existsSync(candidate)) return candidate;
     dir = path.dirname(dir);
@@ -13,12 +16,15 @@ function findDoc(relative: string): string {
   throw new Error(`could not locate ${relative}`);
 }
 
-describe('docs/operations/releasing.md — guard-compatible release flow (story-006-003)', () => {
-  let runbook: string;
+describe('docs/operations/releasing.md — guard-compatible release flow', () => {
+  let runbook = '';
 
-  it('loads docs/operations/releasing.md', () => {
+  before(() => {
     const p = findDoc('docs/operations/releasing.md');
     runbook = fs.readFileSync(p, 'utf8');
+  });
+
+  it('loads docs/operations/releasing.md', () => {
     assert.ok(runbook.length > 0, 'releasing.md must not be empty');
   });
 
@@ -72,12 +78,15 @@ describe('docs/operations/releasing.md — guard-compatible release flow (story-
   });
 });
 
-describe('docs/capabilities.md — loom release row (story-006-003)', () => {
-  let caps: string;
+describe('docs/capabilities.md — loom release row', () => {
+  let caps = '';
 
-  it('loads docs/capabilities.md', () => {
+  before(() => {
     const p = findDoc('docs/capabilities.md');
     caps = fs.readFileSync(p, 'utf8');
+  });
+
+  it('loads docs/capabilities.md', () => {
     assert.ok(caps.length > 0, 'capabilities.md must not be empty');
   });
 
