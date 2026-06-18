@@ -213,7 +213,7 @@ operator-facing `loom` CLI.
 | Capability | How to use | Notes |
 |---|---|---|
 | **Provision approved MCP servers for workers** | `loom mcp add <name>` / `policy.mcp.registry` | **Exclusive allowlist — this is a behavior change.** A worker now sees *exactly* the servers in `policy.mcp.registry` and nothing else: claude-code workers get the registry servers only (enforced structurally via `--strict-mcp-config --mcp-config <worktree>/.cursor/mcp.json`), and cursor-cli workers get the registry servers only — the loom self-server is **not** injected into cursor worktrees. Cursor workers read operator guidance via `loom pull-guidance <story-id>` or by reading `.loom/guidance/<story-id>.md` directly (routed off MCP; see `loom pull-guidance`). **Operator-facing break: servers inherited from your personal `~/.cursor/mcp.json` no longer load in worker sessions.** A worker that used to rely on a globally-configured server will no longer see it — **migrate by registering it explicitly with `loom mcp add <name>`** so it lands in the worktree allowlist. cursor-cli enforcement is best-effort, not structural: `cursor-agent` has no `claude`-style strict flag, so loom enumerates the visible servers per worktree and headlessly disables every non-allowlisted one (per-project, durable, never touching your global config), recording any it cannot disable — plus the inherent setup→spawn race window — in the `worker_mcp_servers` audit row. That residual strictness gap and the out-of-scope upstream `--strict-mcp-config`-equivalent ask are documented in [`docs/research/cursor-mcp-strictness.md`](research/cursor-mcp-strictness.md). |
-| **Prerequisites probe** | `loom doctor` | Checks Node version, git, claude CLI, gh CLI, cursor-agent CLI; warns if `loom` is not on PATH. When a `cursor-cli` backend is configured, also validates `agents.cursor_model` against `cursor-agent --list-models` — fails with the complete valid-model list on an invalid id, warns (never fails) when the probe can't run offline; the same check runs at the start of `loom epic` / `loom run` and exits before any LLM pass. **Alias→advisory tier:** when `cursor_model` is not an exact id but a `-`-boundary prefix of exactly one listed id (e.g. `claude-opus-4-8` for `claude-opus-4-8-high`), the check still passes but emits an *advisory* — a warning, never a failure — recommending you pin the explicit suffixed id; doctor renders it as a non-required Check and `loom epic` / `loom run` warn without exiting. Also runs an advisory integration-gate-command preflight: it resolves the command the gate would run (`policy.agents.test_command`, else auto-detected) and reports whether it's viable in a bare integration worktree — advisory only, it never flips doctor's exit code. `loom doctor --dry-run-gate` is the explicit opt-in that actually executes that gate command once in a throwaway worktree and prints the outcome; `loom doctor --cross-epic-gate` (optionally narrowed by `--epics <a,b>`) merges every open `epic/*` branch into a throwaway union worktree and runs the suite once, reporting per-pair conflicts or the union suite result without mutating any real branch; plain `loom doctor`, `loom epic`, and `loom run` never run either. |
+| **Prerequisites probe** | `loom doctor` | Checks Node version, git, claude CLI, gh CLI, cursor-agent CLI; warns if `loom` is not on PATH. When a `cursor-cli` backend is configured, also validates `agents.cursor_model` against `cursor-agent --list-models` — fails with the complete valid-model list on an invalid id, warns (never fails) when the probe can't run offline; the same check runs at the start of `loom epic` / `loom run` and exits before any LLM pass. **Alias→advisory tier:** when `cursor_model` is not an exact id but a `-`-boundary prefix of exactly one listed id (e.g. `claude-opus-4-8` for `claude-opus-4-8-high`), the check still passes but emits an *advisory* — a warning, never a failure — recommending you pin the explicit suffixed id; doctor renders it as a non-required Check and `loom epic` / `loom run` warn without exiting. Also runs an advisory integration-gate-command preflight: it resolves the command the gate would run (`policy.agents.test_command`, else auto-detected) and reports whether it's viable in a bare integration worktree — advisory only, it never flips doctor's exit code. `loom doctor --dry-run-gate` is the explicit opt-in that actually executes that gate command once in a throwaway worktree and prints the outcome; `loom doctor --cross-epic-gate` (optionally narrowed by `--epics <a,b>`) merges every open `epic/*` branch into a throwaway union worktree and runs the suite once, reporting per-pair conflicts or the union suite result without mutating any real branch; plain `loom doctor`, `loom epic`, and `loom run` never run either. `loom doctor --capabilities` runs the documentation drift check — calls `checkCapabilitiesCoverage()` to verify that every operator command and policy knob is documented in `docs/capabilities.md`; emits any missing or phantom token lists; a non-ok result causes a failing doctor check (best-effort). |
 | **Init in any repo** | `loom init [--cursor]` | Writes `.loom/policy.yaml`, the SQLite DB, and the guard hook. `--cursor` writes the Cursor rules config. Always (re)writes `.loom/policy.example.yaml` (living docs) and reports any policy knobs missing from your `policy.yaml` — the same notice `loom doctor` prints. As of v0.5.0 also writes/merges `.vscode/settings.json` excludes for `.loom/worktrees/**` and `.loom/integration/**` so Cursor/VS Code stops indexing every story worktree (the "too many active changes" warning during multi-epic runs). Registers the repo in `~/.loom/projects.json`. |
 | **Cut a release** | `loom release <version>` | Bumps all workspace `package.json` versions via `scripts/bump-versions.mjs`, creates `release/v<version>`, commits `chore(release): v<version>`, pushes the branch, and opens a PR against `main`. **Never pushes `main` directly** — always a PR-merge step. **Guard-compatible:** `release/v*` is not a protected branch and no `--force` flag is used. Post-merge operator step: `git tag v<version> <merge-sha> && git push origin v<version>`. |
 
@@ -249,8 +249,6 @@ Setting expectations honestly:
   registry, not Homebrew.
 - **Bedrock backend.** The `LLMClient` interface is ready, but the
   Bedrock-specific request shape + IAM auth hasn't shipped.
-- **Mid-spawn agent guidance on the `anthropic-api` backend.** Tracked
-  as a follow-up.
 - **`loom uninstall`.** Tracked as alpha-blocking A4 in the Jira slate.
 
 ---
@@ -275,6 +273,82 @@ but they're a per-release event log; this page is the always-current
 truth.
 
 ---
+
+<!-- coverage:command:start -->
+`loom approve`
+`loom archive`
+`loom artifacts`
+`loom audit`
+`loom autonomy`
+`loom diff`
+`loom doctor`
+`loom epic`
+`loom guard check`
+`loom guide`
+`loom init`
+`loom mcp add`
+`loom mcp list`
+`loom opportunities`
+`loom project`
+`loom projects`
+`loom propose`
+`loom pull-guidance`
+`loom reconcile`
+`loom reject`
+`loom retry`
+`loom revert`
+`loom review`
+`loom run`
+`loom scan`
+`loom st`
+`loom status`
+`loom stop`
+`loom traces`
+`loom unarchive`
+`loom web`
+<!-- coverage:command:end -->
+
+<!-- coverage:knob:start -->
+`policy.agents.budget_tokens_per_story`
+`policy.agents.context_notes`
+`policy.agents.cursor_model`
+`policy.agents.handoff`
+`policy.agents.integration_branch`
+`policy.agents.integration_gate`
+`policy.agents.integrator`
+`policy.agents.llm_backend`
+`policy.agents.max_concurrent`
+`policy.agents.min_brief_quality_score`
+`policy.agents.model`
+`policy.agents.phases`
+`policy.agents.planning_model`
+`policy.agents.pr_strategy`
+`policy.agents.prune_orphan_worktrees`
+`policy.agents.qa_planning`
+`policy.agents.require_human_pr_merge`
+`policy.agents.review_timeout_minutes`
+`policy.agents.shared_contract`
+`policy.agents.skill_demote_failure_ratio`
+`policy.agents.skill_demote_min_samples`
+`policy.agents.skill_gen_model`
+`policy.agents.skill_judge_min_score`
+`policy.agents.skill_promote_after`
+`policy.agents.story_absolute_cap_minutes`
+`policy.agents.story_stall_minutes`
+`policy.agents.story_timeout_multipliers.large`
+`policy.agents.story_timeout_multipliers.medium`
+`policy.agents.story_timeout_multipliers.small`
+`policy.agents.story_timeout_multipliers.trivial`
+`policy.agents.test_command`
+`policy.agents.worker_backend`
+`policy.agents.worktree_isolation`
+`policy.filesystem.allowed_write_root`
+`policy.filesystem.protected_paths`
+`policy.git.agents_must_use_pr`
+`policy.git.allowed_remotes`
+`policy.git.forbidden_flags`
+`policy.git.protected_branches`
+<!-- coverage:knob:end -->
 
 *Single source of truth for what loom does. Edit in
 `docs/capabilities.md`. Linked from README, getting-started, and CLAUDE.md.*

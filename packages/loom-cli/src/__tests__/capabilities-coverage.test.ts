@@ -473,10 +473,8 @@ describe('checkCapabilitiesCoverage — CoverageReport shape', () => {
 });
 
 // ─── [AC5] integration test against the real docs/capabilities.md ─────────────
-// TODO(story-015-003): Remove .skip when the fences and tokens land in docs/capabilities.md.
-
 describe('checkCapabilitiesCoverage — [AC5] live capabilities page drift guard', () => {
-  it.skip('capabilities.md fully covers the live CLI and policy knob surface', () => {
+  it('capabilities.md fully covers the live CLI and policy knob surface', () => {
     const report = checkCapabilitiesCoverage();
     assert.ok(report.ok, report.messages.join('\n'));
   });
