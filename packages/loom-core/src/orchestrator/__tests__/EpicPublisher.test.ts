@@ -1,5 +1,7 @@
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createDatabase } from '../../state/Database.js';
 import { EpicStore } from '../../state/EpicStore.js';
 import { AuditLog } from '../../state/AuditLog.js';
@@ -195,8 +197,6 @@ describe('verb separation from reconcile', () => {
 
 describe('docs', () => {
   it('[AC5] docs/capabilities.md contains a loom publish row', () => {
-    const fs = require('node:fs') as typeof import('node:fs');
-    const path = require('node:path') as typeof import('node:path');
     // Walk up from the compiled test location until we find docs/capabilities.md
     let dir = __dirname;
     let capabilitiesPath: string | undefined;

@@ -38,16 +38,19 @@ export function runPublish(epicId: string, opts: PublishCommandOptions = {}): vo
   if (result.status === 'refused') {
     console.log(`  ${result.note}`);
     process.exit(1);
-  }
-  if (result.status === 'failed') {
+  } else if (result.status === 'failed') {
     console.log(`  ${result.note}`);
     process.exit(1);
+  } else if (result.status === 'published') {
+    if (result.prUrl) {
+      console.log(`  PR: ${result.prUrl}`);
+    }
+    console.log(`  ${result.note}`);
+    console.log('');
+  } else {
+    console.error(`  Unexpected publish status: ${result.status}`);
+    process.exit(1);
   }
-  if (result.prUrl) {
-    console.log(`  PR: ${result.prUrl}`);
-  }
-  console.log(`  ${result.note}`);
-  console.log('');
 }
 
 export const spec: CommandDescription = {

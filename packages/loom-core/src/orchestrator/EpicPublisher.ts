@@ -13,7 +13,7 @@ export interface EpicPublisherOptions {
   openPr?: (input: { branch: string }) => string | undefined;
 }
 
-export type PublishStatus = 'published' | 'noop' | 'refused' | 'failed';
+export type PublishStatus = 'published' | 'refused' | 'failed';
 
 export interface PublishResult {
   status: PublishStatus;
@@ -92,7 +92,7 @@ export class EpicPublisher {
         : (() => {
             const out = execFileSync(
               'gh',
-              ['pr', 'create', '--head', finalizeRef],
+              ['pr', 'create', '--head', finalizeRef, '--fill'],
               { cwd: this.opts.projectRoot, encoding: 'utf8' }
             );
             return out
