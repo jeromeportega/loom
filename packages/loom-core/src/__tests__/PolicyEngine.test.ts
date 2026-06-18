@@ -322,6 +322,39 @@ describe('PolicyEngine — wrapper programs', () => {
   });
 });
 
+// ─── guard regression: protected-branch push for worker agents (Key Inv 1–2) ─
+
+describe('PolicyEngine — protected-branch push guard regression', () => {
+  it('[regression] blocks git push --force (Key Invariant 2)', () => {
+    const r = defaultEngine.check('git push --force');
+    assert.equal(r.allowed, false);
+    assert.equal(r.rule, 'git.forbidden_flags');
+  });
+
+  it('[regression] blocks git push --force-with-lease (Key Invariant 2)', () => {
+    const r = defaultEngine.check('git push --force-with-lease');
+    assert.equal(r.allowed, false);
+    assert.equal(r.rule, 'git.forbidden_flags');
+  });
+
+  it('[regression] blocks worker-agent push to main (Key Invariant 1)', () => {
+    const r = defaultEngine.check('git push origin main');
+    assert.equal(r.allowed, false);
+    assert.equal(r.rule, 'git.protected_branches');
+  });
+
+  it('[regression] blocks worker-agent push to master (Key Invariant 1)', () => {
+    const r = defaultEngine.check('git push origin master');
+    assert.equal(r.allowed, false);
+    assert.equal(r.rule, 'git.protected_branches');
+  });
+
+  it('[regression] allows worker-agent push to story branch', () => {
+    const r = defaultEngine.check('git push origin story/story-005-006');
+    assert.equal(r.allowed, true);
+  });
+});
+
 // ─── edge cases ────────────────────────────────────────────────────────────
 
 describe('PolicyEngine — edge cases', () => {
