@@ -21,14 +21,19 @@
   // ─── Status helpers ────────────────────────────────────────────────────────
 
   const STATUS_COLORS = {
-    done:        { bg: '#1f3a26', fg: '#56d364' },
-    in_progress: { bg: '#1f2c3a', fg: '#58a6ff' },
-    rejected:    { bg: '#3a1f1f', fg: '#f85149' },
-    failed:      { bg: '#3a1f1f', fg: '#f85149' },
-    planning:    { bg: '#2f2a14', fg: '#d29922' },
-    approved:    { bg: '#2c1f3a', fg: '#bc8cff' },
-    planned:     { bg: '#21262d', fg: '#8b949e' },
-    finalizing:  { bg: '#1f2c3a', fg: '#58a6ff' },
+    done:            { bg: '#1f3a26', fg: '#56d364' },
+    in_progress:     { bg: '#1f2c3a', fg: '#58a6ff' },
+    rejected:        { bg: '#3a1f1f', fg: '#f85149' },
+    failed:          { bg: '#3a1f1f', fg: '#f85149' },
+    planning:        { bg: '#2f2a14', fg: '#d29922' },
+    approved:        { bg: '#2c1f3a', fg: '#bc8cff' },
+    planned:         { bg: '#21262d', fg: '#8b949e' },
+    finalizing:      { bg: '#1f2c3a', fg: '#58a6ff' },
+    publish_pending: { bg: '#1f3a2a', fg: '#3fb950' },
+  };
+
+  const STATUS_LABELS = {
+    publish_pending: 'work complete · publish pending',
   };
 
   const BLOCKER_STATUSES = new Set(['blocked', 'failed']);
@@ -36,7 +41,7 @@
   function statusBadge(status, autonomyLevel, paused) {
     const color = STATUS_COLORS[status] || { bg: '#21262d', fg: '#8b949e' };
     const pulse = (status === 'planning' || status === 'in_progress') ? ' pulse' : '';
-    let label = status.replace(/_/g, ' ');
+    let label = STATUS_LABELS[status] || status.replace(/_/g, ' ');
     if (paused) label += ' · paused';
     if (autonomyLevel && autonomyLevel !== 'manual') label += ' · ' + autonomyLevel;
     return `<span class="epic-status ${status}${pulse}" style="background:${color.bg};color:${color.fg}">${esc(label)}</span>`;
