@@ -2,11 +2,15 @@ import type { CommandDescription } from '../describe/schema.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { ZodError } from 'zod';
 import {
   loadMachineConfig,
   defaultMachineConfigPath,
   loomHome,
   PolicyEngine,
+  PolicyValidationError,
+  describePolicyIssues,
+  formatPolicyError,
   validateCursorModels,
 } from '@loom-ai/core';
 import { gateCommandCheck } from './doctorGateCheck.js';
@@ -54,6 +58,35 @@ export function cursorModelCheck(
         : `"${policy.agents.cursor_model}" is a valid Cursor model`,
     required: invalid,
   };
+}
+
+// Validates .loom/policy.yaml; required:true so doctor's existing exit fires on failure.
+export function policyValidationCheck(projectRoot: string): Check {
+  try {
+    PolicyEngine.load(path.join(projectRoot, '.loom'));
+    return { name: 'policy', ok: true, required: true, detail: 'policy.yaml is valid' };
+  } catch (e) {
+    if (e instanceof PolicyValidationError) {
+      return {
+        name: 'policy',
+        ok: false,
+        required: true,
+        detail: formatPolicyError(e.policyPath, e.issues),
+      };
+    }
+    if (e instanceof ZodError) {
+      // PolicyEngine throws raw ZodError until story-011-002 lands; remove this branch after.
+      const policyPath = path.join(projectRoot, '.loom', 'policy.yaml');
+      const issues = describePolicyIssues(e);
+      return {
+        name: 'policy',
+        ok: false,
+        required: true,
+        detail: formatPolicyError(policyPath, issues),
+      };
+    }
+    throw e;
+  }
 }
 
 /** Returns the first line of `<bin> <args>` output, or null if the binary is absent. */
@@ -128,6 +161,12 @@ export function runDoctor(): void {
   // when the configured id is a boundary-prefix alias (FR-1(b)) — both stay
   // exit 0. See {@link cursorModelCheck} for the render.
   if (initialized) {
+    try {
+      checks.push(policyValidationCheck(process.cwd()));
+    } catch (e) {
+      checks.push({ name: 'policy', ok: false, required: true, detail: e instanceof Error ? e.message : String(e) });
+    }
+
     try {
       const check = cursorModelCheck(process.cwd());
       if (check) checks.push(check);
