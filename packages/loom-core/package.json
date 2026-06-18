@@ -24,7 +24,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist dist-test && tsc",
     "test": "node --test $(find dist -path '*__tests__*' -name '*.test.js') && tsc -p tsconfig.test.json && node --test $(find dist-test/test -name '*.test.js')",
     "dev": "tsc --watch"
   },
