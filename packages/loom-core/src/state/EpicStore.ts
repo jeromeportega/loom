@@ -413,4 +413,14 @@ export class EpicStore {
       .prepare('UPDATE epics SET finalize_ref = ?, updated_at = ? WHERE id = ?')
       .run(ref, new Date().toISOString(), id);
   }
+
+  /**
+   * Records the resolved planning model for this epic (epic-013). Called once
+   * after the planner run completes. NULL for pre-v20 rows — never backfilled.
+   */
+  setPlannerModel(epicId: string, model: string): void {
+    this.db
+      .prepare('UPDATE epics SET planner_model = ?, updated_at = ? WHERE id = ?')
+      .run(model, new Date().toISOString(), epicId);
+  }
 }

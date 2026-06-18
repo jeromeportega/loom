@@ -254,4 +254,16 @@ export class AgentStore {
       )
       .run(attemptClass, new Date().toISOString(), agentId);
   }
+
+  /**
+   * Records the model id this agent executed under (epic-013). Called twice:
+   * first at agent creation with the requested policy model, then again when
+   * the system/init stream event arrives with the actual executed model.
+   * The second call overwrites the first — executed beats requested.
+   */
+  setModel(id: string, model: string): void {
+    this.db
+      .prepare('UPDATE agents SET model = ?, updated_at = ? WHERE id = ?')
+      .run(model, new Date().toISOString(), id);
+  }
 }
