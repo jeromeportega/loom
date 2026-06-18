@@ -34,6 +34,7 @@ import { runPullGuidance, spec as pullGuidanceSpec } from './commands/pullGuidan
 import { runProject, spec as projectSpec } from './commands/project.js';
 import { applySpec } from './describe/applySpec.js';
 import { registerDescribe } from './commands/describe.js';
+import { handleTopLevelError } from './errorHandling.js';
 
 // Read the version from this package's package.json at runtime so
 // `loom --version` stays automatically in sync with the published
@@ -362,5 +363,17 @@ export function buildProgram(): Command {
 // package.json#bin → dist/index.js directly (no wrapper), so require.main === module
 // is true when Node invokes the CLI entry point and false when tests import buildProgram.
 if (require.main === module) {
-  buildProgram().parse();
+  // Catch non-policy errors that handleTopLevelError rethrows from the .catch() chain;
+  // they become unhandled rejections — print with stack so developers can debug them.
+  process.on('unhandledRejection', (err) => {
+    if (err instanceof Error) {
+      process.stderr.write((err.stack ?? err.message) + '\n');
+    } else {
+      process.stderr.write(String(err) + '\n');
+    }
+    process.exit(1);
+  });
+  buildProgram().parseAsync().catch(handleTopLevelError);
 }
+
+export { handleTopLevelError };

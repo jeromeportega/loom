@@ -3,8 +3,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { minimatch } from 'minimatch';
 import yaml from 'js-yaml';
+import { ZodError } from 'zod';
 import { PolicySchema, type Policy, type PolicyCheckResult } from '../types.js';
 import { parseCommand } from './CommandParser.js';
+import { describePolicyIssues, PolicyValidationError } from './policyError.js';
 
 export class PolicyEngine {
   private policy: Policy;
@@ -19,8 +21,15 @@ export class PolicyEngine {
       return new PolicyEngine(PolicySchema.parse({}));
     }
     const raw = yaml.load(fs.readFileSync(policyPath, 'utf8')) as unknown;
-    const parsed = PolicySchema.parse(raw ?? {});
-    return new PolicyEngine(parsed);
+    try {
+      const parsed = PolicySchema.parse(raw ?? {});
+      return new PolicyEngine(parsed);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        throw new PolicyValidationError(policyPath, describePolicyIssues(err));
+      }
+      throw err;
+    }
   }
 
   static defaultPolicy(): Policy {
