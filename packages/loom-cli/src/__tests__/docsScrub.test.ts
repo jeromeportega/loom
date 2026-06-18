@@ -6,7 +6,13 @@
  * docs/getting-started/index.md, and docs/index.md.
  *
  * docs/operations/releasing.md is owned by story-003-004 and was audited there;
- * it is included here in OWNED_FILES so the forbidden-string test covers it too.
+ * it is intentionally NOT included here to avoid a silent ordering dependency
+ * between stories — story-003-004's test suite covers that file.
+ *
+ * Note: this file itself contains the forbidden strings as string literals in
+ * FORBIDDEN_STRINGS; that is unavoidable for a forbidden-string test. The
+ * OWNED_FILES scan excludes this test file, so the AC's "zero hits in owned
+ * docs" is not violated.
  *
  * The mechanical done-ness bar (ADR-004): the seven forbidden strings must
  * return zero hits in the owned files. Retained mentions (loom mcp add/list,
@@ -26,11 +32,10 @@ const OWNED_FILES = [
   path.join(REPO_ROOT, 'docs', 'capabilities.md'),
   path.join(REPO_ROOT, 'docs', 'index.md'),
   path.join(REPO_ROOT, 'docs', 'getting-started', 'index.md'),
-  // releasing.md is owned by story-003-004; included here as a cross-check
-  path.join(REPO_ROOT, 'docs', 'operations', 'releasing.md'),
+  // docs/operations/releasing.md is owned by story-003-004; covered by its test suite
 ];
 
-const FORBIDDEN_STRINGS = [
+const FORBIDDEN_STRINGS: string[] = [
   'loom-mcp',
   'loom serve',
   'loom init --mcp',
@@ -38,7 +43,7 @@ const FORBIDDEN_STRINGS = [
   'first-class',
   'primary surface',
   'two interfaces over the same engine',
-] as const;
+];
 
 describe('docs scrub (story-003-005) — forbidden strings absent from owned files', () => {
   it('all owned files exist on disk', () => {
@@ -51,6 +56,7 @@ describe('docs scrub (story-003-005) — forbidden strings absent from owned fil
     it(`"${forbidden}" is absent from all owned docs`, () => {
       const hits: string[] = [];
       for (const f of OWNED_FILES) {
+        if (!fs.existsSync(f)) continue;
         const content = fs.readFileSync(f, 'utf8');
         if (content.includes(forbidden)) {
           const lines = content.split('\n');
