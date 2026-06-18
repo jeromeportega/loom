@@ -17,15 +17,22 @@ function parseLine(line: string): ParsedLine {
   const worker = new ClaudeCodeWorker();
   return (worker as unknown as { parseStreamLine: (l: string) => ParsedLine }).parseStreamLine(line);
 }
+/** Parse a line on a REUSED worker instance (preserves streamUsageAccum across calls). */
+function parseLineWith(worker: ClaudeCodeWorker, line: string): ParsedLine {
+  return (worker as unknown as { parseStreamLine: (l: string) => ParsedLine }).parseStreamLine(line);
+}
 
 describe('ClaudeCodeWorker.parseStreamLine — stream-json (Epic 16 story-016-004)', () => {
-  it('returns the final usage from a `type:"result"` event', () => {
+  it('returns usage from a `type:"result"` event (single-turn: no prior assistant events)', () => {
+    // When no assistant events preceded the result, fall back to result.usage
+    // for token counts. num_turns drives requestCount (story-014-001 fix).
     const line = JSON.stringify({
       type: 'result',
       subtype: 'success',
       is_error: false,
       result: 'OK',
       total_cost_usd: 0.0427,
+      num_turns: 1,
       usage: {
         input_tokens: 100,
         output_tokens: 200,
@@ -41,8 +48,6 @@ describe('ClaudeCodeWorker.parseStreamLine — stream-json (Epic 16 story-016-00
       cacheCreationTokens: 12000,
       totalTokens: 17300,
       costUsd: 0.0427,
-      // v0.5.0: the final result event also attributes 1 LLM session/request
-      // for per-request billing surfaces (cursor-cli org pricing).
       requestCount: 1,
     });
     assert.match(parsed.humanText ?? '', /OK/);
@@ -285,5 +290,174 @@ describe('renderToolCall — per-tool human-readable summary', () => {
     assert.equal(renderToolCall('Bash', undefined), '[Bash] ');
     assert.equal(renderToolCall('Read', { file_path: 42 }), '[Read] ?');
     assert.equal(renderToolCall('Write', { file_path: null, content: 5 }), '[Write] ?');
+  });
+});
+
+/**
+ * story-014-001: Verify that assistant-event usage is accumulated (not replaced)
+ * and that result.usage (final-turn delta) is NOT the authoritative total.
+ *
+ * Root cause: assistant events carry per-turn deltas; applySessionUsage uses REPLACE
+ * semantics (correct only when the value IS the running cumulative total). The fix
+ * maintains streamUsageAccum in ClaudeCodeWorker so the running sum is always the
+ * value passed to applySessionUsage.
+ */
+describe('ClaudeCodeWorker — stream-json usage harvest (story-014-001)', () => {
+  function assistantLine(usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  }): string {
+    return JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'text', text: 'thinking…' }],
+        usage,
+      },
+    });
+  }
+
+  function resultLine(opts: {
+    result?: string;
+    total_cost_usd?: number;
+    num_turns?: number;
+    usage?: {
+      input_tokens: number;
+      output_tokens: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+  }): string {
+    return JSON.stringify({
+      type: 'result',
+      result: opts.result ?? 'done',
+      ...(opts.total_cost_usd !== undefined ? { total_cost_usd: opts.total_cost_usd } : {}),
+      ...(opts.num_turns !== undefined ? { num_turns: opts.num_turns } : {}),
+      ...(opts.usage !== undefined ? { usage: opts.usage } : {}),
+    });
+  }
+
+  it('AC2+AC3: accumulates multi-turn assistant deltas — result total equals sum, NOT last delta', () => {
+    const worker = new ClaudeCodeWorker();
+    // Turn 1: 100 input, 50 output
+    parseLineWith(worker, assistantLine({ input_tokens: 100, output_tokens: 50 }));
+    // Turn 2: 200 input, 80 output, 10 cache read
+    parseLineWith(worker, assistantLine({
+      input_tokens: 200, output_tokens: 80,
+      cache_read_input_tokens: 10,
+    }));
+    // Turn 3: 150 input, 60 output, 20 cache creation
+    parseLineWith(worker, assistantLine({
+      input_tokens: 150, output_tokens: 60,
+      cache_creation_input_tokens: 20,
+    }));
+    // result event: carries ONLY the final turn's delta (150/60/0/20).
+    // The fix must return the SUM of all three turns, not just this delta.
+    const finalResult = parseLineWith(worker, resultLine({
+      total_cost_usd: 0.05,
+      num_turns: 3,
+      usage: { input_tokens: 150, output_tokens: 60, cache_creation_input_tokens: 20 },
+    }));
+
+    assert.deepEqual(finalResult.usage, {
+      inputTokens: 100 + 200 + 150,   // 450 — sum of all turns
+      outputTokens: 50 + 80 + 60,      // 190
+      cacheReadTokens: 0 + 10 + 0,     // 10
+      cacheCreationTokens: 0 + 0 + 20, // 20
+      totalTokens: 450 + 190 + 10 + 20, // 670
+      costUsd: 0.05,                   // AC5: backend total_cost_usd unchanged
+      requestCount: 3,                 // AC4: from num_turns
+    });
+  });
+
+  it('AC4: requestCount comes from result.num_turns, not hardcoded 1', () => {
+    const worker = new ClaudeCodeWorker();
+    parseLineWith(worker, assistantLine({ input_tokens: 10, output_tokens: 5 }));
+    parseLineWith(worker, assistantLine({ input_tokens: 10, output_tokens: 5 }));
+    const result = parseLineWith(worker, resultLine({ num_turns: 7, total_cost_usd: 0.01 }));
+    const usage = result.usage as { requestCount?: number } | undefined;
+    assert.equal(usage?.requestCount, 7);
+  });
+
+  it('AC5: cost_usd is backend total_cost_usd — unchanged by accumulation', () => {
+    const worker = new ClaudeCodeWorker();
+    // Two turns, each with 100 tokens — accumulation must NOT touch costUsd
+    parseLineWith(worker, assistantLine({ input_tokens: 100, output_tokens: 50 }));
+    parseLineWith(worker, assistantLine({ input_tokens: 100, output_tokens: 50 }));
+    const result = parseLineWith(worker, resultLine({ total_cost_usd: 0.0427, num_turns: 2 }));
+    const usage = result.usage as { costUsd?: number } | undefined;
+    assert.equal(usage?.costUsd, 0.0427);
+  });
+
+  it('edge: missing/empty usage fields default to 0 — no NaN or undefined tokens', () => {
+    const worker = new ClaudeCodeWorker();
+    // Assistant event with no cache fields
+    parseLineWith(worker, assistantLine({ input_tokens: 10, output_tokens: 5 }));
+    const result = parseLineWith(worker, resultLine({ num_turns: 1 }));
+    const usage = result.usage as {
+      inputTokens: number; outputTokens: number;
+      cacheReadTokens: number; cacheCreationTokens: number; totalTokens: number;
+    } | undefined;
+    assert.ok(usage, 'should have usage');
+    assert.equal(Number.isNaN(usage.inputTokens), false);
+    assert.equal(Number.isNaN(usage.cacheReadTokens), false);
+    assert.equal(usage.cacheReadTokens, 0);
+    assert.equal(usage.cacheCreationTokens, 0);
+    assert.equal(usage.totalTokens, 15);
+  });
+
+  it('edge: no assistant events — falls back to result.usage (single-turn or partial stream)', () => {
+    const worker = new ClaudeCodeWorker();
+    const result = parseLineWith(worker, resultLine({
+      total_cost_usd: 0.01,
+      num_turns: 1,
+      usage: { input_tokens: 50, output_tokens: 20 },
+    }));
+    assert.deepEqual(result.usage, {
+      inputTokens: 50,
+      outputTokens: 20,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 70,
+      costUsd: 0.01,
+      requestCount: 1,
+    });
+  });
+
+  it('edge: requestCount absent when num_turns missing from result event', () => {
+    const worker = new ClaudeCodeWorker();
+    parseLineWith(worker, assistantLine({ input_tokens: 10, output_tokens: 5 }));
+    const result = parseLineWith(worker, resultLine({ total_cost_usd: 0.005 }));
+    const usage = result.usage as { requestCount?: number } | undefined;
+    assert.equal(usage?.requestCount, undefined);
+  });
+
+  it('system/init resets accumulator so successive streams do not bleed', () => {
+    const worker = new ClaudeCodeWorker();
+    // First stream: accumulate 200 input tokens
+    parseLineWith(worker, assistantLine({ input_tokens: 200, output_tokens: 100 }));
+    // system/init marks the start of a new spawn — must reset accumulator
+    parseLineWith(worker, JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-sonnet-4-6' }));
+    // Second stream: only 30 input tokens
+    parseLineWith(worker, assistantLine({ input_tokens: 30, output_tokens: 10 }));
+    const result = parseLineWith(worker, resultLine({ num_turns: 1 }));
+    const usage = result.usage as { inputTokens: number } | undefined;
+    // Must be 30, not 230 (bleed from first stream)
+    assert.equal(usage?.inputTokens, 30);
+  });
+
+  it('running usage from assistant events is available mid-stream (for budget gating)', () => {
+    const worker = new ClaudeCodeWorker();
+    const after1 = parseLineWith(worker, assistantLine({ input_tokens: 100, output_tokens: 50 }));
+    assert.deepEqual(after1.usage, {
+      inputTokens: 100, outputTokens: 50,
+      cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 150,
+    });
+    const after2 = parseLineWith(worker, assistantLine({ input_tokens: 200, output_tokens: 80 }));
+    assert.deepEqual(after2.usage, {
+      inputTokens: 300, outputTokens: 130,
+      cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 430,
+    });
   });
 });
