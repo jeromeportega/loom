@@ -16,6 +16,7 @@ import {
 } from '@loom-ai/core';
 import type { LLMClient } from '@loom-ai/core';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
+import { formatClarificationsNotice } from './briefGateMessage.js';
 
 /**
  * @param opts.force  Skip the brief-quality gate for this invocation only. The
@@ -112,54 +113,12 @@ export async function runEpic(
   }
   const minScore = policy.agents.min_brief_quality_score;
   const verdict = evaluateBriefGate(refinement, minScore);
-  if (!verdict.pass && !force) {
-    console.error('');
-    console.error(`  Brief scored ${refinement.quality_score}/10 (need >= ${minScore}).`);
-    console.error('');
-    if (refinement.questions.length > 0) {
-      console.error('  Open questions to address:');
-      for (const q of refinement.questions) console.error(`    • ${q}`);
-      console.error('');
-    }
-    const c = refinement.critique;
-    const issues = [
-      ['Ambiguities', c.ambiguities],
-      ['Missing scope', c.missing_scope],
-      ['Untestable claims', c.untestable_claims],
-      ['Hidden complexity', c.hidden_complexity],
-    ] as const;
-    for (const [label, items] of issues) {
-      if (items.length === 0) continue;
-      console.error(`  ${label}:`);
-      for (const item of items) console.error(`    • ${item}`);
-      console.error('');
-    }
-    if (refinement.refined_brief) {
-      console.error('  Suggested refined brief:');
-      console.error('');
-      console.error(refinement.refined_brief.split('\n').map((l) => `    ${l}`).join('\n'));
-      console.error('');
-    }
-    console.error('  Tighten the brief above and re-run `loom epic "<brief>"`.');
-    // Clean terminal state for the gate-rejected run: flip the reserved row
-    // (from reservation, before the refiner) to 'rejected' with the machine
-    // verdict in `error` — NOT `reason`. A human reject writes `reason`; this
-    // gate reject writes `error`, so provenance (operator vs quality gate)
-    // stays distinguishable on the shared 'rejected' status. This replaces the
-    // bare exit so no orphaned '(planning…)' row is left behind.
-    store.reject(
-      reservedId,
-      `brief gate: ${refinement.quality_score}/10 — ${firstCritiqueLine(refinement)}`
-    );
-    process.exit(1);
-    return;
-  }
 
-  if (!verdict.pass && force) {
-    // Forced past a gate rejection. Record the override — with the full
-    // critique embedded — BEFORE the planner runs (ordering invariant /
-    // NFR-2). The synchronous better-sqlite3 insert guarantees durability
-    // ahead of any planner work.
+  if (force && verdict.outcome !== 'pass-clean') {
+    // Forced past a gate rejection or a pass-with-clarifications. Record the
+    // override — with the full critique embedded — BEFORE the planner runs
+    // (ordering invariant / NFR-2). The synchronous better-sqlite3 insert
+    // guarantees durability ahead of any planner work.
     new AuditLog(db).record({
       action: 'brief_gate_forced',
       command: brief.slice(0, 120),
@@ -178,7 +137,56 @@ export async function runEpic(
         '--force override; gate bypassed and audit-logged. Proceeding.'
     );
   } else {
-    console.log(`  Brief scored ${refinement.quality_score}/10 (>= ${minScore}). Proceeding.`);
+    switch (verdict.outcome) {
+      case 'below-threshold': {
+        console.error('');
+        console.error(`  Brief scored ${refinement.quality_score}/10 (need >= ${minScore}).`);
+        console.error('');
+        if (refinement.questions.length > 0) {
+          console.error('  Open questions to address:');
+          for (const q of refinement.questions) console.error(`    • ${q}`);
+          console.error('');
+        }
+        const c = refinement.critique;
+        const issues = [
+          ['Ambiguities', c.ambiguities],
+          ['Missing scope', c.missing_scope],
+          ['Untestable claims', c.untestable_claims],
+          ['Hidden complexity', c.hidden_complexity],
+        ] as const;
+        for (const [label, items] of issues) {
+          if (items.length === 0) continue;
+          console.error(`  ${label}:`);
+          for (const item of items) console.error(`    • ${item}`);
+          console.error('');
+        }
+        if (refinement.refined_brief) {
+          console.error('  Suggested refined brief:');
+          console.error('');
+          console.error(refinement.refined_brief.split('\n').map((l) => `    ${l}`).join('\n'));
+          console.error('');
+        }
+        console.error('  Tighten the brief above and re-run `loom epic "<brief>"`.');
+        // Clean terminal state for the gate-rejected run: flip the reserved row
+        // (from reservation, before the refiner) to 'rejected' with the machine
+        // verdict in `error` — NOT `reason`. A human reject writes `reason`; this
+        // gate reject writes `error`, so provenance (operator vs quality gate)
+        // stays distinguishable on the shared 'rejected' status.
+        store.reject(
+          reservedId,
+          `brief gate: ${refinement.quality_score}/10 — ${firstCritiqueLine(refinement)}`
+        );
+        process.exit(1);
+        return;
+      }
+      case 'pass-with-clarifications':
+        console.log(formatClarificationsNotice(verdict, refinement));
+        process.exit(3);
+        return;
+      case 'pass-clean':
+        console.log(`  Brief scored ${refinement.quality_score}/10 (>= ${minScore}). Proceeding.`);
+        break;
+    }
   }
 
   console.log('\n  Planning your epic — Analyst → PM → Architect.');
@@ -292,6 +300,7 @@ export const spec: CommandDescription = {
   exitCodes: [
     { code: 0, meaning: 'Epic planned successfully' },
     { code: 1, meaning: 'loom not initialized, brief quality gate failed, or LLM error' },
+    { code: 3, meaning: 'Brief passed with optional clarifications — re-run with --force to plan as-is' },
   ],
   errors: ['loom is not initialized — run `loom init` first', 'Brief quality score too low — revise or use --force', 'ANTHROPIC_API_KEY not set'],
   relationships: { prerequisites: ['init'], nextSteps: ['approve', 'artifacts', 'status'] },

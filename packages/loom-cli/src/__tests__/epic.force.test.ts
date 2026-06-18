@@ -292,3 +292,89 @@ describe('loom epic commander wiring', () => {
     assert.match(help, /Skip the brief-quality gate/);
   });
 });
+
+// ── Three-outcome gate routing (story-012-001) ───────────────────────────────
+
+describe('three-outcome gate routing', () => {
+  it('pass-clean (ready: true, score >= threshold) → exits 0, planner runs', async () => {
+    const llm = new MockLLMClient(pipelineResponder({ ready: true, score: 9 }));
+    const exitCode = await runEpicCapture(BRIEF, { force: false, llm });
+    assert.equal(exitCode, null, 'pass-clean exits 0 (null means no explicit exit)');
+
+    resetDatabaseForTest();
+    const db = openDatabase(path.join(tmpDir, '.loom'));
+    assert.equal(new EpicStore(db).get('epic-001')?.status, 'planned', 'planner was invoked');
+    resetDatabaseForTest();
+  });
+
+  it('below-threshold (ready: true, score < threshold) → exits 1, planner not run', async () => {
+    const llm = new MockLLMClient(pipelineResponder({ ready: true, score: 2 }));
+    const exitCode = await runEpicCapture(BRIEF, { force: false, llm });
+    assert.equal(exitCode, 1, 'below-threshold exits 1');
+
+    resetDatabaseForTest();
+    const db = openDatabase(path.join(tmpDir, '.loom'));
+    assert.notEqual(new EpicStore(db).get('epic-001')?.status, 'planned', 'planner not invoked');
+    resetDatabaseForTest();
+  });
+
+  it('pass-with-clarifications (ready: false, score >= threshold) → exits 3, distinct from 0/1/2', async () => {
+    const llm = new MockLLMClient(pipelineResponder({ ready: false, score: 8 }));
+    const exitCode = await runEpicCapture(BRIEF, { force: false, llm });
+    assert.equal(exitCode, 3, 'pass-with-clarifications exits 3');
+    assert.notEqual(exitCode, 0);
+    assert.notEqual(exitCode, 1);
+    assert.notEqual(exitCode, 2);
+
+    // Planner never ran — no planned epic row
+    resetDatabaseForTest();
+    const db = openDatabase(path.join(tmpDir, '.loom'));
+    assert.notEqual(new EpicStore(db).get('epic-001')?.status, 'planned', 'planner not invoked on exit 3');
+    resetDatabaseForTest();
+  });
+
+  it('pass-with-clarifications + --force → proceeds to planning, writes brief_gate_forced row', async () => {
+    const llm = new MockLLMClient(pipelineResponder({ ready: false, score: 8 }));
+    const exitCode = await runEpicCapture(BRIEF, { force: true, llm });
+    assert.equal(exitCode, null, 'forced past pass-with-clarifications exits 0');
+
+    resetDatabaseForTest();
+    const db = openDatabase(path.join(tmpDir, '.loom'));
+    assert.equal(new EpicStore(db).get('epic-001')?.status, 'planned', 'planner was invoked');
+    const forced = new AuditLog(db).recent(50).filter((r) => r.action === 'brief_gate_forced');
+    assert.equal(forced.length, 1, 'one forced audit row written for pass-with-clarifications');
+    const detail = JSON.parse(forced[0].detail!);
+    assert.equal(detail.entry_point, 'cli');
+    assert.equal(detail.ready, false);
+    assert.equal(detail.quality_score, 8);
+    assert.equal(detail.threshold, 6);
+    resetDatabaseForTest();
+  });
+
+  it('audit row exists before process exits on forced pass-with-clarifications (NFR-2)', async () => {
+    let forcedAtPlannerStart: ReturnType<typeof forcedRowsViaFreshConn> | undefined;
+    const llm = new MockLLMClient(
+      pipelineResponder({
+        ready: false,
+        score: 8,
+        onPlannerStart: () => {
+          forcedAtPlannerStart = forcedRowsViaFreshConn();
+        },
+      })
+    );
+    await runEpicCapture(BRIEF, { force: true, llm });
+    assert.ok(forcedAtPlannerStart, 'planner made its first call');
+    assert.equal(
+      forcedAtPlannerStart!.length,
+      1,
+      'brief_gate_forced row was durable before the planner ran'
+    );
+  });
+
+  it('threshold semantics unchanged: score === threshold with ready: true → pass-clean, exits 0', async () => {
+    // Boundary: score exactly equal to threshold (default 6) should be a pass.
+    const llm = new MockLLMClient(pipelineResponder({ ready: true, score: 6 }));
+    const exitCode = await runEpicCapture(BRIEF, { force: false, llm });
+    assert.equal(exitCode, null, 'boundary score (=== threshold) with ready: true exits 0');
+  });
+});

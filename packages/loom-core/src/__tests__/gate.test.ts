@@ -31,6 +31,7 @@ describe('evaluateBriefGate', () => {
   it('echoes ready, quality_score, and threshold exactly as given', () => {
     const v = evaluateBriefGate({ ready: false, quality_score: 7 }, 4);
     assert.deepEqual(v, {
+      outcome: 'pass-with-clarifications',
       pass: false,
       ready: false,
       quality_score: 7,
@@ -44,6 +45,17 @@ describe('evaluateBriefGate', () => {
         for (const threshold of [0, 3, 6, 10]) {
           const v = evaluateBriefGate({ ready, quality_score: score }, threshold);
           assert.equal(v.pass, ready === true && score >= threshold);
+        }
+      }
+    }
+  });
+
+  it('back-compat invariant: pass === (outcome === pass-clean) for all combinations', () => {
+    for (const ready of [true, false]) {
+      for (let score = 0; score <= 10; score++) {
+        for (const threshold of [0, 3, 6, 10]) {
+          const v = evaluateBriefGate({ ready, quality_score: score }, threshold);
+          assert.equal(v.pass, v.outcome === 'pass-clean');
         }
       }
     }
