@@ -55,7 +55,8 @@ export {
 } from './ContractOwnership.js';
 export type { OwnershipEntry, OwnershipMap, Overlap } from './ContractOwnership.js';
 export { IntegrationBranch } from './IntegrationBranch.js';
-export type { IntegrationBranchInfo, MergeOutcome } from './IntegrationBranch.js';
+export type { IntegrationBranchInfo, MergeOutcome, IntegrationBranchOptions } from './IntegrationBranch.js';
+export { linkWorkspaceDeps } from './linkWorkspaceDeps.js';
 export { StoryRetryService } from './StoryRetryService.js';
 export type { StoryRetryOptions, StoryRetryResult } from './StoryRetryService.js';
 export { ClaudeCodeWorker } from './ClaudeCodeWorker.js';
