@@ -148,8 +148,8 @@ function parseOwner(cell: string, epicId: string): { epicId: string; storyId?: s
   return undefined;
 }
 
-/** Extension set shared with story-016-002 — do not re-derive; change here only. */
-const KNOWN_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|sql|sh|css|html)$/i;
+/** Extension allowlist for path-like token detection — exported so callers can import rather than duplicate. */
+export const KNOWN_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|sql|sh|css|html)$/i;
 
 /** True when a slash-normalised token looks like a file path. */
 function isPathLike(token: string): boolean {

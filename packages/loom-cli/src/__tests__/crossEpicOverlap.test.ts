@@ -10,6 +10,7 @@ import {
   resetDatabaseForTest,
   computeOverlaps,
   renderOverlapAdvisory,
+  KNOWN_EXT,
   type OwnershipMap,
 } from '@loom-ai/core';
 import { printOverlapAdvisory } from '../crossEpicOverlap.js';
@@ -350,10 +351,10 @@ describe('source-selection — free-text fallback: only path-shaped tokens emitt
     assert.match(joined, /packages\/loom-core\/src\/real\.ts/);
     // Every path entry in the advisory (4-space indent) must be path-shaped — no bare words.
     const pathLines = lines.filter((l) => /^\s{4}\S/.test(l)); // indented path-entry lines
+    assert.ok(pathLines.length > 0, 'expected at least one 4-space indented path line in advisory output');
     for (const pl of pathLines) {
       const entry = pl.trim();
-      const isPathShaped = entry.includes('/') ||
-        /\.(ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|sql|sh|css|html)$/i.test(entry);
+      const isPathShaped = entry.includes('/') || KNOWN_EXT.test(entry);
       assert.ok(isPathShaped, `advisory path entry "${entry}" is not path-shaped — bare words must be excluded`);
     }
   });

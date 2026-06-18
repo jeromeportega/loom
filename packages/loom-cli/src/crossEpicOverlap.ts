@@ -44,10 +44,14 @@ const FREE_TEXT_DELIMITER = /[\s,·|`]+/;
  * attributed to `epicId` only — free text carries no per-story attribution.
  */
 function scrapeContractBody(body: string, epicId: string): OwnershipMap {
+  const seen = new Set<string>();
   const entries: OwnershipMap = [];
   for (const raw of body.split(FREE_TEXT_DELIMITER)) {
     const p = normalizePath(raw);
-    if (p) entries.push({ epicId, path: p });
+    if (p && !seen.has(p)) {
+      seen.add(p);
+      entries.push({ epicId, path: p });
+    }
   }
   return entries;
 }
