@@ -16,8 +16,9 @@
   "files": ["dist"],
   "engines": { "node": ">=20" },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc && chmod +x dist/index.js $(test -f dist/loom-bench.js && echo dist/loom-bench.js)",
     "test": "node --test $(find dist -path '*__tests__*' -name '*.test.js')",
+    "test:exec-bit": "npm run build && node --test dist/__tests__/execBit.test.js",
     "dev": "tsc --watch"
   },
   "dependencies": {
