@@ -1,12 +1,14 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Command } from 'commander';
 import { ZodError } from 'zod';
 import { ManifestSchema, CommandDescriptionSchema } from '../schema.js';
 import { collectSpecs } from '../registry.js';
 import { WORKFLOWS } from '../workflows.js';
 import { buildManifest } from '../manifest.js';
-import { runDescribe, spec as describeSpec } from '../../commands/describe.js';
+import { runDescribe, registerDescribe, spec as describeSpec } from '../../commands/describe.js';
 
 // ---------------------------------------------------------------------------
 // Capture helpers
@@ -251,10 +253,6 @@ describe('describe command spec', () => {
 
 describe('--help smoke tests', () => {
   it('registerDescribe does not break Commander help output', () => {
-    // Build a minimal program and register describe; verify help text is generated.
-    const { registerDescribe } = require('../../commands/describe.js') as {
-      registerDescribe: (program: Command) => void;
-    };
     const program = new Command('loom');
     program.exitOverride(); // prevent process.exit() from crashing the test
     registerDescribe(program);
@@ -270,13 +268,11 @@ describe('--help smoke tests', () => {
 
 describe('docs/capabilities.md', () => {
   it('contains a "describe" row', () => {
-    const fs = require('node:fs') as typeof import('node:fs');
-    const path = require('node:path') as typeof import('node:path');
-    // __dirname = dist/describe/__tests__; repo root = ../../../../../
-    // Levels: __tests__ -> describe -> dist -> loom-cli -> packages -> repo root (5 levels)
-    const repoRoot = path.resolve(__dirname, '..', '..', '..', '..', '..');
-    const capabilitiesPath = path.join(repoRoot, 'docs', 'capabilities.md');
-    const doc = fs.readFileSync(capabilitiesPath, 'utf8');
+    // __dirname = dist/describe/__tests__; repo root is 5 levels up
+    // dist/describe/__tests__ -> dist/describe -> dist -> loom-cli -> packages -> repo root
+    const repoRoot = resolve(__dirname, '..', '..', '..', '..', '..');
+    const capabilitiesPath = resolve(repoRoot, 'docs', 'capabilities.md');
+    const doc = readFileSync(capabilitiesPath, 'utf8');
     const hasDescribeRow = doc
       .split('\n')
       .some((line) => line.includes('**Emit CLI manifest**') || (line.includes('describe') && line.trimStart().startsWith('|')));
