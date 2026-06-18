@@ -1,22 +1,23 @@
-// Patterns for secrets we redact. The replacement strings must NOT match the
-// same pattern (so re-redacting is a no-op). We verify: `[REDACTED]` contains
-// `[` which is not in `[A-Za-z0-9_\-]`, so sk-ant-[REDACTED] never re-matches.
-const SK_ANT = /sk-ant-[A-Za-z0-9_\-]{10,}/g;
-const GITHUB_PAT_FINEGRAINED = /github_pat_[A-Za-z0-9_]{20,}/g;
-const GITHUB_PAT_CLASSIC = /ghp_[A-Za-z0-9]{20,}/g;
-// OAuth (gho_), user-to-server (ghu_), server-to-server (ghs_), fine-grained actions (ghf_).
-// Uses a capture group so the placeholder preserves the token-type prefix — incident
-// responders can identify which credential family to rotate.
-const GITHUB_OTHER = /gh([ousf])_[A-Za-z0-9]{20,}/g;
-
 /**
  * Replaces known secret patterns in `chunk` with inert placeholders.
  * - Idempotent: calling twice produces the same result as calling once.
  * - Handles empty string.
  * - Does NOT throw on split tokens (partial matches are simply not matched).
+ *
+ * Regex objects are created fresh on each call so that callers can freely use
+ * .test()/.exec() on the same patterns elsewhere without lastIndex skew.
  */
 export function redactSecrets(chunk: string): string {
   if (!chunk) return chunk;
+  // Dash placed last in character class to avoid ambiguity with a range.
+  const SK_ANT = /sk-ant-[A-Za-z0-9_-]{10,}/g;
+  const GITHUB_PAT_FINEGRAINED = /github_pat_[A-Za-z0-9_]{20,}/g;
+  const GITHUB_PAT_CLASSIC = /ghp_[A-Za-z0-9]{20,}/g;
+  // OAuth (gho_), user-to-server (ghu_), server-to-server (ghs_), fine-grained actions (ghf_).
+  // Capture group preserves the token-type prefix so incident responders can identify
+  // which credential family to rotate.
+  const GITHUB_OTHER = /gh([ousf])_[A-Za-z0-9]{20,}/g;
+
   return chunk
     .replace(SK_ANT, 'sk-ant-[REDACTED]')
     .replace(GITHUB_PAT_FINEGRAINED, 'github_pat_[REDACTED]')

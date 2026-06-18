@@ -2,6 +2,7 @@ import { EpicStore } from '../state/index.js';
 import { redactSecrets } from '../util/redact.js';
 import type { PlanningPhase } from '../types.js';
 import type { PlanningEvent } from './PlanningEvent.js';
+import { LIVE_TAIL_CHARS, TAIL_FLUSH_MS } from './constants.js';
 
 /**
  * Rolling tail buffer for planning persona output, mirroring Supervisor's
@@ -14,8 +15,8 @@ import type { PlanningEvent } from './PlanningEvent.js';
  * agents.log_tail (ADR-005).
  */
 export class PlanningOutputSink {
-  static readonly LIVE_TAIL_CHARS = 4096;
-  static readonly TAIL_FLUSH_MS = 1000;
+  static readonly LIVE_TAIL_CHARS = LIVE_TAIL_CHARS;
+  static readonly TAIL_FLUSH_MS = TAIL_FLUSH_MS;
 
   private tail: { buffer: string; dirty: boolean } = { buffer: '', dirty: false };
   private currentPhase: PlanningPhase | null = null;
@@ -55,6 +56,12 @@ export class PlanningOutputSink {
    * rolling buffer (and thus the DB tail) but do NOT emit an `output`
    * PlanningEvent. In the current Planner flow the window is zero lines
    * (setPhase is called before each agent run), so this is not reachable.
+   *
+   * CONTRACT: Must NOT be called after `stop()`. The flush timer is cleared
+   * by `stop()`, so any chunk arriving after that point marks the buffer dirty
+   * but is never flushed to the DB. Callers must ensure all LLM calls have
+   * resolved before calling `stop()` (the Planner awaits each persona in
+   * sequence, so this holds in practice).
    */
   handleChunk(chunk: string): void {
     const redacted = redactSecrets(chunk);

@@ -123,7 +123,7 @@ export class ClaudeCliClient implements LLMClient {
       if (proc.timedOut) {
         throw new Error(`claude CLI timed out after ${this.timeoutMs}ms`);
       }
-      if (!proc.success && proc.code !== 0) {
+      if (!proc.success || proc.code !== 0) {
         const status = extractApiErrorStatus(proc.lastLine ?? '');
         if (status !== undefined && TRANSIENT_API_STATUSES.has(status) && attempt < MAX_RETRIES) {
           const delayMs = BACKOFF_BASE_MS * Math.pow(2, attempt);
@@ -143,7 +143,7 @@ export class ClaudeCliClient implements LLMClient {
   // ─── Subprocess helpers ───────────────────────────────────────────────────
 
   /** Returns the env to pass to the subprocess. Strips API keys when sessionAuth=true. */
-  private spawnEnv(): NodeJS.ProcessEnv {
+  protected spawnEnv(): NodeJS.ProcessEnv {
     if (!this.sessionAuth) return { ...process.env };
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;

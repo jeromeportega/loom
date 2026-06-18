@@ -7,6 +7,7 @@ import type {
   PlanningPhase,
 } from '../types.js';
 import { AutonomyLevelSchema } from '../types.js';
+import { LIVE_TAIL_CHARS } from '../planner/constants.js';
 
 export class EpicStore {
   constructor(private db: Database.Database) {}
@@ -431,8 +432,7 @@ export class EpicStore {
    * the sink's own cap (ADR-005).
    */
   updatePlanningLogTail(id: string, logTail: string): void {
-    const TAIL_CAP = 4096;
-    const bounded = logTail.length > TAIL_CAP ? logTail.slice(-TAIL_CAP) : logTail;
+    const bounded = logTail.length > LIVE_TAIL_CHARS ? logTail.slice(-LIVE_TAIL_CHARS) : logTail;
     this.db
       .prepare(
         `UPDATE epics SET planning_log_tail = ?, updated_at = ? WHERE id = ?`

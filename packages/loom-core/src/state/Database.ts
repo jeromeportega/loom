@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
