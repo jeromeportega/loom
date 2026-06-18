@@ -300,6 +300,8 @@
       // can pull the buffered stdout immediately.
       let eventSource = null;
       let logBuffersByAgent = new Map();
+      // Per-epic planning output buffer — keyed by epic_id, reset on stream open.
+      let planningLogBuffers = new Map();
 
       function api(p, init = {}) {
         return fetch(p, {
@@ -454,7 +456,9 @@
                <tbody>${epic.agents.map(renderRow).join('')}</tbody>
              </table>`
           : (isPlanning
-              ? `<h2>Stories</h2><div class="empty">Stories appear once planning completes.</div>`
+              ? `<h2>Stories</h2>
+                 <div class="log-pane" id="planning-log-${esc(epic.id)}"></div>
+                 <div class="empty">Stories appear once planning completes.</div>`
               : '');
         const archiveLabel = epic.archived ? 'Unarchive' : 'Archive';
         const controls = `
@@ -686,6 +690,7 @@
       function openEventStream(body) {
         closeEventStream();
         logBuffersByAgent = new Map();
+        planningLogBuffers = new Map();
         lastStoryCount = body?.agents?.length ?? 0;
         // EventSource doesn't support custom headers; pass the token via query.
         eventSource = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
@@ -697,6 +702,23 @@
             const next = chunk.startsWith(prev) ? chunk : prev + chunk;
             logBuffersByAgent.set(agent_id, next);
             const pane = document.getElementById(`log-${agent_id}`);
+            if (pane) {
+              pane.textContent = next;
+              const atBottom = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 24;
+              if (atBottom) pane.scrollTop = pane.scrollHeight;
+            }
+          } catch {}
+        });
+
+        eventSource.addEventListener('planning-output', (ev) => {
+          try {
+            const { epic_id, chunk } = JSON.parse(ev.data);
+            const prev = planningLogBuffers.get(epic_id) ?? '';
+            // chunk may be a suffix (new bytes only) or the full new tail
+            // (replacement). Mirror the same buffer-merge logic as 'output'.
+            const next = chunk.startsWith(prev) ? chunk : prev + chunk;
+            planningLogBuffers.set(epic_id, next);
+            const pane = document.getElementById(`planning-log-${epic_id}`);
             if (pane) {
               pane.textContent = next;
               const atBottom = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 24;
