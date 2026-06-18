@@ -132,8 +132,8 @@ export function buildProgram(): Command {
 
   // ─── loom epic ──────────────────────────────────────────────────────────────
   applySpec(program.command('epic'), epicSpec)
-    .action(async (brief: string, opts: { force?: boolean }) => {
-      await runEpic(brief, { force: opts.force });
+    .action(async (brief: string, opts: { force?: boolean; verbose?: boolean }) => {
+      await runEpic(brief, { force: opts.force, verbose: opts.verbose });
     });
 
   // ─── loom approve / reject (human gate) ─────────────────────────────────────
