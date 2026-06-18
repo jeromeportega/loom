@@ -1,282 +1,197 @@
-# Architecture — Finalize Reconciliation & Gate-Block Surfacing (epic-008)
+# Architecture: Trustworthy Build, Test & Integration-Gate Reliability
 
 ## Architecture Philosophy
 
-This epic adds two operator-facing capabilities — a derived `blocked` indicator (read) and a `reconcile` command (write) — onto loom's existing epic lifecycle. The design is driven by four constraints:
+Every defect in this PRD has the same shape: a correctness check consults **derived or stale state** instead of the **current source of truth**. The integration gate compiles against a stale symlink target; the test runner discovers compiled tests that no longer exist in source; the `describe` manifest reads a hand-maintained list rather than the live command tree; the release leaves the lockfile and executable bit lagging the bumped source. The architecture is therefore not a redesign — it is a set of surgical re-pointings, each replacing a stale oracle with the live one. Four constraints drive every decision:
 
-1. **The data already exists; don't store more.** A gate-blocked epic is *already* representable in the DB: `EpicFinalizer.finalize()` leaves `status='in_progress'` with `finalize_phase='gate'` when `integration_gate=block` fails (`EpicFinalizer.ts:507` calls `updateStatus(epicId,'in_progress',…)`, which does **not** clear `finalize_phase`). The `blocked` signal is therefore *derived at read time* from those two columns — never persisted. A stored boolean would be a third source of truth that drifts from `status`.
-2. **Additive, never breaking.** `blocked` / `blocked_reason` are new response fields. The `status` string contract is untouched on all four surfaces, and the `loom run` resume candidate set (`Supervisor.selectEpics`, `RUNNABLE = {approved, in_progress}`) is byte-identical for the same DB state (NFR-2, NFR-3).
-3. **One core service, thin surfaces.** Both write entry points (`loom reconcile` CLI, `loom_reconcile_epic` MCP) wrap a single `EpicReconciler`, exactly as `loom revert` / `loom_revert_epic` both wrap `EpicReverter`. No reconcile logic lives on a surface.
-4. **Fail closed; a "merge" is a claim that must be verified.** Reconcile never assumes merged. It verifies via `gh` (PR-URL path) or `git` ancestry, and any tool/availability error *refuses* rather than guessing. The `done ⇒ epic_pr_url != null` invariant the finalizer's done-gate already upholds (`Supervisor.finalizeAndGateDone`, `EpicFinalizer.ts:706`) is preserved by writing `epic_pr_url` before any `done` write.
+1. **Judge against current source, never derived state.** Each fix swaps a stale input (parent-repo `dist`, leftover `dist/*.test.js`, a curated spec array, an un-refreshed lockfile) for the live one (the worktree's own build output, source-present tests, the live commander registry, the bumped versions). This is the unifying invariant.
 
-A consequence worth stating up front: **no schema migration.** Both capabilities use existing columns (`epics.status`, `epics.finalize_phase`, `epics.epic_pr_url`) and one new `audit_log.action` value. `SCHEMA_VERSION` stays at 18.
+2. **No guardrail may weaken (NFR-1).** Every fix that makes the gate *stop* failing sound code is paired with a proof that it *still* fails genuine regressions: the cross-package regression test (FR-2) and the registry-enumerating completeness tripwire (FR-6). A fix that cannot demonstrate the guard still bites is rejected.
+
+3. **Four independently shippable units, two real cross-epic couplings.** Epics 007–010 touch disjoint code paths and merge independently. But two physical couplings exist and are designed for, not ignored: cleaning `dist/` before build (epic-008) *removes* the CLI executable bit, which is exactly why epic-010 must restore it; and an in-sync lockfile (epic-010) is what lets the worktree dependency-refresh (epic-007) run offline via `npm ci`. These are noted at every relevant seam.
+
+4. **Boring, POSIX, zero new dependencies.** The toolbox is `git`, `tsc`, `npm`, `rm -rf`, and `chmod` — all already in the repo. Target is macOS/Linux dev + (currently absent) CI. No new build tool, no `tsc -b`/project-references migration, no Windows executable-bit handling, no reintroduced MCP server.
 
 ## Component Diagram
 
 ```mermaid
-flowchart TD
-    subgraph Surfaces["Surfaces (thin)"]
-      CLIstatus["loom status — CLI\nloom-cli/commands/status.ts"]
-      MCPstatus["loom_get_status — MCP\nloom-mcp/tools/handlers.ts"]
-      APIstatus["GET /api/status — web\nloom-web/server/index.ts"]
-      APIfleet["GET /api/fleet — web\nloom-web/server/routes/fleet.ts"]
-      CLIrec["loom reconcile — CLI\nloom-cli/commands/reconcile.ts"]
-      MCPrec["loom_reconcile_epic — MCP\nloom-mcp/tools/handlers.ts"]
-    end
+flowchart TB
+  subgraph E7["epic-007 · Trustworthy integration gate"]
+    SUP["Supervisor.ensureIntegrationBranch"] --> IB["IntegrationBranch.ensure<br/>(.loom/integration/&lt;epic&gt;/)"]
+    IB --> PREP["worktree dep-link preflight<br/>linkWorkspaceDeps(worktreeRoot)"]
+    PREP --> BUILD["ordered build: core → web → cli<br/>resolves worktree's OWN dist"]
+    BUILD --> GATE["IntegrationGate.run → GateOutcome"]
+    REG7["regression test (FR-2)<br/>real worktree-and-build fixture"] -. exercises .-> PREP
+  end
 
-    subgraph Core["loom-core"]
-      Blocked["deriveBlocked(epic)\nread-time helper (pure)"]
-      Reconciler["EpicReconciler\nshared write service"]
-      EpicStore["EpicStore\n+ clearFinalizePhase()"]
-      Audit["AuditLog"]
-      Git["git.ts (gitSafe) + gh"]
-    end
+  subgraph E8["epic-008 · Clean build and test"]
+    RBUILD["per-package build:<br/>rm -rf dist[/dist-test] && tsc"] --> RUN["node --test from dist/__tests__"]
+    GUARD["removal-guard tests<br/>git ls-files, not fs.existsSync"]
+  end
 
-    DB[("loom.db\nepics · audit_log")]
+  subgraph E9["epic-009 · Honest self-description"]
+    FACT["buildProgram(): Command<br/>(live commander registry)"] --> MAN["buildManifest(program)<br/>FAIL on unregistered"]
+    SPECS["collectSpecs() + publishSpec"] --> MAN
+    FACT --> COMP["completeness test<br/>enumerate live registry"]
+    MAN --> DESC["loom describe → JSON manifest"]
+  end
 
-    CLIstatus --> Blocked
-    MCPstatus --> Blocked
-    APIstatus --> Blocked
-    APIfleet --> Blocked
-    Blocked -. reads .-> EpicStore
+  subgraph E10["epic-010 · Release and build polish"]
+    REL["release.ts → bump-versions.mjs"] --> LOCK["npm install --package-lock-only<br/>git add package-lock.json"]
+    CLIB["loom-cli build"] --> CHMOD["chmod +x dist/index.js, dist/loom-bench.js"]
+  end
 
-    CLIrec --> Reconciler
-    MCPrec --> Reconciler
-    Reconciler --> Git
-    Reconciler --> EpicStore
-    Reconciler --> Audit
-    EpicStore --> DB
-    Audit --> DB
+  LOCK -. "in-sync lockfile enables npm ci refresh" .-> PREP
+  RBUILD -. "clean wipes exec bit → must restore" .-> CHMOD
 ```
-
-The read path (left) is a pure function fanned out to four call sites. The write path (right) is one service with two verification strategies. They share `EpicStore` but never each other.
 
 ## Tech Stack
 
+This work introduces **no new technology**. The table records the choice made *within* the existing stack for each seam.
+
 | Layer | Choice | Rationale |
 |---|---|---|
-| Language / runtime | TypeScript, Node 20+ | Existing stack; no change. |
-| State | `better-sqlite3` (synchronous) | Existing. Synchronous writes make the FR-9 ordered-write sequence trivially observable in-order without transactions or async races. |
-| Merge verification (PR path) | `gh pr view <url> --json state,headRefName,baseRefName` via `execFileSync` (arg array, no shell) | `gh` is the authoritative source for PR merge state + refs; arg arrays prevent injection from the operator-supplied URL. |
-| Merge verification (ancestry path) | `git merge-base --is-ancestor` via existing `gitSafe()` (`orchestrator/git.ts`) | Boring, offline-capable, already the repo's git wrapper. Returns `{ok, output}` instead of throwing — natural fit for fail-closed branching. |
-| Derived signal | Pure function `deriveBlocked()` in loom-core | No I/O, trivially unit-testable, importable by all four surfaces. |
-| CLI | `commander` | Existing; one new `program.command('reconcile')`. |
-| MCP | `@modelcontextprotocol/sdk` | Existing; one new entry in `TOOL_DEFINITIONS` + `HANDLERS`. |
-| New dependencies | **none** | No library justifies itself here. |
-| Schema | **no migration** | Uses existing columns; one new audit action string. |
+| Worktree dep resolution (FR-1) | Worktree-local workspace symlinks + ordered `tsc` (recommended) **or** `npm ci` refresh | Build order is already correct (core→web→cli); the defect is *resolution*, so the fix is local linking, not reordering. Symlink is offline/fast; `npm ci` is the heavier "refresh the install" alternative. |
+| Build cleanliness (FR-3) | `rm -rf dist && tsc` per package | No `composite`/`tsBuildInfoFile` is configured and **no `.github/workflows` CI exists**, so there is no incremental-build or cache assumption to break. `rm -rf` is POSIX and already used by the root `clean` script. |
+| Test runner | `node --test` over `dist/**/__tests__/**/*.test.js` (unchanged) | Existing runner stays; cleanliness comes from the build step, not a runner swap. |
+| Removal-guard oracle (FR-4) | `git ls-files -- <path>` | Tracked state is the source of truth for "package removed"; disk presence conflates removal with build leftovers. |
+| Manifest source (FR-5/6) | Live commander tree via `buildProgram()` factory | The registry that `loom` actually exposes is the only honest source; a hand-curated array drifts (it already dropped `publish`). |
+| Lockfile refresh (FR-8) | `npm install --package-lock-only` | Rewrites `package-lock.json` to match bumped versions without touching `node_modules` — offline, fast, deterministic. |
+| CLI exec bit (FR-9) | `chmod +x` build step (POSIX) | tsc emits `644`; a clean build drops the bit. A build-time `chmod` is the smallest fix; Windows is out of scope. |
 
 ## Data Models
 
-No DDL changes. The relevant existing columns (`Database.ts`, `types.ts`):
-
-```sql
--- epics (existing, abbreviated to the columns this epic reads/writes)
-CREATE TABLE epics (
-  id              TEXT PRIMARY KEY,
-  status          TEXT NOT NULL,          -- 'in_progress' for a gate-blocked epic
-  finalize_phase  TEXT,                   -- 'gate' when blocked at the integration gate; NULL otherwise
-  epic_pr_url     TEXT,                   -- the PR of record; MUST be non-null before any 'done' write
-  base_sha        TEXT,
-  yaml_path       TEXT,
-  reason          TEXT,
-  error           TEXT
-  -- … unchanged …
-);
-```
-
-`FinalizePhase` (unchanged) = `'merging' | 'gate' | 'review' | 'pushing' | 'opening_pr'`.
-
-### Derived `blocked` signal (computed, never stored)
+These are the shapes the fixes read from and write to. They are TypeScript/JSON/DDL as they exist in the repo today.
 
 ```ts
-// loom-core: new module, e.g. orchestrator/blockedIndicator.ts
-export interface BlockedSignal {
-  blocked: true;
-  blocked_reason: 'integration_gate';
+// packages/loom-cli/src/describe/schema.ts — the contract `describe` must satisfy
+interface CommandDescription {
+  name: string;            // full path, e.g. "guard check", "publish"
+  summary: string;         // → commander .description()
+  whenToUse?: string;
+  arguments: Array<{ name: string; type: string; required: boolean; description: string }>;
+  options: Array<{ /* flags, description, ... */ }>;
+  output?: { text: string };
+  examples?: Array<{ command: string; description: string }>;
+  exitCodes?: Array<{ code: number; meaning: string }>;
+  errors?: string[];
+  relationships?: { prerequisites: string[]; nextSteps: string[] };
 }
 
-/** The ONLY rule. Returns null for every other epic state — normal in_progress,
- *  finalizing, planning, done, failed, rejected. Pure; reads two fields. */
-export function deriveBlocked(
-  epic: Pick<EpicRecord, 'status' | 'finalize_phase'>
-): BlockedSignal | null {
-  return epic.status === 'in_progress' && epic.finalize_phase === 'gate'
-    ? { blocked: true, blocked_reason: 'integration_gate' }
-    : null;
+interface Manifest {
+  loomVersion: string;
+  source: 'live-commander-registry';   // the literal claim this work must make true
+  commands: CommandDescription[];       // MUST cover every node of buildProgram()
+  workflows: Workflow[];
 }
 ```
 
-### `epic_reconciled` audit row (new action; existing table)
+```ts
+// packages/loom-core/src/orchestrator/IntegrationGate.ts — gate verdict (unchanged shape)
+interface GateOutcome {
+  passed: boolean;
+  command: string;        // the resolved test_command run in the worktree
+  exitCode: number | null;
+  amputated: boolean;     // a story merge was dropped → gate fails regardless of tests
+  output: string;         // tail of stdout+stderr
+}
+```
+
+```yaml
+# .loom/policy.yaml — the knobs the gate honors (no schema change; behavior must hold for both)
+agents:
+  integration_branch: rolling          # IntegrationBranch worktree at .loom/integration/<epic>/
+  test_command: "npm ci && npm test"   # or "npm test"; FR-1 must make BOTH worktree-correct
+```
 
 ```jsonc
-// audit_log row written by EpicReconciler on a verified merge (FR-9 step 3)
-{
-  "action": "epic_reconciled",
-  "command": "epic-003",          // the epic id
-  "allowed": true,
-  "detail": {
-    "path": "pr-url",             // "pr-url" | "ancestry"
-    "pr_url": "https://github.com/…/pull/6",
-    "verified_via": "gh pr view",
-    "head_ref": "epic/epic-003",
-    "base_ref": "main"
-  }
-}
-```
-
-### New `EpicStore` method (code, not schema)
-
-```ts
-/** Sets finalize_phase = NULL without touching status. Needed for the ordered
- *  reconcile write (FR-9 step 2) — updateFinalizePhase() only sets a non-null
- *  phase; fail()/reject() clear it but also change status. */
-clearFinalizePhase(id: string): void;
+// package.json shapes the release path mutates (FR-8) and the bin shape (FR-9)
+// root + packages/*/package.json
+{ "version": "5.3.0" }                                   // bumped by scripts/bump-versions.mjs
+// packages/loom-cli/package.json
+{ "bin": { "loom": "dist/index.js", "loom-bench": "dist/loom-bench.js" } } // targets must be +x
+// package-lock.json (lockfileVersion 3, git-tracked) — MUST match bumped versions post-release
 ```
 
 ## API / Interface Contracts
 
-### Read seam — four surfaces, one helper
-
-Every surface that currently emits epic-level fields gains an additive spread of `deriveBlocked(epic)`. None expose raw `finalize_phase` for a non-gate `in_progress` epic (FR-4).
+The signatures of the seams each epic introduces or changes. These are the points where a producing story and a consuming story (or the regression test) must agree.
 
 ```ts
-// 1. MCP loom_get_status — handlers.ts renderEpic(), beside the existing
-//    finalize_phase spread (handlers.ts:391). The existing line keeps gating
-//    finalize_phase to status==='finalizing', so a normal in_progress epic
-//    still exposes neither field.
-...(deriveBlocked(epic) ?? {}),
+// ── epic-007 ────────────────────────────────────────────────────────────────
+// New helper: makes a worktree resolve @loom-ai/* to ITS OWN freshly built dist,
+// not the parent repo's stale symlink target. Invoked by loom's own build path
+// (pre-build) AND by the FR-2 regression fixture, so the test exercises the real path.
+function linkWorkspaceDeps(worktreeRoot: string): void;
+//   creates <worktreeRoot>/node_modules/@loom-ai/{core,web} → ../../packages/{loom-core,loom-web}
+//   (equivalently: the build runs `npm ci` in the worktree when the lockfile is in sync — see ADR-1)
 
-// 2. CLI loom status — status.ts. Human tree: a "blocked: integration_gate"
-//    line under the epic header. --json path (collectJsonEpics): add the
-//    blocked fields to JsonEpic.
+// ── epic-008 ────────────────────────────────────────────────────────────────
+// Removal-guard oracle: tracked-state absence, not disk absence.
+function isTracked(repoRoot: string, relPath: string): boolean;   // `git ls-files -- relPath` non-empty
+//   guards assert: assert.ok(!isTracked(REPO_ROOT, 'packages/loom-mcp'))
 
-// 3. web GET /api/status — index.ts rollupEpics(): spread into the EpicStatus
-//    object (the rollup omits finalize_phase entirely, so this is the only
-//    phase-derived field it carries).
+// ── epic-009 ────────────────────────────────────────────────────────────────
+// Refactor: index.ts stops self-parsing at module scope; exposes a pure factory.
+function buildProgram(): Command;          // registers every command, does NOT call .parse()
+// bin entry becomes: buildProgram().parse();
+function collectSpecs(): CommandDescription[];          // MUST now include publishSpec
+function buildManifest(program: Command): Manifest;     // unregistered-without-spec → THROW (was: warn)
+function enumerateRegisteredCommands(program: Command): string[];   // unchanged; now fed buildProgram()
 
-// 4. web GET /api/fleet — routes/fleet.ts buildProjectCards(): spread into
-//    the FleetCard object.
+// ── epic-010 ────────────────────────────────────────────────────────────────
+// release.ts: after bump, before the release commit —
+//   git: add `package-lock.json` to the existing pathspec
+//   shell: `npm install --package-lock-only` (refresh lock to bumped versions)
+// loom-cli build script gains a post-tsc step: chmod +x dist/index.js dist/loom-bench.js
 ```
 
-The shared response shape these four agree on (pinned in the implementation contract):
+## Security & Guardrail-Integrity Model
 
-```ts
-// additive, optional, present ONLY for an in_progress + gate epic
-blocked?: true;
-blocked_reason?: 'integration_gate';
-```
+The dominant risk here is not exfiltration but **false confidence** — a guard that stops biting. NFR-1 makes guardrail integrity a security property.
 
-### Write seam — `EpicReconciler` (shared core service)
-
-```ts
-// loom-core: new orchestrator/EpicReconciler.ts — mirrors EpicReverter.
-export interface EpicReconcilerOptions {
-  projectRoot: string;
-  db: Database.Database;
-  /** Base branch the epic merges into. Default 'main' (FR-6/FR-7). Injectable for tests. */
-  baseBranch?: string;
-  /** Override binaries for tests. */
-  gitBin?: string;   // default 'git'
-  ghBin?: string;    // default 'gh'
-}
-
-export type ReconcileStatus = 'reconciled' | 'noop' | 'refused' | 'failed';
-
-export interface ReconcileResult {
-  status: ReconcileStatus;
-  epicId: string;
-  prUrl?: string;
-  /** Set on 'refused' — lets the surface distinguish offline from not-merged (FR-8). */
-  reason?:
-    | 'not_merged'           // gh says state != MERGED, or ancestry says not an ancestor
-    | 'unverifiable_offline' // gh/git ran but could not reach a verdict (network)
-    | 'tool_unavailable'     // gh/git binary missing
-    | 'ref_mismatch'         // PR head/base != epic/<id> / base (FR-6)
-    | 'no_epic_branch'       // ancestry path: epic/<id> doesn't exist locally
-    | 'epic_not_found';
-  /** Human-readable; carries the squash-merge --pr hint on ancestry false-negatives (FR-12). */
-  note: string;
-}
-
-export class EpicReconciler {
-  constructor(opts: EpicReconcilerOptions);
-  reconcile(epicId: string, opts?: { prUrl?: string }): ReconcileResult;
-}
-```
-
-**Control flow inside `reconcile()`:**
-
-1. **Load + idempotency (FR-11).** `epicStore.get(epicId)`; if missing → `refused/epic_not_found`. If `status==='done'` **or** `epic_pr_url != null` → `{status:'noop'}`, no re-record, no verification.
-2. **Verify merge (fail closed):**
-   - *PR-URL path* (`opts.prUrl` set, FR-6): `execFileSync(gh, ['pr','view', url, '--json','state,headRefName,baseRefName'])`. `ENOENT` → `refused/tool_unavailable`; other throw → `refused/unverifiable_offline`. `state !== 'MERGED'` → `refused/not_merged`. `headRefName !== 'epic/'+epicId || baseRefName !== baseBranch` → `refused/ref_mismatch`.
-   - *Ancestry path* (no URL, FR-7): if `git rev-parse --verify refs/heads/epic/<id>` fails → `refused/no_epic_branch`; `gitSafe(['merge-base','--is-ancestor','epic/<id>', baseBranch])` — `ok` ⇒ merged; not-ok with a clean git ⇒ `refused/not_merged` **with the squash-merge `--pr <url>` hint** (FR-12); git missing ⇒ `tool_unavailable`.
-3. **Ordered write on verified merge (FR-9 / NFR-1 / NFR-4), exactly:**
-   1. `epicStore.recordPrUrl(epicId, prUrl)` *(ancestry path: the resolved PR URL if known, else the merge-base SHA marker — see ADR-6 trade-off)*
-   2. `epicStore.clearFinalizePhase(epicId)`
-   3. `audit.record({ action:'epic_reconciled', command: epicId, allowed:true, detail:{…} })`
-   4. `epicStore.updateStatus(epicId, 'done')`
-   → return `{status:'reconciled', prUrl, note}`.
-
-### CLI + MCP wrappers (FR-5)
-
-```ts
-// loom-cli/commands/reconcile.ts — registered in index.ts:
-//   loom reconcile <epic-id> [--pr <url>]
-program.command('reconcile')
-  .argument('<epic-id>')
-  .option('--pr <url>', 'PR URL to verify via gh (squash-merged epics REQUIRE this)')
-  .action((epicId, opts) => runReconcile(epicId, { pr: opts.pr }));
-
-// loom-mcp: TOOL_DEFINITIONS entry + HANDLERS['loom_reconcile_epic']
-//   inputSchema: { epic_id (required), pr_url? }
-```
-
-Both construct `new EpicReconciler({ projectRoot, db })` and return/print `ReconcileResult` verbatim. Identical outcomes for identical inputs is structural — there is exactly one `reconcile()` implementation.
-
-## Security Model
-
-| Threat | Control |
-|---|---|
-| Command injection via the operator-supplied `--pr <url>` or epic id | All shell-outs use `execFileSync(bin, [args])` / `gitSafe()` — argument arrays, never a shell string. No interpolation into a command line. |
-| A **false `done`** — recording an epic as merged when it isn't | Verification is mandatory and fail-closed (FR-8/FR-10): `gh`/`git` must return an affirmative merged verdict. Any missing-tool, offline, or non-merged result *refuses*. The signal is never inferred from DB state alone. |
-| Recording the **wrong PR** against an epic | PR-URL path enforces `headRefName === epic/<id>` and `baseRefName === base` (FR-6) before any write — a merged-but-unrelated PR is rejected as `ref_mismatch`. |
-| Silent / automated state change | No background reconciler (explicitly out of scope). Reconcile only runs on explicit operator invocation, and every success writes an `epic_reconciled` audit row before returning (NFR-4) — the same audit-before-return invariant the rest of loom upholds. |
-| Blast radius | Reconcile performs **no remote mutation** — it does not push, open, or close anything. It is a local DB + audit write gated on a read-only `gh`/`git` probe. (Contrast `EpicReverter`, which can delete remote refs.) |
+| Threat | Vector | Control |
+|---|---|---|
+| Gate stops failing real regressions (false negative) | The FR-1 dep-refresh masks a genuine cross-story break by always resolving "fresh" | FR-2 regression test asserts the gate **still fails** a genuine cross-package regression, exercising the real worktree-and-build path — not a stand-in (story-007-002 AC4). |
+| A command ships invisibly again | Future command registered in `buildProgram()` but absent from `collectSpecs()` | FR-6 completeness test enumerates the **live** registry and fails if any node lacks a spec; `buildManifest` upgraded from warn→throw so the manifest build itself fails closed. |
+| Supply-chain drift on release | Lockfile lags bumped versions; `npm ci` later resolves unexpected trees | FR-8 refreshes and stages `package-lock.json` in the release commit; lockfile and source versions move atomically. |
+| Shipping a non-runnable / wrong-bit binary | Clean build emits `dist/index.js` at `644`; `npm link` yields a non-executable `loom` | FR-9 `chmod +x` on the bin targets at build time; the linked command is runnable with no manual `chmod`. |
+| Policy bypass via gate commit | `commitResolved` uses `--no-verify` | Unchanged and intentional: the gate, not a target repo's pre-commit hook, is the authoritative check. The structural policy engine (`loom guard check`) is untouched by this work. |
 
 ## ADR Log
 
-### ADR-1 — Derive `blocked` at read time; never store it
-- **Decision:** Compute `blocked` / `blocked_reason` from `(status, finalize_phase)` in a pure helper at every read surface. Add no column.
-- **Context:** The block-mode gate path (`EpicFinalizer.ts:507`) already leaves `status='in_progress'` + `finalize_phase='gate'`. The information needed for the signal is fully present.
-- **Rationale:** A stored boolean is a third source of truth that can disagree with `status`/`finalize_phase` after a crash or a resume. Deriving guarantees the signal can never contradict the lifecycle, and keeps NFR-3 (no resume drift) free — nothing new is written.
-- **Trade-off:** Four call sites must remember to call the helper; we accept that (and pin the field shape in the implementation contract) in exchange for zero drift and zero migration.
+### ADR-1 — Fix worktree dependency *resolution*, not build *order*
+- **Decision:** In the integration worktree, establish worktree-local `node_modules/@loom-ai/*` symlinks (or refresh the install via `npm ci`) so dependents resolve the worktree's own freshly built `dist`. Do **not** reorder the build.
+- **Context:** The root build is *already* ordered core→web→cli (`package.json`). The real defect: `.loom/integration/<epic>/` has no local `node_modules`, so `loom-cli`'s `import '@loom-ai/core'` resolves *upward* to the main repo's `node_modules/@loom-ai/core`, a symlink to `../../packages/loom-core` — the **main checkout's stale `dist`**, not the worktree's. A method added to core in story A is invisible to story B's compile.
+- **Rationale:** Re-pointing resolution at the worktree's own output is the minimal change that addresses the actual cause; ordering changes would be cargo-culting and fix nothing.
+- **Trade-off:** Symlink-and-order is fast and offline but reimplements a slice of npm's workspace linking; `npm ci` is the "boring" refresh but is slower and **depends on the lockfile being in sync (ADR-5 / epic-010)**. We recommend the symlink helper for the gate's hot path and document `npm ci` as the supported policy alternative.
 
-### ADR-2 — One `EpicReconciler`; CLI and MCP are thin wrappers
-- **Decision:** Put all reconcile logic in `loom-core/orchestrator/EpicReconciler.ts`; `loom reconcile` and `loom_reconcile_epic` only marshal arguments and render the result.
-- **Context:** loom already does this for teardown (`EpicReverter` ← `loom revert` / `loom_revert_epic`).
-- **Rationale:** Two surfaces with copy-pasted verification logic would inevitably diverge on edge cases (offline handling, idempotency). FR-5 demands identical outcomes; a single implementation makes that structural rather than tested-by-hope.
-- **Trade-off:** One extra indirection layer for surfaces that are individually trivial. Worth it for the single-source-of-truth guarantee.
+### ADR-2 — Clean `dist/` before each build with `rm -rf dist && tsc`
+- **Decision:** Each package's `build` script removes its compiled output (`loom-core` also clears `dist-test`) before invoking `tsc`.
+- **Context:** `tsc` overwrites in place but never deletes orphans. A renamed/deleted `src/*.test.ts` leaves its `dist/*.test.js`, which `node --test $(find dist ...)` then runs — a ghost test passing or failing against code that no longer exists.
+- **Rationale:** A clean output directory makes `dist/` a faithful projection of `src/`. Verified safe: no `composite`/`tsBuildInfoFile` is set and **no `.github/workflows` CI exists**, so nothing relies on incremental output (story-008-001 AC4 satisfied by inspection).
+- **Trade-off:** Full recompile every build — slower than incremental. Acceptable: the packages are small and no incremental build was configured to begin with. This step also **wipes the CLI executable bit, mandating ADR-6.**
 
-### ADR-3 — Fail closed, with two verification strategies
-- **Decision:** Verify via `gh pr view` (PR-URL path) or `git merge-base --is-ancestor` (ancestry path). Treat *every* tool-missing / offline / non-affirmative result as a refusal.
-- **Context:** The stranded epic-003 was merged via PR 6 outside the finalize flow; the operator knows the PR. Other epics may be merged with the branch still present locally.
-- **Rationale:** The cost of a false `done` (an epic wrongly marked complete, breaking the `done ⇒ epic_pr_url` invariant) is far higher than the cost of an occasional false refusal the operator can re-run.
-- **Trade-off:** A squash-merged epic false-negatives on the ancestry path (the branch tip is not an ancestor of base). Mitigated by ADR-6's `--pr` hint, not by loosening the check.
+### ADR-3 — Removal-guards assert git-tracked absence, not disk absence
+- **Decision:** Removal-guard tests (`mcpWorkspaceScrub.test.ts`, `serve.test.ts`) replace `fs.existsSync('packages/loom-mcp')` with a `git ls-files -- packages/loom-mcp` emptiness check.
+- **Context:** A removed package can leave untracked build leftovers (`dist/`, `node_modules/`) on a long-lived tree. Disk-presence guards then fail even though the package is gone from version control — the dev/gate disagreement the PRD targets.
+- **Rationale:** "Removed" means "no longer tracked." Querying git is querying the source of truth; querying disk conflates removal with build residue.
+- **Trade-off:** Tests now shell out to `git` and assume execution inside a git checkout (already true for the suite). The guard still fails correctly if any `loom-mcp` file remains *tracked* (story-008-002 AC3).
 
-### ADR-4 — Ordered write preserving `done ⇒ epic_pr_url != null`
-- **Decision:** On a verified merge, write in this exact order: (1) `recordPrUrl`, (2) `clearFinalizePhase`, (3) `epic_reconciled` audit row, (4) `updateStatus('done')`.
-- **Context:** The finalizer's done-gate (`Supervisor.finalizeAndGateDone`) already establishes that `epic_pr_url` must be durable before `done`; reconcile is a second writer into the same terminal state and must honor the same invariant (NFR-1).
-- **Rationale:** A crash between any two steps leaves a *safe* state: after step 1 the epic is still `in_progress` (not `done`) with a PR URL recorded; `done` is only reachable after the URL and audit row are durable. better-sqlite3's synchronous writes make the ordering real, not best-effort.
-- **Trade-off:** Four separate statements rather than one transaction. Acceptable: ordering (not atomicity) is what protects the invariant, and a partial sequence is recoverable by re-running reconcile (which is idempotent — ADR-5).
+### ADR-4 — Drive `describe` from a `buildProgram()` factory; manifest fails closed
+- **Decision:** Refactor `index.ts` to expose `buildProgram(): Command` (registers all commands, no `.parse()`); the bin entry calls `buildProgram().parse()`. `buildManifest` enumerates that live program and **throws** (was: warns to stderr) on any registered command lacking a spec. Wire `publishSpec` into `collectSpecs()`. The completeness test enumerates `buildProgram()` instead of a spec-derived stand-in.
+- **Context:** Today `index.ts` builds the program and self-parses at module load, so it can't be enumerated in a test. `describeCompleteness.test.ts` therefore reconstructs a program *from* `collectSpecs()` — circular: both sides derive from the curated array, so a command registered in `index.ts` but missing from the array (exactly `publish`) is never caught. `buildManifest` already enumerates the live registry but only *warns*.
+- **Rationale:** Enumerating the real registry is the only check that reflects what `loom` actually exposes. Failing closed turns an ignorable warning into a build-breaking guarantee.
+- **Trade-off:** Splitting construction from parsing is a non-trivial refactor of `index.ts` and a shared seam two epic-009 stories depend on (see contract). Worth it: it is the structural fix that makes invisible commands impossible, not just unlikely.
 
-### ADR-5 — Idempotent noop on already-resolved epics
-- **Decision:** If the epic is already `done` or already has a non-null `epic_pr_url`, reconcile returns `noop` without verifying or re-recording. Applied identically in CLI and MCP (they share the service).
-- **Context:** FR-11's open idempotency question, resolved as noop.
-- **Rationale:** Re-recording would write a duplicate `epic_reconciled` row and could overwrite the PR of record. A noop makes reconcile safe to run repeatedly (e.g. a retry after a flaky `gh`).
-- **Trade-off:** Reconcile cannot *re-point* an epic at a corrected PR URL. That's intentional — repointing is a destructive correction that belongs to `revert` + re-finalize, not to reconcile.
+### ADR-5 — Refresh the lockfile with `--package-lock-only`
+- **Decision:** `release.ts` runs `npm install --package-lock-only` after the version bump and adds `package-lock.json` to the release commit's pathspec.
+- **Context:** `bump-versions.mjs` does surgical `package.json` edits and explicitly never touches the lockfile, leaving drift that a clean post-release `npm ci` would choke on.
+- **Rationale:** `--package-lock-only` rewrites the lockfile to match bumped versions without mutating `node_modules` — deterministic, fast, no network install side effects mid-release.
+- **Trade-off:** It assumes the registry is reachable to resolve metadata; a fully air-gapped release would need a vendored cache. Accepted — release is an online operation by nature (it opens a PR via `gh`).
 
-### ADR-6 — Strict head/base ref match on the PR-URL path
-- **Decision:** The PR-URL path records `done` only if the PR's `headRefName === epic/<id>` and `baseRefName === base` (default `main`).
-- **Context:** An operator could paste any merged PR URL; without a ref check, reconcile would happily mark an epic done against an unrelated PR.
-- **Rationale:** The ref match ties the verified merge to *this* epic's branch, which is the whole point of "verify before recording."
-- **Trade-off:** An epic whose branch was renamed before merge will `ref_mismatch` and require manual handling. We keep the base comparison hardcoded to `main` (per FR-6) rather than deriving the repo's default branch — boring and predictable; revisit only if a non-`main` base becomes real. For the ancestry path, when no PR URL is known the recorded `epic_pr_url` is a merge marker (the merge-base SHA), since the invariant requires a non-null value and the operator chose not to supply a URL.
+### ADR-6 — Restore the CLI executable bit with a build-time `chmod +x`
+- **Decision:** `loom-cli`'s build appends `chmod +x dist/index.js dist/loom-bench.js` after `tsc`.
+- **Context:** `tsc` emits `644`. With ADR-2's clean build, the previously-surviving `755` bit is gone, so a freshly built `dist/index.js` is non-executable and `loom` won't run after `npm link` without a manual `chmod`.
+- **Rationale:** Setting the bit at build time keeps the artifact runnable by construction and survives the clean-build step — the bit is re-derived from source intent on every build rather than checked into git and hoped to persist.
+- **Trade-off:** POSIX-only; Windows ignores the bit (explicitly out of scope, NFR-4). This ADR exists *because of* ADR-2 — the two must ship such that clean-build-then-chmod is the build order.

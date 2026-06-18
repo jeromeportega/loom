@@ -1,72 +1,66 @@
-# Finalize Reconciliation & Gate-Block Surfacing for the Loom Orchestrator
+# Trustworthy Build, Test & Integration-Gate Reliability
 
 ## The Problem
 
-Two distinct failures in loom's completion path leave epics permanently stranded and invisibly stuck. Both are live today.
+Loom's own dogfooding surfaced that its quality machinery — the integration gate, the build/test pipeline, the command self-description registry, and the release command — produces **false signals in both directions**. The gate fails sound code, dev-machine runs disagree with the gate, a new command can ship invisibly, and a release leaves the repo in a subtly broken state. The unifying defect: correctness is being judged against *stale or derived state* instead of the *current source of truth*.
 
-1. **Stranded-done failure (live, epic-003).** epic-003 was merged via PR 6 *outside* loom's finalize flow, so `epic_pr_url` was never recorded. The Supervisor done-gate only flips an epic to `done` when `epic_pr_url` is non-null. With no URL and no out-of-band path to record one, epic-003 is stuck at `in_progress` forever. There is currently no operator escape hatch to reconcile a genuinely-merged-but-unrecorded epic.
+Four concrete failures were observed:
 
-2. **Invisible-blocked failure.** When the integration gate blocks an epic in block mode, the epic is flipped to `in_progress` for resume while `finalize_phase` stays set to `gate`. Every status surface reports it as plain `in_progress`, so a gate-blocked epic is indistinguishable from one that is actively working. Anything awaiting completion hangs with no signal that operator action is required.
+1. **Stale dependency in the integration gate.** The gate runs in a throwaway integration worktree where dependencies are never installed. A dependent workspace package resolves a *stale built copy* of a dependency package. When story A adds a method to `loom-core` and story B's package uses it, the gate's build fails with "method does not exist" — even though the code is correct and a clean checkout builds and passes the full suite. Under a blocking gate, this would wrongly withhold a sound PR.
 
-These share a root cause — the completion lifecycle has no way to *represent* or *repair* "merged but not recorded" and "blocked but resumable" states — so they are solved together over one core service.
+2. **Stale build output on long-lived working trees.** The TypeScript compiler never deletes outputs for renamed or removed files; the test runner then discovers and runs every compiled test under `dist/`, including renamed-away ones; and a removal-guard test asserts a package directory is gone *on disk* when only an untracked build-output leftover remains. A fresh worktree hides all of this, so the gate and a real developer checkout disagree.
+
+3. **Silent gap in the describe registry.** A new command can ship with a valid description that is never collected into the manifest. The completeness test passes anyway because it checks the *derived collected list* rather than the *live command registry* — so the new command is silently absent from `describe` output.
+
+4. **Release leaves the repo dirty.** The release command leaves the lockfile drifting behind the bumped package versions, and a clean build drops the executable bit on the CLI entry, so the linked command is not runnable without a manual fix.
 
 ## Target Users
 
-- **Primary — Loom operators.** The human running loom (currently dogfooding) who needs to (a) see at a glance which epics are gate-blocked and awaiting action, and (b) repair a stranded epic with a single explicit command.
-- **Secondary — Downstream automation.** The Supervisor done-gate, the `loom run` resume logic, and any tooling polling the status surfaces. These consume the same fields and must not regress.
-- **Anti-persona — Unattended/auto-reconciliation.** This is *not* a background reconciler. Nothing should ever flip an epic to `done` without an explicit operator invocation *and* a verified merge.
+- **Primary — loom contributors and the loom autonomous agents themselves.** Both rely on the integration gate as a truthful arbiter of whether a PR is mergeable. The agents are a first-class user here: a false gate failure stalls autonomous delivery.
+- **Secondary — loom operators / release managers** who run the release command and expect a clean, runnable, in-sync repository afterward.
+- **Anti-persona — end users of a published loom CLI.** This work is internal engineering hygiene; it must not change user-facing CLI behavior or human help output.
 
 ## Proposed Solution
 
-Build **two capabilities backed by one shared core service** in the finalize/reconcile path.
+Make every quality check judge against current source rather than stale or derived state, across four independent fixes:
 
-**Capability 1 — Derived `blocked` indicator (read-only).** For any epic where `status == in_progress` AND `finalize_phase == gate`, surface a derived signal as **new, additive** response fields: `blocked: true` and `blocked_reason: "integration_gate"`. The reported `status` string stays `in_progress`, unchanged. The signal is computed, not stored — the DB `status` remains `in_progress`, and the in-progress-for-resume semantics plus the `loom run` resume candidate set are untouched.
+1. **Trustworthy integration gate** — guarantee dependent packages build against freshly built dependencies in the integration worktree.
+2. **Clean build and test** — make build/test resilient to stale compiled output and assert removals against version control, not disk.
+3. **Honest self-description completeness** — drive manifest collection and its completeness test from the live command registry.
+4. **Release and build polish** — keep the lockfile in sync and preserve the CLI executable bit on a clean build.
 
-**Capability 2 — `reconcile` entry point (write).** A new `loom reconcile <epic-id> [--pr <url>]` CLI command and a matching `loom_reconcile_epic` MCP tool, both wrapping the shared core service. It verifies a genuine merge before recording anything, then records the URL, clears the block, audits, and flips to `done` — in that order — or refuses.
+The four parts are independently deliverable and independently verifiable; they share the theme but not the code paths.
 
 ## Key Capabilities
 
-1. **Surface `blocked` consistently across all four read surfaces:** `loom status` CLI, `loom_get_status` MCP, the API status rollup route, and the API fleet route. Note that `loom_get_status` today suppresses `finalize_phase` unless `status == finalizing`, and the web rollup omits `finalize_phase` entirely — both must be taught to expose the derived `blocked` signal for the `in_progress + gate` case **only**, without leaking the phase for normal `in_progress` epics.
-2. **Two verification paths in reconcile:**
-   - *PR-URL path* — verify via `gh pr view` that PR state is `merged` AND that its head/base refs match this epic's branch and base (`main`).
-   - *Ancestry path* — when no URL is given, check whether the epic branch is merged into the base branch via git ancestry.
-3. **Fail closed.** When `gh` or `git` is unavailable or offline, reconcile refuses — it never assumes merged.
-4. **Ordered, invariant-preserving write on verified merge:** record `epic_pr_url` **before** any `done` write (preserving the invariant that a `done` epic always has a non-null `epic_pr_url`) → clear `finalize_phase` (so the epic is no longer derived as blocked) → write an `epic_reconciled` row to `audit_log` before returning → flip the epic to `done`.
-5. **Refuse on unverifiable merge; idempotent on already-resolved.** Never produce a false `done`. Reconcile on an epic that is already `done` or already has `epic_pr_url` is a safe noop/refusal, not a re-record.
-6. **Update `docs/capabilities.md` in the same PR:** the `loom reconcile` CLI subcommand row, the `loom_reconcile_epic` MCP tool row, and the gate-blocked indicator as a user-visible status behavior.
-7. **Live validation:** after landing, run `loom reconcile epic-003 --pr <PR-6 url>` via the PR-URL path to drive the real stranded epic to `done`.
+1. In the integration worktree, ensure correct workspace linking and **build dependency packages in dependency order before dependents** (or refresh the dependency install), so a method added to `loom-core` in one story is visible to a dependent package built later in the same gate run.
+2. **Clean per-package compiled output before building** (or otherwise restrict the runner to tests that still exist in source) so renamed-away or deleted compiled tests cannot be picked up and run.
+3. Change removal-guard tests to **assert a package is absent from version control**, not from disk, so an untracked build-output leftover does not fail them.
+4. Make manifest collection **discover a description for every command from the command sources**, and rewrite the completeness test to **enumerate the live registry and assert every registered command resolves to a description** (the inverse of checking the already-collected list).
+5. **Wire the existing `publish` command into the manifest** so `describe` lists it.
+6. In the release command, **refresh and stage the lockfile** so it stays in sync with bumped package versions.
+7. Ensure a **clean build sets the executable bit** on the CLI entry so the linked command is runnable without manual intervention.
 
 ## Constraints
 
-- **Squash-merge reality.** epic-003 / PR 6 was squash-merged, so the epic branch is **not** a git ancestor of `main`; an ancestry check will false-negative. Squash-merged epics must be reconciled via the verified PR-URL path. epic-003 live validation must use that path with PR 6. Base ref to verify against is `main`.
-- **Additive only.** The `blocked`/`blocked_reason` fields are new and additive; the `status` string contract does not change.
-- **No behavioral drift in resume.** The intentional in-progress-for-resume semantics and the `loom run` resume candidate set must be unchanged.
-- **Single shared service.** Both CLI and MCP forms wrap one core service; both capabilities share the same finalize/reconcile core (no divergent logic per surface).
-- **Audit before return** (per loom invariant: all agent actions logged to `audit_log` before returning to the caller).
+- **Do not weaken any guardrail.** The gate must still catch genuine cross-story regressions — this work removes false failures without hiding real ones.
+- **Do not reintroduce an MCP server.** (Worker provisioning is retained per current positioning.)
+- **Keep human help output working.**
+- Build/test changes must hold on a **long-lived working tree that previously built an older revision**, not only in a fresh checkout — that disagreement is the bug, not an edge case.
+- Per `CLAUDE.md`: if any change alters a user-visible feature, update `docs/capabilities.md` in the same PR. [ASSUMPTION] This is internal hygiene with no user-visible surface change, so no capabilities update is expected; confirm before merge.
 
 ## Risks and Open Questions
 
-- **Idempotency semantics undecided.** Brief says reconcile on an already-`done`/URL-set epic is "a safe noop *or* refusal." PM/architect must pick one and make it consistent across CLI and MCP. *(Open question for John.)*
-- **`gh` availability and auth.** `[ASSUMPTION]` The operator environment has `gh` installed and authenticated for the PR-URL path. If not, that path fails closed — acceptable, but operators need a clear error message distinguishing "offline/unavailable" from "PR not merged."
-- **Squash-merge detection vs. operator guidance.** The ancestry path will false-negative on squash-merged epics. `[ASSUMPTION]` Reconcile does *not* auto-detect squash-merge; the operator is expected to supply `--pr`. Consider whether a refusal on the ancestry path should hint "if this was squash-merged, re-run with --pr <url>."
-- **Branch/base ref matching.** `[ASSUMPTION]` The epic's expected branch and base are derivable from epic state for the head/base ref comparison in the PR-URL path. Verify this is recorded before relying on it.
-- **Phase-leak surface area.** Teaching `loom_get_status` and the web rollup to expose the derived signal risks accidentally leaking `finalize_phase` for non-gate `in_progress` epics. The derived signal must be gated strictly to `in_progress + gate`.
+- **Cleaning `dist/` before build may mask incremental-build assumptions** elsewhere in tooling or CI caching. [ASSUMPTION] No tooling depends on stale `dist/` persistence; verify against CI config.
+- **Choice between "build in dependency order" vs. "refresh dependency install"** in the integration worktree is left open by the brief. [ASSUMPTION] Dependency-ordered build is lighter-weight than a full install in a throwaway worktree and is the preferred path; the PM/architect should confirm which the gate's current structure supports most cleanly.
+- **Version-control-absence assertion** depends on a reliable way to query tracked state within the test environment. [ASSUMPTION] The test harness can shell out to git or read the index; confirm this is available in the gate's execution context.
+- **Regression test for cross-package addition** must itself avoid the fresh-worktree blind spot it is testing for — it needs to exercise the actual worktree-and-build path, not a simplified stand-in, or it will pass vacuously.
+- **Executable-bit preservation** is platform-sensitive. [ASSUMPTION] Target is POSIX (macOS/Linux dev + CI); Windows behavior is out of scope.
 
 ## Success Criteria
 
-- [ ] **Live repair:** `loom reconcile epic-003 --pr <PR-6 url>` drives epic-003 to `done` with `epic_pr_url` set to the PR 6 URL, via the PR-URL path.
-- [ ] **Blocked visible everywhere:** a gate-blocked epic (`in_progress + gate`) reports `blocked: true` / `blocked_reason: "integration_gate"` on all four surfaces (`loom status` CLI, `loom_get_status` MCP, API status rollup, API fleet), with `status` still `in_progress`.
-- [ ] **No phase leak:** a normal `in_progress` epic exposes no `blocked` field and no `finalize_phase` across those surfaces.
-- [ ] **DB & resume unchanged:** the derived signal does not alter stored `status`, in-progress-for-resume semantics, or the `loom run` resume candidate set.
-- [ ] **Fail closed:** with `gh`/`git` unavailable or offline, reconcile refuses and does not mark `done`.
-- [ ] **Ordered writes:** on a verified merge, `epic_pr_url` is written before the `done` write, `finalize_phase` is cleared, and an `epic_reconciled` audit row is written before return.
-- [ ] **Refusal / noop:** an unmerged, unverifiable epic stays non-`done`; an already-`done`/URL-set epic is a safe noop/refusal with no re-record.
-- [ ] **Anti-stub test passes:** at least one test imports the **real** `loom_get_status` handler AND the **real** `createApp` serving the API fleet route, drives a gate-blocked epic through them, and asserts both report `blocked` — not a hand-built fixture app.
-- [ ] **Reconcile tests pass:** a reconcile-success test (stranded-but-merged epic → `done` with `epic_pr_url` set) and a reconcile-refusal test (unmerged/unverifiable epic stays non-`done`).
-- [ ] **Docs current:** `docs/capabilities.md` updated in the same PR with the `loom reconcile` CLI row, the `loom_reconcile_epic` MCP row, and the gate-blocked status behavior.
-
-### Explicit Non-Goals
-
-- Do **not** change the gate-block → `in_progress` resume-recovery path.
-- **Never** auto-reconcile: every reconcile requires an explicit operator invocation and a verified merge.
-- Do **not** alter other finalize-phase overlays beyond exposing the gate-blocked case.
+1. A **correct cross-package API addition builds green** through the integration gate rather than failing on a stale dependency, proven by a regression that reproduces the cross-package addition scenario.
+2. The **full build and test suite passes on a long-lived working tree** that previously built an older revision — with no failures from stale compiled tests or build-output leftovers — and the removal-guard tests assert version-control absence.
+3. The **describe manifest includes every registered command**, proven by a completeness test that enumerates the live registry; `describe` returns a description for **`publish` and `release`**.
+4. The **release command leaves the lockfile in sync** with the bumped package versions, and a **clean build produces a runnable linked command** without a manual executable-bit change.
+5. The **full build and test suite passes**, and the integration gate still fails on a genuine cross-story regression (guardrail integrity preserved).
