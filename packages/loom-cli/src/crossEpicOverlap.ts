@@ -2,7 +2,9 @@ import path from 'node:path';
 import {
   openDatabase,
   EpicStore,
-  loadOwnershipMap,
+  parseOwnershipMap,
+  normalizePath,
+  SharedContract,
   computeOverlaps,
   renderOverlapAdvisory,
   type OwnershipMap,
@@ -26,8 +28,47 @@ export interface OverlapAdvisoryDeps {
   listInFlightEpicIds?: (projectRoot: string) => string[];
   /** Loads one epic's ownership map, or null when its contract is absent. */
   loadMap?: (projectRoot: string, epicId: string) => OwnershipMap | null;
+  /** Reads the raw contract body for an epic; used only when loadMap is not injected. */
+  readContract?: (projectRoot: string, epicId: string) => string | null;
   /** Sink for the rendered lines; defaults to console.log. */
   print?: (line: string) => void;
+}
+
+/** Token delimiters for free-text scraping (whitespace plus common prose separators). */
+const FREE_TEXT_DELIMITER = /[\s,·|`]+/;
+
+/**
+ * Fallback path: scan `body` for any token that `normalizePath` accepts as a
+ * file path. Called only when `parseOwnershipMap` yields no entries (the contract
+ * carries no ownership table or the table has no valid rows). Entries are
+ * attributed to `epicId` only — free text carries no per-story attribution.
+ */
+function scrapeContractBody(body: string, epicId: string): OwnershipMap {
+  const entries: OwnershipMap = [];
+  for (const raw of body.split(FREE_TEXT_DELIMITER)) {
+    const p = normalizePath(raw);
+    if (p) entries.push({ epicId, path: p });
+  }
+  return entries;
+}
+
+/**
+ * Default loadMap: prefers the structured ownership table (`parseOwnershipMap`)
+ * as the source — entries carry full storyId attribution from `parseOwner`.
+ * Falls back to free-text scraping only when the table is absent or entirely
+ * malformed, routing every scraped token through `normalizePath` so bare words
+ * and code fragments are excluded.
+ */
+function defaultLoadMap(
+  projectRoot: string,
+  epicId: string,
+  readContractFn: (projectRoot: string, epicId: string) => string | null
+): OwnershipMap | null {
+  const body = readContractFn(projectRoot, epicId);
+  if (body === null) return null;
+  const fromTable = parseOwnershipMap(body, epicId);
+  if (fromTable.length > 0) return fromTable;
+  return scrapeContractBody(body, epicId);
 }
 
 /**
@@ -38,9 +79,15 @@ export interface OverlapAdvisoryDeps {
  * prints an advisory naming each shared file and its owners. It WARNS — it
  * never blocks, never throws, never exits.
  *
+ * Preferred source for each epic's claimed-files set is the contract's
+ * 'File & module ownership map' table (parsed by `parseOwnershipMap`), which
+ * carries per-story attribution. When the table is absent or has no valid rows,
+ * the raw contract body is scraped for path-like tokens as a fallback, filtered
+ * through `normalizePath` to exclude bare words and code fragments.
+ *
  * A missing contract for any compared epic (including the target itself, the
- * shared_contract=off case) is silently skipped: `loadOwnershipMap` returns
- * null and that epic simply drops out of the comparison; the others still run.
+ * shared_contract=off case) is silently skipped: `readContract` returns null and
+ * that epic simply drops out of the comparison; the others still run.
  *
  * Called from `runApprove` (gate.ts) and at `runRun` dispatch start (run.ts)
  * before `supervisor.run()`. Suppression of the duplicate print on a chained
@@ -53,7 +100,8 @@ export function printOverlapAdvisory(
   deps: OverlapAdvisoryDeps = {}
 ): void {
   const print = deps.print ?? ((line: string) => console.log(line));
-  const loadMap = deps.loadMap ?? loadOwnershipMap;
+  const readContractFn = deps.readContract ?? ((pr, id) => SharedContract.read(pr, id));
+  const loadMap = deps.loadMap ?? ((pr, id) => defaultLoadMap(pr, id, readContractFn));
   const listInFlight = deps.listInFlightEpicIds ?? defaultListInFlightEpicIds;
 
   // Loading or DB access must never break approve/dispatch — the advisory is
