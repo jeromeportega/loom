@@ -28,6 +28,7 @@ import { spec as tracesSpec } from '../commands/traces.js';
 import { spec as webSpec } from '../commands/web.js';
 import { spec as describeSpec } from '../commands/describeSpec.js';
 import { spec as releaseSpec } from '../commands/release.js';
+import { spec as publishSpec } from '../commands/publish.js';
 // <command specs>
 
 /**
@@ -69,6 +70,7 @@ export function collectSpecs(): CommandDescription[] {
     webSpec,
     describeSpec,
     releaseSpec,
+    publishSpec,
     // <command specs>
   ];
 }
