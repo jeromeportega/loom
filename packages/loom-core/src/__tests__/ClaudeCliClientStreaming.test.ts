@@ -249,4 +249,45 @@ describe('ClaudeCliClient session auth env-hygiene (AC4)', () => {
     assert.doesNotThrow(() => new ClaudeCliClient({ sessionAuth: false }));
     assert.doesNotThrow(() => new ClaudeCliClient({}));
   });
+
+  it("'session' strips ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the spawned env", () => {
+    // Access private spawnEnv() via any-cast — private is compile-time only in JS.
+    const { ClaudeCliClient } = require('../llm/ClaudeCliClient.js') as {
+      ClaudeCliClient: new (opts?: { sessionAuth?: boolean }) => { [key: string]: unknown };
+    };
+
+    const priorKey = process.env.ANTHROPIC_API_KEY;
+    const priorToken = process.env.ANTHROPIC_AUTH_TOKEN;
+    try {
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-test-key';
+      process.env.ANTHROPIC_AUTH_TOKEN = 'tok-test';
+
+      const sessionClient = new ClaudeCliClient({ sessionAuth: true });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sessionEnv = (sessionClient as any).spawnEnv() as NodeJS.ProcessEnv;
+
+      assert.equal(sessionEnv.ANTHROPIC_API_KEY, undefined,
+        'sessionAuth=true must strip ANTHROPIC_API_KEY from subprocess env');
+      assert.equal(sessionEnv.ANTHROPIC_AUTH_TOKEN, undefined,
+        'sessionAuth=true must strip ANTHROPIC_AUTH_TOKEN from subprocess env');
+      // Returns a copy, not the live process.env reference
+      assert.notEqual(sessionEnv, process.env, 'session env must be a copy, not process.env itself');
+      // Parent process env is not mutated
+      assert.equal(process.env.ANTHROPIC_API_KEY, 'sk-ant-test-key',
+        'parent process.env must not be modified');
+
+      const inheritClient = new ClaudeCliClient({ sessionAuth: false });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const inheritEnv = (inheritClient as any).spawnEnv() as NodeJS.ProcessEnv;
+      assert.equal(inheritEnv.ANTHROPIC_API_KEY, 'sk-ant-test-key',
+        'sessionAuth=false must leave ANTHROPIC_API_KEY intact');
+      assert.equal(inheritEnv, process.env,
+        "sessionAuth=false must return process.env reference unchanged");
+    } finally {
+      if (priorKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = priorKey;
+      if (priorToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+      else process.env.ANTHROPIC_AUTH_TOKEN = priorToken;
+    }
+  });
 });

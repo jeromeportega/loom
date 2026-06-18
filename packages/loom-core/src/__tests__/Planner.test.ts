@@ -15,6 +15,7 @@ import { ArchitectAgent } from '../planner/ArchitectAgent.js';
 import { QAAgent } from '../planner/QAAgent.js';
 import { Planner } from '../planner/Planner.js';
 import type { PlannerContext } from '../planner/context.js';
+import type { PlanningEvent } from '../planner/PlanningEvent.js';
 import { extractJsonBlock, trimToFirstHeading } from '../planner/util.js';
 import { planningPaths } from '../planner/paths.js';
 import { EpicYamlSchema } from '../types.js';
@@ -656,5 +657,68 @@ describe('Planner', () => {
     assert.notEqual(epic.planner_tokens_cached, null);
     assert.notEqual(epic.planner_ms, null);
     assert.ok(typeof epic.planner_ms === 'number' && epic.planner_ms >= 0);
+  });
+
+  it('[AC3] populates planning_log_tail with phase markers after a full run', async () => {
+    // MockLLMClient ignores onText (no streaming), but setPhase() writes markers
+    // directly — so the tail always carries attribution markers even when the LLM
+    // backend doesn't support streaming.
+    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const llm = new MockLLMClient(fullPipelineResponder);
+    await new Planner({ projectRoot: tmpDir, llm, model: 'm', db }).run(
+      'Build something observable.'
+    );
+
+    const epic = new EpicStore(db).get('epic-001');
+    assert.ok(epic, 'epic row must exist');
+    assert.ok(
+      typeof epic!.planning_log_tail === 'string',
+      'planning_log_tail must be a string after a Planner run'
+    );
+    const tail = epic!.planning_log_tail!;
+    // Each persona transition writes a marker — verify all three are present and ordered.
+    assert.ok(tail.includes('\n── analyst ──\n'), 'analyst marker must appear in planning_log_tail');
+    assert.ok(tail.includes('\n── pm ──\n'), 'pm marker must appear in planning_log_tail');
+    assert.ok(tail.includes('\n── architect ──\n'), 'architect marker must appear in planning_log_tail');
+    assert.ok(
+      tail.indexOf('\n── analyst ──\n') < tail.indexOf('\n── pm ──\n'),
+      'analyst marker must precede pm marker'
+    );
+    assert.ok(
+      tail.indexOf('\n── pm ──\n') < tail.indexOf('\n── architect ──\n'),
+      'pm marker must precede architect marker'
+    );
+  });
+
+  it('[AC2] fires onPlanningEvent for each phase transition during a run', async () => {
+    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const llm = new MockLLMClient(fullPipelineResponder);
+    const events: PlanningEvent[] = [];
+
+    await new Planner({
+      projectRoot: tmpDir,
+      llm,
+      model: 'm',
+      db,
+      onPlanningEvent: (e) => events.push(e),
+    }).run('Build something with events.');
+
+    const phaseEvents = events.filter((e) => e.type === 'phase');
+    assert.ok(phaseEvents.length >= 3, `at least 3 phase events expected; got ${phaseEvents.length}`);
+
+    const phases = phaseEvents.map((e) => (e as Extract<PlanningEvent, { type: 'phase' }>).phase);
+    assert.ok(phases.includes('analyst'), 'analyst phase event must fire');
+    assert.ok(phases.includes('pm'), 'pm phase event must fire');
+    assert.ok(phases.includes('architect'), 'architect phase event must fire');
+
+    // Ordering: analyst fires before pm, pm fires before architect
+    assert.ok(
+      phases.indexOf('analyst') < phases.indexOf('pm'),
+      'analyst phase must precede pm phase'
+    );
+    assert.ok(
+      phases.indexOf('pm') < phases.indexOf('architect'),
+      'pm phase must precede architect phase'
+    );
   });
 });
