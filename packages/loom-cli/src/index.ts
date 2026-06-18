@@ -1,33 +1,33 @@
 #!/usr/bin/env node
-import { Command, InvalidArgumentError } from 'commander';
+import { Command } from 'commander';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { runInit } from './commands/init.js';
-import { runGuardCheck, runGuardHook } from './commands/guard.js';
-import { runStatus } from './commands/status.js';
-import { runEpic } from './commands/epic.js';
-import { runApprove, runReject } from './commands/gate.js';
-import { runArchive, runUnarchive } from './commands/archive.js';
-import { runRun } from './commands/run.js';
-import { runRetry } from './commands/retry.js';
-import { runWeb } from './commands/web.js';
-import { runStop } from './commands/stop.js';
-import { runRevert } from './commands/revert.js';
-import { runReconcile } from './commands/reconcile.js';
-import { runGuide } from './commands/guide.js';
-import { runMcpList, runMcpAdd } from './commands/mcp.js';
-import { runDoctor } from './commands/doctor.js';
-import { runScanCommand, runOpportunitiesCommand } from './commands/scan.js';
+import { runInit, spec as initSpec } from './commands/init.js';
+import { runGuardCheck, runGuardHook, specCheck as guardCheckSpec, specHook as guardHookSpec } from './commands/guard.js';
+import { runStatus, spec as statusSpec } from './commands/status.js';
+import { runEpic, spec as epicSpec } from './commands/epic.js';
+import { runApprove, runReject, spec as approveSpec, specReject as rejectSpec } from './commands/gate.js';
+import { runArchive, runUnarchive, spec as archiveSpec, specUnarchive } from './commands/archive.js';
+import { runRun, spec as runSpec } from './commands/run.js';
+import { runRetry, spec as retrySpec } from './commands/retry.js';
+import { runWeb, spec as webSpec } from './commands/web.js';
+import { runStop, spec as stopSpec } from './commands/stop.js';
+import { runRevert, spec as revertSpec } from './commands/revert.js';
+import { runReconcile, spec as reconcileSpec } from './commands/reconcile.js';
+import { runGuide, spec as guideSpec } from './commands/guide.js';
+import { runMcpList, runMcpAdd, specList as mcpListSpec, specAdd as mcpAddSpec } from './commands/mcp.js';
+import { runDoctor, spec as doctorSpec } from './commands/doctor.js';
+import { runScanCommand, runOpportunitiesCommand, spec as scanSpec, specOpportunities } from './commands/scan.js';
 import { runGateDryRunCommand } from './commands/doctorDryRunGate.js';
 import { runCrossEpicGateCommand } from './commands/doctorCrossEpicGate.js';
-import { runPropose } from './commands/propose.js';
-import { runDiff } from './commands/diff.js';
-import { runReview } from './commands/review.js';
-import { runArtifacts } from './commands/artifacts.js';
-import { runTraces } from './commands/traces.js';
-import { runAudit } from './commands/audit.js';
-import { runAutonomy } from './commands/autonomy.js';
-import { runProjects } from './commands/projects.js';
+import { runPropose, spec as proposeSpec } from './commands/propose.js';
+import { runDiff, spec as diffSpec } from './commands/diff.js';
+import { runReview, spec as reviewSpec } from './commands/review.js';
+import { runArtifacts, spec as artifactsSpec } from './commands/artifacts.js';
+import { runTraces, spec as tracesSpec } from './commands/traces.js';
+import { runAudit, spec as auditSpec } from './commands/audit.js';
+import { runAutonomy, spec as autonomySpec } from './commands/autonomy.js';
+import { runProjects, spec as projectsSpec } from './commands/projects.js';
 import { runPullGuidance, spec as pullGuidanceSpec } from './commands/pullGuidance.js';
 import { runProject, spec as projectSpec } from './commands/project.js';
 import { applySpec } from './describe/applySpec.js';
@@ -47,21 +47,7 @@ program
   .version(PKG_VERSION);
 
 // ─── loom doctor ────────────────────────────────────────────────────────────
-program
-  .command('doctor')
-  .description('Check prerequisites (Node, git, claude CLI, gh) and report what is missing')
-  .option(
-    '--dry-run-gate',
-    'Execute the integration gate command ONCE in a throwaway worktree and report the outcome (opt-in only)'
-  )
-  .option(
-    '--cross-epic-gate',
-    'Merge every open epic branch into a throwaway union worktree and run the suite once — reports per-pair conflicts or the union suite result (opt-in only)'
-  )
-  .option(
-    '--epics <ids>',
-    'Comma-separated epic ids to restrict --cross-epic-gate to (default: every epic/* branch)'
-  )
+applySpec(program.command('doctor'), doctorSpec)
   .action(async (opts: { dryRunGate?: boolean; crossEpicGate?: boolean; epics?: string }) => {
     if (opts.crossEpicGate) {
       const epics = opts.epics
@@ -81,9 +67,10 @@ program
   });
 
 // ─── loom init ─────────────────────────────────────────────────────────────
+// Keeps bespoke wiring to preserve the -y shorthand for --yes.
 program
   .command('init')
-  .description('Initialize loom in the current git repo')
+  .description(initSpec.summary)
   .option('--cursor', 'Also write .cursor/rules/loom.mdc for Cursor IDE integration')
   .option('-y, --yes', 'Skip confirmation prompts')
   .action((opts: { cursor?: boolean; yes?: boolean }) => {
@@ -95,31 +82,22 @@ const guard = program
   .command('guard')
   .description('Guardrail commands');
 
+// Keeps bespoke wiring to preserve Commander requiredOption behaviour on --command.
 guard
   .command('check')
-  .description('Check whether a command is allowed by policy (CLI / manual use)')
-  .requiredOption('--command <cmd>', 'The command to validate')
+  .description(guardCheckSpec.summary)
+  .requiredOption('--command <cmd>', 'The shell command to validate against policy')
   .action((opts: { command: string }) => {
     runGuardCheck(opts.command);
   });
 
-guard
-  .command('hook')
-  .description('Read Claude Code PreToolUse JSON from stdin and enforce policy (used by .claude/settings.json hook)')
+applySpec(guard.command('hook'), guardHookSpec)
   .action(async () => {
     await runGuardHook();
   });
 
 // ─── loom status ────────────────────────────────────────────────────────────
-program
-  .command('status')
-  .description('Show epic and per-story status with PR links (use --json for machine-readable output)')
-  .option('--watch', 'Refresh every 10s until all stories reach terminal status')
-  .option('--epic <id>', 'Show only this epic')
-  .option('--all', 'Aggregate status across every registered loom project')
-  .option('--archived', 'Include archived runs (hidden by default)')
-  .option('--json', 'Emit a machine-readable JSON payload (one row per story, retries under history[])')
-  .option('--project <root>', 'Target the named registered project (absolute path)')
+applySpec(program.command('status'), statusSpec)
   .action(
     (opts: {
       watch?: boolean;
@@ -141,63 +119,40 @@ program
   );
 
 // ─── loom epic ──────────────────────────────────────────────────────────────
-program
-  .command('epic')
-  .description('Plan an epic from a brief (runs the Analyst → PM → Architect pipeline)')
-  .argument('<brief>', 'One paragraph describing what to build')
-  .option(
-    '--force',
-    'Skip the brief-quality gate for this invocation; the critique is still produced and audit-logged'
-  )
+applySpec(program.command('epic'), epicSpec)
   .action(async (brief: string, opts: { force?: boolean }) => {
     await runEpic(brief, { force: opts.force });
   });
 
 // ─── loom approve / reject (human gate) ─────────────────────────────────────
-program
-  .command('approve')
-  .description('Approve planned epic(s) and release them for execution')
-  .argument('[epic-id]', 'Epic to approve; omit to approve all planned epics')
-  .option('--run', 'After approving, chain into `loom run <epic-id>` to dispatch immediately (requires an explicit epic id)')
+applySpec(program.command('approve'), approveSpec)
   .action(async (epicId: string | undefined, opts: { run?: boolean }) => {
     await runApprove(epicId, { run: opts.run });
   });
 
-program
-  .command('reject')
-  .description('Reject a planned epic')
-  .argument('<epic-id>', 'Epic to reject')
-  .option('--reason <reason>', 'Why the epic is being rejected')
+applySpec(program.command('reject'), rejectSpec)
   .action((epicId: string, opts: { reason?: string }) => {
     runReject(epicId, opts.reason);
   });
 
 // ─── loom archive / unarchive ───────────────────────────────────────────────
-program
-  .command('archive')
-  .description('Hide a run from status/web/MCP views (non-destructive)')
-  .argument('<epic-id>', 'Epic to archive (e.g. epic-001)')
+applySpec(program.command('archive'), archiveSpec)
   .action((epicId: string) => {
     runArchive(epicId);
   });
 
-program
-  .command('unarchive')
-  .description('Restore an archived run to the default views')
-  .argument('<epic-id>', 'Epic to unarchive (e.g. epic-001)')
+applySpec(program.command('unarchive'), specUnarchive)
   .action((epicId: string) => {
     runUnarchive(epicId);
   });
 
 // ─── loom run ───────────────────────────────────────────────────────────────
+// Keeps bespoke wiring to preserve the variadic [epic-ids...] argument.
 program
   .command('run')
-  .description('Dispatch story agents for approved epics (the supervisor)')
+  .description(runSpec.summary)
   .argument('[epic-ids...]', 'Specific epics to run; omit to run all approved epics')
-  .option(
-    '--checkpoint <boundary>',
-    'Pause after the next "story" or "epic" instead of completing everything'
-  )
+  .option('--checkpoint <value>', 'Pause after the next "story" or "epic" boundary instead of running to completion')
   .option('--verbose', 'Stream live worker stdout/stderr to the terminal')
   .action(async (epicIds: string[], opts: { checkpoint?: string; verbose?: boolean }) => {
     const checkpoint = opts.checkpoint;
@@ -212,25 +167,16 @@ program
   });
 
 // ─── loom retry ───────────────────────────────────────────────────────────────
-program
-  .command('retry')
-  .description(
-    'Reset a failed/blocked story and re-run it. Lease-aware: a live run re-dispatches it; otherwise this command dispatches. Grants a fresh auto-retry budget.'
-  )
-  .argument('<story-id>', 'Story id to retry (e.g. story-001-003)')
-  .option(
-    '--clean',
-    'Tear down the story\'s worktree + branch (and those stacked on it) so it re-runs from scratch instead of resuming'
-  )
-  .option('--reason <text>', 'Optional explanation recorded with the retry in the audit log')
+applySpec(program.command('retry'), retrySpec)
   .action(async (storyId: string, opts: { clean?: boolean; reason?: string }) => {
     await runRetry(storyId, { clean: opts.clean, reason: opts.reason });
   });
 
 // ─── loom web ───────────────────────────────────────────────────────────────
+// Keeps bespoke wiring to preserve the -p shorthand for --port.
 program
   .command('web')
-  .description('Launch the loom web dashboard (localhost-only, random token)')
+  .description(webSpec.summary)
   .option('-p, --port <n>', 'Port to bind (default: 8765, with free-port search)', (v: string) => parseInt(v, 10))
   .option('--no-open', "Don't auto-open the browser")
   .option('--read-only', 'Serve GET routes without authentication; mutations require the write token (also: LOOM_WEB_READONLY=1)')
@@ -239,123 +185,90 @@ program
   });
 
 // ─── loom stop ──────────────────────────────────────────────────────────────
+// Keeps bespoke wiring to preserve the variadic [story-ids...] argument.
 program
   .command('stop')
-  .description('Halt the supervisor (no args), SIGTERM specific worker(s) by story id, or stop all workers in one epic with --epic')
+  .description(stopSpec.summary)
   .argument('[story-ids...]', 'Story ids to stop individually; omit to halt the whole run')
-  .option('--epic <epic-id>', 'Stop every running worker in this epic only (leaves other epics running)')
-  .option('--reason <text>', 'Optional explanation recorded in the audit log (defaults to "cli")')
+  .option('--epic <value>', 'Stop every running worker in this epic only (leaves other epics running)')
+  .option('--reason <value>', 'Explanation recorded in the audit log (defaults to "cli")')
   .action((storyIds: string[], opts: { epic?: string; reason?: string }) => {
     runStop(storyIds, opts);
   });
 
 // ─── loom guide ─────────────────────────────────────────────────────────────
+// Keeps bespoke wiring to preserve the variadic [message...] second argument.
 program
   .command('guide')
-  .description('Append a guidance message for one running worker — reads at next dispatch/revision when policy.agents.operator_guidance=on')
+  .description(guideSpec.summary)
   .argument('<story-id>', 'Story id (e.g. story-001-003)')
   .argument('[message...]', 'Free-form guidance text (omit when using --clear)')
   .option('--clear', 'Remove the guidance file for this story')
-  .option('--author <name>', 'Tag the entry with an author label (defaults to "operator")')
+  .option('--author <value>', 'Tag the entry with an author label (defaults to "operator")')
   .action((storyId: string, messageParts: string[], opts: { clear?: boolean; author?: string }) => {
     runGuide(storyId, messageParts.join(' '), opts);
   });
 
 // ─── loom revert ────────────────────────────────────────────────────────────
-program
-  .command('revert')
-  .description('Tear down an epic: delete the epic + story branches locally, flip DB status. --remote also deletes the upstream branch and closes the PR.')
-  .argument('<epic-id>', 'Epic id (e.g. epic-001)')
-  .option('--remote', 'Also delete the remote epic branch and close any loom-opened PR. Requires the project remote to match policy.git.allowed_remotes.')
-  .option('--reason <text>', 'Optional explanation recorded with the revert in audit_log')
+applySpec(program.command('revert'), revertSpec)
   .action((epicId: string, opts: { remote?: boolean; reason?: string }) => {
     runRevert(epicId, opts);
   });
 
 // ─── loom reconcile ─────────────────────────────────────────────────────────
-program
-  .command('reconcile')
-  .description('Reconcile a stranded-but-merged epic to done. Verifies the PR was merged (via gh or git ancestry) then flips the epic status.')
-  .argument('<epic-id>', 'Epic id (e.g. epic-001)')
-  .option('--pr <url>', 'PR URL to verify via gh (squash-merged epics REQUIRE this)')
+applySpec(program.command('reconcile'), reconcileSpec)
   .action((epicId: string, opts: { pr?: string }) => {
     runReconcile(epicId, { pr: opts.pr });
   });
 
 // ─── loom diff ────────────────────────────────────────────────────────────
-program
-  .command('diff')
-  .description('Show a story or epic diff (git diff base..branch). Read-only.')
-  .argument('<id>', 'Story id (story-XXX-YYY) or epic id (epic-XXX)')
-  .option('--max-bytes <n>', 'Truncate the diff body at N bytes (default 200000)', (v: string) => parseInt(v, 10))
-  .option('--no-stat', 'Omit the leading --stat summary')
-  .option('--json', 'Emit JSON: { base, head, bytes, truncated, diff, stat }')
-  .action(async (id: string, opts: { maxBytes?: number; stat?: boolean; json?: boolean }) => {
-    await runDiff(id, { maxBytes: opts.maxBytes, stat: opts.stat, json: opts.json });
+applySpec(program.command('diff'), diffSpec)
+  .action(async (id: string, opts: { maxBytes?: string | number; stat?: boolean; json?: boolean }) => {
+    await runDiff(id, {
+      maxBytes: opts.maxBytes !== undefined ? parseInt(String(opts.maxBytes), 10) : undefined,
+      stat: opts.stat,
+      json: opts.json,
+    });
   });
 
 // ─── loom review ──────────────────────────────────────────────────────────
-program
-  .command('review')
-  .description("Show a story's review verdict and summary (block-and-revise output)")
-  .argument('<story-id>', 'Story id (e.g. story-001-003)')
-  .option('--json', 'Emit JSON: { story_id, review_status, review_summary }')
+applySpec(program.command('review'), reviewSpec)
   .action((storyId: string, opts: { json?: boolean }) => {
     runReview(storyId, { json: opts.json });
   });
 
 // ─── loom artifacts ───────────────────────────────────────────────────────
-program
-  .command('artifacts')
-  .description("Show an epic's planning artifacts (brief, PRD, architecture, epic YAML)")
-  .argument('<epic-id>', 'Epic id (e.g. epic-001)')
-  .option('--section <name>', 'Print one body: brief | prd | architecture | epic_yaml')
-  .option('--json', 'Emit JSON with paths + all artifact bodies')
+applySpec(program.command('artifacts'), artifactsSpec)
   .action((epicId: string, opts: { section?: string; json?: boolean }) => {
     runArtifacts(epicId, { section: opts.section, json: opts.json });
   });
 
 // ─── loom traces ──────────────────────────────────────────────────────────
-program
-  .command('traces')
-  .description('Show captured worker reasoning (decision traces). Scope to exactly one of --story/--agent/--epic.')
-  .option('--story <id>', 'Story id to scope to')
-  .option('--agent <id>', 'Agent id to scope to')
-  .option('--epic <id>', 'Epic id to scope to')
-  .option('--limit <n>', 'Max rows to return', (v: string) => parseInt(v, 10))
-  .option('--json', 'Emit JSON: { traces: [...] }')
-  .action((opts: { story?: string; agent?: string; epic?: string; limit?: number; json?: boolean }) => {
-    runTraces(opts);
+applySpec(program.command('traces'), tracesSpec)
+  .action((opts: { story?: string; agent?: string; epic?: string; limit?: string | number; json?: boolean }) => {
+    runTraces({
+      ...opts,
+      limit: opts.limit !== undefined ? parseInt(String(opts.limit), 10) : undefined,
+    });
   });
 
 // ─── loom audit ───────────────────────────────────────────────────────────
-program
-  .command('audit')
-  .description('Show recent audit_log entries. Optionally scope to --story or --agent.')
-  .option('--story <id>', 'Story id (matches across retries)')
-  .option('--agent <id>', 'Agent id to scope to')
-  .option('--limit <n>', 'Max rows to return (default 20)', (v: string) => parseInt(v, 10))
-  .option('--json', 'Emit JSON: { entries: [...] }')
-  .action((opts: { story?: string; agent?: string; limit?: number; json?: boolean }) => {
-    runAudit(opts);
+applySpec(program.command('audit'), auditSpec)
+  .action((opts: { story?: string; agent?: string; limit?: string | number; json?: boolean }) => {
+    runAudit({
+      ...opts,
+      limit: opts.limit !== undefined ? parseInt(String(opts.limit), 10) : undefined,
+    });
   });
 
 // ─── loom autonomy ────────────────────────────────────────────────────────
-program
-  .command('autonomy')
-  .description('Set or show an epic autonomy level (full-auto | checkpoint | manual)')
-  .argument('<epic-id>', 'Epic id (e.g. epic-001)')
-  .argument('[level]', 'full-auto | checkpoint | manual; omit to show the current value')
-  .option('--json', 'Emit JSON: { id, autonomy_level }')
+applySpec(program.command('autonomy'), autonomySpec)
   .action((epicId: string, level: string | undefined, opts: { json?: boolean }) => {
     runAutonomy(epicId, level, { json: opts.json });
   });
 
 // ─── loom projects ────────────────────────────────────────────────────────
-program
-  .command('projects')
-  .description('List loom-initialized repos on this machine')
-  .option('--json', 'Emit JSON: { projects: [...] }')
+applySpec(program.command('projects'), projectsSpec)
   .action((opts: { json?: boolean }) => {
     runProjects({ json: opts.json });
   });
@@ -379,59 +292,48 @@ const mcp = program
   .command('mcp')
   .description('Provision approved MCP servers from the org registry');
 
-mcp
-  .command('list')
-  .description('List approved MCP servers from the configured registry')
+applySpec(mcp.command('list'), mcpListSpec)
   .action(() => {
     runMcpList();
   });
 
-mcp
-  .command('add')
-  .description('Add an approved MCP server to .mcp.json and .cursor/mcp.json')
-  .argument('<name>', 'Registry server name')
+applySpec(mcp.command('add'), mcpAddSpec)
   .action((name: string) => {
     runMcpAdd(name);
   });
 
 // ─── loom scan ──────────────────────────────────────────────────────────────
-program
-  .command('scan')
-  .description('Run signal scanners and produce a ranked opportunity board (one LLM call)')
-  .option('--json', 'Emit structured JSON output')
-  .option('--project <root>', 'Target the named registered project (absolute path)')
+applySpec(program.command('scan'), scanSpec)
   .action(async (opts: { json?: boolean; project?: string }) => {
     await runScanCommand({ json: opts.json, project: opts.project });
   });
 
 // ─── loom opportunities ─────────────────────────────────────────────────────
-program
-  .command('opportunities')
-  .description('Show the current opportunity board (reads existing store, no scan)')
-  .option('--json', 'Emit structured JSON output')
+applySpec(program.command('opportunities'), specOpportunities)
   .action((opts: { json?: boolean }) => {
     runOpportunitiesCommand({ json: opts.json });
   });
 
 // ─── loom propose ───────────────────────────────────────────────────────────
-program
-  .command('propose')
-  .description('Propose the next epic from top-ranked lessons + open opportunities (one LLM call)')
-  .option('--top-lessons <n>', 'Number of top lessons to include in the proposal', (v: string) => {
-    if (!/^\d+$/.test(v.trim())) throw new InvalidArgumentError('Must be a positive integer');
-    const n = parseInt(v, 10);
-    if (n < 1) throw new InvalidArgumentError('Must be a positive integer');
-    return n;
-  })
-  .option('--top-opps <n>', 'Number of top opportunities to include in the proposal', (v: string) => {
-    if (!/^\d+$/.test(v.trim())) throw new InvalidArgumentError('Must be a positive integer');
-    const n = parseInt(v, 10);
-    if (n < 1) throw new InvalidArgumentError('Must be a positive integer');
-    return n;
-  })
-  .option('--json', 'Emit machine-readable JSON output ({ ok, epicId? } or { ok, critique })')
-  .action(async (opts: { topLessons?: number; topOpps?: number; json?: boolean }) => {
-    await runPropose({ topLessons: opts.topLessons, topOpps: opts.topOpps, json: opts.json });
+applySpec(program.command('propose'), proposeSpec)
+  .action(async (opts: { topLessons?: string | number; topOpps?: string | number; json?: boolean }) => {
+    let topLessons: number | undefined;
+    if (opts.topLessons !== undefined) {
+      topLessons = parseInt(String(opts.topLessons), 10);
+      if (isNaN(topLessons) || topLessons < 1) {
+        console.error('error: --top-lessons must be a positive integer');
+        process.exit(1);
+      }
+    }
+    let topOpps: number | undefined;
+    if (opts.topOpps !== undefined) {
+      topOpps = parseInt(String(opts.topOpps), 10);
+      if (isNaN(topOpps) || topOpps < 1) {
+        console.error('error: --top-opps must be a positive integer');
+        process.exit(1);
+      }
+    }
+    await runPropose({ topLessons, topOpps, json: opts.json });
   });
 
 program.parse();

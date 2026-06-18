@@ -80,7 +80,9 @@ export function enumerateRegisteredCommands(program: Command): string[] {
   function walk(cmd: Command, prefix: string): void {
     for (const sub of cmd.commands) {
       const fullName = prefix ? `${prefix} ${sub.name()}` : sub.name();
-      names.push(fullName);
+      if (sub.commands.length === 0) {
+        names.push(fullName);
+      }
       walk(sub, fullName);
     }
   }

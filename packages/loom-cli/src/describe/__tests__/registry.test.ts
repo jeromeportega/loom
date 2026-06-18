@@ -181,14 +181,15 @@ describe('enumerateRegisteredCommands', () => {
     assert.ok(names.includes('mcp add'), 'must include mcp add');
   });
 
-  it('does not include the parent command name itself (guard, mcp)', () => {
+  it('includes full-path child names for grouped subcommands but not the group container itself', () => {
     const program = buildTestProgram();
     const names = enumerateRegisteredCommands(program);
-    // 'guard' and 'mcp' as standalone names without subcommand path appear since
-    // they ARE registered commands — but guard check/hook are the subcommands.
-    // Parent commands like 'guard' appear if they have no action; ensure children appear.
+    // Leaf commands must appear with their full path.
     assert.ok(names.includes('guard check'), 'guard check must appear');
     assert.ok(names.includes('mcp add'), 'mcp add must appear');
+    // Parent group containers (no action, only sub-commands) must not appear.
+    assert.strictEqual(names.filter((n) => n === 'guard').length, 0, 'guard parent must not appear as a standalone name');
+    assert.strictEqual(names.filter((n) => n === 'mcp').length, 0, 'mcp parent must not appear as a standalone name');
   });
 
   it('returns unique names for a well-formed program', () => {
