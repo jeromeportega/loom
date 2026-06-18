@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -95,6 +95,9 @@ describe('PolicyEngine — release flow guard regression [story-006-002]', () =>
   it('[AC3] git push --force origin main is blocked (force + protected branch — flag check fires first)', () => {
     const r = engine.check('git push --force origin main');
     assert.equal(r.allowed, false);
+    // PolicyEngine evaluates forbidden_flags before protected_branches; the rule
+    // priority is a documented contract (flag checks precede branch checks in
+    // checkGit). Pinning it here ensures a refactor does not silently swap the order.
     assert.equal(r.rule, 'git.forbidden_flags');
   });
 });
@@ -109,40 +112,38 @@ describe('PolicyEngine — release flow guard regression [story-006-002]', () =>
 // This test reads the release command source to confirm the documentation is
 // present. It does NOT execute the release command.
 
-describe('release command — post-merge operator step is documented [AC1]', () => {
-  function findReleaseSrc(): string {
-    // Walk up from the compiled __dirname until we find the loom-cli source.
-    let dir = __dirname;
-    for (let i = 0; i < 12; i++) {
-      const candidate = path.join(dir, 'packages', 'loom-cli', 'src', 'commands', 'release.ts');
-      if (fs.existsSync(candidate)) return candidate;
-      dir = path.dirname(dir);
-    }
-    throw new Error('could not locate packages/loom-cli/src/commands/release.ts');
-  }
+describe('release command — post-merge operator step is documented [DOC-AC1]', () => {
+  // Resolve from __dirname (CJS; compiled to packages/loom-core/dist/__tests__/).
+  // 4 levels up: dist/__tests__ → dist → loom-core → packages → repo root.
+  const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
+  const RELEASE_TS = path.join(REPO_ROOT, 'packages', 'loom-cli', 'src', 'commands', 'release.ts');
 
-  let content: string;
+  let content = '';
 
-  it('locates packages/loom-cli/src/commands/release.ts', () => {
-    content = fs.readFileSync(findReleaseSrc(), 'utf8');
+  before(() => {
+    assert.ok(
+      fs.existsSync(RELEASE_TS),
+      `release.ts not found at ${RELEASE_TS} — check repo layout`,
+    );
+    content = fs.readFileSync(RELEASE_TS, 'utf8');
     assert.ok(content.length > 0, 'release.ts must not be empty');
   });
 
-  it('[AC1] release.ts documents the post-merge git tag step', () => {
+  it('[DOC-AC1] release.ts documents the post-merge git tag step', () => {
     assert.ok(
       /git tag v/.test(content),
       'release.ts must mention "git tag v<version>" for the post-merge tagging step',
     );
   });
 
-  it('[AC1] release.ts documents that the tag must point at the merged main commit (merge-sha)', () => {
+  it('[DOC-AC1] release.ts documents that the tag must point at the merged main commit (merge-sha)', () => {
     assert.ok(
       /<merge-sha>/.test(content) || /merge.sha/i.test(content) || /merge commit/i.test(content),
       'release.ts must document that the tag must point at the merged main commit',
     );
   });
 
-  it('[AC1] release.ts documents git push origin v<version> as the post-merge tag push', () => {
+  it('[DOC-AC1] release.ts documents git push origin v<version> as the post-merge tag push', () => {
     assert.ok(
       /git push origin v/.test(content),
       'release.ts must document "git push origin v<version>" as the post-merge tag push',
