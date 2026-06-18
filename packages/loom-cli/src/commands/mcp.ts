@@ -7,7 +7,35 @@ import {
   toMcpJsonEntry,
   requiredSecrets,
 } from '@loom-ai/core';
-import { upsertMcpServer } from './mcpConfig.js';
+
+type UpsertResult = 'created' | 'added' | 'exists';
+
+function upsertMcpServer(
+  mcpPath: string,
+  serverName: string,
+  entry: unknown
+): UpsertResult {
+  fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
+
+  const fileExisted = fs.existsSync(mcpPath);
+  let config: { mcpServers?: Record<string, unknown> } = {};
+  if (fileExisted) {
+    try {
+      config = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
+    } catch {
+      config = {};
+    }
+  }
+
+  const servers = config.mcpServers ?? {};
+  if (servers[serverName]) {
+    return 'exists';
+  }
+  servers[serverName] = entry;
+  config.mcpServers = servers;
+  fs.writeFileSync(mcpPath, JSON.stringify(config, null, 2) + '\n');
+  return fileExisted ? 'added' : 'created';
+}
 
 function loadRegistry(): McpRegistry | null {
   const loomDir = path.join(process.cwd(), '.loom');

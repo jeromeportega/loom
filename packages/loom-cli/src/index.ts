@@ -82,11 +82,10 @@ program
 // ─── loom init ─────────────────────────────────────────────────────────────
 program
   .command('init')
-  .description('Initialize loom in the current git repo (CLI-first; MCP server is opt-in)')
-  .option('--cursor', 'Also write .cursor/mcp.json and .cursor/rules/loom.mdc')
-  .option('--mcp', 'Also write .mcp.json so Claude Code connects the optional loom MCP server')
+  .description('Initialize loom in the current git repo')
+  .option('--cursor', 'Also write .cursor/rules/loom.mdc for Cursor IDE integration')
   .option('-y, --yes', 'Skip confirmation prompts')
-  .action((opts: { cursor?: boolean; yes?: boolean; mcp?: boolean }) => {
+  .action((opts: { cursor?: boolean; yes?: boolean }) => {
     runInit(opts);
   });
 
