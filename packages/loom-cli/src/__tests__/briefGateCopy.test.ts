@@ -23,8 +23,8 @@ const UNIQUE_PHRASES = [CANNOT_BYPASS, UNBYPASSABLE];
 
 // Files that carry user-facing copy about the brief-quality gate. None of
 // them may describe the gate as impossible to override.
+// Note: packages/loom-mcp/src/tools/registry.ts was deleted in epic-003 (story-003-001).
 const GATE_COPY_FILES = [
-  'packages/loom-mcp/src/tools/registry.ts',
   'packages/loom-cli/src/commands/init.ts',
   'docs/capabilities.md',
   'README.md',
@@ -83,26 +83,6 @@ describe('brief-quality gate copy (story-001-004)', () => {
       comment,
       gatePhraseRe,
       'comment must not claim the gate is impossible to override'
-    );
-  });
-
-  it('registry.ts loom_start_epic description mentions force and is not framed as unbypassable', () => {
-    const registry = fs.readFileSync(
-      path.join(REPO_ROOT, 'packages/loom-mcp/src/tools/registry.ts'),
-      'utf8'
-    );
-    const marker = "name: 'loom_start_epic'";
-    const startEpicStart = registry.indexOf(marker);
-    assert.ok(startEpicStart >= 0, 'registry should define loom_start_epic');
-    // Bound the slice to this tool definition (up to the next tool entry).
-    const nextTool = registry.indexOf('name: ', startEpicStart + marker.length);
-    const block = registry.slice(startEpicStart, nextTool === -1 ? undefined : nextTool);
-
-    assert.match(block, /force/, 'loom_start_epic copy should mention force');
-    assert.doesNotMatch(
-      block,
-      gatePhraseRe,
-      'loom_start_epic copy must not describe the gate as unbypassable'
     );
   });
 

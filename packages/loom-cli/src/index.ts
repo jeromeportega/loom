@@ -440,14 +440,4 @@ program
     await runPropose({ topLessons: opts.topLessons, topOpps: opts.topOpps, json: opts.json });
   });
 
-// ─── loom serve ─────────────────────────────────────────────────────────────
-program
-  .command('serve')
-  .description('Start the optional loom MCP server (stdio transport). The CLI is the primary surface; prefer running loom commands directly.')
-  .action(async () => {
-    // Dynamically import to keep CLI startup fast when MCP is not needed
-    const { startMcpServer } = await import('@loom-ai/mcp');
-    await startMcpServer();
-  });
-
 program.parse();
