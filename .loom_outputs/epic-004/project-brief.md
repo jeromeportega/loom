@@ -1,67 +1,66 @@
-# Signal Scout — On-Demand Work Discovery and Gated Scoping for loom (Epic C, v3.0)
+# Machine-Readable CLI Self-Description for LLM Agents
 
 ## The Problem
 
-loom can *execute* engineering work autonomously and, since v2.0 (Fleet Commander), *govern* it through an autonomy dial, decision inbox, and fleet board. But the work itself still originates from a human writing a brief. The operator is the bottleneck and the sole source of direction: nothing in the system notices that a TODO has festered for months, that a story keeps failing its integration gate, or that an open GitHub issue maps cleanly onto a deliverable epic.
+Loom recently removed its MCP server, leaving the CLI as the only interface to the system and loom web as the observability surface. The MCP server previously gave LLM clients structured, discoverable tool schemas — typed arguments, output contracts, and tool relationships an agent could read once and then act on. With it gone, an agent driving loom (Claude Code or similar) has only human-oriented `--help` text: prose tuned for human reading, not machine parsing, with no consistent shape, no JSON output contracts, and no encoded notion that `epic` precedes `approve` precedes `run`. The result is a discoverability regression: the CLI can be operated by a human who reads help pages, but an LLM agent cannot reliably learn the full capability surface or chain commands into tasks without reading source code.
 
-The missing layer is **discovery**: a way for loom to read its own real signals, propose where attention is warranted, and route those proposals through the *same* approval gate that already governs execution. Without it, the operator must both find work and authorize it. The goal is to shift them from "write briefs" to "approve direction" — while preserving the hard governance line: loom may *propose*, but it must never self-scope or self-execute.
-
-A secondary, blocking problem: epic-003 left web routes orphaned. `createApp()` mounts only autonomy and fleet routes; `registerInboxRoutes` and `registerMutationRoutes` are never mounted, so `GET /api/inbox` returns 404 and cross-project inbox actions are dead. Signal Scout's surfaces depend on a healthy web layer, so this must be fixed first.
+This matters because the CLI is now loom's sole programmatic interface. If agents cannot drive it reliably, loom loses the LLM-client integration the MCP server provided — without gaining back the observability or usability the removal was meant to clarify.
 
 ## Target Users
 
-- **Primary — the loom operator (Jerome / a solo, serial operator).** Runs `loom scan` on demand, reviews a ranked opportunity board, and decides what becomes real work. Wants high-signal proposals with evidence, not noise, and wants final say at the gate.
-- **Secondary — the PM/planning agents (John, Winston) downstream.** A scoped opportunity becomes a real `planned` epic that flows into the existing planning pipeline; the brief they receive must be well-formed enough to pass the brief gate.
-- **Secondary — future integrators.** The `SignalScanner` interface must accommodate later connectors (Slack, Jira, telemetry) without redesign.
-- **Anti-persona — the "autonomous initiative-taker."** This epic explicitly does *not* serve any actor (human or agent) wanting loom to auto-approve, auto-scope on a score threshold, or run discovery on a schedule/daemon. Every transition from proposal to work is an explicit operator action.
+- **Primary — LLM agents driving loom through the CLI.** Interfaces like Claude Code that need to discover loom's commands, understand each command's arguments, output shapes, and relationships, and chain them to accomplish loom tasks (planning, approving, running, status, retry, reconcile) without source-code access.
+- **Secondary — loom contributors.** Engineers adding or changing CLI commands, who need a documented standard and a completeness test that tells them when a description is missing or invalid.
+- **Secondary — human operators reading docs/help.** Where practical, the same source feeds human help and a generated CLI reference, so humans benefit from descriptions that cannot drift from the code.
+- **Anti-persona — MCP/tool-surface consumers.** This work deliberately does **not** serve clients expecting a reintroduced MCP server or tool API. Discoverability is restored purely at the CLI layer.
 
 ## Proposed Solution
 
-Add an on-demand discovery pipeline that sits on top of the v2.0 governance surface and reuses it rather than reinventing it:
+A four-part CLI self-description capability:
 
-1. **Scan** real repository signals via pluggable scanners.
-2. **Cluster + score** signals into ranked opportunities using one batched LLM-assisted call per scan, with a *deterministic* scoring formula.
-3. **Scope** a selected opportunity — only on explicit operator action — through the existing `BriefRefiner` → `Planner` path into a real `planned` + `manual` epic.
-4. **Gate** every scoped epic through the existing inbox `plan_approval` source; the Supervisor never auto-approves it.
+1. **A schema-encoded standard** for LLM-parseable command descriptions, documented so future commands conform.
+2. **A description for every command the CLI exposes today**, authored to the standard, co-located with the command definitions as a single source of truth so machine output and human help share one origin.
+3. **A `loom describe` command** that emits the full machine-readable manifest as JSON, or a single command's description by name — output that validates against the standard.
+4. **A completeness test** that enumerates every registered command and asserts each has a valid description, failing the suite if any command lacks one.
 
-The pipeline is exposed through a CLI (`loom scan`), an MCP tool (`loom_scan_signals`), and a read-only federated opportunity board with "Scope this" / "Dismiss" actions.
+The guiding aim: from `loom describe` JSON alone, an LLM agent can learn to accomplish loom's core tasks without reading source.
 
 ## Key Capabilities
 
-1. **Fix orphaned web wiring.** Mount `inbox.ts` and `mutations.ts` before any leftover inline route for the same path (Express runs first-registered); delete the now-duplicate inline approve/reject/retry/stop/kill handlers (locate by route path + body, not line number — line numbers will drift); **keep** the inline archive handler (mutations.ts has no archive).
-2. **≥3 real signal scanners** under `loom-core/src/signals/` implementing `SignalScanner`: **audit-introspection** (recurring `work_failure`, retry clusters, `review_status='errored'`, `epic_integration_gate` failures), **code-debt** (regex `TODO|FIXME|HACK` over tracked source, capped at 200 deterministic matches/scan, drops logged), and **github-issues** (`gh issue list`, one signal per open issue, degrades gracefully when `gh` or remote is absent — never throws). Read this repo's real state; no fixtures in the live path.
-3. **Signal persistence with reconciliation.** `SignalStore` → `signals` table (schema v17), UNIQUE on a stable `key`. Re-running a scan UPSERTs (`last_seen`); any previously-open signal not re-observed is marked `stale`. Each scan writes an audit row.
-4. **Opportunity engine.** One batched LLM clustering+scoring call per scan over the capped open-signal set (injectable/stubbable). LLM proposes `impact`/`effort`/`confidence` ∈ [0,1] + written `rationale`; a pure deterministic function computes `score = impact * confidence / max(effort, 0.1)` and descending `rank`. Stable opportunity `key = sha1(sorted(member signal keys))`; `scoped`/`dismissed` keys are never resurfaced, `open` keys are refreshed, materially-changed membership yields a new key. Robust cluster-output validation: drop unknown signal_ids, skip empty clusters, one repair re-prompt on malformed JSON then skip opportunity-generation (never fail the whole scan).
-5. **Explicit-only scoping.** `scopeOpportunity(opportunityId)` feeds `description` + `evidence_summary` through `BriefRefiner` (honoring `min_brief_quality_score`); on pass, runs `Planner` to produce a `planned` epic and links `scoped_epic_id` + `status='scoped'`. On gate failure: record critique, leave opportunity `open`. No threshold trigger, no scheduler/daemon.
-6. **Governance invariant.** Scoped epics are `planned` + `autonomy_level='manual'` and surface in the inbox via the existing `plan_approval` source (no new inbox tagging). A later-rejected scoped epic returns its opportunity to `open`.
-7. **Surfaces.** `GET /api/opportunities` (read-only federated, like fleet) + an `opportunities.js` board view (ranked, with rationale, evidence links, signal counts, Scope/Dismiss buttons, empty state); `POST /api/opportunities/:id/scope` and `…/dismiss` (token-gated, audit-logged); CLI `loom scan` and optional `loom opportunities`; `loom_scan_signals` MCP tool.
+1. **Define and document the description standard** — a structured, consistent shape per command capturing: name/path, one-line summary, when-to-use guidance, positional arguments (name, type, required, description), options/flags (name, type, default, description, whether it changes output shape), output contract (including the JSON shape emitted under `--json` where supported), at least one usage example, exit codes and common error conditions, and command relationships (prerequisites and typical next steps).
+2. **Capture task-level workflows** — a small set of common recipes that chain commands to accomplish a goal (e.g., the plan → approve → run path).
+3. **Encode the standard as a validatable schema** and document it for future authors.
+4. **Author descriptions for every current command** — including parity-port additions (`pull-guidance`, `project`) and the new `stop` and `propose` flags; excluding removed commands such as `serve`.
+5. **Co-locate descriptions with command definitions** as the single source of truth, feeding both machine output and human help where practical.
+6. **Ship `loom describe`** — full manifest as JSON, or single-command lookup by name, validating against the standard.
+7. **Enforce completeness via test** — enumerate registered commands and fail if any lacks a complete, valid description.
+8. **[ASSUMPTION] Optionally generate a human-readable CLI reference** from the same source, so docs cannot drift from code. Treated as a stretch deliverable, consistent with the "Optionally" framing in the brief.
 
 ## Constraints
 
-- **Additive, backward-compatible schema.** Bump `Database.ts` `SCHEMA_VERSION` 16 → 17 with idempotent `CREATE TABLE IF NOT EXISTS`; pre-v17 DBs auto-create the new tables. Default behavior with no scan run is unchanged.
-- **Reuse, do not reinvent** (all verified on `main`): `Planner`, `BriefRefiner`, `EpicStore` lifecycle, `audit_log`/`agents` introspection, `gh` via `execFileSync`, and epic-003's fleet routing/DTO/`ProjectRegistry` patterns. Follow the `EpicStore` ctor / ISO-timestamp / JSON-blob conventions.
-- **Governance is non-negotiable.** No auto-approval; no auto-scoping via score threshold; no scheduler/daemon. Scoped epics must be `planned` + `manual` (proven by test). Scoping is always an explicit operator action.
-- **One batched LLM call per scan** over the capped set — never one call per signal; injectable and stubbed in tests.
-- **Every mutation endpoint token-gated + audit-logged.** Scanners, scoping, and dismiss all write audit rows.
-- **Every new web route covered by a real-`createApp` test** (import the actual `createApp`, not a hand-built express app) so an unmounted route fails loudly.
-- **`docs/capabilities.md` updated** in this PR (add discovery surfaces; relocate any "what loom does NOT do" discovery entry if present).
-- **`npm run build` and `npm run test` green across all packages.**
-- **Single serial operator assumed** — no concurrent-scan locking this epic.
+- **No MCP reintroduction.** Do not bring back any MCP server or tool surface. This is pure CLI self-description.
+- **Surface boundaries hold.** CLI remains the usability surface; loom web remains the observability surface.
+- **Human help keeps working.** Existing `--help` output must continue to function.
+- **No behavior changes.** Do not break any existing command behavior.
+- **Single source of truth, co-located.** Descriptions live with command definitions to prevent drift between machine output, human help, and docs.
+- **Follows existing precedent.** The completeness test mirrors the parity-oracle pattern from the MCP-removal epic. `[ASSUMPTION]` The schema is expressed in a form consistent with loom's existing `schemas/` directory and `zod`/YAML conventions; the brief does not name the format.
+- **Capabilities page.** Per repo policy, the new `describe` command and any user-visible knobs are added to `docs/capabilities.md` in the same change.
 
 ## Risks and Open Questions
 
-- **LLM clustering quality and cost.** A single batched call must cluster the full capped open-signal set coherently. [ASSUMPTION] The capped set (≤200 code-debt matches plus audit/issue signals) fits within one reasonable context window; if not, the cap or batching strategy may need revisiting. Cost-sensitivity is a known operator concern — [ASSUMPTION] this clustering call is a candidate for the cheaper model tier rather than deep-reasoning Opus.
-- **Opportunity identity churn.** Because a materially-changed cluster yields a new `key`, the board could surface near-duplicate opportunities as signal membership drifts between scans. Open question: is "materially changed" purely the sorted-key-set hash (any membership delta = new key), and is that churn acceptable to the operator, or is a similarity/merge step needed later? Current resolution: exact-set hash; revisit if churn is noisy.
-- **Determinism boundary.** Scoring is deterministic given the LLM's `impact`/`effort`/`confidence`, but those inputs are LLM-produced and will vary run to run. "Deterministically-ranked" therefore means *deterministic given fixed LLM output* — worth stating plainly so the determinism claim isn't over-read.
-- **Stale vs. dismissed semantics.** A signal can go `stale` while its opportunity is `dismissed` (permanent per key). [ASSUMPTION] A dismissed opportunity whose underlying signals later re-appear in a *different* cluster (new key) legitimately resurfaces as new work — this is intended, not a leak of dismissed state.
-- **gh degradation breadth.** github-issues must degrade gracefully on missing `gh`, missing remote, and auth failure. Open question: are rate-limit / network-timeout failures also treated as "zero signals + audit note," or surfaced differently? Current resolution: never throw; treat all as graceful zero-signal with an audit note.
-- **Orphaned-route deletion risk.** Inline handlers must be located by route path + body, not line number (≈443/473/532/582/593 will drift). Mis-identifying the archive handler (which must be *kept*) would silently break archive — the real-`createApp` tests are the guard.
+- **Drift despite co-location.** Co-locating descriptions reduces but does not eliminate drift; the completeness test checks *presence and validity*, not *accuracy* of prose (summaries, when-to-use). `[ASSUMPTION]` Prose accuracy is maintained by author discipline and review, not automated checks — open question whether any accuracy guard is wanted.
+- **"Changes the output shape" semantics.** The flag attribute "whether it changes the output shape" needs a precise, testable definition so authors apply it consistently. Open question: is this a free-form note or an enumerated contract?
+- **Output-contract fidelity.** The JSON output shape is documented per command, but nothing yet asserts the documented shape matches the *actual* emitted JSON. Open question: should the completeness test (or a companion test) validate real `--json` output against the declared contract? Without it, the agent-facing contract can silently diverge from runtime behavior.
+- **Workflow selection.** Which task-level workflows to encode is a judgment call. Acceptance names six core tasks — planning, approving, running, checking status, retrying, reconciling — so those anchor the minimum set. `[ASSUMPTION]` "Retrying" maps to a retry/`run`-resume path and "reconciling" to a reconcile command; exact command names to be confirmed against the current CLI.
+- **Command inventory completeness.** The brief calls out inclusions (`pull-guidance`, `project`, `stop`, `propose` flags) and exclusions (`serve`), but the authoritative list is whatever the CLI registers today. Open question resolved by construction: the completeness test enumerates registered commands, so the inventory is derived, not hand-maintained.
+- **The "agent could learn from JSON alone" criterion.** This is partly qualitative. Open question: how is it evaluated — by inspection, or by an actual agent-driven dry run of the six core tasks?
 
 ## Success Criteria
 
-- **Scanners:** ≥3 scanners produce real signals from this repo, persisted, UPSERT-deduped on re-run with stale-marking — one test per scanner.
-- **Opportunities:** signals clustered and scored via the deterministic formula with written rationale + evidence links, persisted, ranked, served by `GET /api/opportunities` (real-`createApp` test), and rendered in the board with an empty state. A re-scan does not duplicate or resurface `scoped`/`dismissed` opportunities (test keyed on the opportunity `key`).
-- **Scoping:** `scopeOpportunity` produces a real `planned` + `manual` epic that passes the brief gate, linked via `scoped_epic_id` — tested with stubbed planner + LLM. A failed brief gate records the critique and leaves the opportunity `open`.
-- **Governance:** the scoped epic appears in `GET /api/inbox` as a pending `plan_approval` and stays `planned` until an explicit approve (test); a rejected scoped epic returns its opportunity to `open` (test).
-- **Wiring fix:** orphaned routes mounted in real `createApp`; inline approve/reject/retry/stop/kill removed; archive kept; `POST /api/epics/:id/resume` newly served; approve now returns `{status:'dispatching'}` — all proven by a real-`createApp` route test.
-- **Hygiene:** `docs/capabilities.md` updated; `npm run build` and `npm run test` green across all workspaces.
+- A documented, schema-encoded standard for command descriptions exists and can validate a description.
+- Every CLI command has a description that validates against the standard, enforced by a completeness test that **fails** if any registered command lacks a valid one.
+- `loom describe` emits the full manifest as JSON and emits a single command's description when given a command name; both outputs validate against the standard.
+- Descriptions include: summary, when-to-use, arguments, flags with types and defaults, the JSON output shape where applicable, at least one example, exit/error behavior, command relationships, and a few task-level workflows.
+- From `loom describe` JSON output alone, an LLM agent could learn to accomplish planning, approving, running, status, retry, and reconcile without reading source code.
+- No MCP server or tool surface is reintroduced; human `--help` output still works; no existing command behavior is broken.
+- The full build and test suite pass.
+- `docs/capabilities.md` reflects the new `describe` command and any user-visible knobs.
