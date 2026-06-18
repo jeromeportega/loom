@@ -46,6 +46,7 @@ export function runPublish(epicId: string, opts: PublishCommandOptions = {}): vo
 
 export const spec: CommandDescription = {
   name: 'publish',
+  audience: 'internal',
   summary: 'Open the PR for a publish-pending epic and flip it to done',
   whenToUse: 'Use when an epic is stuck in publish_pending — the finalizer pushed the branch but the PR step failed. Reads the saved finalize_ref, opens the PR via gh, then atomically records the PR URL and sets status to done. Distinct from reconcile, which verifies an already-merged epic.',
   arguments: [

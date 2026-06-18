@@ -322,11 +322,15 @@ properties:
           a warning) otherwise.
             off — a merge conflict blocks the story immediately (default)
             on  — try to auto-resolve the conflict, gate-verified, before blocking
-      # NOTE: integrator_max_attempts was removed from the public surface in
-      # v0.4 (engine-tuning knob). It's hardcoded internally; the default
-      # bumped from 1 to 2 in v0.5.0 so a transient gate failure (often a
-      # too-broad auto-detected command before the v0.5.0 monorepo scoping
-      # fix) doesn't single-shot the integrator.
+      integrator_max_attempts:
+        type: integer
+        default: 2
+        x-internal: true
+        description: |
+          Bounded integrator attempt cap. Removed from the operator surface in
+          v0.4 (engine-tuning knob, no operator calibration data); hardcoded
+          internally at 2. Declared here with x-internal: true so the schema
+          documents the field exists without advertising it as a policy knob.
 
   mcp:
     type: object

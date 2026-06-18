@@ -148,6 +148,7 @@ export const specCheck: CommandDescription = {
 
 export const specHook: CommandDescription = {
   name: 'guard hook',
+  audience: 'internal',
   summary: 'Enforce policy on PreToolUse events from Claude Code hooks',
   whenToUse: 'Used automatically by the .claude/settings.json PreToolUse hook; not for direct human use.',
   arguments: [],
