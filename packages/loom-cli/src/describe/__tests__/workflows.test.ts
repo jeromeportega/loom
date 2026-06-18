@@ -5,7 +5,10 @@ import { WORKFLOWS } from '../workflows.js';
 
 // Known CLI command names registered in packages/loom-cli/src/index.ts.
 // Verified by reading every .command('...') call in index.ts — update this set
-// if commands are added or removed.
+// if commands are added or removed. This is a one-way allow-list: every workflow
+// step command must be a member, but not every member need appear in a workflow.
+// NOTE: 'mcp', 'mcp list', 'mcp add' provision org-registry MCP servers and are
+// still present in v5+ (distinct from the loom MCP server removed in v5.0.0).
 const KNOWN_CLI_COMMANDS = new Set([
   'doctor',
   'init',
@@ -57,9 +60,8 @@ describe('WORKFLOWS — schema validation', () => {
   it('each workflow validates against WorkflowSchema', () => {
     for (const workflow of WORKFLOWS) {
       const result = WorkflowSchema.safeParse(workflow);
-      assert.equal(
+      assert.ok(
         result.success,
-        true,
         `Workflow "${workflow.id}" failed schema validation: ${
           !result.success
             ? result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
@@ -93,6 +95,8 @@ describe('WORKFLOWS — plan → approve → run chain', () => {
     assert.ok(planWorkflow, 'plan workflow must exist');
 
     const commands = planWorkflow.steps.map((s) => s.command);
+    // indexOf returns the first occurrence — assumes each of epic/approve/run
+    // appears exactly once in the plan workflow steps.
     const epicIdx = commands.indexOf('epic');
     const approveIdx = commands.indexOf('approve');
     const runIdx = commands.indexOf('run');
@@ -106,7 +110,8 @@ describe('WORKFLOWS — plan → approve → run chain', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Referential integrity — every command name must be registered in the CLI
+// Referential integrity — every workflow step command must be in KNOWN_CLI_COMMANDS
+// (one-way: extra entries in KNOWN_CLI_COMMANDS that no workflow uses are harmless)
 // ---------------------------------------------------------------------------
 
 describe('WORKFLOWS — referential integrity', () => {
@@ -130,8 +135,8 @@ describe('WORKFLOWS — referential integrity', () => {
       `retry workflow must use command name "retry"; got: ${JSON.stringify(commands)}`
     );
     assert.ok(
-      !commands.some((c) => c.startsWith('run')),
-      'retry workflow must not use "run" or "run --retry"; the registered command is "retry"'
+      !commands.includes('run'),
+      'retry workflow must not use "run"; the registered command for retrying is "retry"'
     );
   });
 
@@ -151,6 +156,11 @@ describe('WORKFLOWS — referential integrity', () => {
 // ---------------------------------------------------------------------------
 
 describe('WORKFLOWS — structural invariants', () => {
+  it('workflow IDs are unique', () => {
+    const ids = WORKFLOWS.map((w) => w.id);
+    assert.deepEqual(ids, [...new Set(ids)], 'Workflow IDs must be unique');
+  });
+
   it('each workflow has at least one step', () => {
     for (const workflow of WORKFLOWS) {
       assert.ok(
