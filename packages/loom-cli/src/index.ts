@@ -34,7 +34,7 @@ import { runPullGuidance, spec as pullGuidanceSpec } from './commands/pullGuidan
 import { runProject, spec as projectSpec } from './commands/project.js';
 import { applySpec } from './describe/applySpec.js';
 import { registerDescribe } from './commands/describe.js';
-import { PolicyValidationError } from '@loom-ai/core';
+import { handleTopLevelError } from './errorHandling.js';
 
 // Read the version from this package's package.json at runtime so
 // `loom --version` stays automatically in sync with the published
@@ -358,14 +358,6 @@ export function buildProgram(): Command {
     });
 
   return program;
-}
-
-function handleTopLevelError(err: unknown): never {
-  if (err instanceof PolicyValidationError) {
-    process.stderr.write(err.message + '\n');
-    process.exit(1);
-  }
-  throw err;
 }
 
 // package.json#bin → dist/index.js directly (no wrapper), so require.main === module

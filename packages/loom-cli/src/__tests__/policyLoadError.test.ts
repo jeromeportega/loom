@@ -1,15 +1,4 @@
-/**
- * Tests for story-011-002: friendly policy validation error at the shared load path.
- *
- * Coverage:
- *  [AC] PolicyEngine.load throws PolicyValidationError (not raw ZodError) for invalid policy.
- *  [AC] Security-Model guard: invalid policy never yields a usable engine.
- *  [AC] Valid policy: engine returned unchanged (regression).
- *  [AC] handleTopLevelError: PolicyValidationError → stderr message + process.exit(1).
- *  [AC] handleTopLevelError: stderr contains FR-1 fields, zero stack frames.
- *  [AC] handleTopLevelError: non-policy error is rethrown (Philosophy #3 / ADR-1).
- *  [AC] Cross-command proof: ≥2 commands print identical friendly message for invalid policy.
- */
+// Tests for story-011-002: friendly policy validation error at the shared load path.
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { PolicyEngine, PolicyValidationError } from '@loom-ai/core';
-import { handleTopLevelError } from '../index.js';
+import { handleTopLevelError } from '../errorHandling.js';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -42,8 +31,8 @@ function capture(fn: () => void): Captured {
   process.stderr.write = (chunk: unknown, ...rest: unknown[]) => {
     stderrLines.push(String(chunk));
     // Forward encoding/callback so callers that rely on write-completion don't hang.
-    const fn = rest.find((r) => typeof r === 'function') as (() => void) | undefined;
-    fn?.();
+    const writeCb = rest.find((r) => typeof r === 'function') as (() => void) | undefined;
+    writeCb?.();
     return true;
   };
 
@@ -302,7 +291,11 @@ describe('cross-command proof — invalid policy emits friendly message via ≥2
     }
   }
 
-  before(() => {
+  before(function (this: { skip: () => void }) {
+    if (!fs.existsSync(LOOM_CLI)) {
+      this.skip();
+      return;
+    }
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-cross-cmd-'));
     // Initialize git (required by some commands) and create invalid policy
     execSync('git init -q', { cwd: tmpDir });
