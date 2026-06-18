@@ -72,6 +72,7 @@
       .epic-status.rejected { background: #3a1f1f; color: #f85149; }
       .epic-status.planning { background: #2f2a14; color: #d29922; }
       .epic-status.approved { background: #2c1f3a; color: #bc8cff; }
+      .epic-status.publish_pending { background: #1f3a2a; color: #3fb950; }
       .pulse { animation: pulse 1.4s ease-in-out infinite; }
       @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.55 } }
       .counts { color: #8b949e; font-size: 13px; }
@@ -319,10 +320,13 @@
         return `${c.total} stories${parts.length ? ' — ' + parts.join(', ') : ''}`;
       }
 
+      const STATUS_LABELS = {
+        publish_pending: 'work complete · publish pending',
+      };
       function statusBadge(e) {
         const label = e.status === 'planning' && e.planning_phase
           ? `planning · ${e.planning_phase}`
-          : e.status.replace('_', ' ');
+          : (STATUS_LABELS[e.status] || e.status.replace('_', ' '));
         const pulse = e.status === 'planning' || e.status === 'in_progress' ? ' pulse' : '';
         return `<div class="epic-status ${e.status}${pulse}">${esc(label)}</div>`;
       }
