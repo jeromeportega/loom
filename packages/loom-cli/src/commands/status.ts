@@ -9,6 +9,7 @@ import {
   ProjectRegistry,
   deriveBlocked,
   displayModel,
+  type IntakeVerdict,
 } from '@loom-ai/core';
 
 /** Audit actions that mark a worker as approaching/hitting a deadline. */
@@ -164,6 +165,7 @@ interface JsonEpic {
   archived?: boolean;
   blocked?: true;
   blocked_reason?: 'integration_gate';
+  intake_verdict?: IntakeVerdict | null;
   stories: JsonStory[];
 }
 
@@ -238,12 +240,14 @@ function collectJsonEpics(
             : {}),
         };
       });
+      const verdict = epicStore.getIntakeVerdict(epic.id);
       out.push({
         id: epic.id,
         title: epic.title,
         status: epic.status,
         ...(epic.archived_at ? { archived: true } : {}),
         ...(deriveBlocked(epic) ?? {}),
+        intake_verdict: verdict,
         stories,
       });
     }
@@ -309,6 +313,9 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
 
       const gate = gateResultFor(auditStore, epic.id);
       if (gate) console.log(`        gate: ${gate}`);
+
+      const v = epicStore.getIntakeVerdict(epic.id);
+      console.log(`        verdict: ${v ? `${v.type}/${v.size} (${v.confidence})` : 'no verdict'}`);
 
       if (epic.planner_tokens_input || epic.planner_tokens_output) {
         const inn = epic.planner_tokens_input ?? 0;

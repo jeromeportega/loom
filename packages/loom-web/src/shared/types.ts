@@ -6,7 +6,7 @@
  * V1 endpoint set is documented in docs/architecture/web-ui.md.
  */
 
-import type { PlanningPhase } from '@loom-ai/core';
+import type { PlanningPhase, IntakeVerdict } from '@loom-ai/core';
 
 export interface EpicStatus {
   id: string;
@@ -57,6 +57,10 @@ export interface EpicStatus {
    *  integration gate blocked this epic. Absent for all other states. */
   blocked?: true;
   blocked_reason?: 'integration_gate';
+  /** Observe-only intake verdict from `loom weave` classification. Null for
+   *  epics planned via `loom epic` or when classification failed. Never used
+   *  to branch planning or execution — surfaced for information only. */
+  intake_verdict?: IntakeVerdict | null;
 }
 
 export interface AgentSummary {

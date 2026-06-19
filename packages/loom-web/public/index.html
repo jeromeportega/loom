@@ -473,6 +473,9 @@
             ${canStop ? '<button class="danger" id="stopBtn">Stop run (graceful)</button>' : ''}
             <button id="archiveBtn">${archiveLabel}</button>
           </div>`;
+        const verdictLabel = epic.intake_verdict
+          ? `${esc(epic.intake_verdict.type)}/${esc(epic.intake_verdict.size)} (${esc(epic.intake_verdict.confidence)})`
+          : 'no verdict';
         return `
           <div class="back"><a id="backLink">← all epics</a></div>
           <div class="panel">
@@ -484,6 +487,7 @@
               </div>
             </div>
             <div class="updated">updated ${new Date(epic.updated_at).toLocaleString()}</div>
+            <div class="updated">verdict: ${verdictLabel}</div>
             ${briefSection}
             ${artifactsSection}
             ${agentsSection}
