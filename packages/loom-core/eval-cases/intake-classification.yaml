@@ -4,9 +4,16 @@
 # type/size labels, and a rationale. Anchors pin the size extremes;
 # epic-derived cases come from loom's 19 delivered epics.
 #
-# Size labels are ANCHORED on the hand-curated extremes (anchor-* cases).
-# Historical story_count fields are EVIDENCE ONLY — the scorer must never
-# use story_count as the size ground truth (FR-3, ADR-004).
+# Size labels are ANCHORED on intrinsic brief scope (ADR-008, story-023-005).
+# Each brief was reviewed on its own text — the sizing question is: does this
+# brief span multiple functional areas / services / cross-cutting concerns (→ epic)
+# or describe a single bounded change (→ story)? Low-confidence cases default to
+# epic (ADR-006 conservative tiebreak). The re-anchoring review (story-023-005)
+# confirmed ALL current labels are correct; see eval-cases/RELABEL.md for the
+# per-case rationale.
+#
+# story_count fields are @deprecated — EVIDENCE ONLY. The scorer MUST NOT use
+# story_count as the size ground truth; use label.size (FR-3, ADR-004, ADR-008).
 #
 # Validated against IntakeEvalSetSchema.
 
@@ -71,7 +78,7 @@ cases:
       Foundational three-story epic covering CLI scaffolding, structural policy
       engine, and SQLite state schema — each story independently shippable but
       together forming the minimal viable loom runtime.
-    story_count: 3
+    story_count: 3  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-002
     source: epic
@@ -84,7 +91,7 @@ cases:
       Five-story planning pipeline wiring three distinct AI personas in sequence.
       Touches planner orchestration, LLM integration, and output serialization
       across multiple modules — clearly multi-story feature work.
-    story_count: 5
+    story_count: 5  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-003
     source: epic
@@ -97,7 +104,7 @@ cases:
       Three stories building the autonomous dispatch loop: worktree management,
       supervisor orchestration, and the subagent runner. Spans infrastructure
       and orchestration concerns that share no code path.
-    story_count: 3
+    story_count: 3  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-004
     source: epic
@@ -110,7 +117,7 @@ cases:
       Four stories implementing a full MCP server surface with seven distinct
       tools, IDE-specific wiring for two clients, and schema/validation work.
       Multi-story by tool count alone.
-    story_count: 4
+    story_count: 4  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-005
     source: epic
@@ -123,7 +130,7 @@ cases:
       Three stories covering the full skill lifecycle from on-disk discovery and
       validation through runtime injection and post-story generation. Each story
       independently shippable but together forming the skill subsystem.
-    story_count: 3
+    story_count: 3  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-006
     source: epic
@@ -136,7 +143,7 @@ cases:
       Three stories wiring loom into two distinct IDE surfaces with their own
       protocol requirements. Cross-surface work that cannot collapse into a
       single story without losing testability.
-    story_count: 3
+    story_count: 3  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-007
     source: epic
@@ -149,7 +156,7 @@ cases:
       Four stories building the eval runner, skill provenance, lifecycle
       management, and quality judging — four distinct subsystems, each a
       non-trivial feature on its own. Clearly an epic.
-    story_count: 4
+    story_count: 4  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-008
     source: epic
@@ -163,7 +170,7 @@ cases:
       two concerns (data pipeline + policy enforcement) are distinct enough that
       collapsing them would obscure the acceptance criteria. Human judgment:
       epic.
-    story_count: 2
+    story_count: 2  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-009
     source: epic
@@ -176,7 +183,7 @@ cases:
       Three stories: org repo discovery, skill synchronisation, and conflict
       resolution. Introduces a new external dependency and a new discovery
       layer on top of the existing skill system — multi-story scope.
-    story_count: 3
+    story_count: 3  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-010
     source: epic
@@ -189,7 +196,7 @@ cases:
       Four stories spanning diagnostic tooling, interactive approval gates,
       pause/resume controls, and a progress overlay. Distinct UX and runtime
       concerns that each require independent acceptance criteria.
-    story_count: 4
+    story_count: 4  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-011
     source: epic
@@ -202,7 +209,7 @@ cases:
       Two stories: machine-level project registry and a global concurrency
       limiter. Both require new persistent state and cross-process coordination
       — together they constitute a new subsystem, not a single-story tweak.
-    story_count: 2
+    story_count: 2  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-012
     source: epic
@@ -215,7 +222,7 @@ cases:
       Two stories introducing a distinct agent persona (researcher) and a new
       CLI command with its own output format. Adding a second interaction mode
       to loom is a feature of epic scope even at two stories.
-    story_count: 2
+    story_count: 2  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-013
     source: epic
@@ -228,7 +235,7 @@ cases:
       Three stories implementing a new LLM backend, streaming/streaming-chunk
       normalisation, and a Cursor-specific worker. A second agent execution
       backend is multi-story regardless of line count.
-    story_count: 3
+    story_count: 3  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-014
     source: epic
@@ -241,7 +248,7 @@ cases:
       Two stories: a new packages/loom-pi package and its slash-command
       registration. A standalone publishable package constitutes an epic scope
       even with only two stories.
-    story_count: 2
+    story_count: 2  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-015
     source: epic
@@ -254,7 +261,7 @@ cases:
       Three stories adding image upload, vision-model planner integration, and
       screenshot annotation. Touches the planning pipeline, a new media type,
       and UI — multi-story by surface area.
-    story_count: 3
+    story_count: 3  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-016
     source: epic
@@ -269,7 +276,7 @@ cases:
       Six stories addressing token-budget tracking, context pruning, a
       diff-first worker mode, and a cost dashboard. The largest delivered epic
       by story count; clearly multi-story feature work.
-    story_count: 6
+    story_count: 6  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-017
     source: epic
@@ -282,7 +289,7 @@ cases:
       Three stories reworking the PR creation flow to produce one epic-scoped
       PR: branch consolidation, PR-creation changes, and a gate update. Changes
       the delivery contract enough to warrant epic scope.
-    story_count: 3
+    story_count: 3  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-018
     source: epic
@@ -295,7 +302,7 @@ cases:
       Four stories adding an automated review step to the post-story pipeline:
       review agent, findings schema, dedup logic, and supervisor wiring. A new
       quality gate woven into the delivery loop — multi-story by necessity.
-    story_count: 4
+    story_count: 4  # @deprecated — evidence only (FR-3, ADR-004)
 
   - id: epic-019
     source: epic
@@ -308,4 +315,4 @@ cases:
       Four stories building skill extraction from review feedback, a repo-local
       skill corpus, and a promotion/demotion loop. Extends the skill lifecycle
       system with new data pipelines and persistence — multi-story feature.
-    story_count: 4
+    story_count: 4  # @deprecated — evidence only (FR-3, ADR-004)
