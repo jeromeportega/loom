@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { LLMClient } from '../llm/LLMClient.js';
+import { extractJsonObject } from '../llm/extractJson.js';
 
 export const IntakeVerdictSchema = z.object({
   type:       z.enum(['feature', 'bug', 'chore']),
@@ -16,11 +17,14 @@ export type ClassifyResult =
 export const INTAKE_AUDIT_ACTION = 'intake_classified' as const;
 
 const CLASSIFY_SYSTEM =
-  'You are a software-brief classifier. Output ONLY a JSON object (no markdown, no prose) with exactly these fields:\n' +
+  'You are a software-brief classifier. You MUST respond with ONLY a raw JSON object — ' +
+  'no markdown fences, no prose, no explanation before or after. ' +
+  'The object MUST contain exactly these four fields:\n' +
   '- type: "feature" | "bug" | "chore"\n' +
   '- size: "story" | "epic"\n' +
   '- confidence: "low" | "medium" | "high"\n' +
-  '- rationale: string (1–280 chars explaining the classification)';
+  '- rationale: string (1–280 chars explaining the classification)\n' +
+  'Do NOT wrap the object in backticks. Output the raw JSON and nothing else.';
 
 class TriageTimeoutError extends Error {
   constructor(ms: number) {
@@ -45,21 +49,28 @@ export async function classifyIntake(
       opts.llm.complete({
         model: opts.model,
         system: [{ text: CLASSIFY_SYSTEM }],
-        messages: [{ role: 'user', content: brief }],
+        messages: [
+          { role: 'user', content: brief },
+          { role: 'assistant', content: '{' },
+        ],
         maxTokens: 400,
       }),
       timeoutPromise,
     ]);
     clearTimeout(timerId);
 
+    // Re-prepend the '{' consumed by the assistant prefill so the full JSON
+    // object is available to the extractor.
+    const fullText = '{' + response.text;
+
     let raw: unknown;
     try {
-      raw = JSON.parse(response.text);
+      raw = extractJsonObject(fullText);
     } catch (e) {
       return {
         ok: false,
         reason: 'invalid_output',
-        detail: `JSON parse failed: ${e instanceof Error ? e.message : String(e)}`,
+        detail: `JSON extraction failed: ${e instanceof Error ? e.message : String(e)}`,
       };
     }
 
