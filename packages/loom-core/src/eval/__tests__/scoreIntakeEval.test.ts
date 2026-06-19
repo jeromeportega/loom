@@ -207,28 +207,63 @@ describe('scoreIntakeEval — AxisReport judgeVsHuman', () => {
 });
 
 describe('scoreIntakeEval — AxisReport disagreements', () => {
-  it('includes full disagreement entry with caseId, labeled, predicted, judge, rationale', () => {
+  // Disagreements = judge label ≠ human label (mirrors judgeVsHuman.disagree count).
+
+  it('includes entry when judge disagrees with human label (judge=classifier, classifier wrong)', () => {
+    // Human: bug. Classifier: feature (wrong). Judge: feature (agrees with classifier, disagrees with human).
+    // Old code missed this case; new code correctly surfaces it as a disagreement.
     const records: IntakeRunRecord[] = [
       makeRecord(
         makeCase('case-x', 'bug', 'story'),
         { type: 'feature', size: 'story' },        // classifier predicts feature
-        { type: 'bug', size: 'story', grade: 'disagree', reason: 'This is clearly a bug fix.' },
+        { type: 'feature', size: 'story', grade: 'agree', reason: 'Looks like a feature to me.' },
       ),
     ];
 
     const report = scoreIntakeEval(records);
     const typeAxis = report.axes.find(a => a.axis === 'type')!;
 
-    assert.equal(typeAxis.disagreements.length, 1, 'one disagreement');
+    assert.equal(typeAxis.disagreements.length, 1, 'one disagreement (judge≠human)');
     const d = typeAxis.disagreements[0];
     assert.equal(d.caseId, 'case-x');
-    assert.equal(d.labeled, 'bug');      // human label
-    assert.equal(d.predicted, 'feature'); // classifier
-    assert.equal(d.judge, 'bug');         // judge's type
-    assert.equal(d.rationale, 'This is clearly a bug fix.');
+    assert.equal(d.labeled, 'bug');       // human label
+    assert.equal(d.predicted, 'feature'); // classifier prediction
+    assert.equal(d.judge, 'feature');     // judge agrees with classifier, not with human
+    assert.equal(d.rationale, 'Looks like a feature to me.');
   });
 
-  it('records where judge agrees with classifier are not in the disagreements list', () => {
+  it('includes entry when judge disagrees with human even when judge=classifier', () => {
+    // Same as above: both judge and classifier chose the wrong label.
+    const records: IntakeRunRecord[] = [
+      makeRecord(
+        makeCase('case-y', 'chore', 'story'),
+        { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree', reason: 'Expanding functionality.' },
+      ),
+    ];
+
+    const report = scoreIntakeEval(records);
+    const typeAxis = report.axes.find(a => a.axis === 'type')!;
+    assert.equal(typeAxis.disagreements.length, 1, 'disagreement when judge≠human label');
+  });
+
+  it('does NOT include entry when judge agrees with human label (even when judge≠classifier)', () => {
+    // Human: bug. Classifier: feature (wrong). Judge: bug (agrees with human).
+    // This is a classifier error caught by the judge, but NOT a judge-vs-human disagreement.
+    const records: IntakeRunRecord[] = [
+      makeRecord(
+        makeCase('case-z', 'bug', 'story'),
+        { type: 'feature', size: 'story' },
+        { type: 'bug', size: 'story', grade: 'disagree', reason: 'This is clearly a bug fix.' },
+      ),
+    ];
+
+    const report = scoreIntakeEval(records);
+    const typeAxis = report.axes.find(a => a.axis === 'type')!;
+    assert.equal(typeAxis.disagreements.length, 0, 'no disagreement when judge agrees with human label');
+  });
+
+  it('records where judge agrees with both classifier and human are not in the disagreements list', () => {
     const records: IntakeRunRecord[] = [
       makeRecord(
         makeCase('a', 'feature', 'story'),
@@ -239,7 +274,7 @@ describe('scoreIntakeEval — AxisReport disagreements', () => {
 
     const report = scoreIntakeEval(records);
     const typeAxis = report.axes.find(a => a.axis === 'type')!;
-    assert.equal(typeAxis.disagreements.length, 0, 'no disagreements when judge agrees with classifier');
+    assert.equal(typeAxis.disagreements.length, 0, 'no disagreements when judge agrees with human');
   });
 
   it('inconclusive judge records are not in the disagreements list', () => {
@@ -250,6 +285,28 @@ describe('scoreIntakeEval — AxisReport disagreements', () => {
     const report = scoreIntakeEval(records);
     const typeAxis = report.axes.find(a => a.axis === 'type')!;
     assert.equal(typeAxis.disagreements.length, 0, 'inconclusive judge produces no disagreement entry');
+  });
+
+  it('disagreements count matches judgeVsHuman.disagree count', () => {
+    // Validates the count invariant: disagreements.length === judgeVsHuman.disagree.
+    const records: IntakeRunRecord[] = [
+      // Judge agrees with human (not a disagreement)
+      makeRecord(makeCase('ok-1', 'feature', 'story'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree' }),
+      // Judge disagrees with human (classifier was wrong, judge agrees with classifier)
+      makeRecord(makeCase('bad-1', 'bug', 'story'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree' }),
+      // Inconclusive judge (not counted in either)
+      makeRecord(makeCase('inc-1', 'feature', 'story'), { type: 'feature', size: 'story' }, null),
+    ];
+
+    const report = scoreIntakeEval(records);
+    const typeAxis = report.axes.find(a => a.axis === 'type')!;
+    assert.equal(
+      typeAxis.disagreements.length,
+      typeAxis.judgeVsHuman.disagree,
+      'disagreements array length must equal judgeVsHuman.disagree count',
+    );
   });
 });
 

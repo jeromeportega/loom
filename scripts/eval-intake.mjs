@@ -58,6 +58,11 @@ for (const axis of /** @type {('type' | 'size')[]} */ (['type', 'size'])) {
 
 console.log();
 
-// Exit-code mapping (shared contract §8): PROCEED → 0, DO_NOT_PROCEED → 1, INCONCLUSIVE → 2
+// Exit-code mapping (shared contract §8 — see docs/architecture/eval-contract.md):
+//   PROCEED → 0, DO_NOT_PROCEED → 1, INCONCLUSIVE → 2
 const EXIT_CODES = { PROCEED: 0, DO_NOT_PROCEED: 1, INCONCLUSIVE: 2 };
-process.exit(EXIT_CODES[report.overall.decision] ?? 2);
+const exitDecision = report.overall.decision;
+if (!(exitDecision in EXIT_CODES)) {
+  throw new Error(`Unrecognised GateDecision: ${exitDecision}. Update EXIT_CODES in eval-intake.mjs.`);
+}
+process.exit(EXIT_CODES[exitDecision]);

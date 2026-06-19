@@ -66,11 +66,12 @@ function buildFixtureReport(): IntakeEvalReport {
   const records: IntakeRunRecord[] = [
     // 15 passing records to meet the minScoredCases baseline
     ...makePassingRecords(15),
-    // Disagreement: classifier says feature, judge says bug, human says bug
+    // Disagreement: human says bug, classifier says feature, judge agrees with classifier (feature).
+    // judge ≠ human → this IS a judge-vs-human disagreement and appears in the disagreements list.
     makeRecord(
       makeCase('dis-type', 'bug', 'story'),
       { type: 'feature', size: 'story' },
-      { type: 'bug', size: 'story', grade: 'disagree', reason: 'Clearly a defect fix, not a feature.' },
+      { type: 'feature', size: 'story', grade: 'agree', reason: 'Clearly a feature request, not a defect.' },
     ),
     // Dangerous confusion: epic labeled → story predicted (causes DO_NOT_PROCEED)
     makeRecord(makeCase('under-sized', 'feature', 'epic'), { type: 'feature', size: 'story' },
@@ -98,6 +99,12 @@ describe('renderIntakeReport — JSON round-trip', () => {
     const { json } = renderIntakeReport(report);
     const parsed = JSON.parse(json) as IntakeEvalReport;
     assert.deepEqual(parsed, report, 'parsed JSON must deep-equal the original report');
+  });
+
+  it('json string ends with a trailing newline (POSIX convention)', () => {
+    const report = buildFixtureReport();
+    const { json } = renderIntakeReport(report);
+    assert.ok(json.endsWith('\n'), 'JSON output must end with a trailing newline');
   });
 });
 
@@ -151,8 +158,8 @@ describe('renderIntakeReport — markdown contains disagreement rationales', () 
     const { markdown } = renderIntakeReport(report);
 
     assert.ok(
-      markdown.includes('Clearly a defect fix, not a feature.'),
-      'markdown must contain the judge rationale for the known disagreement',
+      markdown.includes('Clearly a feature request, not a defect.'),
+      'markdown must contain the judge rationale for the known judge-vs-human disagreement',
     );
   });
 });

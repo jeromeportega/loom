@@ -257,6 +257,19 @@ describe('classifyIntake — request shape', () => {
       'System prompt should contain forceful directive (MUST or ONLY)',
     );
   });
+
+  it('user message includes classification framing and the brief text', async () => {
+    const brief = 'Add OAuth login support';
+    const llm = new FakeLLM([JSON.stringify(VALID_VERDICT)]);
+    await classifyIntake(brief, { llm, model: 'haiku' });
+    const userMsg = llm.calls[0].messages.find((m: { role: string }) => m.role === 'user');
+    assert.ok(userMsg, 'must have a user message');
+    assert.ok(userMsg.content.includes(brief), 'brief text must appear in user message');
+    assert.ok(
+      userMsg.content.toLowerCase().includes('classify') || userMsg.content.includes('## Brief'),
+      'user message must include classification framing to prevent coding-assistant behaviour',
+    );
+  });
 });
 
 // ── INTAKE_AUDIT_ACTION constant ───────────────────────────────────────────────

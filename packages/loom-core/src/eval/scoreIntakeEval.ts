@@ -74,7 +74,8 @@ function buildDisagreements(
 
   for (const rec of records) {
     if (!rec.classifier.ok || rec.judge.status !== 'ok') continue;
-    if (rec.judge.result[axis] !== rec.classifier.verdict[axis]) {
+    // Disagreement = judge label differs from human label (mirrors judgeVsHuman.disagree count).
+    if (rec.judge.result[axis] !== rec.case.label[axis]) {
       result.push({
         caseId: rec.case.id,
         labeled: rec.case.label[axis],

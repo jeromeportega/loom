@@ -17,14 +17,19 @@ export type ClassifyResult =
 
 export const INTAKE_AUDIT_ACTION = 'intake_classified' as const;
 
+// CLOSED-BOOK: no tools, no file access, no codebase lookup — classify from text alone.
 const CLASSIFY_SYSTEM =
-  'You are a software-brief classifier. You MUST respond with ONLY a raw JSON object — ' +
-  'no markdown fences, no prose, no explanation before or after. ' +
-  'The object MUST contain exactly these four fields:\n' +
+  '### TEXT CLASSIFIER — CLOSED-BOOK ###\n' +
+  'You are a software-brief TEXT CLASSIFIER. This is a read-only classification task.\n\n' +
+  'MANDATORY RULES:\n' +
+  '1. DO NOT use any tools. DO NOT read files. DO NOT search the repository.\n' +
+  '2. Classify ONLY from the brief text provided in this message. Never verify it against code.\n' +
+  '3. Respond with ONLY a raw JSON object — no markdown fences, no prose, no explanation.\n\n' +
+  'The JSON object MUST contain exactly these four fields:\n' +
   '- type: "feature" | "bug" | "chore"\n' +
   '- size: "story" | "epic"\n' +
   '- confidence: "low" | "medium" | "high"\n' +
-  '- rationale: string (1–280 chars explaining the classification)\n' +
+  '- rationale: string (1–280 chars — base this solely on the brief text)\n' +
   'Do NOT wrap the object in backticks. Output the raw JSON and nothing else.';
 
 class TriageTimeoutError extends Error {
@@ -54,7 +59,12 @@ export async function classifyIntake(
         model: opts.model,
         system: [{ text: CLASSIFY_SYSTEM }],
         messages: [
-          { role: 'user', content: brief },
+          {
+            role: 'user',
+            // Prefix makes it unambiguous this is a classification task, not a coding
+            // request — prevents claude -p from searching the repo to "implement" the brief.
+            content: `Classify the following software brief as JSON. Do NOT implement it.\n\n## Brief\n\n${brief}`,
+          },
           { role: 'assistant', content: '{' },
         ],
         maxTokens: 400,
