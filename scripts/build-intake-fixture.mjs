@@ -22,7 +22,11 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const FIXTURE_PATH = path.join(REPO_ROOT, 'packages', 'loom-core', 'eval-cases', 'intake-classification.yaml');
 
 // ---------------------------------------------------------------------------
-// recoverBriefText inline (avoids a TS→JS compilation dependency at build time)
+// recoverBriefText inline — bootstrap copy (avoids a TS→JS compilation
+// dependency at build time so this script runs before `npm run build`).
+//
+// KEEP IN SYNC WITH packages/loom-core/src/eval/recoverBriefText.ts —
+// if you add or change a resolution path there, update this copy too.
 // ---------------------------------------------------------------------------
 function recoverBriefText(epicId, root) {
   const briefPath = path.join(root, '.loom', 'planning', epicId, 'project-brief.md');
@@ -97,17 +101,22 @@ for (const c of cases) {
   // epic-sourced case: confirm brief is recoverable
   const result = recoverBriefText(c.id, REPO_ROOT);
   if (!result.ok) {
-    console.warn(`  EXCLUDED (unrecoverable): ${c.id} — ${result.reason}`);
+    console.error(`  FAIL (unrecoverable): ${c.id} — ${result.reason}`);
     excluded++;
-    // An existing fixture case that is now unrecoverable is an error
     ok = false;
   } else {
     console.log(`  ${c.id}: OK (source: ${result.source})`);
     recovered++;
 
-    // Cross-check: fixture brief_source should match resolved source
+    // Cross-check: fixture brief_source must match the resolved source path.
+    // A mismatch means the fixture is stale (a planning artifact moved) and
+    // is a hard failure so CI catches it rather than silently passing with
+    // wrong provenance recorded.
     if (c.brief_source && c.brief_source !== result.source) {
-      console.warn(`  WARN: ${c.id} brief_source mismatch — fixture="${c.brief_source}" resolved="${result.source}"`);
+      console.error(
+        `  FAIL: ${c.id} brief_source mismatch — fixture="${c.brief_source}" resolved="${result.source}"`,
+      );
+      ok = false;
     }
   }
 }

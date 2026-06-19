@@ -16,6 +16,11 @@ export type RecoverBriefResult =
  * Returns {ok:false} when neither path yields text; the caller MUST
  * exclude that epic from the fixture rather than fabricating a brief.
  *
+ * KEEP IN SYNC WITH scripts/build-intake-fixture.mjs — that script contains
+ * an inline duplicate of this resolution logic for bootstrap reasons (avoids
+ * a TS→JS compilation dependency at build time). If you add or change a
+ * resolution path here, update the duplicate in build-intake-fixture.mjs too.
+ *
  * @param epicId  The epic identifier, e.g. 'epic-007'
  * @param root    Repo root; defaults to process.cwd()
  */

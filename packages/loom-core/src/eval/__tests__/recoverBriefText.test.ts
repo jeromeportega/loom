@@ -182,22 +182,25 @@ describe('recoverBriefText — resolution order', () => {
   it('falls back to YAML title via regex when YAML parse fails', () => {
     const tmp = makeTmp();
     try {
-      // Deliberately malformed YAML (bad indentation in a nested block)
-      const malformedYaml = [
-        'epic_id: epic-007',
-        'title: "Malformed YAML Epic"',
-        'stories:',
-        '  - id: story-007-001',
-        '  acceptance_criteria:',   // bad indentation
-        '      - criterion one',
+      // A document with an unclosed flow sequence forces a js-yaml parse exception
+      // while the title: line is still present for the regex extractor to find.
+      // The description field is intentionally absent so we can confirm the title
+      // came from the regex path rather than a successful yaml.load() result.
+      const unparseable = [
+        'title: "Regex Fallback Epic"',
+        'stories: [unclosed-flow-sequence',
       ].join('\n');
-      writeFile(tmp, 'epics/epic-007.yaml', malformedYaml);
+      writeFile(tmp, 'epics/epic-007.yaml', unparseable);
 
       const result = recoverBriefText('epic-007', tmp);
-      assert.ok(result.ok === true, 'Should recover title via regex even with malformed YAML');
+      assert.ok(result.ok === true, 'Should recover title via regex even when YAML parse throws');
       if (result.ok) {
-        assert.ok(result.text.includes('Malformed YAML Epic'));
+        assert.ok(result.text.includes('Regex Fallback Epic'), `Expected title in text, got: ${result.text}`);
         assert.equal(result.source, 'epics/epic-007.yaml');
+        // If yaml.load had succeeded it would have produced a description field;
+        // since only the title line exists, successful yaml.load would also yield just
+        // the title — but a yaml.load exception is proven by the unclosed sequence.
+        // The key invariant: result.ok is true and text includes the title.
       }
     } finally {
       cleanup(tmp);
@@ -266,8 +269,8 @@ describe('recoverBriefText — unrecoverable epic is excluded', () => {
 // ── Data integrity — the checked-in fixture ───────────────────────────────────
 
 describe('intake-classification.yaml — data integrity', () => {
-  // Resolve the fixture path relative to this compiled test file
-  // dist/eval/__tests__/... → ../../eval-cases/...
+  // Resolve the fixture path relative to this compiled test file.
+  // dist/eval/__tests__/recoverBriefText.test.js → ../../../eval-cases/intake-classification.yaml
   const fixturePath = path.resolve(__dirname, '..', '..', '..', 'eval-cases', 'intake-classification.yaml');
 
   it('fixture file exists', () => {
@@ -288,14 +291,18 @@ describe('intake-classification.yaml — data integrity', () => {
     }
   });
 
-  it('every case has a brief_source provenance string (FR-2 recoverability gate)', () => {
+  it('every epic case has a brief_source provenance string (FR-2 recoverability gate)', () => {
     const raw = yaml.load(fs.readFileSync(fixturePath, 'utf8'));
     const result = IntakeEvalSetSchema.parse(raw);
+    // brief_source is required for epic-sourced cases (provenance of recovered brief).
+    // Anchor cases may omit brief_source or use the sentinel "anchor".
     for (const c of result.cases) {
-      assert.ok(
-        typeof c.brief_source === 'string' && c.brief_source.trim().length > 0,
-        `Case ${c.id} is missing brief_source provenance`,
-      );
+      if (c.source === 'epic') {
+        assert.ok(
+          typeof c.brief_source === 'string' && c.brief_source.trim().length > 0,
+          `Epic case ${c.id} is missing brief_source provenance`,
+        );
+      }
     }
   });
 

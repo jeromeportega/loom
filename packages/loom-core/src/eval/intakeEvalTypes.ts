@@ -1,20 +1,29 @@
 import { z } from 'zod';
+// IntakeClassifier.ts is a Phase-0 seam (already delivered); if it ever moves,
+// this import will fail at compile time — do not suppress the error, fix the path.
 import type { ClassifyResult, IntakeVerdict } from '../intake/IntakeClassifier.js';
 
 export type { ClassifyResult, IntakeVerdict };
 
 // --- Fixture case (story-021-001 authors the data; this is its shape) ---
 export const IntakeEvalCaseSchema = z.object({
-  id:           z.string(),
+  id:           z.string(),                         // 'epic-007' | 'anchor-obvious-bug'
   source:       z.enum(['epic', 'anchor']),
   brief:        z.string().min(1),
+  // provenance path for epic cases, e.g. '.loom/planning/epic-007/project-brief.md'.
+  // For source:'anchor' cases the sentinel value is the string "anchor" (not a file path).
   brief_source: z.string().optional(),
   label: z.object({
     type: z.enum(['feature', 'bug', 'chore']),
     size: z.enum(['story', 'epic']),
   }),
   rationale:    z.string().min(1),
-  story_count:  z.number().int().optional(),   // EVIDENCE ONLY — scorer MUST NOT read this (FR-3, ADR-004)
+  /**
+   * @deprecated Evidence only — the scorer MUST NOT read this field to determine size.
+   * Use label.size as the ground truth (FR-3, ADR-004). This field is retained for
+   * human reference only and may be absent on any case.
+   */
+  story_count:  z.number().int().optional(),
 });
 export const IntakeEvalSetSchema = z.object({ cases: z.array(IntakeEvalCaseSchema).min(1) });
 export type IntakeEvalCase = z.infer<typeof IntakeEvalCaseSchema>;
@@ -22,16 +31,16 @@ export type IntakeEvalSet  = z.infer<typeof IntakeEvalSetSchema>;
 
 // --- Judge result + outcome (shape pinned here; behavior lives in IntakeJudge.ts) ---
 export const IntakeJudgeResultSchema = z.object({
-  type:  z.enum(['feature', 'bug', 'chore']),
+  type:  z.enum(['feature', 'bug', 'chore']),       // judge's INDEPENDENT classification
   size:  z.enum(['story', 'epic']),
-  grade: z.enum(['agree', 'disagree']),
+  grade: z.enum(['agree', 'disagree']),             // grades the classifier verdict + rationale
   reason: z.string().default(''),
 });
 export type IntakeJudgeResult = z.infer<typeof IntakeJudgeResultSchema>;
 
 export type JudgeOutcome =
   | { status: 'ok';           result: IntakeJudgeResult }
-  | { status: 'inconclusive'; detail: string };   // FR-9: outage/parse-fail → inconclusive, NEVER agreement
+  | { status: 'inconclusive'; detail: string };     // FR-9: outage/parse-fail → inconclusive, NEVER agreement
 
 // --- Injection seam so runIntakeEval (002) need not import IntakeJudge (003) ---
 export interface IntakeJudgeLike {
