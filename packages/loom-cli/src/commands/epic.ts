@@ -21,14 +21,9 @@ import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
 import { formatClarificationsNotice } from './briefGateMessage.js';
 import { makePlanningPrinter } from './planningPrinter.js';
 
-/**
- * Configuration for the optional observe-only intake classification stage.
- * Passed by `loom weave`; absent on the `loom epic` path.
- */
+// Observe-only intake classification stage config; forwarded by loom weave, absent on loom epic path.
 export type IntakeStage = {
-  /** Classifier model id (policy.agents.triage_model). */
   model: string;
-  /** Classifier timeout in ms. */
   timeoutMs: number;
 };
 
@@ -122,7 +117,7 @@ export async function runEpic(
   // the audit log, and never propagated (FR-3). Planning always continues.
   if (opts.intake) {
     const doClassify = opts._classifyIntake ?? classifyIntake;
-    let classResult: ClassifyResult;
+    let classResult: ClassifyResult = { ok: false, reason: 'llm_error', detail: 'unexpected' };
     try {
       classResult = await doClassify(brief, {
         llm,

@@ -1,19 +1,15 @@
 import type { CommandDescription } from '../describe/schema.js';
 import path from 'node:path';
-import type { LLMClient, ClassifyResult, Policy } from '@loom-ai/core';
-import { PolicyEngine } from '@loom-ai/core';
+import type { LLMClient, Policy } from '@loom-ai/core';
+import { PolicyEngine, classifyIntake } from '@loom-ai/core';
 import { runEpic } from './epic.js';
 import type { IntakeStage } from './epic.js';
 
 type RunEpicOpts = NonNullable<Parameters<typeof runEpic>[1]>;
 type RunEpicFn = (brief: string, opts?: RunEpicOpts) => Promise<void>;
-type ClassifyFn = (
-  brief: string,
-  opts: { llm: LLMClient; model: string; timeoutMs?: number }
-) => Promise<ClassifyResult>;
+type ClassifyFn = typeof classifyIntake;
 
-// Fallback timeout for the intake classifier.
-// Will be replaced by resolveIntakeTimeoutMs(policy) after story-022-002 merges.
+// Fallback timeout for the intake classifier; overridden by policy once resolveIntakeTimeoutMs is available.
 const WEAVE_DEFAULT_INTAKE_TIMEOUT_MS = 180_000;
 
 /**
@@ -47,7 +43,6 @@ export async function runWeave(
   // uninitialised-repo case without throwing. A malformed policy.yaml would
   // throw PolicyValidationError — fall back to a default policy so runEpic can
   // still reach its own init check and emit the friendly "not initialized" message.
-  // timeoutMs will be resolveIntakeTimeoutMs(policy) after story-022-002 merges.
   const loomDir = path.join(process.cwd(), '.loom');
   let policy: Policy;
   try {
@@ -55,7 +50,7 @@ export async function runWeave(
   } catch {
     policy = PolicyEngine.defaultPolicy();
   }
-  const model = policy.agents.triage_model || 'claude-haiku-4-5-20251001';
+  const model = policy.agents.triage_model;
   const intake: IntakeStage = {
     model,
     timeoutMs: WEAVE_DEFAULT_INTAKE_TIMEOUT_MS,

@@ -21,7 +21,7 @@ import {
   AuditLog,
   INTAKE_AUDIT_ACTION,
 } from '@loom-ai/core';
-import type { LLMRequest, ClassifyResult, IntakeVerdict } from '@loom-ai/core';
+import type { LLMRequest, ClassifyResult, IntakeVerdict, LLMClient } from '@loom-ai/core';
 import { runWeave } from '../commands/weave.js';
 
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
@@ -103,12 +103,13 @@ function pipelineResponder(req: LLMRequest): string {
   throw new Error('unexpected message: ' + last.slice(0, 80));
 }
 
+// WARNING: not re-entrant — patches process.exit/console globally; must not be used in parallel test configurations.
 async function runWeaveCapture(
   brief: string,
   opts: {
     force?: boolean;
-    llm: MockLLMClient;
-    _classifyIntake?: (brief: string, o: { llm: MockLLMClient; model: string; timeoutMs?: number }) => Promise<ClassifyResult>;
+    llm: LLMClient;
+    _classifyIntake?: (brief: string, o: { llm: LLMClient; model: string; timeoutMs?: number }) => Promise<ClassifyResult>;
   }
 ): Promise<number | null> {
   const origExit = process.exit;
@@ -127,7 +128,7 @@ async function runWeaveCapture(
   console.log = (...args: unknown[]) => capturedLines.push(args.join(' '));
   console.error = (...args: unknown[]) => capturedLines.push(args.join(' '));
   try {
-    await runWeave(brief, opts as Parameters<typeof runWeave>[1]);
+    await runWeave(brief, opts);
   } catch (err) {
     if (!(err instanceof ExitSignal)) {
       // Restore before rethrowing so the error and any captured output are visible.
@@ -331,6 +332,8 @@ describe('loom weave intake — planning output unchanged by classifier result',
       });
       assert.equal(exitCode, null, 'weave must exit cleanly');
 
+      // Release the module-level singleton opened by runWeaveCapture before opening
+      // a fresh readonly connection, then release the readonly handle after close.
       resetDatabaseForTest();
       const db = new Database(path.join(tmpDir, '.loom', 'loom.db'), { readonly: true });
       try {
@@ -341,6 +344,7 @@ describe('loom weave intake — planning output unchanged by classifier result',
         return { title: epic!.title, status: epic!.status, yamlContent };
       } finally {
         db.close();
+        resetDatabaseForTest();
       }
     }
 

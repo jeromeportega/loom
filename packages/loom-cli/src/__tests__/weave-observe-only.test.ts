@@ -421,10 +421,15 @@ describe('NFR-1 verdict-value invariance — planning identical across all verdi
         planOpts0,
         `planning opts (excluding _classifyIntake seam) must be identical in scenario ${SCENARIOS[i].label} — verdict must not be threaded into runEpic`
       );
-      // Explicitly verify no verdict field was injected.
-      assert.ok(
-        !('verdict' in captured[i].opts) && !('intake_verdict' in captured[i].opts),
-        `verdict must not be threaded into runEpic opts in scenario ${SCENARIOS[i].label}`
+      // Whitelist check: the only seam keys that may legitimately differ between
+      // scenarios are _-prefixed ones. If a verdict field is ever injected under
+      // any name (e.g. _intake_verdict), this catches it regardless of field name.
+      const seam0 = Object.keys(captured[0].opts).filter(k => k.startsWith('_')).sort();
+      const seami = Object.keys(captured[i].opts).filter(k => k.startsWith('_')).sort();
+      assert.deepEqual(
+        seami,
+        seam0,
+        `seam keys in runEpic opts must be identical across all scenarios in ${SCENARIOS[i].label} — verdict must not add new seam fields`
       );
     }
   });
