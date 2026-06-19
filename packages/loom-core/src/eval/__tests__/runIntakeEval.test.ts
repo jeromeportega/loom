@@ -14,7 +14,7 @@ import type {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const TRIAGE_MODEL = 'claude-haiku-4-5-20251001';
-const JUDGE_MODEL = 'claude-opus-4-7';
+const JUDGE_MODEL = 'claude-opus-4-8';
 
 function makeCase(id: string, type: 'feature' | 'bug' | 'chore', size: 'story' | 'epic'): IntakeEvalCase {
   return {

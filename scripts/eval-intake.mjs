@@ -17,7 +17,7 @@ import {
 
 const backend = process.env.LOOM_EVAL_BACKEND ?? 'claude-cli';
 const classifierModel = process.env.LOOM_EVAL_MODEL ?? 'claude-haiku-4-5-20251001';
-const judgeModel = 'claude-opus-4-7'; // planning_model default; wired by story-021-003
+const judgeModel = process.env.LOOM_JUDGE_MODEL ?? 'claude-opus-4-8'; // planning_model default; wired by story-021-003
 
 const cases = loadIntakeEvalSet();
 console.log(`\nRunning intake eval — ${cases.length} cases, backend: ${backend}.\n`);

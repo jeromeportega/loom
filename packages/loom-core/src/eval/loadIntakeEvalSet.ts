@@ -24,7 +24,7 @@ function defaultFixturePath(): string {
  */
 export function loadIntakeEvalSet(fixturePath?: string): IntakeEvalCase[] {
   const file = fixturePath ?? defaultFixturePath();
-  if (!fs.existsSync(file)) {
+  if (fixturePath && !fs.existsSync(file)) {
     throw new Error(`Intake eval fixture not found: ${file}`);
   }
   const parsed = IntakeEvalSetSchema.parse(yaml.load(fs.readFileSync(file, 'utf8')));

@@ -4,7 +4,6 @@ import type {
   IntakeEvalCase,
   IntakeJudgeLike,
   IntakeRunRecord,
-  IntakeVerdict,
 } from './intakeEvalTypes.js';
 
 export interface RunIntakeEvalDeps {
@@ -36,7 +35,7 @@ export async function runIntakeEval(
     // Exactly one judge call per case when classifier succeeds (NFR-1, FR-6).
     // Classifier failure → inconclusive without calling the judge (no verdict to grade).
     const judge = classifier.ok
-      ? await deps.judge.judge(evalCase.brief, classifier.verdict as IntakeVerdict)
+      ? await deps.judge.judge(evalCase.brief, classifier.verdict)
       : { status: 'inconclusive' as const, detail: `classifier_failure: ${classifier.reason}` };
 
     records.push({ case: evalCase, classifier, judge });
