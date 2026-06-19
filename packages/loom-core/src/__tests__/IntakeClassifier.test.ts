@@ -174,6 +174,73 @@ describe('classifyIntake — failure modes (never throws)', () => {
   });
 });
 
+// ── classifyIntake — tolerant extraction (prose/fence-wrapped responses) ──────
+
+describe('classifyIntake — tolerant extraction', () => {
+  it('recovers verdict from a prose-wrapped response (realistic LLM output)', async () => {
+    // Simulates the model adding a sentence before/after the JSON continuation.
+    // After '{' prefill, the LLM response is the rest of the JSON + trailing prose.
+    const continuation =
+      '"type": "feature", "size": "story", "confidence": "high", ' +
+      '"rationale": "Adds OAuth login capability."}\n\nI hope this classification helps!';
+    const llm = new FakeLLM([continuation]);
+    const result = await classifyIntake('Add OAuth login', { llm, model: 'haiku' });
+    assert.equal(result.ok, true, `Expected ok=true but got: ${!result.ok ? (result as { detail: string }).detail : ''}`);
+    if (result.ok) {
+      assert.equal(result.verdict.type, 'feature');
+      assert.equal(result.verdict.size, 'story');
+    }
+  });
+
+  it('recovers verdict from a fence-wrapped response (model ignores instructions)', async () => {
+    // Simulates the model wrapping output in a code fence despite explicit instructions.
+    // extractJsonObject's fence-stripping handles this recovery path.
+    const fenced =
+      '```json\n' +
+      '{"type": "chore", "size": "story", "confidence": "medium", "rationale": "Routine maintenance."}\n' +
+      '```';
+    const llm = new FakeLLM([fenced]);
+    const result = await classifyIntake('Upgrade dependencies', { llm, model: 'haiku' });
+    assert.equal(result.ok, true, `Expected ok=true but got: ${!result.ok ? (result as { detail: string }).detail : ''}`);
+    if (result.ok) {
+      assert.equal(result.verdict.type, 'chore');
+      assert.equal(result.verdict.confidence, 'medium');
+    }
+  });
+
+  it('recovers verdict when model returns complete JSON object (prefill ignored)', async () => {
+    // Model duplicates the '{' by returning a full JSON object.
+    // extractJsonObject's bracket scanner skips the stray leading '{'.
+    const llm = new FakeLLM([JSON.stringify(VALID_VERDICT)]);
+    const result = await classifyIntake('Add OAuth login', { llm, model: 'haiku' });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.deepEqual(result.verdict, VALID_VERDICT);
+  });
+});
+
+// ── classifyIntake — request shape (prefill + forceful instruction) ────────────
+
+describe('classifyIntake — request shape', () => {
+  it('sends an assistant-turn prefill { as the last message', async () => {
+    const llm = new FakeLLM([JSON.stringify(VALID_VERDICT)]);
+    await classifyIntake('brief', { llm, model: 'haiku' });
+    const messages = llm.calls[0].messages;
+    const lastMsg = messages[messages.length - 1];
+    assert.equal(lastMsg.role, 'assistant', 'last message should be assistant prefill');
+    assert.equal(lastMsg.content, '{', 'prefill should be the opening brace');
+  });
+
+  it('system prompt uses forceful language (MUST / ONLY) to restrict output format', async () => {
+    const llm = new FakeLLM([JSON.stringify(VALID_VERDICT)]);
+    await classifyIntake('brief', { llm, model: 'haiku' });
+    const systemText = llm.calls[0].system.map((b: { text: string }) => b.text).join(' ').toUpperCase();
+    assert.ok(
+      systemText.includes('MUST') || systemText.includes('ONLY'),
+      'System prompt should contain forceful directive (MUST or ONLY)',
+    );
+  });
+});
+
 // ── INTAKE_AUDIT_ACTION constant ───────────────────────────────────────────────
 
 describe('INTAKE_AUDIT_ACTION', () => {

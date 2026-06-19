@@ -1,5 +1,5 @@
 import { loadBundledPrompt } from '../planner/PersonaLoader.js';
-import { extractJsonBlock } from '../planner/util.js';
+import { extractJsonObject } from '../llm/extractJson.js';
 import type { LLMClient } from '../llm/LLMClient.js';
 import { IntakeJudgeResultSchema } from './intakeEvalTypes.js';
 import type {
@@ -32,7 +32,7 @@ export class IntakeJudge implements IntakeJudgeLike {
         messages: [{ role: 'user', content: userContent }],
       });
 
-      const result = IntakeJudgeResultSchema.parse(extractJsonBlock(response.text));
+      const result = IntakeJudgeResultSchema.parse(extractJsonObject(response.text));
       return { status: 'ok', result };
     } catch (err) {
       // Any failure (outage, parse error, validation error) → inconclusive.
