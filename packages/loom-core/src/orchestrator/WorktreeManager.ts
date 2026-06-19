@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { git, gitSafe, hasCommits } from './git.js';
+import type { WorkerLogStore } from '../state/WorkerLogStore.js';
 
 export interface WorktreeInfo {
   storyId: string;
@@ -17,11 +18,13 @@ export interface WorktreeInfo {
  */
 export class WorktreeManager {
   private repoRoot: string;
+  private workerLogs?: WorkerLogStore;
 
-  constructor(repoRoot: string) {
+  constructor(repoRoot: string, workerLogs?: WorkerLogStore) {
     // Canonicalize: `git worktree list` reports realpaths, so a symlinked repo
     // root (e.g. macOS /var -> /private/var) would break startsWith() matching.
     this.repoRoot = fs.existsSync(repoRoot) ? fs.realpathSync(repoRoot) : repoRoot;
+    this.workerLogs = workerLogs;
   }
 
   worktreesDir(): string {
@@ -144,5 +147,7 @@ export class WorktreeManager {
     if (opts.deleteBranch) {
       gitSafe(this.repoRoot, ['branch', '-D', this.branchName(storyId)]);
     }
+
+    this.workerLogs?.remove(storyId);
   }
 }
