@@ -174,8 +174,8 @@ describe('LessonStore — schema shape', () => {
     assert.ok(indexExists(db, 'idx_lessons_category'), 'idx_lessons_category must exist');
   });
 
-  it('SCHEMA_VERSION constant equals 22', () => {
-    assert.equal(SCHEMA_VERSION, 22);
+  it('SCHEMA_VERSION constant equals 23', () => {
+    assert.equal(SCHEMA_VERSION, 23);
   });
 
   it('fresh DB schema_version row is current SCHEMA_VERSION', () => {

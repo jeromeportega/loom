@@ -113,7 +113,7 @@ describe('DatabaseMigrationV20 — agents.model + epics.planner_model (story-013
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
     assert.equal(ver.version, SCHEMA_VERSION, `schema_version must be bumped to ${SCHEMA_VERSION}`);
-    assert.equal(ver.version, 22);
+    assert.equal(ver.version, 23);
   });
 
   it('[AC2 idempotency] running runMigrations() twice produces no error and no duplicate columns', () => {

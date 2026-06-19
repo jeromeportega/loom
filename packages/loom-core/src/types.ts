@@ -221,6 +221,12 @@ export interface EpicRecord {
    * planner emits its first text chunk (or on pre-migration rows).
    */
   planning_log_tail: string | null;
+  /**
+   * JSON-serialised IntakeVerdict from `loom weave` classification. NULL for
+   * all `loom epic` rows, pre-v23 rows, and any run where classification failed.
+   * Never read by planning, gate, or execution code (NFR-1).
+   */
+  intake_verdict: string | null;
 }
 
 export interface AuditLogEntry {
