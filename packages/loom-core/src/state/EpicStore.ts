@@ -475,4 +475,32 @@ export class EpicStore {
       return null;
     }
   }
+
+  /**
+   * Fetches intake verdicts for multiple epics in a single query.
+   * Returns a Map from epic id to verdict (or null). IDs not found in the
+   * database are absent from the Map — callers should treat missing keys as null.
+   */
+  getIntakeVerdicts(ids: string[]): Map<string, IntakeVerdict | null> {
+    if (ids.length === 0) return new Map();
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`SELECT id, intake_verdict FROM epics WHERE id IN (${placeholders})`)
+      .all(...ids) as { id: string; intake_verdict: string | null }[];
+    const out = new Map<string, IntakeVerdict | null>();
+    for (const row of rows) {
+      if (row.intake_verdict === null) {
+        out.set(row.id, null);
+        continue;
+      }
+      try {
+        const raw = JSON.parse(row.intake_verdict);
+        const parsed = IntakeVerdictSchema.safeParse(raw);
+        out.set(row.id, parsed.success ? parsed.data : null);
+      } catch {
+        out.set(row.id, null);
+      }
+    }
+    return out;
+  }
 }

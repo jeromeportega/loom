@@ -60,7 +60,7 @@ export interface EpicStatus {
   /** Observe-only intake verdict from `loom weave` classification. Null for
    *  epics planned via `loom epic` or when classification failed. Never used
    *  to branch planning or execution — surfaced for information only. */
-  intake_verdict?: IntakeVerdict | null;
+  intake_verdict: IntakeVerdict | null;
 }
 
 export interface AgentSummary {

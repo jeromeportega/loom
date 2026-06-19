@@ -212,8 +212,10 @@ function collectJsonEpics(
       ? [epicStore.get(epicId)].filter(Boolean)
       : epicStore.list({ includeArchived });
 
+    const validEpics = epicRows.filter(Boolean);
+    const verdicts = epicStore.getIntakeVerdicts(validEpics.map((e) => e!.id));
     const out: JsonEpic[] = [];
-    for (const epic of epicRows) {
+    for (const epic of validEpics) {
       if (!epic) continue;
       // One row per story_id — collapse retries to the latest attempt and
       // surface older ones under `history`, matching `loom_get_status`.
@@ -240,14 +242,13 @@ function collectJsonEpics(
             : {}),
         };
       });
-      const verdict = epicStore.getIntakeVerdict(epic.id);
       out.push({
         id: epic.id,
         title: epic.title,
         status: epic.status,
         ...(epic.archived_at ? { archived: true } : {}),
         ...(deriveBlocked(epic) ?? {}),
-        intake_verdict: verdict,
+        intake_verdict: verdicts.get(epic.id) ?? null,
         stories,
       });
     }
@@ -285,6 +286,10 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
       return;
     }
 
+    const verdicts = epicStore.getIntakeVerdicts(
+      epics.filter(Boolean).map((e) => e!.id)
+    );
+
     for (const epic of epics) {
       if (!epic) continue;
       const icon = STATUS_ICONS[epic.status] ?? '?';
@@ -314,7 +319,7 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
       const gate = gateResultFor(auditStore, epic.id);
       if (gate) console.log(`        gate: ${gate}`);
 
-      const v = epicStore.getIntakeVerdict(epic.id);
+      const v = verdicts.get(epic.id) ?? null;
       console.log(`        verdict: ${v ? `${v.type}/${v.size} (${v.confidence})` : 'no verdict'}`);
 
       if (epic.planner_tokens_input || epic.planner_tokens_output) {

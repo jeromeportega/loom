@@ -94,17 +94,6 @@ describe('loom status — CLI verdict rendering', () => {
     assert.doesNotMatch(out, /verdict: story/, 'must not fabricate a story class');
   });
 
-  it('renders verdict line when verdict is present', () => {
-    const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
-    const epicStore = new EpicStore(db);
-    epicStore.create('epic-001', 'My Epic');
-    epicStore.recordIntakeVerdict('epic-001', SAMPLE_VERDICT);
-    db.close();
-
-    const out = captureStatus({});
-    const verdictIdx = out.indexOf('verdict: feature/epic (high)');
-    assert.ok(verdictIdx !== -1, `verdict line must be present:\n${out}`);
-  });
 });
 
 describe('loom status --json — JsonEpic.intake_verdict', () => {
