@@ -13,11 +13,19 @@ import {
   derivePlaceholderTitle,
   evaluateBriefGate,
   validateCursorModels,
+  classifyIntake,
+  INTAKE_AUDIT_ACTION,
 } from '@loom-ai/core';
-import type { LLMClient } from '@loom-ai/core';
+import type { LLMClient, ClassifyResult } from '@loom-ai/core';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
 import { formatClarificationsNotice } from './briefGateMessage.js';
 import { makePlanningPrinter } from './planningPrinter.js';
+
+// Observe-only intake classification stage config; forwarded by loom weave, absent on loom epic path.
+export type IntakeStage = {
+  model: string;
+  timeoutMs: number;
+};
 
 /**
  * @param opts.force  Skip the brief-quality gate for this invocation only. The
@@ -27,10 +35,22 @@ import { makePlanningPrinter } from './planningPrinter.js';
  *   omit this and the client is built from policy.agents.llm_backend.
  * @param opts.cursorBin  Test seam — point the cursor_model probe at a stub
  *   `cursor-agent`. Production callers omit this; the real CLI is used.
+ * @param opts.intake   Intake classification stage config; provided by `loom weave`,
+ *   absent on `loom epic`. When present, classifyIntake fires after epic-id
+ *   reservation and persists the verdict (best-effort, observe-only).
+ * @param opts._classifyIntake  Test seam — inject a stub for classifyIntake.
+ *   Only exercised when opts.intake is also provided. Production callers omit.
  */
 export async function runEpic(
   brief: string,
-  opts: { force?: boolean; verbose?: boolean; llm?: LLMClient; cursorBin?: string } = {}
+  opts: {
+    force?: boolean;
+    verbose?: boolean;
+    llm?: LLMClient;
+    cursorBin?: string;
+    intake?: IntakeStage;
+    _classifyIntake?: typeof classifyIntake;
+  } = {}
 ): Promise<void> {
   const force = opts.force === true;
   const projectRoot = process.cwd();
@@ -90,6 +110,35 @@ export async function runEpic(
   const store = new EpicStore(db);
   store.beginPlanning(reservedId, brief);
   store.setTitle(reservedId, derivePlaceholderTitle(brief));
+
+  // Observe-only intake classification (weave path only). Fires right after
+  // epic-id reservation, before the brief-quality gate or planner. Best-effort:
+  // any failure — timeout, parse error, or LLM error — is caught, recorded in
+  // the audit log, and never propagated (FR-3). Planning always continues.
+  if (opts.intake) {
+    const doClassify = opts._classifyIntake ?? classifyIntake;
+    let classResult: ClassifyResult = { ok: false, reason: 'llm_error', detail: 'unexpected' };
+    try {
+      classResult = await doClassify(brief, {
+        llm,
+        model: opts.intake.model,
+        timeoutMs: opts.intake.timeoutMs,
+      });
+    } catch (e) {
+      classResult = {
+        ok: false,
+        reason: 'llm_error',
+        detail: e instanceof Error ? e.message : String(e),
+      };
+    }
+    const auditDetail: Record<string, unknown> = { epicId: reservedId, ok: classResult.ok };
+    if (!classResult.ok) auditDetail.reason = classResult.reason;
+    if (classResult.ok) auditDetail.verdict = classResult.verdict;
+    new AuditLog(db).record({ action: INTAKE_AUDIT_ACTION, detail: auditDetail });
+    if (classResult.ok) {
+      store.recordIntakeVerdict(reservedId, classResult.verdict);
+    }
+  }
 
   // Brief-quality gate. Always runs — refuses briefs scoring below
   // policy.agents.min_brief_quality_score so the planner never spends

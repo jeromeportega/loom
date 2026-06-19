@@ -1,23 +1,29 @@
 import type { CommandDescription } from '../describe/schema.js';
-import type { LLMClient, ClassifyResult } from '@loom-ai/core';
+import path from 'node:path';
+import type { LLMClient, Policy } from '@loom-ai/core';
+import { PolicyEngine, classifyIntake } from '@loom-ai/core';
 import { runEpic } from './epic.js';
+import type { IntakeStage } from './epic.js';
 
 type RunEpicOpts = NonNullable<Parameters<typeof runEpic>[1]>;
 type RunEpicFn = (brief: string, opts?: RunEpicOpts) => Promise<void>;
-type ClassifyFn = (brief: string) => Promise<ClassifyResult>;
+type ClassifyFn = typeof classifyIntake;
+
+// Fallback timeout for the intake classifier; overridden by policy once resolveIntakeTimeoutMs is available.
+const WEAVE_DEFAULT_INTAKE_TIMEOUT_MS = 180_000;
 
 /**
- * Phase 0: thin pass-through to runEpic. Runs the identical brief-quality
- * gate, Analyst → PM → Architect planner, and execution path. No extra args,
- * callbacks, or shared state are threaded into runEpic (ADR-001).
+ * Phase 0.5: wire intake classification before the epic planner.
  *
- * The intake-classification layer (classifyIntake + recordIntakeVerdict) is
- * wired here in a later phase, delivered by stories 020-002 and 020-003.
+ * Reads policy from the current loom directory to build the intake stage
+ * (model + timeout), then calls runEpic with that stage so classifyIntake
+ * fires right after epic-id reservation. Classification is best-effort and
+ * observe-only — failure never blocks or aborts the weave (ADR-009/010).
  *
  * @param opts._runEpic      Test seam — inject a spy for runEpic without ESM
  *   module-binding issues. Production callers omit this.
- * @param opts._classifyIntake  Test seam — inject a stub for classifyIntake.
- *   Not used until story-020-001 wires the classifier. Production callers omit.
+ * @param opts._classifyIntake  Test seam — inject a stub for classifyIntake;
+ *   forwarded into runEpic's opts so the real call can be replaced in tests.
  */
 export async function runWeave(
   brief: string,
@@ -29,11 +35,30 @@ export async function runWeave(
     _classifyIntake?: ClassifyFn;
   }
 ): Promise<void> {
-  // _clf is extracted here so it does not reach runEpic as an unknown option.
-  // The seam is reserved for story-020-001, which wires the real classifier.
-  const { _runEpic, _classifyIntake: _clf, ...epicOpts } = opts ?? {};
+  const { _runEpic, _classifyIntake, ...epicOpts } = opts ?? {};
   const epicRunner: RunEpicFn = _runEpic ?? runEpic;
-  await epicRunner(brief, epicOpts);
+
+  // Build the intake stage from policy. PolicyEngine.load returns defaults when
+  // policy.yaml is absent (missing .loom dir included), so this handles the
+  // uninitialised-repo case without throwing. A malformed policy.yaml would
+  // throw PolicyValidationError — fall back to a default policy so runEpic can
+  // still reach its own init check and emit the friendly "not initialized" message.
+  const loomDir = path.join(process.cwd(), '.loom');
+  let policy: Policy;
+  try {
+    policy = PolicyEngine.load(loomDir).policyData;
+  } catch {
+    policy = PolicyEngine.defaultPolicy();
+  }
+  const model = policy.agents.triage_model;
+  const intake: IntakeStage = {
+    model,
+    timeoutMs: WEAVE_DEFAULT_INTAKE_TIMEOUT_MS,
+  };
+
+  const epicArgs: RunEpicOpts = { ...epicOpts, intake };
+  if (_classifyIntake !== undefined) epicArgs._classifyIntake = _classifyIntake;
+  await epicRunner(brief, epicArgs);
 }
 
 export const spec: CommandDescription = {
