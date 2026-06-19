@@ -98,6 +98,7 @@ export async function classifyIntake(
           { role: 'assistant', content: ASSISTANT_PREFILL },
         ],
         maxTokens: 400,
+        nonAgentic: { excludeDynamicSections: true },
       }),
       timeoutPromise,
     ]);
