@@ -556,3 +556,98 @@ describe('v18 → v19 migration (publish_pending lifecycle, AC2, AC3, AC4)', () 
     db.close();
   });
 });
+
+// ── v21: planning_log_tail migration (story-017-001) ──────────────────────────
+// Seeds a DB that has the v19 columns (finalize_ref, publish_note) but lacks
+// v20 (planner_model) and v21 (planning_log_tail). This exercises the additive
+// ALTER path for planning_log_tail and guards idempotency on repeat startup.
+function seedPreV21Db(dbPath: string): Database.Database {
+  const db = new Database(dbPath);
+  db.exec(`
+    CREATE TABLE schema_version (version INTEGER NOT NULL);
+    CREATE TABLE agents (
+      id TEXT PRIMARY KEY,
+      epic_id TEXT,
+      story_id TEXT,
+      status TEXT,
+      log_tail TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE epics (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'planned',
+      reason TEXT,
+      planning_phase TEXT,
+      finalize_ref TEXT,
+      publish_note TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  db.prepare('INSERT INTO schema_version (version) VALUES (19)').run();
+  db.prepare(`INSERT INTO epics (id, title, status) VALUES (?, ?, ?)`).run(
+    'epic-pre-v21', 'Pre-v21 epic', 'planned'
+  );
+  return db;
+}
+
+describe('v21 planning_log_tail migration (story-017-001)', () => {
+  it('adds planning_log_tail to a DB that predates the column', () => {
+    const dbPath = path.join(tmpDir, 'pre-v21.db');
+    const db = seedPreV21Db(dbPath);
+
+    // Precondition: planning_log_tail absent before migration.
+    const beforeCols = epicColumns(db);
+    assert.ok(!beforeCols.includes('planning_log_tail'), 'planning_log_tail absent before migration');
+
+    runMigrations(db);
+
+    const afterCols = epicColumns(db);
+    assert.ok(afterCols.includes('planning_log_tail'), 'planning_log_tail added by migration');
+    assert.equal(schemaVersion(db), SCHEMA_VERSION, `schema bumped to ${SCHEMA_VERSION}`);
+
+    // Pre-existing row has NULL for the new column — no backfill.
+    const row = db.prepare('SELECT planning_log_tail FROM epics WHERE id = ?').get('epic-pre-v21') as
+      { planning_log_tail: string | null };
+    assert.equal(row.planning_log_tail, null, 'pre-existing row has planning_log_tail = null');
+
+    db.close();
+  });
+
+  it('is idempotent — running migrations twice on a DB that already has planning_log_tail', () => {
+    const dbPath = path.join(tmpDir, 'pre-v21-idempotent.db');
+    const db = seedPreV21Db(dbPath);
+
+    runMigrations(db);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
+
+    // Second run must not throw and must not double-add the column.
+    assert.doesNotThrow(() => runMigrations(db), 'second runMigrations() must not throw');
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
+
+    const cols = epicColumns(db);
+    const count = (name: string) => cols.filter((c) => c === name).length;
+    assert.equal(count('planning_log_tail'), 1, 'planning_log_tail appears exactly once');
+
+    db.close();
+  });
+
+  it('EpicStore.updatePlanningLogTail writes and reads back correctly', () => {
+    const dbPath = path.join(tmpDir, 'planning-log-tail-rw.db');
+    const db = createDatabase(dbPath);
+    const store = new EpicStore(db);
+
+    // beginPlanning does its own INSERT — do not call create() first.
+    store.beginPlanning('epic-plt-001', 'write a great feature');
+
+    const tail = '\n── analyst ──\nHere is the analyst output.';
+    store.updatePlanningLogTail('epic-plt-001', tail);
+
+    const rec = store.get('epic-plt-001')!;
+    assert.equal(rec.planning_log_tail, tail, 'planning_log_tail round-trips through the store');
+
+    db.close();
+  });
+});

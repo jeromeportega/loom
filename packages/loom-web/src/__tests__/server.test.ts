@@ -859,6 +859,51 @@ describe('loom-web — route mounting (story-004-001)', () => {
 });
 
 /**
+ * Collects up to `count` SSE events matching the predicate from one stream
+ * without cancelling the reader between matches. Throws if `count` events
+ * are not seen within `timeoutMs`.
+ */
+async function collectEvents(
+  body: ReadableStream<Uint8Array>,
+  predicate: (event: string, data: unknown) => boolean,
+  count: number,
+  timeoutMs = 3000
+): Promise<Array<{ event: string; data: unknown }>> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  const deadline = Date.now() + timeoutMs;
+  const found: Array<{ event: string; data: unknown }> = [];
+  while (Date.now() < deadline) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const blocks = buf.split('\n\n');
+    buf = blocks.pop() ?? '';
+    for (const block of blocks) {
+      let event = '';
+      let dataStr = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event: ')) event = line.slice(7).trim();
+        else if (line.startsWith('data: ')) dataStr += line.slice(6);
+      }
+      if (!event) continue;
+      let data: unknown;
+      try { data = JSON.parse(dataStr); } catch { continue; }
+      if (predicate(event, data)) {
+        found.push({ event, data });
+        if (found.length >= count) {
+          try { await reader.cancel(); } catch {}
+          return found;
+        }
+      }
+    }
+  }
+  try { await reader.cancel(); } catch {}
+  throw new Error(`Expected ${count} SSE events but got ${found.length} within ${timeoutMs}ms`);
+}
+
+/**
  * Reads SSE events from a Response body and resolves with the first event
  * matching the predicate. Parses the basic `event: <type>\ndata: <json>\n\n`
  * envelope; ignores comments and unknown shapes.
@@ -940,5 +985,157 @@ describe('loom-web — GET /api/events SSE', () => {
       (ev, d) => ev === 'output' && (d as { agent_id: string }).agent_id === a.id
     );
     assert.match((data as { chunk: string }).chunk, /thinking about it/);
+  });
+});
+
+describe('loom-web — SSE planning-output events (story-017-002)', () => {
+  type PlanningOutputData = { epic_id: string; phase: string | null; chunk: string };
+  const isPlanningOutput = (epicId: string) =>
+    (ev: string, d: unknown): boolean =>
+      ev === 'planning-output' && (d as PlanningOutputData).epic_id === epicId;
+
+  it('(AC1/AC5) emits planning-output on the existing SSE channel when planning_log_tail is set', async () => {
+    const epics = new EpicStore(db);
+    epics.beginPlanning('epic-001', 'My epic');
+    epics.updatePlanningLogTail('epic-001', 'analyst thinking…');
+
+    const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
+    const { data } = await readUntilEvent(res.body!, isPlanningOutput('epic-001'));
+    assert.match((data as PlanningOutputData).chunk, /analyst thinking/);
+  });
+
+  it('(AC2) planning-output carries the phase from epic.planning_phase', async () => {
+    const epics = new EpicStore(db);
+    epics.beginPlanning('epic-001', 'My epic');
+    epics.updatePlanningPhase('epic-001', 'pm');
+    epics.updatePlanningLogTail('epic-001', 'pm output');
+
+    const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
+    const { data } = await readUntilEvent(res.body!, isPlanningOutput('epic-001'));
+    assert.equal((data as PlanningOutputData).phase, 'pm');
+  });
+
+  it('(AC2) planning-output emits validly when phase is null', async () => {
+    // Phase becomes null after completePlanning; the event must still carry the chunk.
+    const epics = new EpicStore(db);
+    epics.beginPlanning('epic-001', 'My epic');
+    epics.completePlanning('epic-001', 'Titled epic'); // clears planning_phase
+    epics.updatePlanningLogTail('epic-001', 'residual output');
+
+    const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
+    const { data } = await readUntilEvent(res.body!, isPlanningOutput('epic-001'));
+    assert.equal((data as PlanningOutputData).phase, null);
+    assert.match((data as PlanningOutputData).chunk, /residual output/);
+  });
+
+  // Case (a): tail grows by suffix → emit only the new bytes.
+  it('(a) emits only the new suffix when planning_log_tail is appended to', async () => {
+    const epics = new EpicStore(db);
+    epics.beginPlanning('epic-001', 'My epic');
+    epics.updatePlanningLogTail('epic-001', 'hello');
+
+    const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
+    // First event: initial emission of 'hello' (snapshot established).
+    // Then grow the tail.
+    setTimeout(() => {
+      epics.updatePlanningLogTail('epic-001', 'hello world');
+    }, 80); // 80ms > 1 poll cycle (50ms) so the initial snapshot is committed first
+    const events = await collectEvents(res.body!, isPlanningOutput('epic-001'), 2, 2000);
+    assert.equal((events[0].data as PlanningOutputData).chunk, 'hello');
+    assert.equal((events[1].data as PlanningOutputData).chunk, ' world');
+  });
+
+  // Case (b): tail unchanged between ticks → no second event.
+  it('(b) does not emit a second planning-output when the tail is unchanged', async () => {
+    const epics = new EpicStore(db);
+    epics.beginPlanning('epic-001', 'My epic');
+    epics.updatePlanningLogTail('epic-001', 'fixed');
+
+    const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
+    // Expect the initial emission, then no further events within 3 poll cycles.
+    await assert.rejects(
+      async () => {
+        await collectEvents(res.body!, isPlanningOutput('epic-001'), 2, 250);
+      },
+      (err: Error) => /Expected 2 SSE events but got 1/.test(err.message)
+    );
+  });
+
+  // Case (c): tail replaced (new value does not startsWith snapshot) → full new tail.
+  it('(c) emits the full new tail when planning_log_tail is replaced', async () => {
+    const epics = new EpicStore(db);
+    epics.beginPlanning('epic-001', 'My epic');
+    epics.updatePlanningLogTail('epic-001', 'first');
+
+    const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
+    // Wait for initial emission (snapshot = 'first'), then replace with
+    // something that does NOT start with 'first'.
+    setTimeout(() => {
+      epics.updatePlanningLogTail('epic-001', 'replaced');
+    }, 80);
+    const events = await collectEvents(res.body!, isPlanningOutput('epic-001'), 2, 2000);
+    assert.equal((events[0].data as PlanningOutputData).chunk, 'first');
+    assert.equal((events[1].data as PlanningOutputData).chunk, 'replaced');
+  });
+
+  // Case (d): two concurrent planning epics → isolated snapshots/emits.
+  it('(d) isolates planningTailSnapshots per epic_id for concurrent planning epics', async () => {
+    const epics = new EpicStore(db);
+    epics.beginPlanning('epic-A', 'Epic A');
+    epics.beginPlanning('epic-B', 'Epic B');
+    epics.updatePlanningLogTail('epic-A', 'A output');
+    epics.updatePlanningLogTail('epic-B', 'B output');
+
+    const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
+    const [eA, eB] = await Promise.all([
+      readUntilEvent(res.body!, isPlanningOutput('epic-A')),
+      // Re-fetch for epic-B since reader was cancelled by the first call.
+      fetch(`${baseUrl}/api/events?token=test-token-123`).then((r) =>
+        readUntilEvent(r.body!, isPlanningOutput('epic-B'))
+      ),
+    ]);
+    assert.equal((eA.data as PlanningOutputData).epic_id, 'epic-A');
+    assert.match((eA.data as PlanningOutputData).chunk, /A output/);
+    assert.equal((eB.data as PlanningOutputData).epic_id, 'epic-B');
+    assert.match((eB.data as PlanningOutputData).chunk, /B output/);
+  });
+
+  // AC5: channel reuse — existing output/agent events still flow alongside planning-output.
+  it('(AC5) existing output events still flow alongside planning-output (no regression)', async () => {
+    const epics = new EpicStore(db);
+    const agents = new AgentStore(db);
+    epics.beginPlanning('epic-001', 'My epic');
+    epics.updatePlanningLogTail('epic-001', 'planner thinking');
+    const a = agents.create('epic-001', 'story-001-001', 'A story');
+
+    const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
+    setTimeout(() => {
+      agents.updateLogTail(a.id, 'worker running\n');
+    }, 30);
+    const [planningEv, workerEv] = await Promise.all([
+      readUntilEvent(res.body!, isPlanningOutput('epic-001')),
+      fetch(`${baseUrl}/api/events?token=test-token-123`).then((r) =>
+        readUntilEvent(
+          r.body!,
+          (ev, d) => ev === 'output' && (d as { agent_id: string }).agent_id === a.id
+        )
+      ),
+    ]);
+    assert.ok(planningEv, 'planning-output event arrived');
+    assert.ok(workerEv, 'output event arrived (no regression)');
+  });
+
+  // AC4: pane keyed to epic_id — verifiable by asserting the emitted epic_id
+  // matches the planning epic (not any agent/story id).
+  it('(AC4) planning-output epic_id matches the planning epic with no stories', async () => {
+    const epics = new EpicStore(db);
+    // A planning epic with NO agent rows at all.
+    epics.beginPlanning('epic-solo', 'No stories yet');
+    epics.updatePlanningLogTail('epic-solo', 'persona output');
+
+    const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
+    const { data } = await readUntilEvent(res.body!, isPlanningOutput('epic-solo'));
+    assert.equal((data as PlanningOutputData).epic_id, 'epic-solo');
+    assert.match((data as PlanningOutputData).chunk, /persona output/);
   });
 });

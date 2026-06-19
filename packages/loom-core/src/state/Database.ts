@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -365,6 +365,12 @@ export function runMigrations(db: Database.Database): void {
   }
   if (!epicCols.some((c) => c.name === 'planner_model')) {
     db.exec('ALTER TABLE epics ADD COLUMN planner_model TEXT');
+  }
+  // v21: rolling tail of planning persona stdout. Bounded to <=4096 chars,
+  // nullable. Written during planning; readable after `status` flips to 'planned'.
+  // Mirrors the planning_phase pattern — same guard, additive-only (ADR-005).
+  if (!epicCols.some((c) => c.name === 'planning_log_tail')) {
+    db.exec('ALTER TABLE epics ADD COLUMN planning_log_tail TEXT');
   }
 
   const row = db

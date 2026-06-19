@@ -53,6 +53,7 @@ export function eventStreamHandler(opts: EventStreamOptions) {
     }>();
     const agentSnapshots = new Map<string, { status: string; pr_url: string | null; updated_at: string }>();
     const tailSnapshots = new Map<string, string>();
+    const planningTailSnapshots = new Map<string, string>();
 
     let closed = false;
 
@@ -172,6 +173,26 @@ export function eventStreamHandler(opts: EventStreamOptions) {
               emit(res, 'output', { agent_id: a.id, story_id: a.story_id, chunk: tail });
               tailSnapshots.set(a.id, tail);
             }
+          }
+        }
+        // ─── Planning log tail diffs ─────────────────────────────────────
+        // Diff epic.planning_log_tail per poll and emit 'planning-output'
+        // events when new bytes arrive. Uses the same startsWith()/slice()
+        // logic as agents.log_tail — keyed strictly to epic_id so it works
+        // for planning epics that have no stories yet (AC4).
+        for (const epic of epics) {
+          const tail = epic.planning_log_tail ?? '';
+          if (!tail) continue;
+          const prevTail = planningTailSnapshots.get(epic.id) ?? '';
+          if (tail.length > prevTail.length && tail.startsWith(prevTail)) {
+            // Simple suffix — the planner appends to planning_log_tail.
+            const chunk = tail.slice(prevTail.length);
+            emit(res, 'planning-output', { epic_id: epic.id, phase: epic.planning_phase ?? null, chunk });
+            planningTailSnapshots.set(epic.id, tail);
+          } else if (tail !== prevTail) {
+            // Replacement (tail was truncated/reset). Emit the full new tail.
+            emit(res, 'planning-output', { epic_id: epic.id, phase: epic.planning_phase ?? null, chunk: tail });
+            planningTailSnapshots.set(epic.id, tail);
           }
         }
       } catch (err) {
