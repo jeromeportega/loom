@@ -5,9 +5,17 @@ export type {
   LLMMessage,
   LLMUsage,
   SystemBlock,
+  NonAgenticMode,
 } from './LLMClient.js';
 export { EMPTY_USAGE, addUsage } from './LLMClient.js';
-export { ClaudeCliClient, flattenMessages, parseClaudeJson } from './ClaudeCliClient.js';
+export {
+  ClaudeCliClient,
+  flattenMessages,
+  parseClaudeJson,
+  buildBufferedArgs,
+  buildStreamingArgs,
+  NON_AGENTIC_TOOLS_DISABLE_ARGS,
+} from './ClaudeCliClient.js';
 export type { ClaudeCliClientOptions } from './ClaudeCliClient.js';
 export { CursorCliClient, parseCursorJson } from './CursorCliClient.js';
 export type { CursorCliClientOptions } from './CursorCliClient.js';

@@ -1,6 +1,16 @@
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { flattenMessages, extractApiErrorStatus, parseClaudeJson, buildStreamingArgs, ClaudeCliClient } from '../llm/ClaudeCliClient.js';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  flattenMessages,
+  extractApiErrorStatus,
+  parseClaudeJson,
+  buildStreamingArgs,
+  ClaudeCliClient,
+} from '../llm/ClaudeCliClient.js';
+import { CursorCliClient } from '../llm/CursorCliClient.js';
 import type { LLMRequest, LLMResponse } from '../llm/LLMClient.js';
 import { EMPTY_USAGE } from '../llm/LLMClient.js';
 
@@ -311,5 +321,108 @@ describe('ClaudeCliClient session auth env-hygiene (AC4)', () => {
       if (priorToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
       else process.env.ANTHROPIC_AUTH_TOKEN = priorToken;
     }
+  });
+});
+
+// ─── buildStreamingArgs nonAgentic extension ──────────────────────────────────
+
+describe('buildStreamingArgs nonAgentic extension', () => {
+  it('default agentic (undefined): uses --append-system-prompt, no --system-prompt, no tools-disable (AC4)', () => {
+    const args = buildStreamingArgs('m', 'SYS', undefined);
+    const apIdx = args.indexOf('--append-system-prompt');
+    assert.ok(apIdx !== -1, 'must contain --append-system-prompt');
+    assert.equal(args[apIdx + 1], 'SYS', '--append-system-prompt value must be SYS');
+    assert.ok(!args.includes('--system-prompt'), 'must NOT contain --system-prompt');
+    assert.ok(!args.includes('--tools'), 'must NOT contain --tools flag');
+  });
+
+  it('non-agentic (excludeDynamicSections: true): --system-prompt, tools-disable, no --append-system-prompt (AC2)', () => {
+    const args = buildStreamingArgs('m', 'SYS', { excludeDynamicSections: true });
+    const spIdx = args.indexOf('--system-prompt');
+    assert.ok(spIdx !== -1, 'must contain --system-prompt');
+    assert.equal(args[spIdx + 1], 'SYS', '--system-prompt value must be SYS');
+    assert.ok(!args.includes('--append-system-prompt'), 'must NOT contain --append-system-prompt');
+    const toolsIdx = args.indexOf('--tools');
+    assert.ok(toolsIdx !== -1, 'must contain --tools');
+    assert.equal(args[toolsIdx + 1], '', '--tools must be followed by empty string');
+    assert.ok(args.includes('--verbose'), '--verbose must be retained in non-agentic streaming');
+  });
+
+  it('retention opt-out (excludeDynamicSections: false): still non-agentic shape, no --append-system-prompt (AC3)', () => {
+    const args = buildStreamingArgs('m', 'SYS', { excludeDynamicSections: false });
+    assert.ok(args.includes('--system-prompt'), 'must contain --system-prompt');
+    assert.ok(!args.includes('--append-system-prompt'), 'must NOT contain --append-system-prompt');
+    const toolsIdx = args.indexOf('--tools');
+    assert.ok(toolsIdx !== -1, 'must contain --tools');
+    assert.equal(args[toolsIdx + 1], '', '--tools must be followed by empty string');
+  });
+
+  it('boundary — empty systemText: neither prompt flag in either mode', () => {
+    const agentArgs = buildStreamingArgs('m', '', undefined);
+    assert.ok(!agentArgs.includes('--append-system-prompt'));
+    assert.ok(!agentArgs.includes('--system-prompt'));
+    assert.ok(!agentArgs.includes('--tools'), 'agentic: no --tools for empty text');
+
+    const nonAgentArgs = buildStreamingArgs('m', '', { excludeDynamicSections: true });
+    assert.ok(!nonAgentArgs.includes('--system-prompt'));
+    assert.ok(!nonAgentArgs.includes('--append-system-prompt'));
+    const toolsIdx = nonAgentArgs.indexOf('--tools');
+    assert.ok(toolsIdx !== -1, 'non-agentic: --tools must be present even with empty system text');
+    assert.equal(nonAgentArgs[toolsIdx + 1], '', '--tools must be followed by empty string');
+  });
+});
+
+// ─── CursorCliClient cursor untouched — FR-9 ─────────────────────────────────
+
+describe('CursorCliClient cursor untouched (FR-9)', () => {
+  let dir: string;
+  let binPath: string;
+  let argsFile: string;
+
+  before(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cursor-nona-'));
+    argsFile = join(dir, 'captured.txt');
+    // Fake cursor-agent: write argv (one token per line) to argsFile, drain
+    // stdin, emit valid JSON that parseCursorJson accepts, exit 0.
+    // parseCursorJson accepts {"result":"ok"} — it probes keys in order:
+    // ['result','text','response','content','message'] and uses the first string value.
+    const script = [
+      '#!/bin/sh',
+      `printf '%s\\n' "$@" > ${JSON.stringify(argsFile)}`,
+      'cat > /dev/null',
+      `echo '{"result":"ok"}'`,
+      'exit 0',
+    ].join('\n');
+    binPath = join(dir, 'fake-cursor-agent');
+    writeFileSync(binPath, script);
+    chmodSync(binPath, 0o755);
+  });
+
+  after(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('constructs identical subprocess args with and without nonAgentic (AC6)', async () => {
+    const baseReq: LLMRequest = {
+      model: 'claude-sonnet-4-6',
+      system: [{ text: 'system text' }],
+      messages: [{ role: 'user', content: 'hello' }],
+    };
+    const client = new CursorCliClient({ cursorBin: binPath });
+
+    await client.complete(baseReq);
+    const argsWithout = readFileSync(argsFile, 'utf-8').trim().split('\n');
+
+    await client.complete({ ...baseReq, nonAgentic: { excludeDynamicSections: true } });
+    const argsWith = readFileSync(argsFile, 'utf-8').trim().split('\n');
+
+    assert.deepEqual(
+      argsWith,
+      argsWithout,
+      'CursorCliClient must pass identical subprocess args regardless of nonAgentic field'
+    );
+    assert.ok(!argsWith.includes('--tools'), 'cursor args must never include --tools');
+    assert.ok(!argsWith.includes('--system-prompt'), 'cursor args must never include --system-prompt');
+    assert.ok(!argsWith.includes('--append-system-prompt'), 'cursor args must never include --append-system-prompt');
   });
 });
