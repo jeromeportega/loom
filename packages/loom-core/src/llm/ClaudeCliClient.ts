@@ -106,10 +106,7 @@ export class ClaudeCliClient implements LLMClient {
     const systemText = req.system.map((b) => b.text).join('\n\n');
     const prompt = flattenMessages(req.messages);
 
-    const args = ['-p', '--model', req.model, '--output-format', 'stream-json'];
-    if (systemText.length > 0) {
-      args.push('--append-system-prompt', systemText);
-    }
+    const args = buildStreamingArgs(req.model, systemText);
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const proc = await this.spawnClaudeStream(args, prompt, req.model, onText);
@@ -327,6 +324,22 @@ export class ClaudeCliClient implements LLMClient {
       child.stdin.end();
     });
   }
+}
+
+/**
+ * Builds the argv for the streaming (`onText`) path. `--output-format
+ * stream-json` REQUIRES `--verbose` — the real `claude` binary exits 1 with
+ * "When using --print, --output-format=stream-json requires --verbose" if it's
+ * missing (the mocked tests don't enforce this, so it's pinned by a regression
+ * test instead). Kept as an exported pure function so that contract is testable
+ * without spawning the binary.
+ */
+export function buildStreamingArgs(model: string, systemText: string): string[] {
+  const args = ['-p', '--model', model, '--output-format', 'stream-json', '--verbose'];
+  if (systemText.length > 0) {
+    args.push('--append-system-prompt', systemText);
+  }
+  return args;
 }
 
 /** Flattens a (possibly multi-turn) message list into one single-shot prompt. */
