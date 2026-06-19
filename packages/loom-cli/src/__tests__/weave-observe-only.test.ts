@@ -30,6 +30,7 @@ import {
 import type { LLMRequest } from '@loom-ai/core';
 import { runEpic } from '../commands/epic.js';
 import { runWeave } from '../commands/weave.js';
+import { runInProcess, jsonBlock } from './testUtils.js';
 
 // __dirname = packages/loom-cli/dist/__tests__
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
@@ -40,10 +41,6 @@ if (!fs.existsSync(LOOM_CLI)) {
 }
 
 // ── Deterministic LLM stub ────────────────────────────────────────────────────
-
-function jsonBlock(obj: unknown): string {
-  return '```json\n' + JSON.stringify(obj) + '\n```';
-}
 
 function pipelineResponder(req: LLMRequest): string {
   const last = req.messages[req.messages.length - 1].content;
@@ -98,33 +95,6 @@ function pipelineResponder(req: LLMRequest): string {
 }
 
 // ── In-process runner ─────────────────────────────────────────────────────────
-
-async function runInProcess(fn: () => Promise<void>): Promise<{ exitCode: number | null }> {
-  const origExit = process.exit;
-  const origLog = console.log;
-  const origErr = console.error;
-  let exitCode: number | null = null;
-  class ExitSignal extends Error {}
-  (process as unknown as { exit: (c?: number) => never }).exit = (c?: number) => {
-    exitCode = c ?? 0;
-    throw new ExitSignal();
-  };
-  console.log = () => {};
-  console.error = () => {};
-  try {
-    await fn();
-  } catch (err) {
-    if (!(err instanceof ExitSignal)) {
-      console.error = origErr;
-      throw err;
-    }
-  } finally {
-    process.exit = origExit;
-    console.log = origLog;
-    console.error = origErr;
-  }
-  return { exitCode };
-}
 
 // ── Repo factory ──────────────────────────────────────────────────────────────
 

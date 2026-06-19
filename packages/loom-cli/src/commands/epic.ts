@@ -192,8 +192,8 @@ export async function runEpic(
     }
   }
 
-  // Classify the intake brief best-effort before planning (observe-only, ADR-002).
-  // Returns void and swallows every failure — planning is never gated on the verdict.
+  // Classify the intake brief best-effort before planning (observe-only, ADR-001).
+  // Blocks planning start until classification resolves or times out; never throws.
   await recordIntakeClassification({
     db,
     epicId: reservedId,

@@ -5,12 +5,15 @@
  * intake classifier succeeds (verdict persisted) or fails (no verdict). The
  * verdict is a side-effect with no downstream influence on planning decisions.
  *
- * Two scenarios are compared:
- *   A. Classifier succeeds   — mock LLM returns a valid verdict
- *   B. Classifier fails      — mock LLM throws on the classifier call
+ * Scenarios compared:
+ *   A. Classifier succeeds with a valid verdict
+ *   B. Classifier fails  — mock LLM throws on the classifier call
+ *   C. Parameterised verdict-value invariance — multiple verdict types/sizes/
+ *      confidences all produce identical planning output (the verdict value
+ *      itself must not influence the planner).
  *
  * The produced epic artifact (title, status, parsed YAML) must be identical
- * in both scenarios.
+ * across all scenarios.
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,29 +22,27 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
-import Database from 'better-sqlite3';
 import {
   MockLLMClient,
   resetDatabaseForTest,
   EpicStore,
+  openDatabase,
 } from '@loom-ai/core';
 import type { LLMRequest } from '@loom-ai/core';
 import { runEpic } from '../commands/epic.js';
+import { runInProcess, jsonBlock } from './testUtils.js';
 
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
 
 // ── LLM stubs ─────────────────────────────────────────────────────────────────
 
-function jsonBlock(obj: unknown): string {
-  return '```json\n' + JSON.stringify(obj) + '\n```';
-}
-
 function makePlanningResponder(epicTitle: string) {
   return (req: LLMRequest): string => {
     const last = req.messages[req.messages.length - 1];
 
-    if (last.role === 'assistant') {
-      // This is the intake classifier call. Throw to simulate failure.
+    // Intake classifier: assistant prefill '{' is the distinguishing signal.
+    // Throw to simulate a classifier failure (swallowed by recordIntakeClassification).
+    if (last.role === 'assistant' && last.content === '{') {
       throw new Error('classifier call — planning-only stub rejects it');
     }
 
@@ -97,47 +98,23 @@ function makePlanningResponder(epicTitle: string) {
   };
 }
 
-/** Handles both planning pipeline AND classifier (returns a valid verdict). */
-function makeFullResponder(epicTitle: string) {
+/** Handles both planning pipeline AND classifier (returns a verdict with specific values). */
+function makeVerdictResponder(
+  type: string,
+  size: string,
+  confidence: string,
+  epicTitle: string,
+) {
   return (req: LLMRequest): string => {
     const last = req.messages[req.messages.length - 1];
 
     // Intake classifier: assistant prefill '{' is the last message.
     if (last.role === 'assistant' && last.content === '{') {
-      return '"type":"feature","size":"story","confidence":"high","rationale":"observe-only regression"}';
+      return `"type":"${type}","size":"${size}","confidence":"${confidence}","rationale":"observe-only regression"}`;
     }
 
     return makePlanningResponder(epicTitle)(req);
   };
-}
-
-// ── In-process runner ─────────────────────────────────────────────────────────
-
-async function runInProcess(fn: () => Promise<void>): Promise<{ exitCode: number | null }> {
-  const origExit = process.exit;
-  const origLog = console.log;
-  const origErr = console.error;
-  let exitCode: number | null = null;
-  class ExitSignal extends Error {}
-  (process as unknown as { exit: (c?: number) => never }).exit = (c?: number) => {
-    exitCode = c ?? 0;
-    throw new ExitSignal();
-  };
-  console.log = () => {};
-  console.error = () => {};
-  try {
-    await fn();
-  } catch (err) {
-    if (!(err instanceof ExitSignal)) {
-      console.error = origErr;
-      throw err;
-    }
-  } finally {
-    process.exit = origExit;
-    console.log = origLog;
-    console.error = origErr;
-  }
-  return { exitCode };
 }
 
 // ── Repo factory ──────────────────────────────────────────────────────────────
@@ -155,22 +132,20 @@ function makeLoomRepo(prefix: string): string {
   return dir;
 }
 
+// Reads the epic-001 artifact using the SAME singleton handle the write used
+// (ADR-003) — never a fresh read-only connection.
 function readEpicArtifact(repoDir: string): {
   title: string;
   status: string;
   parsedEpic: unknown;
 } {
-  const db = new Database(path.join(repoDir, '.loom', 'loom.db'), { readonly: true });
-  try {
-    const epic = new EpicStore(db).get('epic-001');
-    if (!epic) return { title: '', status: 'missing', parsedEpic: null };
-    const yamlPath = epic.yaml_path ? path.join(repoDir, epic.yaml_path) : null;
-    const yamlContent = yamlPath && fs.existsSync(yamlPath) ? fs.readFileSync(yamlPath, 'utf8') : '';
-    const parsedEpic = yamlContent ? yaml.load(yamlContent) : null;
-    return { title: epic.title, status: epic.status, parsedEpic };
-  } finally {
-    db.close();
-  }
+  const db = openDatabase(path.join(repoDir, '.loom'));
+  const epic = new EpicStore(db).get('epic-001');
+  if (!epic) return { title: '', status: 'missing', parsedEpic: null };
+  const yamlPath = epic.yaml_path ? path.join(repoDir, epic.yaml_path) : null;
+  const yamlContent = yamlPath && fs.existsSync(yamlPath) ? fs.readFileSync(yamlPath, 'utf8') : '';
+  const parsedEpic = yamlContent ? yaml.load(yamlContent) : null;
+  return { title: epic.title, status: epic.status, parsedEpic };
 }
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -207,7 +182,7 @@ describe('FR-4 observe-only invariant — planner output identical with vs witho
     try {
       process.chdir(dirA);
       resetDatabaseForTest();
-      const llmA = new MockLLMClient(makeFullResponder(EPIC_TITLE));
+      const llmA = new MockLLMClient(makeVerdictResponder('feature', 'story', 'high', EPIC_TITLE));
       const { exitCode: exitA } = await runInProcess(() => runEpic(BRIEF, { llm: llmA, force: true }));
       assert.ok(exitA === null || exitA === 0, 'scenario A (verdict present) must exit cleanly');
       artifactA = readEpicArtifact(dirA);
@@ -244,5 +219,63 @@ describe('FR-4 observe-only invariant — planner output identical with vs witho
       artifactB.parsedEpic,
       'YAML planning content must be identical — verdict must not alter planner output (observe-only invariant)'
     );
+  });
+
+  it('planning output is identical across canonical verdict-value variants (FR-4 full matrix)', async () => {
+    // Canonical verdict combinations to test. These cover the three types, both
+    // sizes, and both confidence extremes — enough to confirm no verdict value
+    // influences planning output.
+    const variants: Array<{ type: string; size: string; confidence: string }> = [
+      { type: 'feature', size: 'story', confidence: 'high' },
+      { type: 'bug',     size: 'epic',  confidence: 'low'  },
+      { type: 'chore',   size: 'story', confidence: 'medium' },
+    ];
+
+    // Capture baseline from a classifier-failure run.
+    const dirBase = makeLoomRepo('loom-observe-only-base-');
+    let baseline: ReturnType<typeof readEpicArtifact> | null = null;
+    try {
+      process.chdir(dirBase);
+      resetDatabaseForTest();
+      const llmBase = new MockLLMClient(makePlanningResponder(EPIC_TITLE));
+      const { exitCode } = await runInProcess(() => runEpic(BRIEF, { llm: llmBase, force: true }));
+      assert.ok(exitCode === null || exitCode === 0, 'baseline run must exit cleanly');
+      baseline = readEpicArtifact(dirBase);
+      assert.equal(baseline.status, 'planned', 'baseline must produce a planned epic');
+    } finally {
+      resetDatabaseForTest();
+      process.chdir(prevCwd);
+      fs.rmSync(dirBase, { recursive: true, force: true });
+    }
+
+    for (const v of variants) {
+      const dir = makeLoomRepo(`loom-observe-only-${v.type}-${v.size}-`);
+      try {
+        process.chdir(dir);
+        resetDatabaseForTest();
+        const llm = new MockLLMClient(makeVerdictResponder(v.type, v.size, v.confidence, EPIC_TITLE));
+        const { exitCode } = await runInProcess(() => runEpic(BRIEF, { llm, force: true }));
+        assert.ok(
+          exitCode === null || exitCode === 0,
+          `verdict variant ${v.type}/${v.size}/${v.confidence} must exit cleanly`
+        );
+        const artifact = readEpicArtifact(dir);
+        assert.equal(artifact.status, 'planned', `variant ${v.type}/${v.size} must produce a planned epic`);
+        assert.equal(
+          artifact.title,
+          baseline!.title,
+          `epic title must match baseline for verdict ${v.type}/${v.size}/${v.confidence}`
+        );
+        assert.deepEqual(
+          artifact.parsedEpic,
+          baseline!.parsedEpic,
+          `YAML planning content must match baseline — verdict value ${v.type}/${v.size}/${v.confidence} must not affect planner output`
+        );
+      } finally {
+        resetDatabaseForTest();
+        process.chdir(prevCwd);
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
   });
 });

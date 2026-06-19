@@ -23,14 +23,9 @@ import {
 } from '@loom-ai/core';
 import type { LLMRequest } from '@loom-ai/core';
 import { runEpic } from '../commands/epic.js';
+import { runInProcess, jsonBlock } from './testUtils.js';
 
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
-
-// ── LLM stub ─────────────────────────────────────────────────────────────────
-
-function jsonBlock(obj: unknown): string {
-  return '```json\n' + JSON.stringify(obj) + '\n```';
-}
 
 /**
  * Handles both the planning pipeline AND the intake classifier call.
@@ -94,35 +89,6 @@ function fullPipelineResponder(req: LLMRequest): string {
     return '# Architecture\n\n## Architecture Philosophy\nBoring tech.';
   if (content.includes('Headless task B: produce per-story')) return '```json\n{"tech_notes":{}}\n```';
   throw new Error('unexpected planning message: ' + content.slice(0, 60));
-}
-
-// ── In-process runner ─────────────────────────────────────────────────────────
-
-async function runInProcess(fn: () => Promise<void>): Promise<{ exitCode: number | null }> {
-  const origExit = process.exit;
-  const origLog = console.log;
-  const origErr = console.error;
-  let exitCode: number | null = null;
-  class ExitSignal extends Error {}
-  (process as unknown as { exit: (c?: number) => never }).exit = (c?: number) => {
-    exitCode = c ?? 0;
-    throw new ExitSignal();
-  };
-  console.log = () => {};
-  console.error = () => {};
-  try {
-    await fn();
-  } catch (err) {
-    if (!(err instanceof ExitSignal)) {
-      console.error = origErr;
-      throw err;
-    }
-  } finally {
-    process.exit = origExit;
-    console.log = origLog;
-    console.error = origErr;
-  }
-  return { exitCode };
 }
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -221,7 +187,8 @@ describe('weave intake e2e — verdict persisted through the real runEpic path',
     // A mock that handles planning but throws on classifier (assistant prefill) calls.
     function planningOnlyResponder(req: LLMRequest): string {
       const last = req.messages[req.messages.length - 1];
-      if (last.role === 'assistant') throw new Error('classifier call rejected by test');
+      if (last.role === 'assistant' && (last.content as string).startsWith('{'))
+        throw new Error('classifier call rejected by test');
       return fullPipelineResponder(req);
     }
 
@@ -236,5 +203,25 @@ describe('weave intake e2e — verdict persisted through the real runEpic path',
     const rows = new AuditLog(db).recent(50).filter((r) => r.action === INTAKE_AUDIT_ACTION);
     assert.equal(rows.length, 1, 'intake_classified audit row must be written even on failure');
     assert.equal(rows[0].allowed, 0, 'allowed must be 0 on classifier failure');
+  });
+
+  it('audit log command is truncated at 120 chars for a long brief', async () => {
+    // BRIEF is 95 chars; this brief is ≥121 chars to exercise the .slice(0, 120) truncation.
+    const LONG_BRIEF =
+      'Build a comprehensive feature covering authentication, authorization, auditing, and access-control policies across the entire stack end-to-end.';
+    assert.ok(LONG_BRIEF.length > 120, 'test setup: long brief must exceed 120 chars');
+
+    const llm = new MockLLMClient(fullPipelineResponder);
+    await runInProcess(() => runEpic(LONG_BRIEF, { llm, force: true }));
+
+    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const rows = new AuditLog(db).recent(50).filter((r) => r.action === INTAKE_AUDIT_ACTION);
+    assert.equal(rows.length, 1, 'exactly one intake_classified row must be written');
+    assert.equal(
+      rows[0].command,
+      LONG_BRIEF.slice(0, 120),
+      'command must be truncated to 120 chars'
+    );
+    assert.ok(rows[0].command!.length === 120, 'truncated command must be exactly 120 chars');
   });
 });
