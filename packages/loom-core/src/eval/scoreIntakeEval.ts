@@ -147,6 +147,13 @@ function buildAxisReport(records: IntakeRunRecord[], axis: 'type' | 'size'): Axi
  *   3. judgeInconclusiveRate > threshold  → INCONCLUSIVE
  *   4. any axis fails to clear bar        → DO_NOT_PROCEED
  *   5. else                               → PROCEED
+ *
+ * Priority rationale (ADR-013): step 1 (insufficient data) gates before failure-rate checks,
+ * so a run with scored=0 always exits as INCONCLUSIVE even when the classifier failure rate
+ * is 100%. This is intentional: when there is no data we cannot confirm the classifier is
+ * broken — it may simply not have run. Steps 2 and 3 are ordered so a high classifier failure
+ * rate (DO_NOT_PROCEED) takes precedence over a high judge inconclusive rate (INCONCLUSIVE),
+ * because a broken classifier makes the judge signal unreliable.
  */
 export function decideGate(
   report: Omit<IntakeEvalReport, 'overall'>,
@@ -164,7 +171,8 @@ export function decideGate(
     };
   }
 
-  const classifierFailureRate = total > 0 ? (total - scored) / total : 0;
+  // total >= scored >= minScoredCases is guaranteed at this point; the total === 0 branch is unreachable
+  const classifierFailureRate = (total - scored) / total;
   if (classifierFailureRate > maxClassifierFailureRate) {
     const failedCount = total - scored;
     return {
@@ -185,16 +193,18 @@ export function decideGate(
   const sizeAxis = axes.find(a => a.axis === 'size');
   if (!typeAxis || !sizeAxis) throw new Error('decideGate: axes must include both "type" and "size" AxisReport entries');
   if (!typeAxis.verdict.clearsBar || !sizeAxis.verdict.clearsBar) {
-    const epicsUnderSized = sizeAxis.dangerousConfusions.find(d => d.from === 'epic' && d.to === 'story')?.count ?? 0;
+    const failingAxes = [typeAxis, sizeAxis].filter(a => !a.verdict.clearsBar);
+    const reasons = failingAxes.map(a => a.verdict.statement).join('; ');
     return {
       decision: 'DO_NOT_PROCEED',
-      statement: `DO NOT PROCEED: ${epicsUnderSized} epic→story under-sizing confusion(s) detected across ${scored} scored cases.`,
+      statement: `DO NOT PROCEED: axis bar(s) not cleared across ${scored} scored cases. ${reasons}`,
     };
   }
 
+  const totalDangerous = axes.reduce((n, a) => n + a.dangerousConfusions.reduce((s, d) => s + d.count, 0), 0);
   return {
     decision: 'PROCEED',
-    statement: `PROCEED: classifier clears Phase 1 bar — 0 dangerous confusions on both axes across ${scored} scored cases.`,
+    statement: `PROCEED: classifier clears Phase 1 bar — ${totalDangerous} dangerous confusions on both axes across ${scored} scored cases.`,
   };
 }
 
@@ -207,7 +217,9 @@ export function scoreIntakeEval(
   records: IntakeRunRecord[],
   meta: ScoreIntakeEvalMeta = {},
 ): IntakeEvalReport {
-  const inconclusiveJudgeCount = records.filter(r => r.judge.status === 'inconclusive').length;
+  // Only count inconclusive judges on scored (classifier.ok) records — classifier-failed records
+  // always produce an inconclusive judge placeholder and must not inflate the rate numerator.
+  const inconclusiveJudgeCount = records.filter(r => r.classifier.ok && r.judge.status === 'inconclusive').length;
 
   const failureCounts = {
     timeout:        records.filter(r => !r.classifier.ok && r.classifier.reason === 'timeout').length,

@@ -367,16 +367,18 @@ describe('scoreIntakeEval — verdict.statement references dangerous-cell count'
 // ── inconclusiveJudgeCount ────────────────────────────────────────────────────
 
 describe('scoreIntakeEval — inconclusiveJudgeCount', () => {
-  it('counts records with inconclusive judge status', () => {
+  it('counts inconclusive judges on scored (classifier.ok) records only', () => {
     const records: IntakeRunRecord[] = [
       makeRecord(makeCase('a', 'feature', 'story'), { type: 'feature', size: 'story' },
-        { type: 'feature', size: 'story', grade: 'agree' }),  // ok
-      makeRecord(makeCase('b', 'bug', 'story'), { type: 'bug', size: 'story' }, null), // inconclusive
-      makeRecord(makeCase('c', 'chore', 'epic'), null),                                 // classifier fail → inconclusive
+        { type: 'feature', size: 'story', grade: 'agree' }),  // ok judge, scored
+      makeRecord(makeCase('b', 'bug', 'story'), { type: 'bug', size: 'story' }, null), // inconclusive judge, scored → counts
+      makeRecord(makeCase('c', 'chore', 'epic'), null),                                 // classifier fail → judge placeholder inconclusive, excluded
     ];
 
     const report = scoreIntakeEval(records);
-    assert.equal(report.inconclusiveJudgeCount, 2, 'two inconclusive judge outcomes');
+    // Only record 'b' counts: scored + inconclusive judge. Record 'c' has classifier.ok=false
+    // so its auto-inconclusive judge placeholder must NOT inflate the numerator.
+    assert.equal(report.inconclusiveJudgeCount, 1, 'only scored records with inconclusive judge outcome count');
   });
 
   it('is 0 when all judges returned ok', () => {
@@ -486,6 +488,26 @@ describe('scoreIntakeEval — overall.decision (tri-state gate)', () => {
   it('overall statement is non-empty', () => {
     const report = scoreIntakeEval(makePassingRecords(18));
     assert.ok(report.overall.statement.length > 0, 'overall statement must be non-empty');
+  });
+
+  it('DO_NOT_PROCEED statement references failing axis verdict (not a hardcoded epic→story count)', () => {
+    // 18 passing + 1 epic→story confusion → sizeAxis fails to clear bar
+    const records = [
+      ...makePassingRecords(17),
+      makeRecord(makeCase('epic-a', 'feature', 'epic'), { type: 'feature', size: 'story' }),
+    ];
+    const report = scoreIntakeEval(records);
+    assert.equal(report.overall.decision, 'DO_NOT_PROCEED');
+    // Statement must reference the size-axis context (not misreport via the wrong axis)
+    assert.ok(
+      report.overall.statement.includes('epic') || report.overall.statement.includes('under-sizing'),
+      `statement must mention the failing axis reason, got: "${report.overall.statement}"`,
+    );
+    // Must NOT produce the old misleading "0 epic→story under-sizing" phrasing for the sizeAxis case
+    assert.ok(
+      !report.overall.statement.startsWith('DO NOT PROCEED: 0 epic→story'),
+      `statement must not hardcode a count from the wrong axis, got: "${report.overall.statement}"`,
+    );
   });
 });
 
@@ -607,6 +629,27 @@ describe('decideGate — judgeInconclusiveRate threshold', () => {
     assert.equal(report.inconclusiveJudgeCount, 2, '2 inconclusive judges');
     assert.equal(report.overall.decision, 'INCONCLUSIVE',
       '2/18 ≈ 11.1% must yield INCONCLUSIVE; wrong denominator 2/20 = 10.0% would not trigger the gate');
+  });
+});
+
+describe('decideGate — throws when axes are incomplete', () => {
+  it('throws when axes array is empty', () => {
+    const pr = partialReport(makePassingRecords(20));
+    const emptyAxes = { ...pr, axes: [] };
+    assert.throws(
+      () => decideGate(emptyAxes),
+      /decideGate: axes must include both/,
+      'empty axes array must throw a descriptive error',
+    );
+  });
+
+  it('throws when axes array is missing the "size" entry', () => {
+    const pr = partialReport(makePassingRecords(20));
+    const typeOnly = { ...pr, axes: pr.axes.filter(a => a.axis === 'type') };
+    assert.throws(
+      () => decideGate(typeOnly),
+      /decideGate: axes must include both/,
+    );
   });
 });
 
