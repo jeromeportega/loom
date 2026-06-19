@@ -1,6 +1,6 @@
 import type { CommandDescription } from '../describe/schema.js';
 import path from 'node:path';
-import type { LLMClient, ClassifyResult } from '@loom-ai/core';
+import type { LLMClient, ClassifyResult, Policy } from '@loom-ai/core';
 import { PolicyEngine } from '@loom-ai/core';
 import { runEpic } from './epic.js';
 import type { IntakeStage } from './epic.js';
@@ -11,6 +11,10 @@ type ClassifyFn = (
   brief: string,
   opts: { llm: LLMClient; model: string; timeoutMs?: number }
 ) => Promise<ClassifyResult>;
+
+// Fallback timeout for the intake classifier.
+// Will be replaced by resolveIntakeTimeoutMs(policy) after story-022-002 merges.
+const WEAVE_DEFAULT_INTAKE_TIMEOUT_MS = 180_000;
 
 /**
  * Phase 0.5: wire intake classification before the epic planner.
@@ -38,15 +42,23 @@ export async function runWeave(
   const { _runEpic, _classifyIntake, ...epicOpts } = opts ?? {};
   const epicRunner: RunEpicFn = _runEpic ?? runEpic;
 
-  // Build the intake stage from policy. PolicyEngine.load returns defaults
-  // when policy.yaml is absent, so this never throws for a missing file.
-  // runEpic exits cleanly if loom is not initialized.
+  // Build the intake stage from policy. PolicyEngine.load returns defaults when
+  // policy.yaml is absent (missing .loom dir included), so this handles the
+  // uninitialised-repo case without throwing. A malformed policy.yaml would
+  // throw PolicyValidationError — fall back to a default policy so runEpic can
+  // still reach its own init check and emit the friendly "not initialized" message.
   // timeoutMs will be resolveIntakeTimeoutMs(policy) after story-022-002 merges.
   const loomDir = path.join(process.cwd(), '.loom');
-  const policy = PolicyEngine.load(loomDir).policyData;
+  let policy: Policy;
+  try {
+    policy = PolicyEngine.load(loomDir).policyData;
+  } catch {
+    policy = PolicyEngine.defaultPolicy();
+  }
+  const model = policy.agents.triage_model || 'claude-haiku-4-5-20251001';
   const intake: IntakeStage = {
-    model: policy.agents.triage_model,
-    timeoutMs: 180_000,
+    model,
+    timeoutMs: WEAVE_DEFAULT_INTAKE_TIMEOUT_MS,
   };
 
   const epicArgs: RunEpicOpts = { ...epicOpts, intake };

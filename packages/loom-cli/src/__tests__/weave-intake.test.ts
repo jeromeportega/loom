@@ -39,7 +39,14 @@ const VALID_VERDICT: IntakeVerdict = {
   rationale: 'Clear feature request with bounded scope.',
 };
 
-/** Responds to the planning pipeline AND the classifier (if the real LLM is used). */
+/**
+ * Responds to the planning pipeline AND the classifier (if the real LLM is used).
+ *
+ * Routing: classifier calls are identified by their system prompt, which begins
+ * with "You are a software-brief classifier." — see IntakeClassifier.ts:CLASSIFY_SYSTEM.
+ * If that constant is renamed, this branch becomes unreachable and tests will throw
+ * "unexpected message" rather than failing on an assertion, so renames are noisy.
+ */
 function pipelineResponder(req: LLMRequest): string {
   const last = req.messages[req.messages.length - 1].content;
   // Classifier call: system prompt mentions "software-brief classifier"
@@ -108,17 +115,28 @@ async function runWeaveCapture(
   const origLog = console.log;
   const origErr = console.error;
   let exitCode: number | null = null;
+  const capturedLines: string[] = [];
   class ExitSignal extends Error {}
   (process as unknown as { exit: (c?: number) => never }).exit = (c?: number) => {
     exitCode = c ?? 0;
     throw new ExitSignal();
   };
-  console.log = () => {};
-  console.error = () => {};
+  // Collect output instead of discarding it, so unexpected runtime errors
+  // (stack traces, assertion failures in async callbacks) remain recoverable.
+  // Dump the buffer only when an unexpected error escapes the process.exit seam.
+  console.log = (...args: unknown[]) => capturedLines.push(args.join(' '));
+  console.error = (...args: unknown[]) => capturedLines.push(args.join(' '));
   try {
     await runWeave(brief, opts as Parameters<typeof runWeave>[1]);
   } catch (err) {
-    if (!(err instanceof ExitSignal)) throw err;
+    if (!(err instanceof ExitSignal)) {
+      // Restore before rethrowing so the error and any captured output are visible.
+      process.exit = origExit;
+      console.log = origLog;
+      console.error = origErr;
+      if (capturedLines.length > 0) origErr('[runWeaveCapture captured output]', capturedLines.join('\n'));
+      throw err;
+    }
   } finally {
     process.exit = origExit;
     console.log = origLog;
@@ -154,6 +172,11 @@ beforeEach(() => {
 
   prevCwd = process.cwd();
   process.chdir(tmpDir);
+  // Release the module-level DB singleton that loom init opened, so the first
+  // openDatabase() call in each test body opens the freshly-created loom.db
+  // (not a handle from the init sub-process). This is the same two-call pattern
+  // used in weave.test.ts beforeEach: first call clears previous-test state,
+  // second call clears post-init state.
   resetDatabaseForTest();
 });
 
@@ -169,6 +192,11 @@ afterEach(() => {
 // ── AC: classifier fires before planner, verdict persisted to all three sinks ─
 
 describe('loom weave intake classification — end-to-end', () => {
+  // Exercises the REAL classifyIntake code path (no _classifyIntake stub).
+  // llm is initialised in runEpic before the opts.intake block runs, so this
+  // test also verifies the initialisation order is correct — if llm were
+  // undefined at the intake call site the MockLLMClient would never receive
+  // the classifier request and the verdict assertions below would fail.
   it('runs the classifier before the planner and persists verdict to DB, audit log, and status surface', async () => {
     const llm = new MockLLMClient(pipelineResponder);
     const exitCode = await runWeaveCapture(BRIEF, { llm, force: true });
