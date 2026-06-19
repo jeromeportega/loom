@@ -15,6 +15,7 @@ import {
   validateCursorModels,
 } from '@loom-ai/core';
 import type { LLMClient } from '@loom-ai/core';
+import { recordIntakeClassification } from '../intake/recordIntakeClassification.js';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
 import { formatClarificationsNotice } from './briefGateMessage.js';
 import { makePlanningPrinter } from './planningPrinter.js';
@@ -190,6 +191,17 @@ export async function runEpic(
         break;
     }
   }
+
+  // Classify the intake brief best-effort before planning (observe-only, ADR-002).
+  // Returns void and swallows every failure — planning is never gated on the verdict.
+  await recordIntakeClassification({
+    db,
+    epicId: reservedId,
+    brief,
+    llm,
+    model: modelFor(policy, 'planning'),
+    timeoutMs: policy.agents.intake_timeout_ms,
+  });
 
   console.log('\n  Planning your epic — Analyst → PM → Architect.');
   console.log(`  Backend: ${policy.agents.llm_backend}. Runs headless, takes a few minutes.\n`);
