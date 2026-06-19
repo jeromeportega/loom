@@ -6,8 +6,8 @@
     {
       "axis": "type",
       "accuracy": {
-        "correct": 8,
-        "scored": 8
+        "correct": 21,
+        "scored": 22
       },
       "confusion": {
         "axis": "type",
@@ -18,13 +18,13 @@
         ],
         "counts": {
           "feature": {
-            "feature": 8,
+            "feature": 20,
             "bug": 0,
-            "chore": 0
+            "chore": 1
           },
           "bug": {
             "feature": 0,
-            "bug": 0,
+            "bug": 1,
             "chore": 0
           },
           "chore": {
@@ -35,16 +35,24 @@
         }
       },
       "judgeVsClassifier": {
-        "agree": 8,
-        "disagree": 0,
-        "inconclusive": 14
+        "agree": 20,
+        "disagree": 2,
+        "inconclusive": 0
       },
       "judgeVsHuman": {
-        "agree": 8,
-        "disagree": 0,
-        "inconclusive": 14
+        "agree": 21,
+        "disagree": 1,
+        "inconclusive": 0
       },
-      "disagreements": [],
+      "disagreements": [
+        {
+          "caseId": "epic-009",
+          "labeled": "feature",
+          "predicted": "feature",
+          "judge": "chore",
+          "rationale": "Setting up an org-maintained skills repo is infrastructure/process work with no new user-visible product behavior, so it is a chore, not a feature; the classifier's size (epic) is right but its type is wrong."
+        }
+      ],
       "dangerousConfusions": [],
       "verdict": {
         "clearsBar": true,
@@ -54,8 +62,8 @@
     {
       "axis": "size",
       "accuracy": {
-        "correct": 3,
-        "scored": 8
+        "correct": 18,
+        "scored": 22
       },
       "confusion": {
         "axis": "size",
@@ -65,67 +73,73 @@
         ],
         "counts": {
           "story": {
-            "story": 0,
+            "story": 2,
             "epic": 0
           },
           "epic": {
-            "story": 5,
-            "epic": 3
+            "story": 4,
+            "epic": 16
           }
         }
       },
       "judgeVsClassifier": {
-        "agree": 6,
-        "disagree": 2,
-        "inconclusive": 14
+        "agree": 19,
+        "disagree": 3,
+        "inconclusive": 0
       },
       "judgeVsHuman": {
-        "agree": 5,
+        "agree": 19,
         "disagree": 3,
-        "inconclusive": 14
+        "inconclusive": 0
       },
       "disagreements": [
         {
-          "caseId": "epic-003",
+          "caseId": "epic-008",
           "labeled": "epic",
           "predicted": "story",
-          "judge": "epic",
-          "rationale": "Story Dispatch bundles three substantial subsystems (supervisor, worktree isolation, subagent runner) that need coordination beyond a single PR, making it an epic, and the classifier's rationale is incoherent—it describes eval-intake/go-no-go gating from recent commits rather than the dispatch brief it was given."
+          "judge": "story",
+          "rationale": "Connecting loom to an approved MCP registry is a new user-visible capability (feature) and reads as a bounded single-PR integration—point at a registry, fetch, and provision approved servers (story)—and the classifier's rationale coherently names the capability and its scope drivers."
         },
         {
-          "caseId": "epic-004",
+          "caseId": "epic-017",
+          "labeled": "epic",
+          "predicted": "epic",
+          "judge": "story",
+          "rationale": "Changing the default so an epic ships as one PR instead of N story PRs is a user-visible behaviour change (feature, not chore), and it is a single focused delivery-model change shippable in one PR (story, not epic) — corroborated by it being scoped here as the single story-022-005 — so both axes are wrong."
+        },
+        {
+          "caseId": "epic-018",
           "labeled": "epic",
           "predicted": "story",
-          "judge": "epic",
-          "rationale": "Standing up an MCP server with 7 distinct tools across two client integrations is a multi-story effort that needs decomposition (epic), and the classifier's rationale is incoherent—it justifies the verdict from branch/file metadata about an unrelated eval-intake system rather than the brief's actual content, which conflicts with the project's stated direction of removing the MCP surface."
+          "judge": "story",
+          "rationale": "This adds a new user-visible capability (automated pre-PR code review), making it a feature, and it is a bounded, self-contained step that one developer can build in a single PR, making it a story — the classifier's verdict and coherent rationale both match."
         }
       ],
       "dangerousConfusions": [
         {
           "from": "epic",
           "to": "story",
-          "count": 5,
+          "count": 4,
           "caseIds": [
-            "epic-003",
-            "epic-004",
+            "epic-005",
             "epic-008",
             "epic-013",
-            "epic-015"
+            "epic-018"
           ]
         }
       ],
       "verdict": {
         "clearsBar": false,
-        "statement": "Size axis: 5 epic→story under-sizing confusion(s) detected. Does NOT clear Phase 1 bar — costly under-sizing present."
+        "statement": "Size axis: 4 epic→story under-sizing confusion(s) detected. Does NOT clear Phase 1 bar — costly under-sizing present."
       }
     }
   ],
   "inconclusiveJudgeCount": 0,
   "failureCounts": {
     "timeout": 0,
-    "invalid_output": 14,
+    "invalid_output": 0,
     "llm_error": 0,
-    "scored": 8,
+    "scored": 22,
     "total": 22
   },
   "thresholds": {
@@ -134,7 +148,7 @@
     "maxJudgeInconclusiveRate": 0.1
   },
   "overall": {
-    "decision": "INCONCLUSIVE",
-    "statement": "INCONCLUSIVE: only 8 of 22 case(s) scored (minimum 18 required). Failure breakdown: timeout=0, invalid_output=14, llm_error=0."
+    "decision": "DO_NOT_PROCEED",
+    "statement": "DO NOT PROCEED: axis bar(s) not cleared across 22 scored cases. Size axis: 4 epic→story under-sizing confusion(s) detected. Does NOT clear Phase 1 bar — costly under-sizing present."
   }
 }

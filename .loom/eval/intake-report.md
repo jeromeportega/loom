@@ -6,8 +6,8 @@ Generated from **22** cases — classifier: `claude-haiku-4-5-20251001`, judge: 
 
 ### Failure Counts
 
-- Scored: 8 of 22
-- timeout: 0 | invalid_output: 14 | llm_error: 0
+- Scored: 22 of 22
+- timeout: 0 | invalid_output: 0 | llm_error: 0
 
 ### Thresholds
 
@@ -19,24 +19,26 @@ Generated from **22** cases — classifier: `claude-haiku-4-5-20251001`, judge: 
 
 ## Type Axis
 
-**Accuracy:** 8/8 correct (100%)
+**Accuracy:** 21/22 correct (95%)
 
 ### Confusion Matrix
 
 |  | predicted:feature | predicted:bug | predicted:chore |
 | --- | --- | --- | --- |
-| **feature** | 8 | 0 | 0 |
-| **bug** | 0 | 0 | 0 |
+| **feature** | 20 | 0 | 1 |
+| **bug** | 0 | 1 | 0 |
 | **chore** | 0 | 0 | 0 |
 
 ### Agreement
 
-- Judge vs Classifier: agree 8 | disagree 0 | inconclusive 14
-- Judge vs Human: agree 8 | disagree 0 | inconclusive 14
+- Judge vs Classifier: agree 20 | disagree 2 | inconclusive 0
+- Judge vs Human: agree 21 | disagree 1 | inconclusive 0
 
-### Disagreements (0)
+### Disagreements (1)
 
-None.
+| Case | Labeled | Predicted | Judge | Rationale |
+| --- | --- | --- | --- | --- |
+| epic-009 | feature | feature | chore | Setting up an org-maintained skills repo is infrastructure/process work with no new user-visible product behavior, so it is a chore, not a feature; the classifier's size (epic) is right but its type is wrong. |
 
 ### Dangerous Confusions
 
@@ -50,39 +52,40 @@ Type axis: 0 dangerous confusion(s) detected. Clears Phase 1 bar.
 
 ## Size Axis
 
-**Accuracy:** 3/8 correct (38%)
+**Accuracy:** 18/22 correct (82%)
 
 ### Confusion Matrix
 
 |  | predicted:story | predicted:epic |
 | --- | --- | --- |
-| **story** | 0 | 0 |
-| **epic** | 5 | 3 |
+| **story** | 2 | 0 |
+| **epic** | 4 | 16 |
 
 ### Agreement
 
-- Judge vs Classifier: agree 6 | disagree 2 | inconclusive 14
-- Judge vs Human: agree 5 | disagree 3 | inconclusive 14
+- Judge vs Classifier: agree 19 | disagree 3 | inconclusive 0
+- Judge vs Human: agree 19 | disagree 3 | inconclusive 0
 
-### Disagreements (2)
+### Disagreements (3)
 
 | Case | Labeled | Predicted | Judge | Rationale |
 | --- | --- | --- | --- | --- |
-| epic-003 | epic | story | epic | Story Dispatch bundles three substantial subsystems (supervisor, worktree isolation, subagent runner) that need coordination beyond a single PR, making it an epic, and the classifier's rationale is incoherent—it describes eval-intake/go-no-go gating from recent commits rather than the dispatch brief it was given. |
-| epic-004 | epic | story | epic | Standing up an MCP server with 7 distinct tools across two client integrations is a multi-story effort that needs decomposition (epic), and the classifier's rationale is incoherent—it justifies the verdict from branch/file metadata about an unrelated eval-intake system rather than the brief's actual content, which conflicts with the project's stated direction of removing the MCP surface. |
+| epic-008 | epic | story | story | Connecting loom to an approved MCP registry is a new user-visible capability (feature) and reads as a bounded single-PR integration—point at a registry, fetch, and provision approved servers (story)—and the classifier's rationale coherently names the capability and its scope drivers. |
+| epic-017 | epic | epic | story | Changing the default so an epic ships as one PR instead of N story PRs is a user-visible behaviour change (feature, not chore), and it is a single focused delivery-model change shippable in one PR (story, not epic) — corroborated by it being scoped here as the single story-022-005 — so both axes are wrong. |
+| epic-018 | epic | story | story | This adds a new user-visible capability (automated pre-PR code review), making it a feature, and it is a bounded, self-contained step that one developer can build in a single PR, making it a story — the classifier's verdict and coherent rationale both match. |
 
 ### Dangerous Confusions
 
-**epic → story:** 5 case(s) — epic-003, epic-004, epic-008, epic-013, epic-015
+**epic → story:** 4 case(s) — epic-005, epic-008, epic-013, epic-018
 
 ### Verdict
 
-Size axis: 5 epic→story under-sizing confusion(s) detected. Does NOT clear Phase 1 bar — costly under-sizing present.
+Size axis: 4 epic→story under-sizing confusion(s) detected. Does NOT clear Phase 1 bar — costly under-sizing present.
 
 ---
 
 ## Overall
 
-**Decision:** INCONCLUSIVE
+**Decision:** DO_NOT_PROCEED
 
-INCONCLUSIVE: only 8 of 22 case(s) scored (minimum 18 required). Failure breakdown: timeout=0, invalid_output=14, llm_error=0.
+DO NOT PROCEED: axis bar(s) not cleared across 22 scored cases. Size axis: 4 epic→story under-sizing confusion(s) detected. Does NOT clear Phase 1 bar — costly under-sizing present.
