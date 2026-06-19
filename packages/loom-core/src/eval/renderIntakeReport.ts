@@ -78,12 +78,25 @@ function renderAxisReport(ar: AxisReport): string {
 }
 
 function renderMarkdown(report: IntakeEvalReport): string {
+  const { failureCounts: fc, thresholds: th } = report;
+
   const lines: string[] = [
     '# Intake Classifier Evaluation Report',
     '',
     `Generated from **${report.generatedFromCases}** cases — classifier: \`${report.classifierModel}\`, judge: \`${report.judgeModel}\``,
     '',
     `**Inconclusive judge calls:** ${report.inconclusiveJudgeCount}`,
+    '',
+    '### Failure Counts',
+    '',
+    `- Scored: ${fc.scored} of ${fc.total}`,
+    `- timeout: ${fc.timeout} | invalid_output: ${fc.invalid_output} | llm_error: ${fc.llm_error}`,
+    '',
+    '### Thresholds',
+    '',
+    `- minScoredCases: ${th.minScoredCases}`,
+    `- maxClassifierFailureRate: ${(th.maxClassifierFailureRate * 100).toFixed(0)}%`,
+    `- maxJudgeInconclusiveRate: ${(th.maxJudgeInconclusiveRate * 100).toFixed(0)}%`,
     '',
     '---',
     '',
@@ -98,7 +111,7 @@ function renderMarkdown(report: IntakeEvalReport): string {
 
   lines.push('## Overall');
   lines.push('');
-  lines.push(`**Proceed to Phase 1:** ${report.overall.proceed ? 'Yes' : 'No'}`);
+  lines.push(`**Decision:** ${report.overall.decision}`);
   lines.push('');
   lines.push(report.overall.statement);
   lines.push('');

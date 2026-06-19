@@ -18,6 +18,6 @@ export { loadIntakeEvalSet } from './loadIntakeEvalSet.js';
 export { runIntakeEval, computeAxisAccuracy } from './runIntakeEval.js';
 export type { RunIntakeEvalDeps } from './runIntakeEval.js';
 export { IntakeJudge, computeJudgeVsHumanAgreement } from './IntakeJudge.js';
-export { scoreIntakeEval } from './scoreIntakeEval.js';
+export { scoreIntakeEval, decideGate } from './scoreIntakeEval.js';
 export type { ScoreIntakeEvalMeta } from './scoreIntakeEval.js';
 export { renderIntakeReport, writeIntakeReportFiles } from './renderIntakeReport.js';

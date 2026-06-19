@@ -1,10 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { scoreIntakeEval } from '../scoreIntakeEval.js';
+import { scoreIntakeEval, decideGate } from '../scoreIntakeEval.js';
 import type {
   IntakeRunRecord,
   IntakeEvalCase,
+  IntakeEvalReport,
+  GateDecision,
 } from '../intakeEvalTypes.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -27,10 +29,11 @@ function makeRecord(
   c: IntakeEvalCase,
   predicted: { type: 'feature' | 'bug' | 'chore'; size: 'story' | 'epic' } | null,
   judgeResult?: { type: 'feature' | 'bug' | 'chore'; size: 'story' | 'epic'; grade: 'agree' | 'disagree'; reason?: string } | null,
+  classifierReason?: 'timeout' | 'invalid_output' | 'llm_error',
 ): IntakeRunRecord {
   const classifier = predicted
     ? { ok: true as const, verdict: { ...predicted, confidence: 'high' as const, rationale: 'test' } }
-    : { ok: false as const, reason: 'llm_error' as const, detail: 'test failure' };
+    : { ok: false as const, reason: (classifierReason ?? 'llm_error') as 'timeout' | 'invalid_output' | 'llm_error', detail: 'test failure' };
 
   const judge =
     judgeResult === null
@@ -40,6 +43,28 @@ function makeRecord(
         : { status: 'inconclusive' as const, detail: 'stub' };
 
   return { case: c, classifier, judge };
+}
+
+/** Build N identical passing records to satisfy the minScoredCases gate. */
+function makePassingRecords(n: number): IntakeRunRecord[] {
+  return Array.from({ length: n }, (_, i) =>
+    makeRecord(
+      makeCase(`pass-${i}`, 'feature', 'story'),
+      { type: 'feature', size: 'story' },
+      { type: 'feature', size: 'story', grade: 'agree' },
+    ),
+  );
+}
+
+/**
+ * Build a partial report (Omit<IntakeEvalReport, 'overall'>) for decideGate tests.
+ * Uses scoreIntakeEval on the given records to produce the partial shape.
+ */
+function partialReport(records: IntakeRunRecord[]): Omit<IntakeEvalReport, 'overall'> {
+  const full = scoreIntakeEval(records);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { overall: _omit, ...rest } = full;
+  return rest;
 }
 
 // ── ConfusionMatrix — raw counts, all labels present (FR-10) ─────────────────
@@ -342,16 +367,18 @@ describe('scoreIntakeEval — verdict.statement references dangerous-cell count'
 // ── inconclusiveJudgeCount ────────────────────────────────────────────────────
 
 describe('scoreIntakeEval — inconclusiveJudgeCount', () => {
-  it('counts records with inconclusive judge status', () => {
+  it('counts inconclusive judges on scored (classifier.ok) records only', () => {
     const records: IntakeRunRecord[] = [
       makeRecord(makeCase('a', 'feature', 'story'), { type: 'feature', size: 'story' },
-        { type: 'feature', size: 'story', grade: 'agree' }),  // ok
-      makeRecord(makeCase('b', 'bug', 'story'), { type: 'bug', size: 'story' }, null), // inconclusive
-      makeRecord(makeCase('c', 'chore', 'epic'), null),                                 // classifier fail → inconclusive
+        { type: 'feature', size: 'story', grade: 'agree' }),  // ok judge, scored
+      makeRecord(makeCase('b', 'bug', 'story'), { type: 'bug', size: 'story' }, null), // inconclusive judge, scored → counts
+      makeRecord(makeCase('c', 'chore', 'epic'), null),                                 // classifier fail → judge placeholder inconclusive, excluded
     ];
 
     const report = scoreIntakeEval(records);
-    assert.equal(report.inconclusiveJudgeCount, 2, 'two inconclusive judge outcomes');
+    // Only record 'b' counts: scored + inconclusive judge. Record 'c' has classifier.ok=false
+    // so its auto-inconclusive judge placeholder must NOT inflate the numerator.
+    assert.equal(report.inconclusiveJudgeCount, 1, 'only scored records with inconclusive judge outcome count');
   });
 
   it('is 0 when all judges returned ok', () => {
@@ -365,48 +392,289 @@ describe('scoreIntakeEval — inconclusiveJudgeCount', () => {
   });
 });
 
-// ── overall proceed + statement ───────────────────────────────────────────────
+// ── failureCounts ─────────────────────────────────────────────────────────────
 
-describe('scoreIntakeEval — overall', () => {
-  it('proceed=true when both axes clear their bar', () => {
+describe('scoreIntakeEval — failureCounts', () => {
+  it('counts timeout, invalid_output, and llm_error failures separately', () => {
+    const records: IntakeRunRecord[] = [
+      makeRecord(makeCase('a', 'feature', 'story'), { type: 'feature', size: 'story' }), // scored
+      makeRecord(makeCase('b', 'bug', 'story'), null, undefined, 'timeout'),
+      makeRecord(makeCase('c', 'chore', 'epic'), null, undefined, 'invalid_output'),
+      makeRecord(makeCase('d', 'feature', 'epic'), null, undefined, 'llm_error'),
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.deepEqual(report.failureCounts, {
+      timeout: 1,
+      invalid_output: 1,
+      llm_error: 1,
+      scored: 1,
+      total: 4,
+    });
+  });
+
+  it('all-success: scored == total, all failure types are 0', () => {
     const records: IntakeRunRecord[] = [
       makeRecord(makeCase('a', 'feature', 'story'), { type: 'feature', size: 'story' }),
+      makeRecord(makeCase('b', 'bug', 'story'), { type: 'bug', size: 'story' }),
     ];
 
     const report = scoreIntakeEval(records);
-    assert.ok(report.overall.proceed, 'proceed must be true when no dangerous confusions');
+    assert.deepEqual(report.failureCounts, {
+      timeout: 0,
+      invalid_output: 0,
+      llm_error: 0,
+      scored: 2,
+      total: 2,
+    });
   });
 
-  it('proceed=false when size axis has epic→story confusion', () => {
+  it('all-fail: scored == 0', () => {
     const records: IntakeRunRecord[] = [
-      makeRecord(makeCase('epic-a', 'feature', 'epic'), { type: 'feature', size: 'story' }),
+      makeRecord(makeCase('a', 'feature', 'story'), null, undefined, 'llm_error'),
+      makeRecord(makeCase('b', 'bug', 'story'), null, undefined, 'llm_error'),
     ];
 
     const report = scoreIntakeEval(records);
-    assert.ok(!report.overall.proceed, 'proceed must be false when epic→story confusion present');
+    assert.deepEqual(report.failureCounts, {
+      timeout: 0,
+      invalid_output: 0,
+      llm_error: 2,
+      scored: 0,
+      total: 2,
+    });
+  });
+});
+
+// ── thresholds ────────────────────────────────────────────────────────────────
+
+describe('scoreIntakeEval — thresholds recorded in report', () => {
+  it('report contains recorded thresholds matching the canonical values (ADR-013)', () => {
+    const report = scoreIntakeEval([]);
+    assert.equal(report.thresholds.minScoredCases, 18, 'minScoredCases must be 18');
+    assert.equal(report.thresholds.maxClassifierFailureRate, 0.10, 'maxClassifierFailureRate must be 0.10');
+    assert.equal(report.thresholds.maxJudgeInconclusiveRate, 0.10, 'maxJudgeInconclusiveRate must be 0.10');
+  });
+});
+
+// ── overall — tri-state decision ──────────────────────────────────────────────
+
+describe('scoreIntakeEval — overall.decision (tri-state gate)', () => {
+  it('is INCONCLUSIVE when scored < minScoredCases (even if no confusions)', () => {
+    // 17 passing records — one short of the 18 minimum
+    const records = makePassingRecords(17);
+    const report = scoreIntakeEval(records);
+    assert.equal(report.overall.decision, 'INCONCLUSIVE',
+      'fewer than 18 scored cases must yield INCONCLUSIVE');
   });
 
-  it('overall statement references dangerous confusion count (not a headline percentage)', () => {
-    const records: IntakeRunRecord[] = [
+  it('is PROCEED when 18+ records all pass with no dangerous confusions', () => {
+    const records = makePassingRecords(18);
+    const report = scoreIntakeEval(records);
+    assert.equal(report.overall.decision, 'PROCEED',
+      '18 clean passing records must yield PROCEED');
+  });
+
+  it('is DO_NOT_PROCEED when size axis has epic→story confusion (with 18+ records)', () => {
+    const records = [
+      ...makePassingRecords(17),
       makeRecord(makeCase('epic-a', 'feature', 'epic'), { type: 'feature', size: 'story' }),
     ];
-
     const report = scoreIntakeEval(records);
+    assert.equal(report.overall.decision, 'DO_NOT_PROCEED',
+      'epic→story confusion with enough scored cases yields DO_NOT_PROCEED');
+  });
+
+  it('overall statement is non-empty', () => {
+    const report = scoreIntakeEval(makePassingRecords(18));
+    assert.ok(report.overall.statement.length > 0, 'overall statement must be non-empty');
+  });
+
+  it('DO_NOT_PROCEED statement references failing axis verdict (not a hardcoded epic→story count)', () => {
+    // 18 passing + 1 epic→story confusion → sizeAxis fails to clear bar
+    const records = [
+      ...makePassingRecords(17),
+      makeRecord(makeCase('epic-a', 'feature', 'epic'), { type: 'feature', size: 'story' }),
+    ];
+    const report = scoreIntakeEval(records);
+    assert.equal(report.overall.decision, 'DO_NOT_PROCEED');
+    // Statement must reference the size-axis context (not misreport via the wrong axis)
     assert.ok(
-      report.overall.statement.includes('1'),
-      `overall statement must reference the dangerous confusion count 1, got: "${report.overall.statement}"`,
+      report.overall.statement.includes('epic') || report.overall.statement.includes('under-sizing'),
+      `statement must mention the failing axis reason, got: "${report.overall.statement}"`,
+    );
+    // Must NOT produce the old misleading "0 epic→story under-sizing" phrasing for the sizeAxis case
+    assert.ok(
+      !report.overall.statement.startsWith('DO NOT PROCEED: 0 epic→story'),
+      `statement must not hardcode a count from the wrong axis, got: "${report.overall.statement}"`,
+    );
+  });
+});
+
+// ── decideGate — pure gate function (canonical all-22-fail case) ──────────────
+
+describe('decideGate — INCONCLUSIVE when all cases fail (scored=0)', () => {
+  it('all-22-fail: scored=0, decision is INCONCLUSIVE, never PROCEED', () => {
+    const failedRecords: IntakeRunRecord[] = Array.from({ length: 22 }, (_, i) =>
+      makeRecord(makeCase(`case-${i}`, 'feature', 'story'), null, undefined, 'llm_error'),
+    );
+    const report = scoreIntakeEval(failedRecords);
+
+    assert.equal(report.failureCounts.scored, 0, 'scored must be 0 when all classifier calls fail');
+    assert.equal(report.failureCounts.total, 22, 'total must be 22');
+    assert.equal(report.failureCounts.llm_error, 22, 'all failures must be classified as llm_error');
+    assert.notEqual(report.overall.decision, 'PROCEED', 'PROCEED is impossible when scored=0');
+    assert.equal(report.overall.decision, 'INCONCLUSIVE',
+      'all-22-fail must yield INCONCLUSIVE (not DO_NOT_PROCEED)');
+    assert.ok(
+      report.overall.statement.toLowerCase().includes('0') ||
+      report.overall.statement.includes('scored'),
+      `statement must surface the 0-scored-cases reason, got: "${report.overall.statement}"`,
+    );
+  });
+});
+
+describe('decideGate — failure-reason counts surfaced in statement', () => {
+  it('INCONCLUSIVE statement names the failure breakdown when scored < min', () => {
+    const records: IntakeRunRecord[] = [
+      makeRecord(makeCase('a', 'feature', 'story'), null, undefined, 'timeout'),
+      makeRecord(makeCase('b', 'bug', 'story'), null, undefined, 'invalid_output'),
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.equal(report.overall.decision, 'INCONCLUSIVE');
+    assert.ok(
+      report.overall.statement.includes('timeout') || report.overall.statement.includes('invalid_output'),
+      `INCONCLUSIVE statement must include failure breakdown, got: "${report.overall.statement}"`,
+    );
+  });
+});
+
+describe('decideGate — classifierFailureRate threshold', () => {
+  it('DO_NOT_PROCEED when classifier failure rate exceeds 10% with enough scored cases', () => {
+    // 18 scored + 3 failed = 21 total; 3/21 ≈ 14.3% > 10%
+    const records: IntakeRunRecord[] = [
+      ...makePassingRecords(18),
+      makeRecord(makeCase('f1', 'feature', 'story'), null, undefined, 'llm_error'),
+      makeRecord(makeCase('f2', 'bug', 'story'), null, undefined, 'llm_error'),
+      makeRecord(makeCase('f3', 'chore', 'epic'), null, undefined, 'llm_error'),
+    ];
+    const report = scoreIntakeEval(records);
+    assert.equal(report.overall.decision, 'DO_NOT_PROCEED',
+      'high classifier failure rate with enough scored cases must yield DO_NOT_PROCEED');
+  });
+
+  it('PROCEED when classifier failure rate is exactly at threshold boundary (≤10%) with 18+ scored', () => {
+    // 18 scored + 2 failed = 20 total; 2/20 = 10.0% which is NOT > 10%
+    const records: IntakeRunRecord[] = [
+      ...makePassingRecords(18),
+      makeRecord(makeCase('f1', 'feature', 'story'), null, undefined, 'llm_error'),
+      makeRecord(makeCase('f2', 'bug', 'story'), null, undefined, 'llm_error'),
+    ];
+    const report = scoreIntakeEval(records);
+    // 2/20 = 10% exactly — not > 10% — and no dangerous confusions → PROCEED
+    assert.notEqual(report.overall.decision, 'DO_NOT_PROCEED',
+      '10% failure rate (= threshold, not >) must not trigger DO_NOT_PROCEED for this reason');
+  });
+});
+
+describe('decideGate — judgeInconclusiveRate threshold', () => {
+  it('INCONCLUSIVE when judge inconclusive rate exceeds 10% with enough scored cases', () => {
+    // 18 scored, 0 classifier failures, 3 inconclusive judges = 3/18 ≈ 16.7% > 10%
+    const records: IntakeRunRecord[] = [
+      ...Array.from({ length: 15 }, (_, i) =>
+        makeRecord(
+          makeCase(`ok-${i}`, 'feature', 'story'),
+          { type: 'feature', size: 'story' },
+          { type: 'feature', size: 'story', grade: 'agree' },
+        ),
+      ),
+      ...Array.from({ length: 3 }, (_, i) =>
+        makeRecord(
+          makeCase(`inc-${i}`, 'feature', 'story'),
+          { type: 'feature', size: 'story' },
+          null, // inconclusive judge
+        ),
+      ),
+    ];
+    const report = scoreIntakeEval(records);
+    assert.equal(report.failureCounts.scored, 18, 'all 18 classifiers succeeded');
+    assert.equal(report.inconclusiveJudgeCount, 3, '3 inconclusive judges');
+    assert.equal(report.overall.decision, 'INCONCLUSIVE',
+      'high judge inconclusive rate must yield INCONCLUSIVE');
+  });
+
+  it('INCONCLUSIVE when judge inconclusive rate exceeds 10% — denominator is scored, not total', () => {
+    // Setup: 18 scored + 2 classifier failures (ok judge to keep failure rate ≤10%).
+    // inconclusiveJudgeCount = 2 (explicit inconclusive judges on scored records).
+    // correct denominator:  2 / 18 ≈ 11.1% > 10% → INCONCLUSIVE
+    // buggy denominator:    2 / 20  = 10.0%       → exactly at threshold, NOT > 10% → would silently PROCEED
+    const okJudge = { type: 'feature' as const, size: 'story' as const, grade: 'agree' as const };
+    const records: IntakeRunRecord[] = [
+      ...Array.from({ length: 16 }, (_, i) =>
+        makeRecord(makeCase(`ok-${i}`, 'feature', 'story'), { type: 'feature', size: 'story' }, okJudge),
+      ),
+      ...Array.from({ length: 2 }, (_, i) =>
+        makeRecord(makeCase(`inc-${i}`, 'feature', 'story'), { type: 'feature', size: 'story' }, null),
+      ),
+      // 2 classifier failures with an explicit ok judge so they do NOT inflate inconclusiveJudgeCount
+      // and keep classifier failure rate at 2/20 = 10% (not > 10%, so no DO_NOT_PROCEED from that check)
+      ...Array.from({ length: 2 }, (_, i) =>
+        makeRecord(makeCase(`fail-${i}`, 'feature', 'story'), null, okJudge, 'llm_error'),
+      ),
+    ];
+    const report = scoreIntakeEval(records);
+    assert.equal(report.failureCounts.scored, 18, '18 classifiers succeeded');
+    assert.equal(report.failureCounts.total, 20, '20 total records');
+    assert.equal(report.inconclusiveJudgeCount, 2, '2 inconclusive judges');
+    assert.equal(report.overall.decision, 'INCONCLUSIVE',
+      '2/18 ≈ 11.1% must yield INCONCLUSIVE; wrong denominator 2/20 = 10.0% would not trigger the gate');
+  });
+});
+
+describe('decideGate — throws when axes are incomplete', () => {
+  it('throws when axes array is empty', () => {
+    const pr = partialReport(makePassingRecords(20));
+    const emptyAxes = { ...pr, axes: [] };
+    assert.throws(
+      () => decideGate(emptyAxes),
+      /decideGate: axes must include both/,
+      'empty axes array must throw a descriptive error',
     );
   });
 
-  it('proceed statement references 0 when bar is cleared', () => {
-    const records: IntakeRunRecord[] = [
-      makeRecord(makeCase('a', 'feature', 'story'), { type: 'feature', size: 'story' }),
-    ];
+  it('throws when axes array is missing the "size" entry', () => {
+    const pr = partialReport(makePassingRecords(20));
+    const typeOnly = { ...pr, axes: pr.axes.filter(a => a.axis === 'type') };
+    assert.throws(
+      () => decideGate(typeOnly),
+      /decideGate: axes must include both/,
+    );
+  });
+});
 
-    const report = scoreIntakeEval(records);
+describe('decideGate — direct invocation with partial report', () => {
+  it('PROCEED when partial report has all conditions passing', () => {
+    const recs = makePassingRecords(20);
+    const pr = partialReport(recs);
+    const result = decideGate(pr);
+    assert.equal(result.decision, 'PROCEED');
+  });
+
+  it('INCONCLUSIVE when scored < minScoredCases even with zero failures', () => {
+    const recs = makePassingRecords(10);
+    const pr = partialReport(recs);
+    const result = decideGate(pr);
+    assert.equal(result.decision, 'INCONCLUSIVE');
+  });
+
+  it('decision and statement are consistent (statement mentions the decision)', () => {
+    const recs = makePassingRecords(18);
+    const pr = partialReport(recs);
+    const result = decideGate(pr);
     assert.ok(
-      report.overall.statement.includes('0'),
-      `overall proceed statement should reference 0 dangerous confusions, got: "${report.overall.statement}"`,
+      result.statement.toUpperCase().includes(result.decision.replaceAll('_', ' ')),
+      `statement must include the decision word, got: "${result.statement}"`,
     );
   });
 });
