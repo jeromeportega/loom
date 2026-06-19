@@ -9,6 +9,7 @@ import { WorktreeJanitor } from '../orchestrator/WorktreeJanitor.js';
 import { AgentStore } from '../state/AgentStore.js';
 import { EpicStore } from '../state/EpicStore.js';
 import { createDatabase } from '../state/Database.js';
+import { WorkerLogStore } from '../state/WorkerLogStore.js';
 import type Database from 'better-sqlite3';
 import type { AgentStatus } from '../types.js';
 
@@ -114,5 +115,67 @@ describe('WorktreeJanitor', () => {
 
   it('reports nothing when there are no worktrees', () => {
     assert.deepEqual(new WorktreeJanitor(wt, agents).findOrphans(), []);
+  });
+
+  describe('WorktreeJanitor — workerLogs pruning lifecycle', () => {
+    let logs: WorkerLogStore;
+    let loomdir: string;
+
+    beforeEach(() => {
+      loomdir = path.join(repo, '.loom');
+      fs.mkdirSync(loomdir, { recursive: true });
+      logs = new WorkerLogStore(loomdir);
+      // Rebind wt with workerLogs so prune routes log removal through remove().
+      wt = new WorktreeManager(repo, logs);
+    });
+
+    it('removes log file for a done worker when pruned', () => {
+      wt.create('story-001-001');
+      seed('story-001-001', 'done');
+      logs.append('story-001-001', 'done worker output\n');
+      const logPath = logs.pathFor('story-001-001');
+      assert.ok(fs.existsSync(logPath), 'log file present before prune');
+
+      new WorktreeJanitor(wt, agents).prune();
+
+      assert.ok(!fs.existsSync(logPath), 'log file removed after prune of done worker');
+    });
+
+    it('preserves log files for failed and blocked workers after prune', () => {
+      wt.create('story-001-001'); // failed
+      wt.create('story-001-002'); // blocked
+      wt.create('story-001-003'); // done — triggers prune to run
+      seed('story-001-001', 'failed');
+      seed('story-001-002', 'blocked');
+      seed('story-001-003', 'done');
+      logs.append('story-001-001', 'failed worker output\n');
+      logs.append('story-001-002', 'blocked worker output\n');
+      logs.append('story-001-003', 'done worker output\n');
+
+      new WorktreeJanitor(wt, agents).prune();
+
+      assert.ok(fs.existsSync(logs.pathFor('story-001-001')), 'failed worker log preserved');
+      assert.ok(fs.existsSync(logs.pathFor('story-001-002')), 'blocked worker log preserved');
+      assert.ok(!fs.existsSync(logs.pathFor('story-001-003')), 'done worker log removed');
+    });
+
+    it('log removal is wired through WorktreeManager.remove, not a separate sweep', () => {
+      // Demonstrate single-chokepoint: creating a janitor with a different wt (no logs)
+      // leaves logs untouched, while the wt with logs removes them.
+      wt.create('story-001-001');
+      seed('story-001-001', 'done');
+      logs.append('story-001-001', 'output\n');
+      const logPath = logs.pathFor('story-001-001');
+
+      // Janitor using a WorktreeManager without workerLogs — log survives.
+      const wtNoLogs = new WorktreeManager(repo, undefined);
+      new WorktreeJanitor(wtNoLogs, agents).prune();
+      assert.ok(!fs.existsSync(wt.worktreePath('story-001-001')), 'worktree removed');
+      assert.ok(fs.existsSync(logPath), 'log survives when workerLogs not injected');
+
+      // Now call remove directly on the wt that has logs — log is removed.
+      wt.remove('story-001-001');
+      assert.ok(!fs.existsSync(logPath), 'log removed only via the wt with workerLogs');
+    });
   });
 });
