@@ -121,7 +121,7 @@ function renderMarkdown(report: IntakeEvalReport): string {
 
 export function renderIntakeReport(report: IntakeEvalReport): { markdown: string; json: string } {
   const markdown = renderMarkdown(report);
-  const json = JSON.stringify(report, null, 2);
+  const json = JSON.stringify(report, null, 2) + '\n';
   return { markdown, json };
 }
 

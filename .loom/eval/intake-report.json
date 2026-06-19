@@ -1,0 +1,154 @@
+{
+  "generatedFromCases": 22,
+  "classifierModel": "claude-haiku-4-5-20251001",
+  "judgeModel": "claude-opus-4-8",
+  "axes": [
+    {
+      "axis": "type",
+      "accuracy": {
+        "correct": 21,
+        "scored": 22
+      },
+      "confusion": {
+        "axis": "type",
+        "labels": [
+          "feature",
+          "bug",
+          "chore"
+        ],
+        "counts": {
+          "feature": {
+            "feature": 20,
+            "bug": 0,
+            "chore": 1
+          },
+          "bug": {
+            "feature": 0,
+            "bug": 1,
+            "chore": 0
+          },
+          "chore": {
+            "feature": 0,
+            "bug": 0,
+            "chore": 0
+          }
+        }
+      },
+      "judgeVsClassifier": {
+        "agree": 20,
+        "disagree": 2,
+        "inconclusive": 0
+      },
+      "judgeVsHuman": {
+        "agree": 21,
+        "disagree": 1,
+        "inconclusive": 0
+      },
+      "disagreements": [
+        {
+          "caseId": "epic-009",
+          "labeled": "feature",
+          "predicted": "feature",
+          "judge": "chore",
+          "rationale": "Setting up an org-maintained skills repo is infrastructure/process work with no new user-visible product behavior, so it is a chore, not a feature; the classifier's size (epic) is right but its type is wrong."
+        }
+      ],
+      "dangerousConfusions": [],
+      "verdict": {
+        "clearsBar": true,
+        "statement": "Type axis: 0 dangerous confusion(s) detected. Clears Phase 1 bar."
+      }
+    },
+    {
+      "axis": "size",
+      "accuracy": {
+        "correct": 18,
+        "scored": 22
+      },
+      "confusion": {
+        "axis": "size",
+        "labels": [
+          "story",
+          "epic"
+        ],
+        "counts": {
+          "story": {
+            "story": 2,
+            "epic": 0
+          },
+          "epic": {
+            "story": 4,
+            "epic": 16
+          }
+        }
+      },
+      "judgeVsClassifier": {
+        "agree": 19,
+        "disagree": 3,
+        "inconclusive": 0
+      },
+      "judgeVsHuman": {
+        "agree": 19,
+        "disagree": 3,
+        "inconclusive": 0
+      },
+      "disagreements": [
+        {
+          "caseId": "epic-008",
+          "labeled": "epic",
+          "predicted": "story",
+          "judge": "story",
+          "rationale": "Connecting loom to an approved MCP registry is a new user-visible capability (feature) and reads as a bounded single-PR integration—point at a registry, fetch, and provision approved servers (story)—and the classifier's rationale coherently names the capability and its scope drivers."
+        },
+        {
+          "caseId": "epic-017",
+          "labeled": "epic",
+          "predicted": "epic",
+          "judge": "story",
+          "rationale": "Changing the default so an epic ships as one PR instead of N story PRs is a user-visible behaviour change (feature, not chore), and it is a single focused delivery-model change shippable in one PR (story, not epic) — corroborated by it being scoped here as the single story-022-005 — so both axes are wrong."
+        },
+        {
+          "caseId": "epic-018",
+          "labeled": "epic",
+          "predicted": "story",
+          "judge": "story",
+          "rationale": "This adds a new user-visible capability (automated pre-PR code review), making it a feature, and it is a bounded, self-contained step that one developer can build in a single PR, making it a story — the classifier's verdict and coherent rationale both match."
+        }
+      ],
+      "dangerousConfusions": [
+        {
+          "from": "epic",
+          "to": "story",
+          "count": 4,
+          "caseIds": [
+            "epic-005",
+            "epic-008",
+            "epic-013",
+            "epic-018"
+          ]
+        }
+      ],
+      "verdict": {
+        "clearsBar": false,
+        "statement": "Size axis: 4 epic→story under-sizing confusion(s) detected. Does NOT clear Phase 1 bar — costly under-sizing present."
+      }
+    }
+  ],
+  "inconclusiveJudgeCount": 0,
+  "failureCounts": {
+    "timeout": 0,
+    "invalid_output": 0,
+    "llm_error": 0,
+    "scored": 22,
+    "total": 22
+  },
+  "thresholds": {
+    "minScoredCases": 18,
+    "maxClassifierFailureRate": 0.1,
+    "maxJudgeInconclusiveRate": 0.1
+  },
+  "overall": {
+    "decision": "DO_NOT_PROCEED",
+    "statement": "DO NOT PROCEED: axis bar(s) not cleared across 22 scored cases. Size axis: 4 epic→story under-sizing confusion(s) detected. Does NOT clear Phase 1 bar — costly under-sizing present."
+  }
+}
