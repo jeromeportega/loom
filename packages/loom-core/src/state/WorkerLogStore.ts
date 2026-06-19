@@ -14,6 +14,11 @@ import path from 'node:path';
  */
 export class WorkerLogStore {
   private logsDir: string;
+  // Avoids a mkdirSync syscall on every chunk after the first append.
+  private dirReady = false;
+  // Tracks cumulative byte offsets per story to avoid TOCTOU races between
+  // appendFileSync and a subsequent statSync, and to eliminate the extra stat call.
+  private offsetMap = new Map<string, number>();
 
   constructor(loomdir: string) {
     this.logsDir = path.join(loomdir, 'logs');
@@ -30,10 +35,16 @@ export class WorkerLogStore {
    * Returns the new cumulative post-redaction byte length (i.e. file size).
    */
   append(storyId: string, redacted: string): number {
-    fs.mkdirSync(this.logsDir, { recursive: true });
+    if (!this.dirReady) {
+      fs.mkdirSync(this.logsDir, { recursive: true });
+      this.dirReady = true;
+    }
     const filePath = this.pathFor(storyId);
+    const chunkBytes = Buffer.byteLength(redacted, 'utf8');
     fs.appendFileSync(filePath, redacted, 'utf8');
-    return fs.statSync(filePath).size;
+    const newOffset = (this.offsetMap.get(storyId) ?? 0) + chunkBytes;
+    this.offsetMap.set(storyId, newOffset);
+    return newOffset;
   }
 
   /** Returns the file's current byte length, or 0 if absent. */
@@ -76,8 +87,8 @@ export class WorkerLogStore {
   remove(storyId: string): void {
     try {
       fs.unlinkSync(this.pathFor(storyId));
-    } catch {
-      // file absent — nothing to do
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
     }
   }
 }

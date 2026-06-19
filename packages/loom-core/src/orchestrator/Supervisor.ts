@@ -1457,6 +1457,10 @@ export class Supervisor {
       branchName: wt.branch,
     });
 
+    // Set the agentId→storyId mapping once, before the per-chunk closure, so
+    // it is not redundantly re-set on every output chunk.
+    this.agentToStory.set(task.agentId, task.story.id);
+
     const onOutput = (chunk: string, stream: 'stdout' | 'stderr'): void => {
       // Redaction runs ONCE here — before any persistence path (DB tail or file).
       const redacted = redactSecrets(chunk);
@@ -1467,7 +1471,6 @@ export class Supervisor {
         chunk: redacted,
       });
       this.appendToTail(task.agentId, redacted);
-      this.agentToStory.set(task.agentId, task.story.id);
       // File append returns new cumulative byte length; store it so flushTails
       // can write agents.log_bytes. File write precedes the DB pointer (ordering
       // invariant: log_bytes <= file size always).
@@ -2043,7 +2046,6 @@ export class Supervisor {
     task.status = status;
     this.agents.updateStatus(task.agentId, status, {
       pr_url: result.prUrl ?? null,
-      log_tail: result.logTail,
     });
     if (result.review && result.review.status !== 'skipped') {
       this.agents.setReview(task.agentId, result.review.status, result.review.summary);

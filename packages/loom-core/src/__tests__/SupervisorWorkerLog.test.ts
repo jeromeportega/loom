@@ -252,9 +252,10 @@ describe('Supervisor — log_bytes offset accounting', () => {
       expectedBytes > multibyteChunk.length,
       'byte count must exceed char count for multibyte input'
     );
-    assert.ok(
-      agent.log_bytes != null && agent.log_bytes <= expectedBytes,
-      `log_bytes (${agent.log_bytes}) must be <= expected bytes (${expectedBytes})`
+    assert.equal(
+      agent.log_bytes,
+      expectedBytes,
+      'log_bytes must equal exact byte count for multibyte content'
     );
   });
 });
@@ -328,11 +329,16 @@ describe('Supervisor — storage location', () => {
       filePath.startsWith(path.join(repo, '.loom', 'logs')),
       `file must be under <projectRoot>/.loom/logs, got: ${filePath}`
     );
-    // Not stored as a database blob — the agent record must NOT contain the content
+    // The full streamed content lives on disk, not in the DB.
+    const onDisk = fs.readFileSync(filePath, 'utf8');
+    assert.ok(onDisk.includes('some output'), 'file must contain the streamed content');
+    // log_bytes is set (proves the DB pointer is wired up) but the blob is on disk.
     const agent = new AgentStore(db).getByStory('story-001-001')!;
+    assert.ok(agent.log_bytes != null && agent.log_bytes > 0, 'log_bytes must be set in DB');
+    // Confirm no separate blob column was added — the content lives only in the file.
     assert.ok(
-      !(agent.log_tail ?? '').includes('some output'),
-      'full content must NOT be stored in the DB log_tail (log_tail is only a bounded tail)'
+      !('log_content' in agent),
+      'agents table must not have a log_content blob column'
     );
   });
 });

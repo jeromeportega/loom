@@ -172,7 +172,7 @@ export class AgentStore {
    * logBytes is the cumulative post-redaction byte length of the on-disk log
    * file; it derives directly from WorkerLogStore.append()'s return value.
    */
-  updateLogTail(id: string, logTail: string, logBytes: number): void {
+  updateLogTail(id: string, logTail: string, logBytes: number = 0): void {
     this.db
       .prepare(
         'UPDATE agents SET log_tail = ?, log_bytes = ?, updated_at = ? WHERE id = ?'
