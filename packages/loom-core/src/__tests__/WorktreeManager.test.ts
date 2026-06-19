@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { WorktreeManager } from '../orchestrator/WorktreeManager.js';
+import { WorkerLogStore } from '../state/WorkerLogStore.js';
 
 let repo: string;
 
@@ -110,5 +111,54 @@ describe('WorktreeManager', () => {
     } finally {
       fs.rmSync(empty, { recursive: true, force: true });
     }
+  });
+});
+
+describe('WorktreeManager — workerLogs pruning lifecycle', () => {
+  it('removes the log file when workerLogs is injected', () => {
+    const loomdir = path.join(repo, '.loom');
+    fs.mkdirSync(loomdir, { recursive: true });
+    const logs = new WorkerLogStore(loomdir);
+    const wm = new WorktreeManager(repo, logs);
+
+    logs.append('story-019-001', 'some output\n');
+    const logPath = logs.pathFor('story-019-001');
+    assert.ok(fs.existsSync(logPath), 'log file created before remove');
+
+    wm.create('story-019-001');
+    wm.remove('story-019-001');
+
+    assert.ok(!fs.existsSync(logPath), 'log file removed after worktree removal');
+  });
+
+  it('does not throw when no workerLogs injected (null-safe)', () => {
+    const wm = new WorktreeManager(repo);
+    wm.create('story-019-001');
+    assert.doesNotThrow(() => wm.remove('story-019-001'));
+  });
+
+  it('is idempotent when log file already absent', () => {
+    const loomdir = path.join(repo, '.loom');
+    fs.mkdirSync(loomdir, { recursive: true });
+    const logs = new WorkerLogStore(loomdir);
+    const wm = new WorktreeManager(repo, logs);
+    wm.create('story-019-001');
+    wm.remove('story-019-001'); // no log file written — remove is a no-op on ENOENT
+    assert.doesNotThrow(() => wm.remove('story-019-001')); // second call also safe
+  });
+
+  it('removes the log file even when the worktree directory is already gone', () => {
+    const loomdir = path.join(repo, '.loom');
+    fs.mkdirSync(loomdir, { recursive: true });
+    const logs = new WorkerLogStore(loomdir);
+    const wm = new WorktreeManager(repo, logs);
+
+    logs.append('story-019-001', 'output after crash\n');
+    const logPath = logs.pathFor('story-019-001');
+    assert.ok(fs.existsSync(logPath), 'log file present');
+
+    // Call remove without ever creating the worktree — simulates a crash-cleaned tree.
+    wm.remove('story-019-001');
+    assert.ok(!fs.existsSync(logPath), 'log file removed even without worktree on disk');
   });
 });
