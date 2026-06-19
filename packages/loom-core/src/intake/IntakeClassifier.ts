@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { LLMClient } from '../llm/LLMClient.js';
-import { INTAKE_TIMEOUT_DEFAULT_MS } from './intakeTimeout.js';
+import { INTAKE_TIMEOUT_DEFAULT_MS, INTAKE_TIMEOUT_FLOOR_MS } from './intakeTimeout.js';
 
 export const IntakeVerdictSchema = z.object({
   type:       z.enum(['feature', 'bug', 'chore']),
@@ -34,11 +34,14 @@ export async function classifyIntake(
   brief: string,
   opts: { llm: LLMClient; model: string; timeoutMs?: number },
 ): Promise<ClassifyResult> {
-  const timeoutMs = opts.timeoutMs ?? INTAKE_TIMEOUT_DEFAULT_MS;
+  const effectiveTimeoutMs = Math.max(
+    opts.timeoutMs ?? INTAKE_TIMEOUT_DEFAULT_MS,
+    INTAKE_TIMEOUT_FLOOR_MS,
+  );
 
   let timerId: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timerId = setTimeout(() => reject(new TriageTimeoutError(timeoutMs)), timeoutMs);
+    timerId = setTimeout(() => reject(new TriageTimeoutError(effectiveTimeoutMs)), effectiveTimeoutMs);
   });
 
   try {

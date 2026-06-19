@@ -32,7 +32,7 @@ describe('timeout constants', () => {
 
 // ── resolveIntakeTimeoutMs ─────────────────────────────────────────────────────
 
-const defaultPolicy = PolicySchema.parse({});
+const defaultPolicy = PolicySchema.parse({ agents: {} });
 
 describe('resolveIntakeTimeoutMs — no policy override', () => {
   it('returns DEFAULT when policy omits intake_classify_timeout_ms', () => {
