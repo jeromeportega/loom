@@ -9,7 +9,7 @@ import type {
 export interface RunIntakeEvalDeps {
   llm: LLMClient;
   classifierModel: string;
-  judgeModel: string;
+  judgeModel: string; // reserved: story-021-003 will forward this to the real IntakeJudge constructor
   judge: IntakeJudgeLike;
 }
 
@@ -26,11 +26,22 @@ export async function runIntakeEval(
   const records: IntakeRunRecord[] = [];
 
   for (const evalCase of cases) {
-    // Exactly one classifier call per case (NFR-1, FR-4)
-    const classifier = await classifyIntake(evalCase.brief, {
-      llm: deps.llm,
-      model: deps.classifierModel,
-    });
+    // Exactly one classifier call per case (NFR-1, FR-4). Catch thrown exceptions
+    // (network errors, API 500s) and convert them to {ok:false} so the run
+    // continues for remaining cases rather than aborting mid-set.
+    let classifier: Awaited<ReturnType<typeof classifyIntake>>;
+    try {
+      classifier = await classifyIntake(evalCase.brief, {
+        llm: deps.llm,
+        model: deps.classifierModel,
+      });
+    } catch (err) {
+      classifier = {
+        ok: false,
+        reason: 'llm_error',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
 
     // Exactly one judge call per case when classifier succeeds (NFR-1, FR-6).
     // Classifier failure → inconclusive without calling the judge (no verdict to grade).

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { MockLLMClient } from '../../llm/MockLLMClient.js';
+import type { LLMClient, LLMRequest, LLMResponse } from '../../llm/LLMClient.js';
 import { runIntakeEval, computeAxisAccuracy } from '../runIntakeEval.js';
 import type {
   IntakeEvalCase,
@@ -12,6 +13,16 @@ import type {
 } from '../intakeEvalTypes.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** LLM client that throws on complete() — used to test runIntakeEval's try/catch guard. */
+class ThrowingLLMClient implements LLMClient {
+  readonly requests: LLMRequest[] = [];
+  constructor(private readonly message: string) {}
+  async complete(req: LLMRequest): Promise<LLMResponse> {
+    this.requests.push(req);
+    throw new Error(this.message);
+  }
+}
 
 const TRIAGE_MODEL = 'claude-haiku-4-5-20251001';
 const JUDGE_MODEL = 'claude-opus-4-8';
@@ -178,6 +189,32 @@ describe('runIntakeEval — classifier failure handling', () => {
     assert.equal(records[1].classifier.ok, true, 'second case should succeed');
     assert.equal(llm.requests.length, 2, 'still exactly one LLM call per case');
     assert.equal(judgeCallCount, 1, 'judge called only for the successful case');
+  });
+});
+
+describe('runIntakeEval — LLM client throws (defensive try/catch guard)', () => {
+  it('converts a thrown exception to {ok:false} and continues for remaining cases', async () => {
+    const cases = [makeCase('a', 'feature', 'story'), makeCase('b', 'bug', 'epic')];
+    const llm = new ThrowingLLMClient('simulated network error');
+
+    const records = await runIntakeEval(cases, {
+      llm,
+      classifierModel: TRIAGE_MODEL,
+      judgeModel: JUDGE_MODEL,
+      judge: inconclusiveJudge,
+    });
+
+    assert.equal(records.length, 2, 'all cases must have a record even when LLM throws');
+    assert.equal(records[0].classifier.ok, false, 'thrown exception → {ok:false}');
+    assert.equal(records[1].classifier.ok, false, 'thrown exception → {ok:false}');
+    if (!records[0].classifier.ok) {
+      assert.equal(records[0].classifier.reason, 'llm_error');
+      assert.ok(
+        records[0].classifier.detail.includes('simulated network error'),
+        `detail should carry the thrown error message, got: ${records[0].classifier.detail}`,
+      );
+    }
+    assert.equal(llm.requests.length, 2, 'one LLM call per case even when each throws');
   });
 });
 
