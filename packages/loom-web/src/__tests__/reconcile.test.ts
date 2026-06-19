@@ -9,9 +9,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { reconcileOutput } from '../shared/reconcile.js';
 
+/** Helper: build an event object with the correct byteLength for a string. */
+function evt(from: number, bytes: string): { from: number; bytes: string; byteLength: number } {
+  return { from, bytes, byteLength: Buffer.byteLength(bytes, 'utf8') };
+}
+
 describe('reconcileOutput — append with no overlap', () => {
   it('pure append: from === clientOffset, all bytes are new', () => {
-    const result = reconcileOutput({ from: 10, bytes: 'hello' }, 10);
+    const result = reconcileOutput(evt(10, 'hello'), 10);
     assert.ok(result.gap === false);
     if (result.gap) return;
     assert.equal(result.append, 'hello');
@@ -19,7 +24,7 @@ describe('reconcileOutput — append with no overlap', () => {
   });
 
   it('empty bytes at clientOffset: no-op append', () => {
-    const result = reconcileOutput({ from: 5, bytes: '' }, 5);
+    const result = reconcileOutput(evt(5, ''), 5);
     assert.ok(result.gap === false);
     if (result.gap) return;
     assert.equal(result.append, '');
@@ -27,7 +32,7 @@ describe('reconcileOutput — append with no overlap', () => {
   });
 
   it('first event from zero with full content', () => {
-    const result = reconcileOutput({ from: 0, bytes: 'line1\nline2\n' }, 0);
+    const result = reconcileOutput(evt(0, 'line1\nline2\n'), 0);
     assert.ok(result.gap === false);
     if (result.gap) return;
     assert.equal(result.append, 'line1\nline2\n');
@@ -38,7 +43,7 @@ describe('reconcileOutput — append with no overlap', () => {
 describe('reconcileOutput — overlap trim (from < clientOffset)', () => {
   it('partial overlap: trims prefix, appends remainder', () => {
     // Server resent from=3, clientOffset=8 → overlap=5 chars ('hello'), new='world'
-    const result = reconcileOutput({ from: 3, bytes: 'helloworld' }, 8);
+    const result = reconcileOutput(evt(3, 'helloworld'), 8);
     assert.ok(result.gap === false);
     if (result.gap) return;
     assert.equal(result.append, 'world');
@@ -47,7 +52,7 @@ describe('reconcileOutput — overlap trim (from < clientOffset)', () => {
 
   it('exact resend: from=0, bytes=already known content → empty append', () => {
     // Client already has 'abcdef', server resends from 0
-    const result = reconcileOutput({ from: 0, bytes: 'abcdef' }, 6);
+    const result = reconcileOutput(evt(0, 'abcdef'), 6);
     assert.ok(result.gap === false);
     if (result.gap) return;
     assert.equal(result.append, '');
@@ -56,36 +61,50 @@ describe('reconcileOutput — overlap trim (from < clientOffset)', () => {
 
   it('full-overlap resend with tail extension: trims to only new part', () => {
     // clientOffset=10, server resends from=5 with 10 bytes (5 known + 5 new)
-    const result = reconcileOutput({ from: 5, bytes: '1234567890' }, 10);
+    const result = reconcileOutput(evt(5, '1234567890'), 10);
     assert.ok(result.gap === false);
     if (result.gap) return;
     assert.equal(result.append, '67890'); // slice(5)
     assert.equal(result.newOffset, 15); // 5 + 10
   });
 
-  it('overlap covers all bytes — nothing to append, no duplication', () => {
-    // clientOffset already past the end of this event's range
-    const result = reconcileOutput({ from: 0, bytes: 'abc' }, 5);
+  it('overlap covers all bytes — nothing to append, offset clamped to clientOffset', () => {
+    // clientOffset=5 is already past the end of this event's range (from=0, byteLength=3).
+    // newOffset must clamp to 5 (not regress to 3) so the next SSE event whose
+    // `from=5` is not mistaken for a gap and does not trigger a spurious refetch.
+    const result = reconcileOutput(evt(0, 'abc'), 5);
     assert.ok(result.gap === false);
     if (result.gap) return;
     assert.equal(result.append, '');
-    assert.equal(result.newOffset, 3); // 0 + 3 (behind clientOffset)
+    assert.equal(result.newOffset, 5); // Math.max(0+3, 5) = 5, not 3
+  });
+
+  it('multi-byte UTF-8: overlap slice aligns on byte boundary, not char boundary', () => {
+    // '…' (U+2026 HORIZONTAL ELLIPSIS) is 1 JS char but 3 UTF-8 bytes (0xE2 0x80 0xA6).
+    // from=0, clientOffset=3 (3 bytes already shown = '…'), bytes='…abc'
+    // overlap=3 bytes → append='abc', newOffset=6
+    const bytes = '…abc'; // '…abc': 3+3=6 UTF-8 bytes, 4 JS chars
+    const result = reconcileOutput(evt(0, bytes), 3);
+    assert.ok(result.gap === false);
+    if (result.gap) return;
+    assert.equal(result.append, 'abc');
+    assert.equal(result.newOffset, 6); // 0 + Buffer.byteLength('…abc') = 6
   });
 });
 
 describe('reconcileOutput — gap detection (from > clientOffset)', () => {
   it('gap: from > clientOffset → {gap: true}', () => {
-    const result = reconcileOutput({ from: 20, bytes: 'new data' }, 10);
+    const result = reconcileOutput(evt(20, 'new data'), 10);
     assert.ok(result.gap === true);
   });
 
   it('gap at zero: clientOffset=0, from=5 → {gap: true}', () => {
-    const result = reconcileOutput({ from: 5, bytes: 'data' }, 0);
+    const result = reconcileOutput(evt(5, 'data'), 0);
     assert.ok(result.gap === true);
   });
 
   it('no gap: from === clientOffset is NOT a gap', () => {
-    const result = reconcileOutput({ from: 7, bytes: 'x' }, 7);
+    const result = reconcileOutput(evt(7, 'x'), 7);
     assert.ok(result.gap === false);
   });
 });
@@ -104,7 +123,7 @@ describe('reconcileOutput — byte-identical after sequence of appends', () => {
     ];
 
     for (const chunk of chunks) {
-      const result = reconcileOutput(chunk, clientOffset);
+      const result = reconcileOutput(evt(chunk.from, chunk.bytes), clientOffset);
       assert.ok(result.gap === false);
       if (result.gap) break;
       pane += result.append;
@@ -121,7 +140,7 @@ describe('reconcileOutput — byte-identical after sequence of appends', () => {
     let clientOffset = 6;
 
     // Server sends from=3 with 'lo world' (first 3 chars are already shown)
-    const result = reconcileOutput({ from: 3, bytes: 'lo world' }, clientOffset);
+    const result = reconcileOutput(evt(3, 'lo world'), clientOffset);
     assert.ok(result.gap === false);
     if (result.gap) return;
     pane += result.append;
@@ -137,12 +156,12 @@ describe('reconcileOutput — byte-identical after sequence of appends', () => {
     let clientOffset = 0;
 
     // First event: first two lines (no overlap)
-    const r1 = reconcileOutput({ from: 0, bytes: 'alpha\nbeta\n' }, clientOffset);
+    const r1 = reconcileOutput(evt(0, 'alpha\nbeta\n'), clientOffset);
     assert.ok(!r1.gap);
     if (!r1.gap) { pane += r1.append; clientOffset = r1.newOffset; }
 
     // Second event resent from 5 with overlap + new bytes
-    const r2 = reconcileOutput({ from: 5, bytes: '\nbeta\ngamma\n' }, clientOffset);
+    const r2 = reconcileOutput(evt(5, '\nbeta\ngamma\n'), clientOffset);
     assert.ok(!r2.gap);
     if (!r2.gap) { pane += r2.append; clientOffset = r2.newOffset; }
 

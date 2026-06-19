@@ -187,15 +187,20 @@ export function eventStreamHandler(opts: EventStreamOptions) {
             } else {
               const from = emittedOffsets.get(a.id)!;
               if (logBytes > from) {
-                const newBuf = workerLogs.read(a.story_id, from, logBytes);
-                if (newBuf.length > 0) {
-                  emit(res, 'output', {
-                    agent_id: a.id,
-                    story_id: a.story_id,
-                    from,
-                    bytes: newBuf.toString('utf8'),
-                  });
-                  emittedOffsets.set(a.id, logBytes);
+                try {
+                  const newBuf = workerLogs.read(a.story_id, from, logBytes);
+                  if (newBuf.length > 0) {
+                    emit(res, 'output', {
+                      agent_id: a.id,
+                      story_id: a.story_id,
+                      from,
+                      bytes: newBuf.toString('utf8'),
+                      byteLength: newBuf.length,
+                    });
+                    emittedOffsets.set(a.id, logBytes);
+                  }
+                } catch {
+                  // log file temporarily unavailable; retry next tick
                 }
               }
             }

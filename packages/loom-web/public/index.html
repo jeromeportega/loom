@@ -724,9 +724,7 @@
         // Rebuild all visible panes from the full-log read path. Called on
         // view-enter/reload and when the server-restart epoch signal fires.
         async function rebuildAllVisible() {
-          for (var i = 0; i < visibleAgentIds.length; i++) {
-            await rebuildAgent(visibleAgentIds[i]);
-          }
+          await Promise.all(visibleAgentIds.map(rebuildAgent));
         }
 
         // Authoritative rebuild on view-enter / reload.
@@ -757,26 +755,35 @@
             var agentId = d.agent_id;
             var from = d.from;
             var bytes = d.bytes;
+            var byteLength = d.byteLength;
             var clientOffset = clientOffsets.get(agentId);
             if (clientOffset === undefined) {
               // Rebuild in progress for this pane — skip until seeded.
               return;
             }
             if (from > clientOffset) {
-              // Gap: bytes between clientOffset and from are missing.
-              // Refetch the full log to re-anchor.
+              // Gap: delete the stale offset to prevent a cascade of refetches
+              // while the async rebuild is in flight (subsequent SSE events land
+              // on `undefined` and are skipped until rebuildAgent re-seeds it).
+              clientOffsets.delete(agentId);
               rebuildAgent(agentId);
               return;
             }
             var overlap = clientOffset - from;
-            var newContent = bytes.slice(overlap);
+            // byte-accurate slice: `from`/`clientOffset` are UTF-8 byte offsets.
+            // bytes.slice(overlap) would slice by JS char index which diverges for
+            // multi-byte characters; TextEncoder/TextDecoder are available everywhere.
+            var encodedBytes = new TextEncoder().encode(bytes);
+            var newContent = new TextDecoder().decode(encodedBytes.subarray(overlap));
             var pane = document.getElementById('log-' + agentId);
             if (newContent && pane) {
               pane.textContent += newContent;
               var atBottom = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 24;
               if (atBottom) pane.scrollTop = pane.scrollHeight;
             }
-            clientOffsets.set(agentId, from + bytes.length);
+            // Clamp: never regress clientOffset when a stale/buffered event
+            // covers only already-displayed bytes (from + byteLength < clientOffset).
+            clientOffsets.set(agentId, Math.max(clientOffset, from + byteLength));
           } catch {}
         });
 

@@ -224,6 +224,7 @@ describe('events.ts — tick emission: new bytes emitted with correct from offse
         const ev = JSON.parse(outputForAgent[0].data);
         assert.equal(ev.from, initialBytes, 'from must equal the seeded offset');
         assert.equal(ev.bytes, appendContent, 'bytes must be only the new content');
+        assert.equal(ev.byteLength, Buffer.byteLength(appendContent, 'utf8'), 'byteLength must be UTF-8 byte length');
         assert.equal(ev.agent_id, a.id);
         assert.equal(ev.story_id, a.story_id);
       } finally {
@@ -341,13 +342,14 @@ describe('events.ts — multiple sequential appends accumulate correctly', () =>
         assert.ok(outputEvents.length >= 2, 'at least two output events expected');
 
         // Reconstruct full log by applying events in order.
+        // Use byte-accurate slice (Buffer) since from/offset are byte offsets.
         let reconstructed = '';
         let offset = 0;
         for (const ev of outputEvents) {
           assert.ok(ev.from <= offset, `from=${ev.from} must not be ahead of offset=${offset}`);
           const overlap = offset - ev.from;
-          reconstructed += ev.bytes.slice(overlap);
-          offset = ev.from + ev.bytes.length;
+          reconstructed += Buffer.from(ev.bytes, 'utf8').subarray(overlap).toString('utf8');
+          offset = ev.from + ev.byteLength;
         }
         assert.equal(reconstructed, 'chunk1\nchunk2\n');
       } finally {
