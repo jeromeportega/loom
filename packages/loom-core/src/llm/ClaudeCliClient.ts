@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { EMPTY_USAGE } from './LLMClient.js';
-import type { LLMClient, LLMRequest, LLMResponse, LLMMessage, LLMUsage } from './LLMClient.js';
+import type { LLMClient, LLMRequest, LLMResponse, LLMMessage, LLMUsage, NonAgenticMode } from './LLMClient.js';
 import { redactSecrets } from '../util/redact.js';
 
 export interface ClaudeCliClientOptions {
@@ -67,10 +67,7 @@ export class ClaudeCliClient implements LLMClient {
     const systemText = req.system.map((b) => b.text).join('\n\n');
     const prompt = flattenMessages(req.messages);
 
-    const args = ['-p', '--model', req.model, '--output-format', 'json'];
-    if (systemText.length > 0) {
-      args.push('--append-system-prompt', systemText);
-    }
+    const args = buildBufferedArgs(req.model, systemText, req.nonAgentic);
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const proc = await this.spawnClaude(args, prompt);
@@ -106,7 +103,7 @@ export class ClaudeCliClient implements LLMClient {
     const systemText = req.system.map((b) => b.text).join('\n\n');
     const prompt = flattenMessages(req.messages);
 
-    const args = buildStreamingArgs(req.model, systemText);
+    const args = buildStreamingArgs(req.model, systemText, req.nonAgentic);
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const proc = await this.spawnClaudeStream(args, prompt, req.model, onText);
@@ -327,17 +324,63 @@ export class ClaudeCliClient implements LLMClient {
 }
 
 /**
+ * The exact argv tokens that disable all tools in non-agentic mode.
+ * Confirmed against `claude --help`: `--tools ""` sets the tool list to empty.
+ * Exported as a single source of truth so downstream tests (story-025-003)
+ * import this constant rather than hard-coding a guessed spelling (NFR-5).
+ */
+export const NON_AGENTIC_TOOLS_DISABLE_ARGS: readonly string[] = ['--tools', ''];
+
+/**
+ * Builds the argv for the buffered (`--output-format json`) path.
+ * Mirrors buildStreamingArgs but targets the buffered format.
+ * When nonAgentic is defined, uses --system-prompt (replace) and disables
+ * tools; otherwise uses --append-system-prompt (today's agentic default).
+ */
+export function buildBufferedArgs(
+  model: string,
+  systemText: string,
+  nonAgentic?: NonAgenticMode,
+): string[] {
+  const args = ['-p', '--model', model, '--output-format', 'json'];
+  if (nonAgentic !== undefined) {
+    if (systemText.length > 0) {
+      args.push('--system-prompt', systemText);
+    }
+    args.push(...NON_AGENTIC_TOOLS_DISABLE_ARGS);
+  } else {
+    if (systemText.length > 0) {
+      args.push('--append-system-prompt', systemText);
+    }
+  }
+  return args;
+}
+
+/**
  * Builds the argv for the streaming (`onText`) path. `--output-format
  * stream-json` REQUIRES `--verbose` — the real `claude` binary exits 1 with
  * "When using --print, --output-format=stream-json requires --verbose" if it's
  * missing (the mocked tests don't enforce this, so it's pinned by a regression
  * test instead). Kept as an exported pure function so that contract is testable
  * without spawning the binary.
+ * When nonAgentic is defined, uses --system-prompt (replace) and disables
+ * tools; otherwise uses --append-system-prompt (today's agentic default).
  */
-export function buildStreamingArgs(model: string, systemText: string): string[] {
+export function buildStreamingArgs(
+  model: string,
+  systemText: string,
+  nonAgentic?: NonAgenticMode,
+): string[] {
   const args = ['-p', '--model', model, '--output-format', 'stream-json', '--verbose'];
-  if (systemText.length > 0) {
-    args.push('--append-system-prompt', systemText);
+  if (nonAgentic !== undefined) {
+    if (systemText.length > 0) {
+      args.push('--system-prompt', systemText);
+    }
+    args.push(...NON_AGENTIC_TOOLS_DISABLE_ARGS);
+  } else {
+    if (systemText.length > 0) {
+      args.push('--append-system-prompt', systemText);
+    }
   }
   return args;
 }

@@ -15,6 +15,17 @@ export interface LLMMessage {
   content: string;
 }
 
+/**
+ * Opt-in non-agentic completion. Absence (undefined) preserves today's exact
+ * agentic behavior: --append-system-prompt, tools available (FR-3).
+ */
+export interface NonAgenticMode {
+  /** When true (default), supply ONLY caller blocks via --system-prompt,
+   *  excluding Claude Code's built-in dynamic sections (FR-2).
+   *  Set false to retain them — the NFR-4 accuracy fallback. */
+  excludeDynamicSections?: boolean; // default: true
+}
+
 export interface LLMRequest {
   model: string;
   /** System prompt as ordered blocks; cacheable blocks come first. */
@@ -28,6 +39,8 @@ export interface LLMRequest {
    * (MockLLMClient, CursorCliClient) ignore this field and return final text.
    */
   onText?: (delta: string) => void;
+  /** Opt-in only; ClaudeCliClient honors it, CursorCliClient ignores it (FR-9). */
+  nonAgentic?: NonAgenticMode;
 }
 
 export interface LLMUsage {
