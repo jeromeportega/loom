@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { flattenMessages, parseClaudeJson, extractApiErrorStatus } from '../llm/ClaudeCliClient.js';
+import {
+  flattenMessages,
+  parseClaudeJson,
+  extractApiErrorStatus,
+  buildBufferedArgs,
+} from '../llm/ClaudeCliClient.js';
 import type { LLMMessage } from '../llm/LLMClient.js';
 
 describe('flattenMessages', () => {
@@ -95,5 +100,64 @@ describe('extractApiErrorStatus', () => {
       extractApiErrorStatus(JSON.stringify({ api_error_status: 'oops' })),
       undefined
     );
+  });
+});
+
+// ─── buildBufferedArgs argv contract ─────────────────────────────────────────
+
+describe('buildBufferedArgs', () => {
+  it('default agentic (undefined): uses --append-system-prompt, no --system-prompt, no tools-disable (AC4)', () => {
+    const args = buildBufferedArgs('m', 'SYS', undefined);
+    const apIdx = args.indexOf('--append-system-prompt');
+    assert.ok(apIdx !== -1, 'must contain --append-system-prompt');
+    assert.equal(args[apIdx + 1], 'SYS', '--append-system-prompt value must be SYS');
+    assert.ok(!args.includes('--system-prompt'), 'must NOT contain --system-prompt');
+    assert.ok(!args.includes('--tools'), 'must NOT contain --tools flag');
+  });
+
+  it('non-agentic (excludeDynamicSections: true): uses --system-prompt, tools-disable, no --append-system-prompt (AC2)', () => {
+    const args = buildBufferedArgs('m', 'SYS', { excludeDynamicSections: true });
+    const spIdx = args.indexOf('--system-prompt');
+    assert.ok(spIdx !== -1, 'must contain --system-prompt');
+    assert.equal(args[spIdx + 1], 'SYS', '--system-prompt value must be SYS');
+    assert.ok(!args.includes('--append-system-prompt'), 'must NOT contain --append-system-prompt');
+    const toolsIdx = args.indexOf('--tools');
+    assert.ok(toolsIdx !== -1, 'must contain --tools');
+    assert.equal(args[toolsIdx + 1], '', '--tools must be followed by empty string');
+  });
+
+  it('retention opt-out (excludeDynamicSections: false): still non-agentic shape, no --append-system-prompt (AC3)', () => {
+    const args = buildBufferedArgs('m', 'SYS', { excludeDynamicSections: false });
+    assert.ok(args.includes('--system-prompt'), 'must contain --system-prompt');
+    assert.ok(!args.includes('--append-system-prompt'), 'must NOT contain --append-system-prompt');
+    const toolsIdx = args.indexOf('--tools');
+    assert.ok(toolsIdx !== -1, 'must contain --tools');
+    assert.equal(args[toolsIdx + 1], '', '--tools must be followed by empty string');
+  });
+
+  it('boundary — empty systemText: neither prompt flag added in agentic or non-agentic mode', () => {
+    const agentArgs = buildBufferedArgs('m', '', undefined);
+    assert.ok(!agentArgs.includes('--append-system-prompt'), 'agentic: no --append-system-prompt for empty text');
+    assert.ok(!agentArgs.includes('--system-prompt'), 'agentic: no --system-prompt for empty text');
+    assert.ok(!agentArgs.includes('--tools'), 'agentic: no --tools for empty text');
+
+    const nonAgentArgs = buildBufferedArgs('m', '', { excludeDynamicSections: true });
+    assert.ok(!nonAgentArgs.includes('--system-prompt'), 'non-agentic: no --system-prompt for empty text');
+    assert.ok(!nonAgentArgs.includes('--append-system-prompt'), 'non-agentic: no --append-system-prompt for empty text');
+    const toolsIdx = nonAgentArgs.indexOf('--tools');
+    assert.ok(toolsIdx !== -1, 'non-agentic: --tools must be present even with empty system text');
+    assert.equal(nonAgentArgs[toolsIdx + 1], '', '--tools must be followed by empty string');
+  });
+
+  it('includes -p, --model, and --output-format json in both modes', () => {
+    const agentArgs = buildBufferedArgs('claude-sonnet-4-6', 'sys', undefined);
+    assert.ok(agentArgs.includes('-p'));
+    assert.equal(agentArgs[agentArgs.indexOf('--model') + 1], 'claude-sonnet-4-6');
+    assert.equal(agentArgs[agentArgs.indexOf('--output-format') + 1], 'json');
+
+    const nonAgentArgs = buildBufferedArgs('claude-sonnet-4-6', 'sys', { excludeDynamicSections: true });
+    assert.ok(nonAgentArgs.includes('-p'));
+    assert.equal(nonAgentArgs[nonAgentArgs.indexOf('--model') + 1], 'claude-sonnet-4-6');
+    assert.equal(nonAgentArgs[nonAgentArgs.indexOf('--output-format') + 1], 'json');
   });
 });

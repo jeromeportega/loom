@@ -15,6 +15,21 @@ export interface LLMMessage {
   content: string;
 }
 
+// Opt-in non-agentic completion; absence preserves agentic defaults (--append-system-prompt, tools on).
+export interface NonAgenticMode {
+  /**
+   * Caller-side contract for req.system composition. When true (default), the caller
+   * supplies only self-contained blocks and excludes Claude Code's built-in dynamic sections
+   * (cwd, env info, memory paths, git status). When false, the caller may include them.
+   *
+   * Note: argv-level exclusion is already automatic — ClaudeCliClient uses --system-prompt,
+   * which replaces the entire default system prompt (including dynamic sections). Both true and
+   * false produce the same subprocess argv (--system-prompt + tools-disable); the difference
+   * is purely in how the caller composes req.system before calling complete().
+   */
+  excludeDynamicSections?: boolean;
+}
+
 export interface LLMRequest {
   model: string;
   /** System prompt as ordered blocks; cacheable blocks come first. */
@@ -28,6 +43,8 @@ export interface LLMRequest {
    * (MockLLMClient, CursorCliClient) ignore this field and return final text.
    */
   onText?: (delta: string) => void;
+  /** Opt-in only; ClaudeCliClient honors it; CursorCliClient ignores it — Cursor manages its own tool and system-prompt lifecycle. */
+  nonAgentic?: NonAgenticMode;
 }
 
 export interface LLMUsage {

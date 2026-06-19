@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { EMPTY_USAGE } from './LLMClient.js';
-import type { LLMClient, LLMRequest, LLMResponse, LLMMessage, LLMUsage } from './LLMClient.js';
+import type { LLMClient, LLMRequest, LLMResponse, LLMMessage, LLMUsage, NonAgenticMode } from './LLMClient.js';
 import { redactSecrets } from '../util/redact.js';
 
 export interface ClaudeCliClientOptions {
@@ -67,10 +67,7 @@ export class ClaudeCliClient implements LLMClient {
     const systemText = req.system.map((b) => b.text).join('\n\n');
     const prompt = flattenMessages(req.messages);
 
-    const args = ['-p', '--model', req.model, '--output-format', 'json'];
-    if (systemText.length > 0) {
-      args.push('--append-system-prompt', systemText);
-    }
+    const args = buildBufferedArgs(req.model, systemText, req.nonAgentic);
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const proc = await this.spawnClaude(args, prompt);
@@ -106,7 +103,7 @@ export class ClaudeCliClient implements LLMClient {
     const systemText = req.system.map((b) => b.text).join('\n\n');
     const prompt = flattenMessages(req.messages);
 
-    const args = buildStreamingArgs(req.model, systemText);
+    const args = buildStreamingArgs(req.model, systemText, req.nonAgentic);
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const proc = await this.spawnClaudeStream(args, prompt, req.model, onText);
@@ -326,18 +323,50 @@ export class ClaudeCliClient implements LLMClient {
   }
 }
 
-/**
- * Builds the argv for the streaming (`onText`) path. `--output-format
- * stream-json` REQUIRES `--verbose` — the real `claude` binary exits 1 with
- * "When using --print, --output-format=stream-json requires --verbose" if it's
- * missing (the mocked tests don't enforce this, so it's pinned by a regression
- * test instead). Kept as an exported pure function so that contract is testable
- * without spawning the binary.
- */
-export function buildStreamingArgs(model: string, systemText: string): string[] {
+// Confirmed against `claude --help`: "--tools: Use \"\" to disable all tools, \"default\" to use all tools,
+// or specify tool names (e.g. \"Bash,Edit,Read\")." Single source of truth — downstream tests import this
+// constant rather than hard-coding a flag spelling so a CLI rename fails loudly.
+export const NON_AGENTIC_TOOLS_DISABLE_ARGS: readonly string[] = ['--tools', ''];
+
+// Buffered argv (--output-format json); nonAgentic defined → --system-prompt + tools-disable, else --append-system-prompt.
+export function buildBufferedArgs(
+  model: string,
+  systemText: string,
+  nonAgentic?: NonAgenticMode,
+): string[] {
+  const args = ['-p', '--model', model, '--output-format', 'json'];
+  if (nonAgentic !== undefined) {
+    if (systemText.length > 0) {
+      args.push('--system-prompt', systemText);
+    }
+    args.push(...NON_AGENTIC_TOOLS_DISABLE_ARGS);
+  } else {
+    if (systemText.length > 0) {
+      args.push('--append-system-prompt', systemText);
+    }
+  }
+  return args;
+}
+
+// Streaming argv (stream-json). --verbose is load-bearing: the real `claude` binary exits 1 with
+// "When using --print, --output-format=stream-json requires --verbose" if it is absent; mocked tests
+// don't catch this — the 'buildStreamingArgs flag contract' test suite pins it as a regression guard.
+// nonAgentic defined → --system-prompt + tools-disable, else --append-system-prompt.
+export function buildStreamingArgs(
+  model: string,
+  systemText: string,
+  nonAgentic?: NonAgenticMode,
+): string[] {
   const args = ['-p', '--model', model, '--output-format', 'stream-json', '--verbose'];
-  if (systemText.length > 0) {
-    args.push('--append-system-prompt', systemText);
+  if (nonAgentic !== undefined) {
+    if (systemText.length > 0) {
+      args.push('--system-prompt', systemText);
+    }
+    args.push(...NON_AGENTIC_TOOLS_DISABLE_ARGS);
+  } else {
+    if (systemText.length > 0) {
+      args.push('--append-system-prompt', systemText);
+    }
   }
   return args;
 }
