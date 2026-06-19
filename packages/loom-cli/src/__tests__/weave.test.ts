@@ -169,10 +169,10 @@ describe('loom weave command registration', () => {
   });
 });
 
-// ── Pure pass-through (unit) ─────────────────────────────────────────────────
+// ── Forwarding to runEpic (unit) ─────────────────────────────────────────────
 
-describe('runWeave — pure pass-through to runEpic', () => {
-  it('delegates to runEpic exactly once with the same (brief, opts)', async () => {
+describe('runWeave — forwards brief, planning opts, and intake stage to runEpic', () => {
+  it('delegates to runEpic exactly once with the correct brief', async () => {
     // CommonJS module cache allows replacing the export on the shared object.
     // weave.ts compiles to: const epic_js_1 = require("./epic.js"); epic_js_1.runEpic(...)
     // Replacing epicMod.runEpic replaces what weave.ts calls at runtime.
@@ -184,44 +184,42 @@ describe('runWeave — pure pass-through to runEpic', () => {
       calls.push([brief, opts]);
     };
 
-    const opts = { force: false as const, verbose: false as const };
     try {
-      await runWeave(BRIEF, opts);
+      await runWeave(BRIEF, { force: false, verbose: false });
     } finally {
       epicMod.runEpic = origRunEpic;
     }
 
     assert.equal(calls.length, 1, 'runEpic must be called exactly once');
     assert.equal(calls[0][0], BRIEF, 'brief must be passed through unchanged');
-    assert.deepEqual(calls[0][1], opts, 'opts must be passed through unchanged');
   });
 
-  it('passes opts.force and opts.verbose verbatim — no extra keys injected', async () => {
+  it('forwards force and verbose into runEpic opts', async () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const epicMod = require('../commands/epic.js') as { runEpic: (brief: string, opts: unknown) => Promise<void> };
-    let captured: unknown;
+    let captured: Record<string, unknown> = {};
     const origRunEpic = epicMod.runEpic;
     epicMod.runEpic = async (_brief: string, opts: unknown) => {
-      captured = opts;
+      captured = opts as Record<string, unknown>;
     };
 
-    const opts = { force: true as const, verbose: true as const };
     try {
-      await runWeave(BRIEF, opts);
+      await runWeave(BRIEF, { force: true, verbose: true });
     } finally {
       epicMod.runEpic = origRunEpic;
     }
 
-    assert.deepEqual(captured, opts, 'opts object forwarded verbatim — no callbacks, no extra shared state');
+    assert.equal(captured.force, true, 'force must be forwarded to runEpic');
+    assert.equal(captured.verbose, true, 'verbose must be forwarded to runEpic');
   });
 
-  it('passes empty opts when called without opts argument', async () => {
+  it('injects intake stage with model and timeoutMs into runEpic opts', async () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const epicMod = require('../commands/epic.js') as { runEpic: (brief: string, opts: unknown) => Promise<void> };
-    let capturedOpts: unknown;
+    let captured: Record<string, unknown> = {};
     const origRunEpic = epicMod.runEpic;
     epicMod.runEpic = async (_brief: string, opts: unknown) => {
-      capturedOpts = opts;
+      captured = opts as Record<string, unknown>;
     };
 
     try {
@@ -230,7 +228,47 @@ describe('runWeave — pure pass-through to runEpic', () => {
       epicMod.runEpic = origRunEpic;
     }
 
-    assert.deepEqual(capturedOpts, {}, 'missing opts defaults to {}');
+    const intake = captured.intake as Record<string, unknown> | undefined;
+    assert.ok(intake, 'intake stage must be injected into runEpic opts');
+    assert.ok(typeof intake.model === 'string' && intake.model.length > 0, 'intake.model must be a non-empty string');
+    assert.ok(typeof intake.timeoutMs === 'number' && intake.timeoutMs > 0, 'intake.timeoutMs must be a positive number');
+  });
+
+  it('forwards _classifyIntake seam into runEpic opts when provided', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const epicMod = require('../commands/epic.js') as { runEpic: (brief: string, opts: unknown) => Promise<void> };
+    let captured: Record<string, unknown> = {};
+    const origRunEpic = epicMod.runEpic;
+    epicMod.runEpic = async (_brief: string, opts: unknown) => {
+      captured = opts as Record<string, unknown>;
+    };
+
+    const stub = async () => ({ ok: false as const, reason: 'llm_error' as const, detail: 'test' });
+    try {
+      await runWeave(BRIEF, { _classifyIntake: stub });
+    } finally {
+      epicMod.runEpic = origRunEpic;
+    }
+
+    assert.equal(captured._classifyIntake, stub, '_classifyIntake seam must be forwarded to runEpic');
+  });
+
+  it('omits _classifyIntake from runEpic opts when not provided', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const epicMod = require('../commands/epic.js') as { runEpic: (brief: string, opts: unknown) => Promise<void> };
+    let captured: Record<string, unknown> = {};
+    const origRunEpic = epicMod.runEpic;
+    epicMod.runEpic = async (_brief: string, opts: unknown) => {
+      captured = opts as Record<string, unknown>;
+    };
+
+    try {
+      await runWeave(BRIEF);
+    } finally {
+      epicMod.runEpic = origRunEpic;
+    }
+
+    assert.ok(!('_classifyIntake' in captured), '_classifyIntake must not be in opts when not provided');
   });
 });
 

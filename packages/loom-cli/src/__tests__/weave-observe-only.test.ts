@@ -205,18 +205,20 @@ function wipeLoomDb(repoDir: string): void {
 // ── Part 1: Topology guard ────────────────────────────────────────────────────
 
 describe('NFR-1 topology guard — planning-side source must not import or reference intake', () => {
-  // These source directories contain every code path that executes during
-  // planning: the brief-quality gate, the Analyst/PM/Architect persona agents,
-  // the Planner orchestrator, the policy/guardrails gate, and the epic CLI entry
-  // point. None of them may import from the intake module or read the verdict.
+  // Pure planning dirs: Planner, BriefRefiner, PolicyEngine. These must NEVER
+  // touch the intake module in any way — no imports, no verdict reads, no
+  // classifyIntake calls. epic.ts is the CLI orchestration layer and is checked
+  // separately (it may call classifyIntake, but must not read intake_verdict for
+  // branching or import directly from the intake path).
   const planningDirs = [
     path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'planner'),
     path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'brief'),
     path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'guardrails'),
   ];
-  const planningFiles = [
-    path.join(REPO_ROOT, 'packages', 'loom-cli', 'src', 'commands', 'epic.ts'),
-  ];
+  // epic.ts is the CLI orchestration entry point. It may call classifyIntake
+  // (as the observe-only intake stage), but must not import directly from the
+  // intake path or read intake_verdict for planning decisions.
+  const epicTsPath = path.join(REPO_ROOT, 'packages', 'loom-cli', 'src', 'commands', 'epic.ts');
 
   // Recursive walker: collects all .ts source files (excluding .test.ts) under
   // each dir. Uses Node 18+ readdirSync recursive option which returns relative
@@ -234,7 +236,10 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
     return out;
   }
 
-  const allPlanningFiles = [...collectSrcFiles(planningDirs), ...planningFiles];
+  // strictFiles: dirs only — the pure planning layer, checked for everything.
+  const strictFiles = collectSrcFiles(planningDirs);
+  // allPlanningFiles: dirs + epic.ts — checked for intake import paths and verdict reads.
+  const allPlanningFiles = [...strictFiles, epicTsPath];
 
   // Key backbone files — each must be present in the scan for the topology
   // guard to be meaningful. Named explicitly so a rename or move produces a
@@ -247,7 +252,7 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
     path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'brief', 'gate.ts'),
     path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'brief', 'BriefRefiner.ts'),
     path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'guardrails', 'PolicyEngine.ts'),
-    path.join(REPO_ROOT, 'packages', 'loom-cli', 'src', 'commands', 'epic.ts'),
+    epicTsPath,
   ];
 
   it('scans all required planning-side source files', () => {
@@ -259,9 +264,10 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
     }
   });
 
-  it('no planning-side file imports from the intake module', () => {
+  it('no planning-side file imports directly from the intake path', () => {
     const violations: string[] = [];
     // Catches: static imports, dynamic import(), and require() — including template-literal forms.
+    // epic.ts imports classifyIntake via '@loom-ai/core' (not the intake path), so it passes.
     const intakeImportRe = /(?:from|import|require)\s*[\(]?\s*['"].*intake/;
     for (const file of allPlanningFiles) {
       if (!fs.existsSync(file)) continue;
@@ -273,7 +279,7 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
     assert.deepEqual(
       violations,
       [],
-      `Planning-side files must not import from intake module:\n  ${violations.join('\n  ')}`
+      `Planning-side files must not import from intake path:\n  ${violations.join('\n  ')}`
     );
   });
 
@@ -293,9 +299,12 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
     );
   });
 
-  it('no planning-side file calls classifyIntake', () => {
+  it('pure planning dirs (planner/, brief/, guardrails/) never call classifyIntake', () => {
+    // epic.ts is the orchestration layer and IS allowed to call classifyIntake
+    // (observe-only, best-effort). The pure planning directories that implement
+    // the Analyst/PM/Architect pipeline must never call it.
     const violations: string[] = [];
-    for (const file of allPlanningFiles) {
+    for (const file of strictFiles) {
       if (!fs.existsSync(file)) continue;
       const src = fs.readFileSync(file, 'utf8');
       if (/classifyIntake/.test(src)) {
@@ -305,7 +314,7 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
     assert.deepEqual(
       violations,
       [],
-      `Planning-side files must not call classifyIntake:\n  ${violations.join('\n  ')}`
+      `Pure planning dirs must not call classifyIntake:\n  ${violations.join('\n  ')}`
     );
   });
 });
@@ -377,36 +386,45 @@ describe('NFR-1 verdict-value invariance — planning identical across all verdi
     { label: 'chore/epic/low', result: { ok: true, verdict: { type: 'chore', size: 'epic', confidence: 'low', rationale: 'test' } } },
   ];
 
-  it('runEpic receives identical (brief, opts) regardless of classifyIntake return value', async () => {
+  it('runEpic receives identical planning opts regardless of classifyIntake return value', async () => {
     // Use the _runEpic DI seam to capture calls. This avoids ESM/CJS module-binding
     // brittleness — the spy is injected directly into opts, not via module-cache patching.
-    const captured: Array<{ brief: string; opts: unknown }> = [];
+    const captured: Array<{ brief: string; opts: Record<string, unknown> }> = [];
 
     for (const { result } of SCENARIOS) {
       await runInProcess(() =>
         runWeave(BRIEF, {
           force: true,
           // Spy: capture call args without running the real planner.
-          _runEpic: async (b, o) => { captured.push({ brief: b, opts: o }); },
-          // Inject the scenario's classifier result so that when story-020-001
-          // wires classifyIntake, this test already enforces the invariant.
+          _runEpic: async (b, o) => { captured.push({ brief: b, opts: o as Record<string, unknown> }); },
+          // Vary the classifier result across scenarios.
           _classifyIntake: async () => result,
         })
       );
     }
 
     assert.equal(captured.length, SCENARIOS.length, 'runEpic must be called once per scenario');
-    // Every call must carry the same (brief, opts) — verdict never reaches runEpic.
+    // Planning-semantic opts (excluding the _classifyIntake seam itself, which is
+    // expected to vary) must be identical across all scenarios — the verdict returned
+    // by classifyIntake must never be threaded into the planning path.
     for (let i = 1; i < captured.length; i++) {
       assert.equal(
         captured[i].brief,
         captured[0].brief,
         `brief must be identical in scenario ${SCENARIOS[i].label}`
       );
+      // Strip the seam from both sides before comparing.
+      const { _classifyIntake: _c0, ...planOpts0 } = captured[0].opts;
+      const { _classifyIntake: _ci, ...planOptsi } = captured[i].opts;
       assert.deepEqual(
-        captured[i].opts,
-        captured[0].opts,
-        `opts must be identical in scenario ${SCENARIOS[i].label} — verdict must not be threaded into runEpic`
+        planOptsi,
+        planOpts0,
+        `planning opts (excluding _classifyIntake seam) must be identical in scenario ${SCENARIOS[i].label} — verdict must not be threaded into runEpic`
+      );
+      // Explicitly verify no verdict field was injected.
+      assert.ok(
+        !('verdict' in captured[i].opts) && !('intake_verdict' in captured[i].opts),
+        `verdict must not be threaded into runEpic opts in scenario ${SCENARIOS[i].label}`
       );
     }
   });
