@@ -8,11 +8,15 @@
  *   LOOM_EVAL_BACKEND=cursor-cli npm run eval:intake
  *   LOOM_EVAL_MODEL=claude-haiku-4-5-20251001 npm run eval:intake
  */
+import path from 'node:path';
 import {
   loadIntakeEvalSet,
   runIntakeEval,
   computeAxisAccuracy,
   IntakeJudge,
+  scoreIntakeEval,
+  writeIntakeReportFiles,
+  renderIntakeReport,
   createLLMClient,
 } from '../packages/loom-core/dist/index.js';
 
@@ -35,7 +39,12 @@ const deps = {
 
 const records = await runIntakeEval(cases, deps);
 
-// [INJECT:report] story-021-004 adds scoreIntakeEval + renderIntakeReport here.
+// [INJECT:report] wired by story-021-004
+const report = scoreIntakeEval(records, { classifierModel, judgeModel });
+const outputDir = path.resolve('.loom/eval');
+writeIntakeReportFiles(report, outputDir);
+console.log(`\nReport written to ${outputDir}/intake-report.{md,json}`);
+console.log(`Overall: ${report.overall.proceed ? 'PROCEED' : 'DO NOT PROCEED'} — ${report.overall.statement}`);
 
 // Per-axis exact-match accuracy vs human labels (Phase 0 classifier only).
 console.log('Classifier accuracy vs human labels:');
