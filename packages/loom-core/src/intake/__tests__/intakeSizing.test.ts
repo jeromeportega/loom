@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { LLMClient, LLMRequest, LLMResponse } from '../../llm/LLMClient.js';
-import { classifyIntake, type IntakeVerdict } from '../IntakeClassifier.js';
+import type { IntakeVerdict } from '../IntakeClassifier.js';
 import { buildIntakeSizingInstruction, applyConservativeTiebreak } from '../intakePrompt.js';
+import { classifyWithTiebreak } from '../intakePipeline.js';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -29,7 +30,9 @@ class FakeLLM implements LLMClient {
   }
 }
 
-function verdictJson(v: Partial<IntakeVerdict> & { type: IntakeVerdict['type']; size: IntakeVerdict['size']; confidence: IntakeVerdict['confidence'] }): string {
+function verdictJson(
+  v: Pick<IntakeVerdict, 'type' | 'size' | 'confidence'> & Partial<Omit<IntakeVerdict, 'type' | 'size' | 'confidence'>>,
+): string {
   return JSON.stringify({ rationale: 'test rationale', ...v });
 }
 
@@ -41,48 +44,44 @@ describe('buildIntakeSizingInstruction', () => {
     assert.ok(typeof text === 'string' && text.length > 0, 'should return a non-empty string');
   });
 
-  it('mentions multiple functional areas as an epic signal', () => {
+  it('names multiple functional areas as an epic signal', () => {
     const text = buildIntakeSizingInstruction();
     assert.ok(
-      text.toLowerCase().includes('multiple functional area') || text.toLowerCase().includes('functional area'),
-      'should mention multiple functional areas as an epic signal',
+      text.includes('multiple functional areas'),
+      'exact phrase "multiple functional areas" must appear',
     );
   });
 
-  it('mentions multiple services as an epic signal', () => {
+  it('names multiple services as an epic signal', () => {
     const text = buildIntakeSizingInstruction();
     assert.ok(
-      text.toLowerCase().includes('multiple service') || text.toLowerCase().includes('services'),
-      'should mention multiple services as an epic signal',
+      text.includes('multiple services'),
+      'exact phrase "multiple services" must appear',
     );
   });
 
-  it('mentions cross-cutting as an epic signal', () => {
+  it('names cross-cutting as an epic signal', () => {
     const text = buildIntakeSizingInstruction();
     assert.ok(
-      text.toLowerCase().includes('cross-cutting') || text.toLowerCase().includes('cross cutting'),
-      'should mention cross-cutting as an epic signal',
+      text.includes('cross-cutting'),
+      'exact phrase "cross-cutting" must appear',
     );
   });
 
-  it('mentions single bounded change as a story signal', () => {
+  it('names single bounded change as a story signal', () => {
     const text = buildIntakeSizingInstruction();
     assert.ok(
-      text.toLowerCase().includes('single') && text.toLowerCase().includes('bounded'),
-      'should mention single bounded change as a story signal',
+      text.includes('single, bounded change') || text.includes('single bounded change'),
+      '"single, bounded change" or "single bounded change" must appear',
     );
   });
 
   it('encodes the conservative tiebreak — default to epic under uncertainty', () => {
     const text = buildIntakeSizingInstruction();
     assert.ok(
-      text.toLowerCase().includes('epic') && (
-        text.toLowerCase().includes('uncertainty') ||
-        text.toLowerCase().includes('uncertain') ||
-        text.toLowerCase().includes('tiebreak') ||
-        text.toLowerCase().includes('default to')
-      ),
-      'should instruct the LLM to default to epic under uncertainty',
+      text.includes('Under uncertainty, always resolve to epic') ||
+      (text.toLowerCase().includes('tiebreak') && text.toLowerCase().includes('epic')),
+      'must instruct LLM to default to epic under uncertainty',
     );
   });
 });
@@ -153,57 +152,80 @@ describe('applyConservativeTiebreak', () => {
     applyConservativeTiebreak(verdict);
     assert.deepEqual(verdict, copy, 'applyConservativeTiebreak must not mutate its input');
   });
+
+  it('always returns a new object — even in the no-op branch', () => {
+    const verdict: IntakeVerdict = {
+      type: 'feature', size: 'story', confidence: 'high', rationale: 'clear scope',
+    };
+    const result = applyConservativeTiebreak(verdict);
+    assert.notEqual(result, verdict, 'must return a new object in the no-op branch');
+    assert.deepEqual(result, verdict);
+  });
 });
 
-// ── tiebreak pipeline — classifyIntake + applyConservativeTiebreak ────────────
+// ── classifyWithTiebreak — composed entry-point (AC: tiebreak wired in) ───────
 //
-// Pins the conservative tiebreak behavior end-to-end: the stub simulates an LLM
-// that returned a low-confidence story; the tiebreak must upgrade it to epic.
-// The second case guards against merely swapping bias — a clear story stays a story.
+// The conservative tiebreak must be applied automatically by the production
+// entry-point. Callers must NOT be required to manually invoke applyConservativeTiebreak.
 
-describe('conservative tiebreak — end-to-end pipeline', () => {
-  it('low-confidence story verdict is upgraded to epic by the tiebreak', async () => {
+describe('classifyWithTiebreak — tiebreak applied automatically', () => {
+  it('low-confidence story is upgraded to epic without manual tiebreak call', async () => {
     const llm = new FakeLLM(verdictJson({ type: 'feature', size: 'story', confidence: 'low' }));
-    const raw = await classifyIntake(
+    const result = await classifyWithTiebreak(
       'Vague brief that might touch multiple services',
       { llm, model: 'claude-haiku-4-5' },
     );
-    assert.ok(raw.ok, 'classifyIntake should succeed with valid JSON');
-    assert.equal(raw.verdict.size, 'story', 'raw classifier returns the LLM verdict before tiebreak');
-    const final = applyConservativeTiebreak(raw.verdict);
-    assert.equal(final.size, 'epic', 'after tiebreak, low-confidence story becomes epic');
+    assert.ok(result.ok, 'classifyWithTiebreak should succeed with valid JSON');
+    assert.equal(result.verdict.size, 'epic', 'low-confidence story must be epic after the composed pipeline');
   });
 
   it('high-confidence story is NOT upgraded — no over-sizing bias (guards against swap)', async () => {
     const llm = new FakeLLM(verdictJson({ type: 'feature', size: 'story', confidence: 'high' }));
-    const raw = await classifyIntake(
+    const result = await classifyWithTiebreak(
       'Add a validation rule to the existing form',
       { llm, model: 'claude-haiku-4-5' },
     );
-    assert.ok(raw.ok);
-    const final = applyConservativeTiebreak(raw.verdict);
-    assert.equal(final.size, 'story', 'high-confidence story must remain a story — not every request becomes an epic');
+    assert.ok(result.ok);
+    assert.equal(result.verdict.size, 'story', 'high-confidence story must remain a story');
   });
 
   it('medium-confidence story is NOT upgraded — tiebreak fires only on low confidence', async () => {
     const llm = new FakeLLM(verdictJson({ type: 'chore', size: 'story', confidence: 'medium' }));
-    const raw = await classifyIntake(
+    const result = await classifyWithTiebreak(
       'Update the CI pipeline configuration',
       { llm, model: 'claude-haiku-4-5' },
     );
-    assert.ok(raw.ok);
-    const final = applyConservativeTiebreak(raw.verdict);
-    assert.equal(final.size, 'story', 'medium-confidence story should not be auto-escalated');
+    assert.ok(result.ok);
+    assert.equal(result.verdict.size, 'story', 'medium-confidence story should not be auto-escalated');
   });
 
   it('explicit epic verdict is preserved regardless of confidence', async () => {
     const llm = new FakeLLM(verdictJson({ type: 'feature', size: 'epic', confidence: 'low' }));
-    const raw = await classifyIntake(
+    const result = await classifyWithTiebreak(
       'Large-scale platform migration',
       { llm, model: 'claude-haiku-4-5' },
     );
-    assert.ok(raw.ok);
-    const final = applyConservativeTiebreak(raw.verdict);
-    assert.equal(final.size, 'epic', 'epic verdict is preserved after tiebreak');
+    assert.ok(result.ok);
+    assert.equal(result.verdict.size, 'epic', 'epic verdict is preserved after tiebreak');
+  });
+
+  it('propagates classifier failure — ok: false when LLM returns invalid JSON', async () => {
+    const llm = new FakeLLM('this is not json at all');
+    const result = await classifyWithTiebreak(
+      'Add a new endpoint',
+      { llm, model: 'claude-haiku-4-5' },
+    );
+    assert.equal(result.ok, false, 'must propagate the failure result without applying tiebreak');
+    assert.equal(result.reason, 'invalid_output');
+  });
+
+  it('propagates classifier failure — ok: false when JSON is missing required fields', async () => {
+    const llm = new FakeLLM(JSON.stringify({ type: 'feature' }));
+    const result = await classifyWithTiebreak(
+      'Some brief',
+      { llm, model: 'claude-haiku-4-5' },
+    );
+    assert.equal(result.ok, false, 'missing size/confidence must produce invalid_output');
+    assert.equal(result.reason, 'invalid_output');
   });
 });

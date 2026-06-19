@@ -1,10 +1,5 @@
 import type { IntakeVerdict } from './IntakeClassifier.js';
 
-/**
- * Returns the system-prompt fragment encoding the conservative epic-vs-story
- * sizing criteria (ADR-006). Imported by IntakeClassifier to compose the full
- * system prompt.
- */
 export function buildIntakeSizingInstruction(): string {
   return `## Size classification — epic vs story
 
@@ -20,7 +15,7 @@ Classify as **story** when ALL of the following are true:
 - Fully specifiable before work begins: acceptance criteria can be written now
 - Can be implemented and reviewed as one cohesive unit in a single sprint
 
-**Conservative tiebreak (ADR-006) — default to the richer size:**
+**Conservative tiebreak — default to the richer size:**
 When there is low confidence, ambiguous scope signals, or any doubt about whether
 the brief fits a single bounded change, classify as **epic**, not story.
 A story wrongly escalated to an epic costs one planning round.
@@ -29,15 +24,14 @@ Under uncertainty, always resolve to epic.`;
 }
 
 /**
- * Code-level conservative tiebreak (ADR-006). When the classifier returns low
- * confidence on a story, upgrade to epic — the brief is too ambiguous to
- * confidently bound to a single work stream.
- *
- * Called by IntakeClassifier after parsing the LLM verdict.
+ * A story wrongly escalated to an epic costs one planning round; an epic
+ * wrongly compressed to a story causes mid-sprint scope explosion — so
+ * low-confidence stories are upgraded to epic at the code level.
  */
 export function applyConservativeTiebreak(verdict: IntakeVerdict): IntakeVerdict {
   if (verdict.confidence === 'low' && verdict.size === 'story') {
     return { ...verdict, size: 'epic' };
   }
-  return verdict;
+  // Always return a new object so callers can never rely on identity equality.
+  return { ...verdict };
 }
