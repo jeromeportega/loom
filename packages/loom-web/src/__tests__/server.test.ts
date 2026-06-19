@@ -23,13 +23,19 @@ import { createApp } from '../server/index.js';
 async function launch(token = 'test-token-123', ssePollMs = 50): Promise<{
   db: Database.Database;
   baseUrl: string;
+  loomdir: string;
   close: () => Promise<void>;
 }> {
   const db = createDatabase(':memory:');
+  // Give the server a real temp projectRoot so the events handler and the
+  // /api/agents/:id/log route both use the same loomdir for log files.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-server-test-'));
+  const loomdir = path.join(projectRoot, '.loom');
+  fs.mkdirSync(path.join(loomdir, 'logs'), { recursive: true });
   // loomBin: ['true'] makes the approve handler's spawn a no-op
   // (the GNU/BSD `true` accepts any args and exits 0). Tests assert
   // DB+audit side effects, not the actual supervisor.
-  const app = createApp({ db, token, ssePollMs, loomBin: ['true'] });
+  const app = createApp({ db, token, ssePollMs, loomBin: ['true'], projectRoot });
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const addr = server.address();
@@ -39,15 +45,20 @@ async function launch(token = 'test-token-123', ssePollMs = 50): Promise<{
   return {
     db,
     baseUrl: `http://127.0.0.1:${addr.port}`,
+    loomdir,
     close: () =>
       new Promise<void>((resolve, reject) =>
-        server.close((err) => (err ? reject(err) : resolve()))
+        server.close((err) => {
+          fs.rmSync(projectRoot, { recursive: true, force: true });
+          err ? reject(err) : resolve();
+        })
       ),
   };
 }
 
 let db: Database.Database;
 let baseUrl: string;
+let loomdir: string;
 let close: () => Promise<void>;
 let prevLoomHome: string | undefined;
 let loomHomeDir: string;
@@ -60,7 +71,7 @@ beforeEach(async () => {
   prevLoomHome = process.env.LOOM_HOME;
   loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-web-home-'));
   process.env.LOOM_HOME = loomHomeDir;
-  ({ db, baseUrl, close } = await launch());
+  ({ db, baseUrl, loomdir, close } = await launch());
 });
 afterEach(async () => {
   await close();
@@ -970,21 +981,29 @@ describe('loom-web — GET /api/events SSE', () => {
     assert.equal((data as { planning_phase: string }).planning_phase, 'analyst');
   });
 
-  it('emits an `output` event when an agent log_tail grows', async () => {
+  it('emits an `output` event when new log bytes arrive (durable-offset format)', async () => {
     const epics = new EpicStore(db);
     const agents = new AgentStore(db);
     epics.create('epic-001', 'Add /health');
     const a = agents.create('epic-001', 'story-001-001', 'Add /health');
 
+    // Open the SSE stream FIRST so the seed tick runs at offset 0.
     const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
     setTimeout(() => {
-      agents.updateLogTail(a.id, 'thinking about it…\nwriting the code\n');
+      // Write a real log file and update log_bytes so the events handler
+      // detects the advance and emits an offset-keyed output event.
+      const content = 'thinking about it…\nwriting the code\n';
+      const logBytes = Buffer.byteLength(content, 'utf8');
+      fs.writeFileSync(path.join(loomdir, 'logs', `${a.story_id}.log`), content, 'utf8');
+      agents.updateLogTail(a.id, content, logBytes);
     }, 30);
     const { data } = await readUntilEvent(
       res.body!,
       (ev, d) => ev === 'output' && (d as { agent_id: string }).agent_id === a.id
     );
-    assert.match((data as { chunk: string }).chunk, /thinking about it/);
+    // New wire format: {from, bytes} instead of {chunk}.
+    assert.equal((data as { from: number }).from, 0);
+    assert.match((data as { bytes: string }).bytes, /thinking about it/);
   });
 });
 
@@ -1108,12 +1127,20 @@ describe('loom-web — SSE planning-output events (story-017-002)', () => {
     epics.updatePlanningLogTail('epic-001', 'planner thinking');
     const a = agents.create('epic-001', 'story-001-001', 'A story');
 
-    const res = await fetch(`${baseUrl}/api/events?token=test-token-123`);
+    // Seed tick for this agent runs at offset 0; after that, writing a log
+    // file and advancing log_bytes triggers the output event.
+    // 100ms gives the SSE connections time to establish and run their seed
+    // tick before the log write, avoiding a race on slow CI machines.
     setTimeout(() => {
-      agents.updateLogTail(a.id, 'worker running\n');
-    }, 30);
+      const content = 'worker running\n';
+      const logBytes = Buffer.byteLength(content, 'utf8');
+      fs.writeFileSync(path.join(loomdir, 'logs', `${a.story_id}.log`), content, 'utf8');
+      agents.updateLogTail(a.id, content, logBytes);
+    }, 100);
     const [planningEv, workerEv] = await Promise.all([
-      readUntilEvent(res.body!, isPlanningOutput('epic-001')),
+      fetch(`${baseUrl}/api/events?token=test-token-123`).then((r) =>
+        readUntilEvent(r.body!, isPlanningOutput('epic-001'))
+      ),
       fetch(`${baseUrl}/api/events?token=test-token-123`).then((r) =>
         readUntilEvent(
           r.body!,
