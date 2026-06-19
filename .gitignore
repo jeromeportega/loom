@@ -50,6 +50,11 @@ site/
 # never committed (story-010-002, NFR-3).
 .loom/signals/
 
+# Per-story durable worker log files (story-019-001). Full post-redaction
+# output appended at stream time; never committed (content is machine-local
+# and grows unboundedly across runs).
+.loom/logs/
+
 # Per-machine integration files (paths bake in your local install; regenerable via `loom init`):
 .claude/settings.json
 .claude/skills/loom-*/

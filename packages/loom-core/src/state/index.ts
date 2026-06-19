@@ -1,4 +1,5 @@
 export { openDatabase, createDatabase, resetDatabaseForTest, SCHEMA_VERSION } from './Database.js';
+export { WorkerLogStore } from './WorkerLogStore.js';
 export { LessonStore } from './LessonStore.js';
 export { EpicStore } from './EpicStore.js';
 export { AgentStore } from './AgentStore.js';

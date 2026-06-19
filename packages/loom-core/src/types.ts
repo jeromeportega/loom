@@ -115,6 +115,12 @@ export interface AgentRecord {
    * backfilled — a plausible-but-wrong model is worse than unknown).
    */
   model: string | null;
+  /**
+   * Durable post-redaction byte length of the on-disk log file under
+   * <loomdir>/logs/<story-id>.log. Equals file size at the last flushTails
+   * write; NULL for rows predating v22. 0 when absent.
+   */
+  log_bytes: number | null;
 }
 
 export interface EpicRecord {
