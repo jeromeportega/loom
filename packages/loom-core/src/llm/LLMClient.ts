@@ -15,15 +15,10 @@ export interface LLMMessage {
   content: string;
 }
 
-/**
- * Opt-in non-agentic completion. Absence (undefined) preserves today's exact
- * agentic behavior: --append-system-prompt, tools available (FR-3).
- */
+// Opt-in non-agentic completion; absence preserves agentic defaults (--append-system-prompt, tools on).
 export interface NonAgenticMode {
-  /** When true (default), supply ONLY caller blocks via --system-prompt,
-   *  excluding Claude Code's built-in dynamic sections (FR-2).
-   *  Set false to retain them — the NFR-4 accuracy fallback. */
-  excludeDynamicSections?: boolean; // default: true
+  // Caller-side hint for req.system composition; ClaudeCliClient ignores this field — both values produce --system-prompt + tools-disable.
+  excludeDynamicSections?: boolean;
 }
 
 export interface LLMRequest {

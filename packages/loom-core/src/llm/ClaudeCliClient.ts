@@ -323,20 +323,10 @@ export class ClaudeCliClient implements LLMClient {
   }
 }
 
-/**
- * The exact argv tokens that disable all tools in non-agentic mode.
- * Confirmed against `claude --help`: `--tools ""` sets the tool list to empty.
- * Exported as a single source of truth so downstream tests (story-025-003)
- * import this constant rather than hard-coding a guessed spelling (NFR-5).
- */
+// --tools "" confirmed against claude --help; single source of truth so downstream tests import this rather than guessing.
 export const NON_AGENTIC_TOOLS_DISABLE_ARGS: readonly string[] = ['--tools', ''];
 
-/**
- * Builds the argv for the buffered (`--output-format json`) path.
- * Mirrors buildStreamingArgs but targets the buffered format.
- * When nonAgentic is defined, uses --system-prompt (replace) and disables
- * tools; otherwise uses --append-system-prompt (today's agentic default).
- */
+// Buffered argv (--output-format json); nonAgentic defined → --system-prompt + tools-disable, else --append-system-prompt.
 export function buildBufferedArgs(
   model: string,
   systemText: string,
@@ -356,16 +346,7 @@ export function buildBufferedArgs(
   return args;
 }
 
-/**
- * Builds the argv for the streaming (`onText`) path. `--output-format
- * stream-json` REQUIRES `--verbose` — the real `claude` binary exits 1 with
- * "When using --print, --output-format=stream-json requires --verbose" if it's
- * missing (the mocked tests don't enforce this, so it's pinned by a regression
- * test instead). Kept as an exported pure function so that contract is testable
- * without spawning the binary.
- * When nonAgentic is defined, uses --system-prompt (replace) and disables
- * tools; otherwise uses --append-system-prompt (today's agentic default).
- */
+// Streaming argv (stream-json); --verbose required or claude exits 1. nonAgentic defined → --system-prompt + tools-disable, else --append-system-prompt.
 export function buildStreamingArgs(
   model: string,
   systemText: string,

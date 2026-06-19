@@ -9,7 +9,6 @@ import {
   parseClaudeJson,
   buildStreamingArgs,
   ClaudeCliClient,
-  NON_AGENTIC_TOOLS_DISABLE_ARGS,
 } from '../llm/ClaudeCliClient.js';
 import { CursorCliClient } from '../llm/CursorCliClient.js';
 import type { LLMRequest, LLMResponse } from '../llm/LLMClient.js';
@@ -334,9 +333,7 @@ describe('buildStreamingArgs nonAgentic extension', () => {
     assert.ok(apIdx !== -1, 'must contain --append-system-prompt');
     assert.equal(args[apIdx + 1], 'SYS', '--append-system-prompt value must be SYS');
     assert.ok(!args.includes('--system-prompt'), 'must NOT contain --system-prompt');
-    for (const tok of NON_AGENTIC_TOOLS_DISABLE_ARGS) {
-      assert.ok(!args.includes(tok), `must NOT contain tools-disable token "${tok}"`);
-    }
+    assert.ok(!args.includes('--tools'), 'must NOT contain --tools flag');
   });
 
   it('non-agentic (excludeDynamicSections: true): --system-prompt, tools-disable, no --append-system-prompt (AC2)', () => {
@@ -345,9 +342,9 @@ describe('buildStreamingArgs nonAgentic extension', () => {
     assert.ok(spIdx !== -1, 'must contain --system-prompt');
     assert.equal(args[spIdx + 1], 'SYS', '--system-prompt value must be SYS');
     assert.ok(!args.includes('--append-system-prompt'), 'must NOT contain --append-system-prompt');
-    for (const tok of NON_AGENTIC_TOOLS_DISABLE_ARGS) {
-      assert.ok(args.includes(tok), `must contain tools-disable token "${tok}"`);
-    }
+    const toolsIdx = args.indexOf('--tools');
+    assert.ok(toolsIdx !== -1, 'must contain --tools');
+    assert.equal(args[toolsIdx + 1], '', '--tools must be followed by empty string');
     assert.ok(args.includes('--verbose'), '--verbose must be retained in non-agentic streaming');
   });
 
@@ -355,19 +352,23 @@ describe('buildStreamingArgs nonAgentic extension', () => {
     const args = buildStreamingArgs('m', 'SYS', { excludeDynamicSections: false });
     assert.ok(args.includes('--system-prompt'), 'must contain --system-prompt');
     assert.ok(!args.includes('--append-system-prompt'), 'must NOT contain --append-system-prompt');
-    for (const tok of NON_AGENTIC_TOOLS_DISABLE_ARGS) {
-      assert.ok(args.includes(tok), `must contain tools-disable token "${tok}"`);
-    }
+    const toolsIdx = args.indexOf('--tools');
+    assert.ok(toolsIdx !== -1, 'must contain --tools');
+    assert.equal(args[toolsIdx + 1], '', '--tools must be followed by empty string');
   });
 
   it('boundary — empty systemText: neither prompt flag in either mode', () => {
     const agentArgs = buildStreamingArgs('m', '', undefined);
     assert.ok(!agentArgs.includes('--append-system-prompt'));
     assert.ok(!agentArgs.includes('--system-prompt'));
+    assert.ok(!agentArgs.includes('--tools'), 'agentic: no --tools for empty text');
 
     const nonAgentArgs = buildStreamingArgs('m', '', { excludeDynamicSections: true });
     assert.ok(!nonAgentArgs.includes('--system-prompt'));
     assert.ok(!nonAgentArgs.includes('--append-system-prompt'));
+    const toolsIdx = nonAgentArgs.indexOf('--tools');
+    assert.ok(toolsIdx !== -1, 'non-agentic: --tools must be present even with empty system text');
+    assert.equal(nonAgentArgs[toolsIdx + 1], '', '--tools must be followed by empty string');
   });
 });
 
