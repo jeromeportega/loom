@@ -491,6 +491,8 @@ export const PolicySchema = z.object({
       // epic shared-client run shipped unreviewed because of this). Default
       // 10 keeps prior behavior; raise it for repos with sizable diffs.
       review_timeout_minutes: z.number().int().min(1).max(60).default(10),
+      // Wall-clock bound for `loom weave` intake classification; floor 120 s enforced at runtime.
+      intake_classify_timeout_ms: z.number().int().min(120_000).max(600_000).optional(),
       // Brief-quality gate. Every `loom epic` and `loom_start_epic` runs
       // the BriefRefiner before the planner and refuses briefs whose
       // quality_score is below this threshold, returning the critique so

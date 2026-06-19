@@ -14,3 +14,4 @@ export * from './bench/index.js';
 export * from './brief/index.js';
 export * from './mcp/index.js';
 export * from './intake/IntakeClassifier.js';
+export * from './intake/intakeTimeout.js';

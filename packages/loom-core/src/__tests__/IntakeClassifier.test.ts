@@ -9,6 +9,7 @@ import {
   INTAKE_AUDIT_ACTION,
   type ClassifyResult,
 } from '../intake/IntakeClassifier.js';
+import { INTAKE_TIMEOUT_FLOOR_MS } from '../intake/intakeTimeout.js';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -151,12 +152,29 @@ describe('classifyIntake — failure modes (never throws)', () => {
   it('llm never resolves → {ok:false, reason:"timeout"} after timeoutMs', async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const llm = new FakeLLM(['hang']);
-    const resultPromise = classifyIntake('brief', { llm, model: 'haiku', timeoutMs: 5000 });
-    // Advance fake clock past the timeout
-    t.mock.timers.tick(5001);
+    // Use a value above the floor so effectiveTimeoutMs == this value
+    const aboveFloorMs = INTAKE_TIMEOUT_FLOOR_MS + 1_000;
+    const resultPromise = classifyIntake('brief', { llm, model: 'haiku', timeoutMs: aboveFloorMs });
+    t.mock.timers.tick(aboveFloorMs + 1);
     const result = await resultPromise;
     assertFailure(result, 'timeout');
-    assert.ok(result.ok === false && result.detail.includes('5000ms'));
+    assert.ok(result.ok === false && result.detail.includes(`${aboveFloorMs}ms`));
+  });
+
+  it('sub-floor timeoutMs is clamped to INTAKE_TIMEOUT_FLOOR_MS', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const llm = new FakeLLM(['hang']);
+    // Pass a sub-floor value; the effective timeout must be INTAKE_TIMEOUT_FLOOR_MS
+    const resultPromise = classifyIntake('brief', { llm, model: 'haiku', timeoutMs: 5_000 });
+    // Tick past the floor to trigger the clamped timer
+    t.mock.timers.tick(INTAKE_TIMEOUT_FLOOR_MS + 1);
+    const result = await resultPromise;
+    assertFailure(result, 'timeout');
+    // Detail must mention the floor value (not 5_000)
+    assert.ok(
+      result.ok === false && result.detail.includes(`${INTAKE_TIMEOUT_FLOOR_MS}ms`),
+      `Expected detail to mention floor (${INTAKE_TIMEOUT_FLOOR_MS}ms), got: ${!result.ok ? result.detail : ''}`,
+    );
   });
 
   it('classifyIntake never throws — all failure modes return a value', async () => {
