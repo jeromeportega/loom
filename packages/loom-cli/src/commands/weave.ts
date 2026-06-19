@@ -1,6 +1,10 @@
 import type { CommandDescription } from '../describe/schema.js';
-import type { LLMClient } from '@loom-ai/core';
+import type { LLMClient, ClassifyResult } from '@loom-ai/core';
 import { runEpic } from './epic.js';
+
+type RunEpicOpts = { force?: boolean; verbose?: boolean; llm?: LLMClient; cursorBin?: string };
+type RunEpicFn = (brief: string, opts?: RunEpicOpts) => Promise<void>;
+type ClassifyFn = (...args: unknown[]) => Promise<ClassifyResult>;
 
 /**
  * Phase 0: thin pass-through to runEpic. Runs the identical brief-quality
@@ -9,12 +13,26 @@ import { runEpic } from './epic.js';
  *
  * The intake-classification layer (classifyIntake + recordIntakeVerdict) is
  * wired here in a later phase, delivered by stories 020-002 and 020-003.
+ *
+ * @param opts._runEpic      Test seam — inject a spy for runEpic without ESM
+ *   module-binding issues. Production callers omit this.
+ * @param opts._classifyIntake  Test seam — inject a stub for classifyIntake.
+ *   Not used until story-020-001 wires the classifier. Production callers omit.
  */
 export async function runWeave(
   brief: string,
-  opts?: { force?: boolean; verbose?: boolean; llm?: LLMClient }
+  opts?: {
+    force?: boolean;
+    verbose?: boolean;
+    llm?: LLMClient;
+    _runEpic?: RunEpicFn;
+    _classifyIntake?: ClassifyFn;
+  }
 ): Promise<void> {
-  await runEpic(brief, opts ?? {});
+  const { _runEpic, _classifyIntake, ...epicOpts } = opts ?? {};
+  const epicRunner: RunEpicFn = _runEpic ?? runEpic;
+  void _classifyIntake; // seam reserved for story-020-001
+  await epicRunner(brief, epicOpts);
 }
 
 export const spec: CommandDescription = {

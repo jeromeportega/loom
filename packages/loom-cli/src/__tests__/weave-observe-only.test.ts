@@ -20,19 +20,13 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import {
   MockLLMClient,
-  openDatabase,
   resetDatabaseForTest,
   EpicStore,
 } from '@loom-ai/core';
-import type { LLMRequest } from '@loom-ai/core';
-
-// Mirror of ClassifyResult from @loom-ai/core — defined locally so this test
-// compiles against any version of the loom-core dist (including pre-epic-020).
-type ClassifyResult =
-  | { ok: true; verdict: { type: string; size: string; confidence: string; rationale: string } }
-  | { ok: false; reason: 'llm_error' | 'timeout' | 'invalid_output'; detail: string };
+import type { LLMRequest, ClassifyResult } from '@loom-ai/core';
 import { runEpic } from '../commands/epic.js';
 import { runWeave } from '../commands/weave.js';
 
@@ -169,23 +163,24 @@ afterEach(() => {
   else process.env.LOOM_HOME = prevLoomHome;
 });
 
-// Reads the epic-001 artifact from a loom dir; does NOT touch the singleton.
+// Reads the epic-001 artifact using an independent DB connection — does NOT
+// touch or re-initialize the module-level singleton used by runEpic/runWeave.
 function readEpicArtifact(repoDir: string): { title: string; status: string; yamlContent: string } {
-  resetDatabaseForTest();
-  const db = openDatabase(path.join(repoDir, '.loom'));
-  const epic = new EpicStore(db).get('epic-001');
-  if (!epic) {
-    resetDatabaseForTest();
-    return { title: '', status: 'missing', yamlContent: '' };
+  const db = new Database(path.join(repoDir, '.loom', 'loom.db'), { readonly: true });
+  try {
+    const epic = new EpicStore(db).get('epic-001');
+    if (!epic) return { title: '', status: 'missing', yamlContent: '' };
+    const yamlPath = epic.yaml_path ? path.join(repoDir, epic.yaml_path) : null;
+    const yamlContent = yamlPath && fs.existsSync(yamlPath) ? fs.readFileSync(yamlPath, 'utf8') : '';
+    return { title: epic.title, status: epic.status, yamlContent };
+  } finally {
+    db.close();
   }
-  const yamlPath = epic.yaml_path ? path.join(repoDir, epic.yaml_path) : null;
-  const yamlContent = yamlPath && fs.existsSync(yamlPath) ? fs.readFileSync(yamlPath, 'utf8') : '';
-  resetDatabaseForTest();
-  return { title: epic.title, status: epic.status, yamlContent };
 }
 
 // Wipes only the SQLite files so the next openDatabase() creates a fresh schema.
 // Policy.yaml and planning/* files are preserved.
+// resetDatabaseForTest() releases module singleton handles before deletion.
 function wipeLoomDb(repoDir: string): void {
   resetDatabaseForTest();
   for (const ext of ['', '-wal', '-shm']) {
@@ -198,25 +193,28 @@ function wipeLoomDb(repoDir: string): void {
 describe('NFR-1 topology guard — planning-side source must not import or reference intake', () => {
   // These source directories contain every code path that executes during
   // planning: the brief-quality gate, the Analyst/PM/Architect persona agents,
-  // the Planner orchestrator, and the epic CLI entry point.
-  // None of them may import from the intake module or read the verdict.
+  // the Planner orchestrator, the policy/guardrails gate, and the epic CLI entry
+  // point. None of them may import from the intake module or read the verdict.
   const planningDirs = [
     path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'planner'),
     path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'brief'),
+    path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'guardrails'),
   ];
   const planningFiles = [
     path.join(REPO_ROOT, 'packages', 'loom-cli', 'src', 'commands', 'epic.ts'),
   ];
 
+  // Recursive walker: collects all .ts source files (excluding .test.ts) under
+  // each dir. Uses Node 18+ readdirSync recursive option which returns relative
+  // path strings from the root dir, catching files in any subdirectory.
   function collectSrcFiles(dirs: string[]): string[] {
     const out: string[] = [];
     for (const dir of dirs) {
       if (!fs.existsSync(dir)) continue;
-      for (const name of fs.readdirSync(dir)) {
-        const full = path.join(dir, name);
-        if (fs.statSync(full).isFile() && full.endsWith('.ts') && !full.endsWith('.test.ts')) {
-          out.push(full);
-        }
+      const entries = fs.readdirSync(dir, { recursive: true }) as string[];
+      for (const rel of entries) {
+        if (!rel.endsWith('.ts') || rel.endsWith('.test.ts')) continue;
+        out.push(path.join(dir, rel));
       }
     }
     return out;
@@ -224,9 +222,27 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
 
   const allPlanningFiles = [...collectSrcFiles(planningDirs), ...planningFiles];
 
-  it('scans at least the core planning-side files', () => {
-    const exists = allPlanningFiles.filter((f) => fs.existsSync(f));
-    assert.ok(exists.length >= 5, `Expected ≥5 planning-side source files; got ${exists.length}`);
+  // Key backbone files — each must be present in the scan for the topology
+  // guard to be meaningful. Named explicitly so a rename or move produces a
+  // clear failure rather than a silent headcount drop.
+  const REQUIRED_IN_SCAN = [
+    path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'planner', 'Planner.ts'),
+    path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'planner', 'AnalystAgent.ts'),
+    path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'planner', 'PMAgent.ts'),
+    path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'planner', 'ArchitectAgent.ts'),
+    path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'brief', 'gate.ts'),
+    path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'brief', 'BriefRefiner.ts'),
+    path.join(REPO_ROOT, 'packages', 'loom-core', 'src', 'guardrails', 'PolicyEngine.ts'),
+    path.join(REPO_ROOT, 'packages', 'loom-cli', 'src', 'commands', 'epic.ts'),
+  ];
+
+  it('scans all required planning-side source files', () => {
+    for (const required of REQUIRED_IN_SCAN) {
+      assert.ok(
+        allPlanningFiles.includes(required),
+        `Planning-side scan must include ${path.relative(REPO_ROOT, required)}`
+      );
+    }
   });
 
   it('no planning-side file imports from the intake module', () => {
@@ -280,16 +296,16 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
 
 // ── Part 2: epic ≡ weave ──────────────────────────────────────────────────────
 
-describe('epic ≡ weave — same brief produces identical epic artifact', () => {
+describe('epic ≡ weave — same brief produces identical epic artifact', { concurrency: false }, () => {
   it('runEpic and runWeave produce the same epic title and status', async () => {
     // runEpic baseline (uses tmpDir from beforeEach)
     const epicLlm = new MockLLMClient(pipelineResponder);
     const { exitCode: epicExit } = await runInProcess(() => runEpic(BRIEF, { llm: epicLlm, force: true }));
-    assert.equal(epicExit, null, 'runEpic must exit 0');
+    assert.ok(epicExit === null || epicExit === 0, 'runEpic must exit cleanly (null or 0)');
     const epicArtifact = readEpicArtifact(tmpDir);
     assert.equal(epicArtifact.status, 'planned', 'runEpic must produce a planned epic');
 
-    // runWeave run in an independent loom repo
+    // runWeave run in an independent loom repo to avoid DB state interference
     const weaveDir = makeLoomRepo('loom-weave-compare-');
     const savedCwd = process.cwd();
     try {
@@ -297,7 +313,7 @@ describe('epic ≡ weave — same brief produces identical epic artifact', () =>
       resetDatabaseForTest();
       const weaveLlm = new MockLLMClient(pipelineResponder);
       const { exitCode: weaveExit } = await runInProcess(() => runWeave(BRIEF, { llm: weaveLlm, force: true }));
-      assert.equal(weaveExit, null, 'runWeave must exit 0');
+      assert.ok(weaveExit === null || weaveExit === 0, 'runWeave must exit cleanly (null or 0)');
       const weaveArtifact = readEpicArtifact(weaveDir);
       assert.equal(weaveArtifact.status, 'planned', 'runWeave must produce a planned epic');
 
@@ -313,7 +329,7 @@ describe('epic ≡ weave — same brief produces identical epic artifact', () =>
 
 // ── Part 3: Verdict-value invariance ─────────────────────────────────────────
 
-describe('NFR-1 verdict-value invariance — planning identical across all verdict states', () => {
+describe('NFR-1 verdict-value invariance — planning identical across all verdict states', { concurrency: false }, () => {
   // Every verdict value in the type × size × confidence matrix, plus all
   // failure modes. Planning must behave identically for each.
   const SCENARIOS: Array<{ label: string; result: ClassifyResult }> = [
@@ -342,32 +358,21 @@ describe('NFR-1 verdict-value invariance — planning identical across all verdi
   ];
 
   it('runEpic receives identical (brief, opts) regardless of classifyIntake return value', async () => {
-    // Patch epicMod.runEpic to capture calls without actually running the planner.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const epicMod = require('../commands/epic.js') as {
-      runEpic: (brief: string, opts: unknown) => Promise<void>;
-    };
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const coreMod = require('@loom-ai/core') as {
-      classifyIntake: (...args: unknown[]) => Promise<ClassifyResult>;
-    };
-
-    const origRunEpic = epicMod.runEpic;
-    const origClassify = coreMod.classifyIntake;
-
+    // Use the _runEpic DI seam to capture calls. This avoids ESM/CJS module-binding
+    // brittleness — the spy is injected directly into opts, not via module-cache patching.
     const captured: Array<{ brief: string; opts: unknown }> = [];
-    epicMod.runEpic = async (brief: string, opts: unknown) => {
-      captured.push({ brief, opts });
-    };
 
-    try {
-      for (const { result } of SCENARIOS) {
-        coreMod.classifyIntake = async () => result;
-        await runWeave(BRIEF, { force: true as const });
-      }
-    } finally {
-      epicMod.runEpic = origRunEpic;
-      coreMod.classifyIntake = origClassify;
+    for (const { result } of SCENARIOS) {
+      await runInProcess(() =>
+        runWeave(BRIEF, {
+          force: true,
+          // Spy: capture call args without running the real planner.
+          _runEpic: async (b, o) => { captured.push({ brief: b, opts: o }); },
+          // Inject the scenario's classifier result so that when story-020-001
+          // wires classifyIntake, this test already enforces the invariant.
+          _classifyIntake: async () => result,
+        })
+      );
     }
 
     assert.equal(captured.length, SCENARIOS.length, 'runEpic must be called once per scenario');
@@ -387,24 +392,21 @@ describe('NFR-1 verdict-value invariance — planning identical across all verdi
   });
 
   it('produced epic artifact is byte-identical across no-verdict, failure, and every verdict-present run', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const coreMod = require('@loom-ai/core') as {
-      classifyIntake: (...args: unknown[]) => Promise<ClassifyResult>;
-    };
-    const origClassify = coreMod.classifyIntake;
-
-    // Baseline: classifier fails (equivalent to "no verdict" / loom epic behaviour).
-    coreMod.classifyIntake = async () =>
-      ({ ok: false, reason: 'llm_error', detail: 'baseline' } as ClassifyResult);
+    // Baseline: classifier failure — equivalent to "no verdict" / loom epic behaviour.
     const baselineLlm = new MockLLMClient(pipelineResponder);
     const { exitCode: baselineExit } = await runInProcess(() =>
-      runWeave(BRIEF, { llm: baselineLlm, force: true })
+      runWeave(BRIEF, {
+        llm: baselineLlm,
+        force: true,
+        _classifyIntake: async () => ({ ok: false, reason: 'llm_error', detail: 'baseline' } as ClassifyResult),
+      })
     );
-    assert.equal(baselineExit, null, 'baseline run must succeed');
+    assert.ok(baselineExit === null || baselineExit === 0, 'baseline run must exit cleanly');
     const baseline = readEpicArtifact(tmpDir);
     assert.equal(baseline.status, 'planned', 'baseline must be planned');
 
-    // Representative verdict values to verify full invariance.
+    // Representative verdict values — full type×size×confidence matrix coverage
+    // would be prohibitive in a per-run integration test; spot-check each dimension.
     const verdictScenarios: Array<{ label: string; result: ClassifyResult }> = [
       {
         label: 'feature/story/high',
@@ -424,35 +426,35 @@ describe('NFR-1 verdict-value invariance — planning identical across all verdi
       },
     ];
 
-    try {
-      for (const { label, result } of verdictScenarios) {
-        // Reset to a clean DB so the scenario produces epic-001 (same position).
-        wipeLoomDb(tmpDir);
-        coreMod.classifyIntake = async () => result;
-        const llm = new MockLLMClient(pipelineResponder);
-        const { exitCode } = await runInProcess(() => runWeave(BRIEF, { llm, force: true }));
-        assert.equal(exitCode, null, `scenario "${label}" must exit 0`);
+    for (const { label, result } of verdictScenarios) {
+      // Reset to a clean DB so the scenario produces epic-001 (same position).
+      wipeLoomDb(tmpDir);
+      const llm = new MockLLMClient(pipelineResponder);
+      const { exitCode } = await runInProcess(() =>
+        runWeave(BRIEF, {
+          llm,
+          force: true,
+          _classifyIntake: async () => result,
+        })
+      );
+      assert.ok(exitCode === null || exitCode === 0, `scenario "${label}" must exit cleanly`);
 
-        const artifact = readEpicArtifact(tmpDir);
-        assert.equal(
-          artifact.title,
-          baseline.title,
-          `epic title must be identical for verdict scenario "${label}"`
-        );
-        assert.equal(
-          artifact.status,
-          baseline.status,
-          `epic status must be identical for verdict scenario "${label}"`
-        );
-        assert.equal(
-          artifact.yamlContent,
-          baseline.yamlContent,
-          `YAML artifact must be byte-identical for verdict scenario "${label}" — verdict must not alter planning output`
-        );
-      }
-    } finally {
-      coreMod.classifyIntake = origClassify;
-      resetDatabaseForTest();
+      const artifact = readEpicArtifact(tmpDir);
+      assert.equal(
+        artifact.title,
+        baseline.title,
+        `epic title must be identical for verdict scenario "${label}"`
+      );
+      assert.equal(
+        artifact.status,
+        baseline.status,
+        `epic status must be identical for verdict scenario "${label}"`
+      );
+      assert.equal(
+        artifact.yamlContent,
+        baseline.yamlContent,
+        `YAML artifact must be byte-identical for verdict scenario "${label}" — verdict must not alter planning output`
+      );
     }
   });
 });
