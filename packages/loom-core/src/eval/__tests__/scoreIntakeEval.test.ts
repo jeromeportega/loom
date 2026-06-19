@@ -581,6 +581,33 @@ describe('decideGate — judgeInconclusiveRate threshold', () => {
     assert.equal(report.overall.decision, 'INCONCLUSIVE',
       'high judge inconclusive rate must yield INCONCLUSIVE');
   });
+
+  it('INCONCLUSIVE when judge inconclusive rate exceeds 10% — denominator is scored, not total', () => {
+    // Setup: 18 scored + 2 classifier failures (ok judge to keep failure rate ≤10%).
+    // inconclusiveJudgeCount = 2 (explicit inconclusive judges on scored records).
+    // correct denominator:  2 / 18 ≈ 11.1% > 10% → INCONCLUSIVE
+    // buggy denominator:    2 / 20  = 10.0%       → exactly at threshold, NOT > 10% → would silently PROCEED
+    const okJudge = { type: 'feature' as const, size: 'story' as const, grade: 'agree' as const };
+    const records: IntakeRunRecord[] = [
+      ...Array.from({ length: 16 }, (_, i) =>
+        makeRecord(makeCase(`ok-${i}`, 'feature', 'story'), { type: 'feature', size: 'story' }, okJudge),
+      ),
+      ...Array.from({ length: 2 }, (_, i) =>
+        makeRecord(makeCase(`inc-${i}`, 'feature', 'story'), { type: 'feature', size: 'story' }, null),
+      ),
+      // 2 classifier failures with an explicit ok judge so they do NOT inflate inconclusiveJudgeCount
+      // and keep classifier failure rate at 2/20 = 10% (not > 10%, so no DO_NOT_PROCEED from that check)
+      ...Array.from({ length: 2 }, (_, i) =>
+        makeRecord(makeCase(`fail-${i}`, 'feature', 'story'), null, okJudge, 'llm_error'),
+      ),
+    ];
+    const report = scoreIntakeEval(records);
+    assert.equal(report.failureCounts.scored, 18, '18 classifiers succeeded');
+    assert.equal(report.failureCounts.total, 20, '20 total records');
+    assert.equal(report.inconclusiveJudgeCount, 2, '2 inconclusive judges');
+    assert.equal(report.overall.decision, 'INCONCLUSIVE',
+      '2/18 ≈ 11.1% must yield INCONCLUSIVE; wrong denominator 2/20 = 10.0% would not trigger the gate');
+  });
 });
 
 describe('decideGate — direct invocation with partial report', () => {
@@ -603,7 +630,7 @@ describe('decideGate — direct invocation with partial report', () => {
     const pr = partialReport(recs);
     const result = decideGate(pr);
     assert.ok(
-      result.statement.toUpperCase().includes(result.decision.replace('_', ' ')),
+      result.statement.toUpperCase().includes(result.decision.replaceAll('_', ' ')),
       `statement must include the decision word, got: "${result.statement}"`,
     );
   });

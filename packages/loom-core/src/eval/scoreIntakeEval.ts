@@ -173,16 +173,17 @@ export function decideGate(
     };
   }
 
-  const judgeInconclusiveRate = total > 0 ? inconclusiveJudgeCount / total : 0;
+  const judgeInconclusiveRate = scored > 0 ? inconclusiveJudgeCount / scored : 0;
   if (judgeInconclusiveRate > maxJudgeInconclusiveRate) {
     return {
       decision: 'INCONCLUSIVE',
-      statement: `INCONCLUSIVE: judge inconclusive rate ${(judgeInconclusiveRate * 100).toFixed(1)}% exceeds ${(maxJudgeInconclusiveRate * 100).toFixed(1)}% threshold (${inconclusiveJudgeCount} of ${total} cases inconclusive).`,
+      statement: `INCONCLUSIVE: judge inconclusive rate ${(judgeInconclusiveRate * 100).toFixed(1)}% exceeds ${(maxJudgeInconclusiveRate * 100).toFixed(1)}% threshold (${inconclusiveJudgeCount} of ${scored} scored cases inconclusive).`,
     };
   }
 
-  const typeAxis = axes.find(a => a.axis === 'type')!;
-  const sizeAxis = axes.find(a => a.axis === 'size')!;
+  const typeAxis = axes.find(a => a.axis === 'type');
+  const sizeAxis = axes.find(a => a.axis === 'size');
+  if (!typeAxis || !sizeAxis) throw new Error('decideGate: axes must include both "type" and "size" AxisReport entries');
   if (!typeAxis.verdict.clearsBar || !sizeAxis.verdict.clearsBar) {
     const epicsUnderSized = sizeAxis.dangerousConfusions.find(d => d.from === 'epic' && d.to === 'story')?.count ?? 0;
     return {
