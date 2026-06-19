@@ -10,6 +10,7 @@ import {
   SkillStore,
   SkillUsageStore,
   ProjectRegistry,
+  WorkerLogStore,
   openDatabase,
   createDatabase,
   deriveBlocked,
@@ -106,6 +107,7 @@ export function createApp(opts: CreateAppOptions): Express {
 
   const currentProjectRoot = opts.projectRoot ?? process.cwd();
   const resolveProjectDb = makeResolveProjectDb(opts.db, currentProjectRoot);
+  const workerLogs = new WorkerLogStore(path.join(currentProjectRoot, '.loom'));
 
   // ─── Route modules (owned by sibling stories; mounted here) ─────────────
   registerAutonomyRoutes(app, { epicStore, auditLog });
@@ -285,6 +287,27 @@ export function createApp(opts: CreateAppOptions): Express {
       worker_pid: agent.worker_pid,
     };
     res.json(detail);
+  });
+
+  // ─── GET /api/agents/:id/log — full persisted log with optional from-offset ─
+  // Resolves :id → story_id via AgentStore (unknown id → 404; raw param never
+  // concatenated into a path). Reads are bounded to agents.log_bytes so a
+  // concurrently-appending writer is tolerated. ?from=N returns only bytes
+  // after offset N; from === log_bytes yields an empty 200 body.
+  app.get('/api/agents/:id/log', (req, res) => {
+    const agent = agentStore.get(req.params.id);
+    if (!agent) {
+      res.status(404).json({ error: 'agent not found' });
+      return;
+    }
+    const logBytes = agent.log_bytes ?? 0;
+    const fromRaw = req.query.from;
+    const from =
+      typeof fromRaw === 'string' ? Math.max(0, parseInt(fromRaw, 10) || 0) : 0;
+    const body = workerLogs.read(agent.story_id, from, logBytes);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('X-Log-Length', String(logBytes));
+    res.status(200).send(body);
   });
 
   // ─── GET /api/agents/:id/audit — audit-log entries for the agent ─────────
