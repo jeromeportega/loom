@@ -39,12 +39,13 @@ function jsonBlock(obj: unknown): string {
 function makePlanningResponder(epicTitle: string) {
   return (req: LLMRequest): string => {
     const last = req.messages[req.messages.length - 1];
-    const content = (last.role === 'assistant' ? req.messages[req.messages.length - 2].content : last.content) as string;
 
     if (last.role === 'assistant') {
       // This is the intake classifier call. Throw to simulate failure.
       throw new Error('classifier call — planning-only stub rejects it');
     }
+
+    const content = last.content as string;
     if (content.includes('Apply the discipline above')) {
       return jsonBlock({
         ready: true,
@@ -202,7 +203,7 @@ describe('FR-4 observe-only invariant — planner output identical with vs witho
   it('planning output is byte-identical whether the classifier succeeds or fails', async () => {
     // Scenario A: classifier SUCCEEDS — mock returns a valid verdict.
     const dirA = makeLoomRepo('loom-observe-only-a-');
-    let artifactA: ReturnType<typeof readEpicArtifact>;
+    let artifactA: ReturnType<typeof readEpicArtifact> | null = null;
     try {
       process.chdir(dirA);
       resetDatabaseForTest();
@@ -219,7 +220,7 @@ describe('FR-4 observe-only invariant — planner output identical with vs witho
 
     // Scenario B: classifier FAILS — mock throws on classifier call; verdict absent.
     const dirB = makeLoomRepo('loom-observe-only-b-');
-    let artifactB: ReturnType<typeof readEpicArtifact>;
+    let artifactB: ReturnType<typeof readEpicArtifact> | null = null;
     try {
       process.chdir(dirB);
       resetDatabaseForTest();
@@ -235,6 +236,7 @@ describe('FR-4 observe-only invariant — planner output identical with vs witho
     }
 
     // The artifact must be identical regardless of whether the verdict was stored.
+    assert.ok(artifactA !== null && artifactB !== null, 'both scenarios must produce artifacts');
     assert.equal(artifactA.title, artifactB.title, 'epic title must be identical with and without verdict');
     assert.equal(artifactA.status, artifactB.status, 'epic status must be identical');
     assert.deepEqual(

@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { LLMClient } from '@loom-ai/core';
+import type { LLMClient, ClassifyResult } from '@loom-ai/core';
 import { classifyIntake, INTAKE_AUDIT_ACTION, EpicStore, AuditLog } from '@loom-ai/core';
 
 /**
@@ -18,12 +18,13 @@ export async function recordIntakeClassification(deps: {
 }): Promise<void> {
   const { db, epicId, brief, llm, model, timeoutMs } = deps;
 
-  let result;
+  let result: ClassifyResult | undefined;
   try {
     result = await classifyIntake(brief, { llm, model, timeoutMs });
   } catch {
     return;
   }
+  if (!result) return;
 
   // Persist to each sink independently so one failure doesn't prevent the others.
 
