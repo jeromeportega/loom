@@ -715,3 +715,98 @@ describe('scoreIntakeEval — gate: proceed and do-not-proceed decisions', () =>
     );
   });
 });
+
+// ── gate.maxFailureRate — exposed in gate object ──────────────────────────────
+
+describe('scoreIntakeEval — gate.maxFailureRate', () => {
+  it('is present and is a positive number less than 1', () => {
+    const report = scoreIntakeEval([]);
+    assert.ok(
+      typeof report.gate.maxFailureRate === 'number' &&
+      report.gate.maxFailureRate > 0 &&
+      report.gate.maxFailureRate < 1,
+      `maxFailureRate must be a fraction between 0 and 1, got: ${report.gate.maxFailureRate}`,
+    );
+  });
+
+  it('is consistent across proceed, inconclusive, and do-not-proceed decisions', () => {
+    const good5 = Array.from({ length: 5 }, (_, i) =>
+      makeRecord(makeCase(`g${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree' }),
+    );
+    const proceed = scoreIntakeEval(good5);
+
+    const empty = scoreIntakeEval([]);
+
+    const undersized = [
+      ...Array.from({ length: 4 }, (_, i) =>
+        makeRecord(makeCase(`ok${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+          { type: 'feature', size: 'story', grade: 'agree' }),
+      ),
+      makeRecord(makeCase('epic-x', 'feature', 'epic'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'epic', grade: 'disagree', reason: 'Under-sized.' }),
+    ];
+    const doNotProceed = scoreIntakeEval(undersized);
+
+    assert.equal(proceed.gate.maxFailureRate, empty.gate.maxFailureRate,
+      'maxFailureRate is the same constant across decisions');
+    assert.equal(proceed.gate.maxFailureRate, doNotProceed.gate.maxFailureRate,
+      'maxFailureRate is the same constant across decisions');
+  });
+});
+
+// ── gate: judge-inconclusive rate uses classifier-ok denominator ──────────────
+
+describe('scoreIntakeEval — gate: judge inconclusive rate only over classifier-ok records', () => {
+  it('does not count classifier-failure-caused inconclusive judges in the judge rate', () => {
+    // 10 records: 2 classifier failures (20% < 25% — passes first check)
+    // Those 2 failures produce 2 inconclusive judges.
+    // 8 classifier-ok records with 0 independent judge-inconclusive outcomes.
+    // Old (wrong) rate: 2/10 = 20% → passes. But the denominator was total.
+    // New (correct) rate: 0/8 = 0% — the inconclusives are caused by classifier failure.
+    const records: IntakeRunRecord[] = [
+      ...Array.from({ length: 8 }, (_, i) =>
+        makeRecord(makeCase(`ok${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+          { type: 'feature', size: 'story', grade: 'agree' }),
+      ),
+      ...Array.from({ length: 2 }, (_, i) =>
+        makeRecord(makeCase(`fail${i}`, 'bug', 'story'), null),  // classifier failure → judge inconclusive
+      ),
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.equal(report.failureCounts.judgeInconclusive, 2,
+      'failureCounts.judgeInconclusive reflects all inconclusive judges including classifier-caused ones');
+    // Gate must NOT fire inconclusive for judge rate — the judge rate over classifier-ok is 0%
+    assert.notEqual(report.gate.decision, 'inconclusive',
+      'gate must not fire inconclusive for judge rate when inconclusives are all from classifier failures');
+    assert.equal(report.gate.decision, 'proceed',
+      'gate proceeds when classifier failure rate is within threshold and independent judge rate is 0%');
+  });
+
+  it('fires inconclusive when independent judge rate is high (classifier-failure-caused excluded)', () => {
+    // 10 records: 2 classifier failures (20% → within threshold)
+    // 8 classifier-ok records: 3 independent judge-inconclusive (3/8 = 37.5% > 25%)
+    const records: IntakeRunRecord[] = [
+      ...Array.from({ length: 5 }, (_, i) =>
+        makeRecord(makeCase(`ok${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+          { type: 'feature', size: 'story', grade: 'agree' }),
+      ),
+      ...Array.from({ length: 3 }, (_, i) =>
+        makeRecord(makeCase(`judgeInconc${i}`, 'bug', 'story'), { type: 'bug', size: 'story' }, null),
+      ),
+      ...Array.from({ length: 2 }, (_, i) =>
+        makeRecord(makeCase(`classifierFail${i}`, 'chore', 'story'), null),
+      ),
+    ];
+
+    const report = scoreIntakeEval(records);
+    // independent judge rate: 3 / (10 - 2) = 3/8 = 37.5% > 25%
+    assert.equal(report.gate.decision, 'inconclusive',
+      'independent judge-inconclusive rate 37.5% must trigger inconclusive');
+    assert.ok(
+      report.gate.statement.includes('3') && report.gate.statement.includes('8'),
+      `statement should show 3/8 (independent rate), got: "${report.gate.statement}"`,
+    );
+  });
+});

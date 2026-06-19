@@ -157,7 +157,10 @@ function computeFailureCounts(records: IntakeRunRecord[]): IntakeEvalReport['fai
 
   for (const rec of records) {
     if (!rec.classifier.ok) {
-      classifier[rec.classifier.reason]++;
+      const reason = rec.classifier.reason;
+      if (reason in classifier) {
+        classifier[reason as keyof typeof classifier]++;
+      }
     }
     if (rec.judge.status === 'inconclusive') {
       judgeInconclusive++;
@@ -176,12 +179,14 @@ function computeGate(
 ): IntakeEvalReport['gate'] {
   const total = records.length;
   const minScoredCases = MIN_SCORED_CASES;
+  const maxFailureRate = MAX_FAILURE_RATE;
 
   if (total === 0 || scoredCases < minScoredCases) {
     return {
       decision: 'inconclusive',
       statement: `Inconclusive: only ${scoredCases} successfully scored case(s) (minimum ${minScoredCases} required). Re-run with more cases.`,
       minScoredCases,
+      maxFailureRate,
     };
   }
 
@@ -190,31 +195,43 @@ function computeGate(
     failureCounts.classifier.timeout +
     failureCounts.classifier.invalid_output;
   const classifierFailureRate = totalClassifierFailures / total;
-  const judgeInconclusiveRate = failureCounts.judgeInconclusive / total;
 
-  if (classifierFailureRate > MAX_FAILURE_RATE) {
+  if (classifierFailureRate > maxFailureRate) {
     const pct = Math.round(classifierFailureRate * 100);
     return {
       decision: 'inconclusive',
-      statement: `Inconclusive: classifier failure rate ${pct}% exceeds ${Math.round(MAX_FAILURE_RATE * 100)}% threshold (${totalClassifierFailures}/${total} cases failed). Re-run to confirm.`,
+      statement: `Inconclusive: classifier failure rate ${pct}% exceeds ${Math.round(maxFailureRate * 100)}% threshold (${totalClassifierFailures}/${total} cases failed). Re-run to confirm.`,
       minScoredCases,
+      maxFailureRate,
     };
   }
 
-  if (judgeInconclusiveRate > MAX_FAILURE_RATE) {
+  // Measure judge-inconclusive rate only over classifier-ok records to avoid
+  // double-counting cases already captured by the classifier failure rate check.
+  const classifierOkCount = total - totalClassifierFailures;
+  const independentJudgeInconclusive = records.filter(
+    r => r.classifier.ok && r.judge.status === 'inconclusive',
+  ).length;
+  const judgeInconclusiveRate = classifierOkCount > 0
+    ? independentJudgeInconclusive / classifierOkCount
+    : 0;
+
+  if (judgeInconclusiveRate > maxFailureRate) {
     const pct = Math.round(judgeInconclusiveRate * 100);
     return {
       decision: 'inconclusive',
-      statement: `Inconclusive: judge-inconclusive rate ${pct}% exceeds ${Math.round(MAX_FAILURE_RATE * 100)}% threshold (${failureCounts.judgeInconclusive}/${total} cases inconclusive). Re-run to confirm.`,
+      statement: `Inconclusive: judge-inconclusive rate ${pct}% exceeds ${Math.round(maxFailureRate * 100)}% threshold (${independentJudgeInconclusive}/${classifierOkCount} classifier-ok cases inconclusive). Re-run to confirm.`,
       minScoredCases,
+      maxFailureRate,
     };
   }
 
   if (overallProceed) {
     return {
       decision: 'proceed',
-      statement: `Proceed: classifier clears Phase 1 quality bar across ${scoredCases} scored case(s) with acceptable failure rates (classifier: ${totalClassifierFailures}/${total}, judge-inconclusive: ${failureCounts.judgeInconclusive}/${total}).`,
+      statement: `Proceed: classifier clears Phase 1 quality bar across ${scoredCases} scored case(s) with acceptable failure rates (classifier: ${totalClassifierFailures}/${total}, judge-inconclusive: ${independentJudgeInconclusive}/${classifierOkCount}).`,
       minScoredCases,
+      maxFailureRate,
     };
   }
 
@@ -222,6 +239,7 @@ function computeGate(
     decision: 'do-not-proceed',
     statement: `Do-not-proceed: classifier failed Phase 1 quality bar — ${epicsUnderSized} epic→story under-sizing confusion(s) detected across ${scoredCases} scored case(s).`,
     minScoredCases,
+    maxFailureRate,
   };
 }
 

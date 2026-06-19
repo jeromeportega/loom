@@ -98,7 +98,14 @@ function renderMarkdown(report: IntakeEvalReport): string {
 
   lines.push('## Overall');
   lines.push('');
-  lines.push(`**Proceed to Phase 1:** ${report.overall.proceed ? 'Yes' : 'No'}`);
+  if (report.gate.decision !== 'proceed') {
+    // Gate is authoritative — the axis quality bar result below may say 'proceed'
+    // but the gate overrides it based on failure rates or insufficient sample size.
+    lines.push(`> **Note:** Gate decision is \`${report.gate.decision}\` (see Gate Decision below). ` +
+      `The axis quality bar result is informational only when the gate is not \`proceed\`.`);
+    lines.push('');
+  }
+  lines.push(`**Axis quality bar (per-axis dangerous confusions):** ${report.overall.proceed ? 'Cleared' : 'Not cleared'}`);
   lines.push('');
   lines.push(report.overall.statement);
   lines.push('');
@@ -112,6 +119,8 @@ function renderMarkdown(report: IntakeEvalReport): string {
   lines.push('');
   lines.push(`**Scored cases (ok classifier + conclusive judge):** ${report.scoredCases} / ${report.generatedFromCases} total (minimum required: ${report.gate.minScoredCases})`);
   lines.push('');
+  lines.push(`**Failure rate threshold:** ${Math.round(report.gate.maxFailureRate * 100)}%`);
+  lines.push('');
   lines.push('### Failure Counts');
   lines.push('');
   lines.push('| Category | Count |');
@@ -119,7 +128,7 @@ function renderMarkdown(report: IntakeEvalReport): string {
   lines.push(`| Classifier: llm_error | ${report.failureCounts.classifier.llm_error} |`);
   lines.push(`| Classifier: timeout | ${report.failureCounts.classifier.timeout} |`);
   lines.push(`| Classifier: invalid_output | ${report.failureCounts.classifier.invalid_output} |`);
-  lines.push(`| Judge: inconclusive | ${report.failureCounts.judgeInconclusive} |`);
+  lines.push(`| Judge: inconclusive (total) | ${report.failureCounts.judgeInconclusive} |`);
   lines.push('');
 
   return lines.join('\n');
