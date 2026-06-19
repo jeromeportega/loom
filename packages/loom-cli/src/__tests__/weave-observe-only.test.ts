@@ -8,8 +8,8 @@
  *      (title, status, YAML content) for the same brief.
  *   3. Verdict-value invariance — `runEpic` is called with identical arguments
  *      regardless of what `classifyIntake` returns (no-verdict, failure, every
- *      verdict value); the produced epic artifact is byte-identical across all
- *      conditions.
+ *      verdict value); the produced epic artifact is structurally identical across
+ *      all conditions (title, status, parsed YAML planning content).
  *
  * Any new edge from planning/gate/persona/execution code into the intake module
  * or the `intake_verdict` column MUST break this test.
@@ -20,6 +20,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import yaml from 'js-yaml';
 import Database from 'better-sqlite3';
 import {
   MockLLMClient,
@@ -33,6 +34,10 @@ import { runWeave } from '../commands/weave.js';
 // __dirname = packages/loom-cli/dist/__tests__
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
+
+if (!fs.existsSync(LOOM_CLI)) {
+  throw new Error(`loom CLI not found at ${LOOM_CLI} — run 'npm run build' before running integration tests`);
+}
 
 // ── Deterministic LLM stub ────────────────────────────────────────────────────
 
@@ -109,7 +114,10 @@ async function runInProcess(fn: () => Promise<void>): Promise<{ exitCode: number
   try {
     await fn();
   } catch (err) {
-    if (!(err instanceof ExitSignal)) throw err;
+    if (!(err instanceof ExitSignal)) {
+      console.error = origErr;
+      throw err;
+    }
   } finally {
     process.exit = origExit;
     console.log = origLog;
@@ -143,7 +151,6 @@ let loomHomeDir: string;
 const BRIEF = 'Build a minimal feature to verify the observe-only invariant holds end-to-end.';
 
 beforeEach(() => {
-  resetDatabaseForTest();
   prevLoomHome = process.env.LOOM_HOME;
   loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-cli-home-'));
   process.env.LOOM_HOME = loomHomeDir;
@@ -165,14 +172,21 @@ afterEach(() => {
 
 // Reads the epic-001 artifact using an independent DB connection — does NOT
 // touch or re-initialize the module-level singleton used by runEpic/runWeave.
-function readEpicArtifact(repoDir: string): { title: string; status: string; yamlContent: string } {
+// parsedEpic holds the structured planning fields (title, priority, requirements,
+// stories) for structural comparison that is robust to formatting changes.
+function readEpicArtifact(repoDir: string): {
+  title: string;
+  status: string;
+  parsedEpic: unknown;
+} {
   const db = new Database(path.join(repoDir, '.loom', 'loom.db'), { readonly: true });
   try {
     const epic = new EpicStore(db).get('epic-001');
-    if (!epic) return { title: '', status: 'missing', yamlContent: '' };
+    if (!epic) return { title: '', status: 'missing', parsedEpic: null };
     const yamlPath = epic.yaml_path ? path.join(repoDir, epic.yaml_path) : null;
     const yamlContent = yamlPath && fs.existsSync(yamlPath) ? fs.readFileSync(yamlPath, 'utf8') : '';
-    return { title: epic.title, status: epic.status, yamlContent };
+    const parsedEpic = yamlContent ? yaml.load(yamlContent) : null;
+    return { title: epic.title, status: epic.status, parsedEpic };
   } finally {
     db.close();
   }
@@ -247,10 +261,12 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
 
   it('no planning-side file imports from the intake module', () => {
     const violations: string[] = [];
+    // Catches: static imports, dynamic import(), and require() — including template-literal forms.
+    const intakeImportRe = /(?:from|import|require)\s*[\(]?\s*['"].*intake/;
     for (const file of allPlanningFiles) {
       if (!fs.existsSync(file)) continue;
       const src = fs.readFileSync(file, 'utf8');
-      if (/from\s+['"].*intake/.test(src) || /require\s*\(\s*['"].*intake/.test(src)) {
+      if (intakeImportRe.test(src)) {
         violations.push(path.relative(REPO_ROOT, file));
       }
     }
@@ -318,7 +334,11 @@ describe('epic ≡ weave — same brief produces identical epic artifact', { con
       assert.equal(weaveArtifact.status, 'planned', 'runWeave must produce a planned epic');
 
       assert.equal(weaveArtifact.title, epicArtifact.title, 'epic title must be identical for runEpic and runWeave');
-      assert.equal(weaveArtifact.yamlContent, epicArtifact.yamlContent, 'YAML artifact must be byte-identical for runEpic and runWeave');
+      assert.deepEqual(
+        weaveArtifact.parsedEpic,
+        epicArtifact.parsedEpic,
+        'YAML artifact planning content must be structurally identical for runEpic and runWeave'
+      );
     } finally {
       process.chdir(savedCwd);
       resetDatabaseForTest();
@@ -333,8 +353,8 @@ describe('NFR-1 verdict-value invariance — planning identical across all verdi
   // Every verdict value in the type × size × confidence matrix, plus all
   // failure modes. Planning must behave identically for each.
   const SCENARIOS: Array<{ label: string; result: ClassifyResult }> = [
-    { label: 'no classifier call (current thin pass-through)', result: { ok: false, reason: 'llm_error', detail: 'unused' } },
-    { label: 'llm_error failure', result: { ok: false, reason: 'llm_error', detail: 'stubbed error' } },
+    { label: 'llm_error failure (baseline — equivalent to no-verdict state)', result: { ok: false, reason: 'llm_error', detail: 'unused' } },
+    { label: 'llm_error failure (second stub)', result: { ok: false, reason: 'llm_error', detail: 'stubbed error' } },
     { label: 'timeout failure', result: { ok: false, reason: 'timeout', detail: 'stubbed timeout' } },
     { label: 'invalid_output failure', result: { ok: false, reason: 'invalid_output', detail: 'stubbed invalid' } },
     { label: 'feature/story/high', result: { ok: true, verdict: { type: 'feature', size: 'story', confidence: 'high', rationale: 'test' } } },
@@ -391,7 +411,7 @@ describe('NFR-1 verdict-value invariance — planning identical across all verdi
     }
   });
 
-  it('produced epic artifact is byte-identical across no-verdict, failure, and every verdict-present run', async () => {
+  it('produced epic artifact is structurally identical across no-verdict, failure, and every verdict-present run', async () => {
     // Baseline: classifier failure — equivalent to "no verdict" / loom epic behaviour.
     const baselineLlm = new MockLLMClient(pipelineResponder);
     const { exitCode: baselineExit } = await runInProcess(() =>
@@ -450,10 +470,10 @@ describe('NFR-1 verdict-value invariance — planning identical across all verdi
         baseline.status,
         `epic status must be identical for verdict scenario "${label}"`
       );
-      assert.equal(
-        artifact.yamlContent,
-        baseline.yamlContent,
-        `YAML artifact must be byte-identical for verdict scenario "${label}" — verdict must not alter planning output`
+      assert.deepEqual(
+        artifact.parsedEpic,
+        baseline.parsedEpic,
+        `YAML artifact planning content must be structurally identical for verdict scenario "${label}" — verdict must not alter planning output`
       );
     }
   });

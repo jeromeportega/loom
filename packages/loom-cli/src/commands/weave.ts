@@ -2,9 +2,9 @@ import type { CommandDescription } from '../describe/schema.js';
 import type { LLMClient, ClassifyResult } from '@loom-ai/core';
 import { runEpic } from './epic.js';
 
-type RunEpicOpts = { force?: boolean; verbose?: boolean; llm?: LLMClient; cursorBin?: string };
+type RunEpicOpts = NonNullable<Parameters<typeof runEpic>[1]>;
 type RunEpicFn = (brief: string, opts?: RunEpicOpts) => Promise<void>;
-type ClassifyFn = (...args: unknown[]) => Promise<ClassifyResult>;
+type ClassifyFn = (brief: string) => Promise<ClassifyResult>;
 
 /**
  * Phase 0: thin pass-through to runEpic. Runs the identical brief-quality
@@ -29,9 +29,10 @@ export async function runWeave(
     _classifyIntake?: ClassifyFn;
   }
 ): Promise<void> {
-  const { _runEpic, _classifyIntake, ...epicOpts } = opts ?? {};
+  // _clf is extracted here so it does not reach runEpic as an unknown option.
+  // The seam is reserved for story-020-001, which wires the real classifier.
+  const { _runEpic, _classifyIntake: _clf, ...epicOpts } = opts ?? {};
   const epicRunner: RunEpicFn = _runEpic ?? runEpic;
-  void _classifyIntake; // seam reserved for story-020-001
   await epicRunner(brief, epicOpts);
 }
 
