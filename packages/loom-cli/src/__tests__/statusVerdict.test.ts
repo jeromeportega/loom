@@ -29,6 +29,8 @@ afterEach(() => {
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
+// runStatus is synchronous (returns void, backed by better-sqlite3's sync API),
+// so no await is needed — the console.log patch is still in place when output is produced.
 function captureStatus(options: Parameters<typeof runStatus>[0]): string {
   const lines: string[] = [];
   const orig = console.log;
@@ -92,7 +94,7 @@ describe('loom status — CLI verdict rendering', () => {
     assert.doesNotMatch(out, /verdict: story/, 'must not fabricate a story class');
   });
 
-  it('renders verdict line after the existing gate line ordering', () => {
+  it('renders verdict line when verdict is present', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
     const epicStore = new EpicStore(db);
     epicStore.create('epic-001', 'My Epic');
@@ -100,8 +102,6 @@ describe('loom status — CLI verdict rendering', () => {
     db.close();
 
     const out = captureStatus({});
-    // Both gate (absent here, so no gate line) and verdict lines are present
-    // Verify verdict line appears in the output
     const verdictIdx = out.indexOf('verdict: feature/epic (high)');
     assert.ok(verdictIdx !== -1, `verdict line must be present:\n${out}`);
   });

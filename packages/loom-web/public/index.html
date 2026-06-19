@@ -85,6 +85,7 @@
         text-align: center;
       }
       .updated { color: #6e7681; font-size: 11px; margin-top: 6px; }
+      .verdict { color: #6e7681; font-size: 11px; margin-top: 4px; }
       .footer { color: #6e7681; font-size: 12px; margin-top: 32px; }
       a { color: #58a6ff; cursor: pointer; }
       .brief {
@@ -487,7 +488,7 @@
               </div>
             </div>
             <div class="updated">updated ${new Date(epic.updated_at).toLocaleString()}</div>
-            <div class="updated">verdict: ${verdictLabel}</div>
+            <div class="verdict">verdict: ${verdictLabel}</div>
             ${briefSection}
             ${artifactsSection}
             ${agentsSection}

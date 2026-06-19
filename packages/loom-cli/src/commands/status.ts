@@ -165,7 +165,7 @@ interface JsonEpic {
   archived?: boolean;
   blocked?: true;
   blocked_reason?: 'integration_gate';
-  intake_verdict?: IntakeVerdict | null;
+  intake_verdict: IntakeVerdict | null;
   stories: JsonStory[];
 }
 
