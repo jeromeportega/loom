@@ -167,14 +167,17 @@ export class AgentStore {
   }
 
   /**
-   * Updates only the log_tail field — used by the Supervisor to flush a live
-   * rolling tail of a running worker's stdout so other processes (e.g. pi's
-   * dashboard) can see in-flight progress without changing the agent's status.
+   * Updates the rolling log tail and the durable byte offset together.
+   * Used by the Supervisor's flushTails() to persist in-flight worker output.
+   * logBytes is the cumulative post-redaction byte length of the on-disk log
+   * file; it derives directly from WorkerLogStore.append()'s return value.
    */
-  updateLogTail(id: string, logTail: string): void {
+  updateLogTail(id: string, logTail: string, logBytes: number): void {
     this.db
-      .prepare('UPDATE agents SET log_tail = ?, updated_at = ? WHERE id = ?')
-      .run(logTail, new Date().toISOString(), id);
+      .prepare(
+        'UPDATE agents SET log_tail = ?, log_bytes = ?, updated_at = ? WHERE id = ?'
+      )
+      .run(logTail, logBytes, new Date().toISOString(), id);
   }
 
   /**

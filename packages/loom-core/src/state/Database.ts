@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -365,6 +365,13 @@ export function runMigrations(db: Database.Database): void {
   }
   if (!epicCols.some((c) => c.name === 'planner_model')) {
     db.exec('ALTER TABLE epics ADD COLUMN planner_model TEXT');
+  }
+  // v22: durable per-agent log byte offset — the cumulative post-redaction
+  // UTF-8 byte length of the on-disk log file under <loomdir>/logs/. NULL for
+  // rows predating this migration; 0 treated as no-offset. Written by
+  // flushTails alongside log_tail (never backfilled — pre-v22 rows stay NULL).
+  if (!agentCols.some((c) => c.name === 'log_bytes')) {
+    db.exec('ALTER TABLE agents ADD COLUMN log_bytes INTEGER');
   }
   // v21: rolling tail of planning persona stdout. Bounded to <=4096 chars,
   // nullable. Written during planning; readable after `status` flips to 'planned'.

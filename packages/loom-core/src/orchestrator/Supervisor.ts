@@ -10,6 +10,7 @@ import {
   ControlStore,
   DecisionTraceStore,
   LeaseStore,
+  WorkerLogStore,
 } from '../state/index.js';
 import type { GlobalLimiter, LimiterSlot } from '../state/index.js';
 import { EpicYamlSchema, type Story, type AgentStatus } from '../types.js';
@@ -52,6 +53,7 @@ import {
 import { investigateAndRoute } from '../failure/investigateAndRoute.js';
 import { computeHeuristics, buildStorySignals } from './signalLedger.js';
 import { SignalLedger } from './signalStore.js';
+import { redactSecrets } from '../util/redact.js';
 
 export interface SupervisorOptions {
   projectRoot: string;
@@ -313,6 +315,12 @@ export class Supervisor {
   /** Per-agent rolling output tails, flushed periodically to agents.log_tail. */
   private outputTails = new Map<string, { buffer: string; dirty: boolean }>();
   private tailFlushTimer: ReturnType<typeof setInterval> | null = null;
+  /** Durable per-story log file writer. Rooted at <projectRoot>/.loom/logs/. */
+  private workerLogs: WorkerLogStore;
+  /** Cumulative post-redaction byte length per story, updated by onOutput. */
+  private logBytes = new Map<string, number>();
+  /** Maps agentId → storyId so flushTails can look up the log_bytes offset. */
+  private agentToStory = new Map<string, string>();
 
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
@@ -376,6 +384,7 @@ export class Supervisor {
 
   constructor(private opts: SupervisorOptions) {
     this.wt = new WorktreeManager(opts.projectRoot);
+    this.workerLogs = new WorkerLogStore(path.join(opts.projectRoot, '.loom'));
     this.integration = new IntegrationBranch(opts.projectRoot);
     if (opts.integrationBranch === 'rolling' && opts.integrator === 'on') {
       this.integratorGate =
@@ -399,6 +408,8 @@ export class Supervisor {
   async run(epicIds?: string[]): Promise<SupervisorResult> {
     this.skillGenPromises = [];
     this.outputTails.clear();
+    this.logBytes.clear();
+    this.agentToStory.clear();
     this.successCount = 0;
     // Clear any stale stop signal from a previous run.
     this.control.setState('running');
@@ -1447,13 +1458,23 @@ export class Supervisor {
     });
 
     const onOutput = (chunk: string, stream: 'stdout' | 'stderr'): void => {
+      // Redaction runs ONCE here — before any persistence path (DB tail or file).
+      const redacted = redactSecrets(chunk);
       this.opts.onWorkerEvent?.({
         type: 'output',
         storyId: task.story.id,
         stream,
-        chunk,
+        chunk: redacted,
       });
-      this.appendToTail(task.agentId, chunk);
+      this.appendToTail(task.agentId, redacted);
+      this.agentToStory.set(task.agentId, task.story.id);
+      // File append returns new cumulative byte length; store it so flushTails
+      // can write agents.log_bytes. File write precedes the DB pointer (ordering
+      // invariant: log_bytes <= file size always).
+      this.logBytes.set(
+        task.story.id,
+        this.workerLogs.append(task.story.id, redacted)
+      );
     };
 
     // Persist the worker subprocess pid as soon as it spawns so an
@@ -1972,7 +1993,7 @@ export class Supervisor {
     Supervisor.liveInstances.delete(this);
   }
 
-  /** Writes any dirty rolling tails to agents.log_tail. */
+  /** Writes any dirty rolling tails and durable byte offsets to the DB. */
   private flushTails(): void {
     for (const [agentId, entry] of this.outputTails) {
       if (!entry.dirty) continue;
@@ -1980,7 +2001,9 @@ export class Supervisor {
         entry.buffer.length > Supervisor.LIVE_TAIL_CHARS
           ? entry.buffer.slice(-Supervisor.LIVE_TAIL_CHARS)
           : entry.buffer;
-      this.agents.updateLogTail(agentId, trimmed);
+      const storyId = this.agentToStory.get(agentId);
+      const logBytes = storyId != null ? (this.logBytes.get(storyId) ?? 0) : 0;
+      this.agents.updateLogTail(agentId, trimmed, logBytes);
       entry.dirty = false;
     }
   }
@@ -2094,9 +2117,24 @@ export class Supervisor {
         },
       });
     }
-    // The final log_tail just landed via updateStatus; clear the live entry so
-    // a subsequent flush doesn't overwrite it with a stale rolling buffer.
+    // Write the durable log_bytes offset at completion. The periodic flushTails
+    // runs on a 1-second cadence so fast workers may complete before it fires;
+    // this write guarantees log_bytes is always persisted at the end of a run.
+    const completionStoryId = this.agentToStory.get(task.agentId);
+    const completionLogBytes =
+      completionStoryId != null ? (this.logBytes.get(completionStoryId) ?? 0) : 0;
+    this.agents.updateLogTail(
+      task.agentId,
+      result.logTail ?? '',
+      completionLogBytes
+    );
+    // Clear the live entry so a subsequent flushTails doesn't overwrite the
+    // just-written final log_tail/log_bytes with a stale rolling buffer.
     this.outputTails.delete(task.agentId);
+    // Release the agentId→storyId mapping; the log_bytes accumulator for the
+    // story is intentionally preserved (a retry continues appending to the same
+    // file, so the cumulative offset must survive past the agent's completion).
+    this.agentToStory.delete(task.agentId);
     // Per-story guidance state: the channel is dead now that the spawn
     // ended, and the offset is meaningless for a future story even if the
     // file lingers on disk. Worker pid was added to childPids on spawn —
