@@ -77,5 +77,27 @@ export interface IntakeEvalReport {
   judgeModel: string;
   axes: AxisReport[];           // exactly one per axis: 'type', then 'size'
   inconclusiveJudgeCount: number;
-  overall: { proceed: boolean; statement: string };
+  overall: {
+    /**
+     * @deprecated Use `gate.decision` as the authoritative go/no-go signal.
+     * This field reflects only the per-axis quality bar (dangerous confusions)
+     * and does not account for minimum scored-case thresholds or failure rates.
+     * It may be `true` even when `gate.decision` is `'inconclusive'`.
+     */
+    proceed: boolean;
+    statement: string;
+  };
+  // Fields below are read by the gate reporter — removing them is a breaking change.
+  failureCounts: {
+    classifier: Record<'llm_error' | 'timeout' | 'invalid_output', number>;
+    /** Total inconclusive judge outcomes, including those caused by classifier failures. */
+    judgeInconclusive: number;
+  };
+  scoredCases: number;          // cases with ok classifier AND conclusive judge
+  gate: {
+    decision: 'proceed' | 'do-not-proceed' | 'inconclusive';
+    statement: string;
+    minScoredCases: number;     // justified threshold; gate fails closed below this count
+    maxFailureRate: number;     // justified threshold; gate fires inconclusive above this rate
+  };
 }
