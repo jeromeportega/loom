@@ -1,12 +1,19 @@
+import path from 'node:path';
 import type { Request, Response } from 'express';
 import type Database from 'better-sqlite3';
-import { EpicStore, AgentStore } from '@loom-ai/core';
+import { EpicStore, AgentStore, WorkerLogStore } from '@loom-ai/core';
 
 /**
  * Server-Sent Events handler for /api/events. Each connection holds its
- * own per-poll snapshot of agent log_tails and emits diffs as new bytes
- * arrive — surfaces live worker stdout to the dashboard without the
- * supervisor and the web server needing to share an in-process event bus.
+ * own per-poll snapshot of agent log offsets and emits incremental appends
+ * as new bytes arrive — surfaces live worker stdout to the dashboard without
+ * the supervisor and the web server needing to share an in-process event bus.
+ *
+ * Output events carry `{from, bytes}` keyed to the absolute durable offset
+ * (agents.log_bytes). On connect, `emittedOffset[agentId]` is seeded to the
+ * current log_bytes so only NEW appends are streamed — history is never
+ * replayed over SSE. The client fetches the full log on view-enter/reload
+ * via GET /api/agents/:id/log and anchors its clientOffset to X-Log-Length.
  *
  * Polling cadence is 500ms by default — matches the Supervisor's tail
  * flush of 1s comfortably without thrashing the DB. SQLite WAL mode
@@ -23,12 +30,21 @@ export interface EventStreamOptions {
   db: Database.Database;
   /** Poll interval in ms. Default 500. */
   pollMs?: number;
+  /**
+   * Absolute path to the loom state directory (the `.loom` dir).
+   * Used to construct a WorkerLogStore for reading durable log files.
+   * Defaults to `process.cwd()/.loom` when omitted; pass explicitly in
+   * tests to avoid relying on the working directory.
+   */
+  loomdir?: string;
 }
 
 export function eventStreamHandler(opts: EventStreamOptions) {
   const epicStore = new EpicStore(opts.db);
   const agentStore = new AgentStore(opts.db);
   const pollMs = opts.pollMs ?? 500;
+  const loomdir = opts.loomdir ?? path.join(process.cwd(), '.loom');
+  const workerLogs = new WorkerLogStore(loomdir);
 
   return (req: Request, res: Response): void => {
     // SSE headers. `X-Accel-Buffering: no` defeats nginx/express's default
@@ -52,7 +68,9 @@ export function eventStreamHandler(opts: EventStreamOptions) {
       paused_at: string | null;
     }>();
     const agentSnapshots = new Map<string, { status: string; pr_url: string | null; updated_at: string }>();
-    const tailSnapshots = new Map<string, string>();
+    // Durable byte offsets per agent — seeded to log_bytes on first encounter
+    // so we never replay history. Advances as new bytes are emitted.
+    const emittedOffsets = new Map<string, number>();
     const planningTailSnapshots = new Map<string, string>();
 
     let closed = false;
@@ -125,10 +143,12 @@ export function eventStreamHandler(opts: EventStreamOptions) {
           }
         }
 
-        // ─── Agent + log_tail diffs ──────────────────────────────────────
-        // Read each epic's agents in turn; emit on any change. The log_tail
-        // diff (new bytes since last poll) becomes an 'output' event so
-        // the UI can append to a live pane without a full re-render.
+        // ─── Agent status diffs + offset-keyed log appends ──────────────
+        // Read each epic's agents in turn; emit agent-status on any change.
+        // Log output is streamed as absolute-offset events: the server seeds
+        // emittedOffset[id] to log_bytes on first encounter and emits only
+        // new bytes on subsequent ticks. The client fetches the full log on
+        // view-enter and tracks its own clientOffset for gap-detection.
         for (const epic of epics) {
           for (const a of agentStore.listByEpic(epic.id)) {
             const prev = agentSnapshots.get(a.id);
@@ -160,26 +180,33 @@ export function eventStreamHandler(opts: EventStreamOptions) {
               });
             }
 
-            const prevTail = tailSnapshots.get(a.id) ?? '';
-            const tail = a.log_tail ?? '';
-            if (tail.length > prevTail.length && tail.startsWith(prevTail)) {
-              // Simple suffix — the supervisor appends to log_tail.
-              const chunk = tail.slice(prevTail.length);
-              emit(res, 'output', { agent_id: a.id, story_id: a.story_id, chunk });
-              tailSnapshots.set(a.id, tail);
-            } else if (tail !== prevTail) {
-              // Truncation or replacement (final log_tail overwrites the
-              // rolling buffer on completion). Emit the whole new tail.
-              emit(res, 'output', { agent_id: a.id, story_id: a.story_id, chunk: tail });
-              tailSnapshots.set(a.id, tail);
+            const logBytes = a.log_bytes ?? 0;
+            if (!emittedOffsets.has(a.id)) {
+              // Seed on first encounter — never replay history over SSE.
+              emittedOffsets.set(a.id, logBytes);
+            } else {
+              const from = emittedOffsets.get(a.id)!;
+              if (logBytes > from) {
+                const newBuf = workerLogs.read(a.story_id, from, logBytes);
+                if (newBuf.length > 0) {
+                  emit(res, 'output', {
+                    agent_id: a.id,
+                    story_id: a.story_id,
+                    from,
+                    bytes: newBuf.toString('utf8'),
+                  });
+                  emittedOffsets.set(a.id, logBytes);
+                }
+              }
             }
           }
         }
+
         // ─── Planning log tail diffs ─────────────────────────────────────
         // Diff epic.planning_log_tail per poll and emit 'planning-output'
         // events when new bytes arrive. Uses the same startsWith()/slice()
-        // logic as agents.log_tail — keyed strictly to epic_id so it works
-        // for planning epics that have no stories yet (AC4).
+        // logic as before — keyed strictly to epic_id so it works for
+        // planning epics that have no stories yet (AC4).
         for (const epic of epics) {
           const tail = epic.planning_log_tail ?? '';
           if (!tail) continue;

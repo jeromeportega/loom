@@ -541,7 +541,11 @@ export function createApp(opts: CreateAppOptions): Express {
   // Epic / agent status changes + appended log_tail bytes flow here. The
   // browser opens an EventSource; the server polls the DB every ~500ms and
   // emits diffs. Heartbeat every 15s.
-  app.get('/api/events', eventStreamHandler({ db: opts.db, pollMs: opts.ssePollMs }));
+  app.get('/api/events', eventStreamHandler({
+    db: opts.db,
+    pollMs: opts.ssePollMs,
+    loomdir: path.join(currentProjectRoot, '.loom'),
+  }));
 
   // ─── Static frontend (built React) ───────────────────────────────────────
   if (opts.staticDir) {
