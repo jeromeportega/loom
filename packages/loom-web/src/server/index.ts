@@ -14,6 +14,7 @@ import {
   openDatabase,
   createDatabase,
   deriveBlocked,
+  type IntakeVerdict,
 } from '@loom-ai/core';
 import type {
   EpicStatus,
@@ -211,6 +212,7 @@ export function createApp(opts: CreateAppOptions): Express {
         project_root: scopedRoot,
         is_current_project: scopedRoot === currentProjectRoot,
         archived: epic.archived_at != null,
+        intake_verdict: scopedEpics.getIntakeVerdict(epic.id),
       };
       res.json(detail);
     } finally {
@@ -572,6 +574,7 @@ function rollupEpics(
   includeArchived = false
 ): EpicStatus[] {
   const epics = epicStore.list({ includeArchived });
+  const verdicts = epicStore.getIntakeVerdicts(epics.map((e) => e.id));
   return epics.map((epic) => ({
     id: epic.id,
     title: epic.title,
@@ -586,6 +589,7 @@ function rollupEpics(
     is_current_project: isCurrent,
     archived: epic.archived_at != null,
     ...(deriveBlocked(epic) ?? {}),
+    intake_verdict: verdicts.get(epic.id) ?? null,
   }));
 }
 
