@@ -323,7 +323,9 @@ export class ClaudeCliClient implements LLMClient {
   }
 }
 
-// --tools "" confirmed against claude --help; single source of truth so downstream tests import this rather than guessing.
+// Confirmed against `claude --help`: "--tools: Use \"\" to disable all tools, \"default\" to use all tools,
+// or specify tool names (e.g. \"Bash,Edit,Read\")." Single source of truth — downstream tests import this
+// constant rather than hard-coding a flag spelling so a CLI rename fails loudly.
 export const NON_AGENTIC_TOOLS_DISABLE_ARGS: readonly string[] = ['--tools', ''];
 
 // Buffered argv (--output-format json); nonAgentic defined → --system-prompt + tools-disable, else --append-system-prompt.
@@ -346,7 +348,10 @@ export function buildBufferedArgs(
   return args;
 }
 
-// Streaming argv (stream-json); --verbose required or claude exits 1. nonAgentic defined → --system-prompt + tools-disable, else --append-system-prompt.
+// Streaming argv (stream-json). --verbose is load-bearing: the real `claude` binary exits 1 with
+// "When using --print, --output-format=stream-json requires --verbose" if it is absent; mocked tests
+// don't catch this — the 'buildStreamingArgs flag contract' test suite pins it as a regression guard.
+// nonAgentic defined → --system-prompt + tools-disable, else --append-system-prompt.
 export function buildStreamingArgs(
   model: string,
   systemText: string,

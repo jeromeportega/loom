@@ -384,6 +384,8 @@ describe('CursorCliClient cursor untouched (FR-9)', () => {
     argsFile = join(dir, 'captured.txt');
     // Fake cursor-agent: write argv (one token per line) to argsFile, drain
     // stdin, emit valid JSON that parseCursorJson accepts, exit 0.
+    // parseCursorJson accepts {"result":"ok"} — it probes keys in order:
+    // ['result','text','response','content','message'] and uses the first string value.
     const script = [
       '#!/bin/sh',
       `printf '%s\\n' "$@" > ${JSON.stringify(argsFile)}`,
