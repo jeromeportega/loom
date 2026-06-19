@@ -5,10 +5,17 @@ import type {
   IntakeEvalReport,
   AxisReport,
   ConfusionMatrix,
+  GateDecision,
 } from './intakeEvalTypes.js';
 
 const TYPE_LABELS: ReadonlyArray<string> = ['feature', 'bug', 'chore'];
 const SIZE_LABELS: ReadonlyArray<string> = ['story', 'epic'];
+
+const THRESHOLDS = {
+  minScoredCases: 18,
+  maxClassifierFailureRate: 0.10,
+  maxJudgeInconclusiveRate: 0.10,
+} as const;
 
 function buildConfusionMatrix(
   records: IntakeRunRecord[],
@@ -132,6 +139,64 @@ function buildAxisReport(records: IntakeRunRecord[], axis: 'type' | 'size'): Axi
   return { axis, accuracy, confusion, judgeVsClassifier, judgeVsHuman, disagreements, dangerousConfusions, verdict };
 }
 
+/**
+ * Pure gate function: decides the tri-state outcome given a completed (minus overall) report.
+ * PROCEED is unreachable unless scored ≥ minScoredCases. The decision order is:
+ *   1. scored < minScoredCases           → INCONCLUSIVE
+ *   2. classifierFailureRate > threshold  → DO_NOT_PROCEED
+ *   3. judgeInconclusiveRate > threshold  → INCONCLUSIVE
+ *   4. any axis fails to clear bar        → DO_NOT_PROCEED
+ *   5. else                               → PROCEED
+ */
+export function decideGate(
+  report: Omit<IntakeEvalReport, 'overall'>,
+): { decision: GateDecision; statement: string } {
+  const { failureCounts, thresholds, inconclusiveJudgeCount, axes } = report;
+  const { scored, total, timeout, invalid_output, llm_error } = failureCounts;
+  const { minScoredCases, maxClassifierFailureRate, maxJudgeInconclusiveRate } = thresholds;
+
+  const failureSummary = `timeout=${timeout}, invalid_output=${invalid_output}, llm_error=${llm_error}`;
+
+  if (scored < minScoredCases) {
+    return {
+      decision: 'INCONCLUSIVE',
+      statement: `INCONCLUSIVE: only ${scored} of ${total} case(s) scored (minimum ${minScoredCases} required). Failure breakdown: ${failureSummary}.`,
+    };
+  }
+
+  const classifierFailureRate = total > 0 ? (total - scored) / total : 0;
+  if (classifierFailureRate > maxClassifierFailureRate) {
+    const failedCount = total - scored;
+    return {
+      decision: 'DO_NOT_PROCEED',
+      statement: `DO NOT PROCEED: classifier failure rate ${(classifierFailureRate * 100).toFixed(1)}% exceeds ${(maxClassifierFailureRate * 100).toFixed(1)}% threshold (${failedCount} of ${total} cases failed). Failure breakdown: ${failureSummary}.`,
+    };
+  }
+
+  const judgeInconclusiveRate = total > 0 ? inconclusiveJudgeCount / total : 0;
+  if (judgeInconclusiveRate > maxJudgeInconclusiveRate) {
+    return {
+      decision: 'INCONCLUSIVE',
+      statement: `INCONCLUSIVE: judge inconclusive rate ${(judgeInconclusiveRate * 100).toFixed(1)}% exceeds ${(maxJudgeInconclusiveRate * 100).toFixed(1)}% threshold (${inconclusiveJudgeCount} of ${total} cases inconclusive).`,
+    };
+  }
+
+  const typeAxis = axes.find(a => a.axis === 'type')!;
+  const sizeAxis = axes.find(a => a.axis === 'size')!;
+  if (!typeAxis.verdict.clearsBar || !sizeAxis.verdict.clearsBar) {
+    const epicsUnderSized = sizeAxis.dangerousConfusions.find(d => d.from === 'epic' && d.to === 'story')?.count ?? 0;
+    return {
+      decision: 'DO_NOT_PROCEED',
+      statement: `DO NOT PROCEED: ${epicsUnderSized} epic→story under-sizing confusion(s) detected across ${scored} scored cases.`,
+    };
+  }
+
+  return {
+    decision: 'PROCEED',
+    statement: `PROCEED: classifier clears Phase 1 bar — 0 dangerous confusions on both axes across ${scored} scored cases.`,
+  };
+}
+
 export interface ScoreIntakeEvalMeta {
   classifierModel?: string;
   judgeModel?: string;
@@ -143,21 +208,30 @@ export function scoreIntakeEval(
 ): IntakeEvalReport {
   const inconclusiveJudgeCount = records.filter(r => r.judge.status === 'inconclusive').length;
 
+  const failureCounts = {
+    timeout:        records.filter(r => !r.classifier.ok && r.classifier.reason === 'timeout').length,
+    invalid_output: records.filter(r => !r.classifier.ok && r.classifier.reason === 'invalid_output').length,
+    llm_error:      records.filter(r => !r.classifier.ok && r.classifier.reason === 'llm_error').length,
+    scored:         records.filter(r => r.classifier.ok).length,
+    total:          records.length,
+  };
+
+  const thresholds = { ...THRESHOLDS };
+
   const typeAxis = buildAxisReport(records, 'type');
   const sizeAxis = buildAxisReport(records, 'size');
 
-  const proceed = typeAxis.verdict.clearsBar && sizeAxis.verdict.clearsBar;
-  const epicsUnderSized = sizeAxis.dangerousConfusions.find(d => d.from === 'epic' && d.to === 'story')?.count ?? 0;
-  const overallStatement = proceed
-    ? `Classifier clears Phase 1 bar: 0 dangerous confusions on both axes across ${records.length} cases.`
-    : `Classifier does NOT clear Phase 1 bar: ${epicsUnderSized} epic→story under-sizing confusion(s) detected across ${records.length} cases.`;
-
-  return {
+  const partialReport: Omit<IntakeEvalReport, 'overall'> = {
     generatedFromCases: records.length,
     classifierModel: meta.classifierModel ?? 'unknown',
     judgeModel: meta.judgeModel ?? 'unknown',
     axes: [typeAxis, sizeAxis],
     inconclusiveJudgeCount,
-    overall: { proceed, statement: overallStatement },
+    failureCounts,
+    thresholds,
   };
+
+  const overall = decideGate(partialReport);
+
+  return { ...partialReport, overall };
 }

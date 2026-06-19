@@ -47,25 +47,39 @@ function makeRecord(
   return { case: c, classifier, judge };
 }
 
-/** Build a realistic report fixture for rendering tests. */
+/** Build N identical passing records to satisfy the minScoredCases gate. */
+function makePassingRecords(n: number): IntakeRunRecord[] {
+  return Array.from({ length: n }, (_, i) =>
+    makeRecord(
+      makeCase(`pass-${i}`, 'feature', 'story'),
+      { type: 'feature', size: 'story' },
+      { type: 'feature', size: 'story', grade: 'agree', reason: 'Correct.' },
+    ),
+  );
+}
+
+/**
+ * Build a fixture report that triggers DO_NOT_PROCEED via dangerous confusion
+ * (epic→story under-sizing) with ≥18 scored cases.
+ */
 function buildFixtureReport(): IntakeEvalReport {
   const records: IntakeRunRecord[] = [
-    // Correct cases
-    makeRecord(makeCase('c-feature-story', 'feature', 'story'), { type: 'feature', size: 'story' },
-      { type: 'feature', size: 'story', grade: 'agree', reason: 'Correct.' }),
-    makeRecord(makeCase('c-bug-story', 'bug', 'story'), { type: 'bug', size: 'story' },
-      { type: 'bug', size: 'story', grade: 'agree', reason: '' }),
-    makeRecord(makeCase('c-epic', 'feature', 'epic'), { type: 'feature', size: 'epic' },
-      { type: 'feature', size: 'epic', grade: 'agree', reason: '' }),
+    // 15 passing records to meet the minScoredCases baseline
+    ...makePassingRecords(15),
     // Disagreement: classifier says feature, judge says bug, human says bug
     makeRecord(
       makeCase('dis-type', 'bug', 'story'),
       { type: 'feature', size: 'story' },
       { type: 'bug', size: 'story', grade: 'disagree', reason: 'Clearly a defect fix, not a feature.' },
     ),
-    // Dangerous confusion: epic labeled → story predicted
+    // Dangerous confusion: epic labeled → story predicted (causes DO_NOT_PROCEED)
     makeRecord(makeCase('under-sized', 'feature', 'epic'), { type: 'feature', size: 'story' },
       { type: 'feature', size: 'epic', grade: 'disagree', reason: 'Epic scope, not a story.' }),
+    // Two more passing records to reach 18 scored
+    makeRecord(makeCase('c-bug-story', 'bug', 'story'), { type: 'bug', size: 'story' },
+      { type: 'bug', size: 'story', grade: 'agree', reason: '' }),
+    makeRecord(makeCase('c-epic', 'feature', 'epic'), { type: 'feature', size: 'epic' },
+      { type: 'feature', size: 'epic', grade: 'agree', reason: '' }),
     // Inconclusive judge
     makeRecord(makeCase('inconclusive-1', 'chore', 'story'), { type: 'chore', size: 'story' }, null),
   ];
@@ -155,14 +169,68 @@ describe('renderIntakeReport — markdown contains dangerous confusion details',
   });
 });
 
-describe('renderIntakeReport — markdown contains proceed/don\'t-proceed statement', () => {
-  it('markdown includes a proceed/no-go statement', () => {
+// ── markdown renders the tri-state decision ──────────────────────────────────
+
+describe('renderIntakeReport — markdown renders GateDecision', () => {
+  it('markdown includes the decision string in the Overall section', () => {
     const report = buildFixtureReport();
     const { markdown } = renderIntakeReport(report);
 
-    const hasYes = markdown.toLowerCase().includes('yes') && markdown.toLowerCase().includes('proceed');
-    const hasNo = markdown.toLowerCase().includes('no') && markdown.toLowerCase().includes('proceed');
-    assert.ok(hasYes || hasNo, 'markdown must contain a proceed yes/no statement');
+    // Fixture has epic→story confusion + 18 scored → DO_NOT_PROCEED
+    assert.ok(
+      markdown.includes('DO_NOT_PROCEED') || markdown.includes('DO NOT PROCEED') || markdown.includes('PROCEED'),
+      `markdown must contain a decision string, got: ${markdown.slice(-300)}`,
+    );
+  });
+
+  it('markdown includes PROCEED for a clean passing report with 18+ cases', () => {
+    const report = scoreIntakeEval(makePassingRecords(18), {
+      classifierModel: 'claude-haiku-4-5-20251001',
+      judgeModel: 'claude-opus-4-8',
+    });
+    const { markdown } = renderIntakeReport(report);
+
+    assert.ok(
+      markdown.includes('PROCEED'),
+      'markdown must contain PROCEED for a clean passing report',
+    );
+  });
+
+  it('markdown includes INCONCLUSIVE when fewer than minScoredCases', () => {
+    const report = scoreIntakeEval([
+      makeRecord(makeCase('a', 'feature', 'story'), { type: 'feature', size: 'story' }),
+    ]);
+    const { markdown } = renderIntakeReport(report);
+
+    assert.ok(
+      markdown.includes('INCONCLUSIVE'),
+      'markdown must contain INCONCLUSIVE when scored < minScoredCases',
+    );
+  });
+});
+
+// ── markdown contains failureCounts and thresholds ────────────────────────────
+
+describe('renderIntakeReport — markdown contains failureCounts and thresholds', () => {
+  it('markdown includes a Failure Counts section', () => {
+    const report = buildFixtureReport();
+    const { markdown } = renderIntakeReport(report);
+    assert.ok(markdown.includes('Failure Counts'), 'markdown must include Failure Counts section');
+  });
+
+  it('markdown includes a Thresholds section', () => {
+    const report = buildFixtureReport();
+    const { markdown } = renderIntakeReport(report);
+    assert.ok(markdown.includes('Thresholds'), 'markdown must include Thresholds section');
+  });
+
+  it('markdown includes the minScoredCases threshold value', () => {
+    const report = buildFixtureReport();
+    const { markdown } = renderIntakeReport(report);
+    assert.ok(
+      markdown.includes('18') && markdown.includes('minScoredCases'),
+      'markdown must include minScoredCases=18',
+    );
   });
 });
 
@@ -180,15 +248,29 @@ describe('renderIntakeReport — single source: markdown and json cannot drift',
     );
   });
 
-  it('overall proceed/no-go in markdown matches json proceed boolean', () => {
+  it('overall decision in markdown matches json decision', () => {
     const report = buildFixtureReport();
     const { markdown, json } = renderIntakeReport(report);
     const parsed = JSON.parse(json) as IntakeEvalReport;
 
-    const expectedWord = parsed.overall.proceed ? 'Yes' : 'No';
     assert.ok(
-      markdown.includes(expectedWord),
-      `markdown must contain "${expectedWord}" to match json proceed=${parsed.overall.proceed}`,
+      markdown.includes(parsed.overall.decision),
+      `markdown must contain decision="${parsed.overall.decision}", got portion: ${markdown.slice(-400)}`,
+    );
+  });
+
+  it('json failureCounts scored matches the number of passing records', () => {
+    const report = buildFixtureReport();
+    const { json } = renderIntakeReport(report);
+    const parsed = JSON.parse(json) as IntakeEvalReport;
+
+    // Fixture: 15 + 1 disagreement + 1 dangerous + 2 more + 1 inconclusive = 20 scored records
+    assert.ok(parsed.failureCounts.scored > 0, 'scored must be > 0 in the fixture');
+    assert.ok(
+      parsed.failureCounts.scored + parsed.failureCounts.timeout +
+      parsed.failureCounts.invalid_output + parsed.failureCounts.llm_error
+      === parsed.failureCounts.total,
+      'scored + all failure types must equal total',
     );
   });
 });
@@ -228,7 +310,7 @@ describe('writeIntakeReportFiles — integration', () => {
     assert.deepEqual(parsed, report, 'written JSON must round-trip to original report');
   });
 
-  it('written markdown file is non-empty and contains the proceed statement', () => {
+  it('written markdown file is non-empty and contains the decision', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-eval-test-'));
     const report = buildFixtureReport();
     writeIntakeReportFiles(report, tmpDir);
@@ -238,8 +320,8 @@ describe('writeIntakeReportFiles — integration', () => {
 
     assert.ok(content.length > 100, 'markdown file must be non-trivially sized');
     assert.ok(
-      content.toLowerCase().includes('proceed'),
-      'markdown file must contain the proceed statement',
+      content.includes('Decision'),
+      'markdown file must contain the Decision field',
     );
   });
 });

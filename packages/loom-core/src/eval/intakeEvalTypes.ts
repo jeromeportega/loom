@@ -71,11 +71,15 @@ export interface AxisReport {
   verdict: { clearsBar: boolean; statement: string };
 }
 
+export type GateDecision = 'PROCEED' | 'DO_NOT_PROCEED' | 'INCONCLUSIVE';
+
 export interface IntakeEvalReport {
   generatedFromCases: number;
   classifierModel: string;
   judgeModel: string;
   axes: AxisReport[];           // exactly one per axis: 'type', then 'size'
   inconclusiveJudgeCount: number;
-  overall: { proceed: boolean; statement: string };
+  failureCounts: { timeout: number; invalid_output: number; llm_error: number; scored: number; total: number };
+  thresholds: { minScoredCases: number; maxClassifierFailureRate: number; maxJudgeInconclusiveRate: number };
+  overall: { decision: GateDecision; statement: string };
 }
