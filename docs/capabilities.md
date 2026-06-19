@@ -33,6 +33,7 @@ One interface over the engine:
 | Capability | How to use | Notes |
 |---|---|---|
 | **Plan an epic from a brief** | `loom epic "<brief>"` | Three personas in sequence: Mary (Analyst) → John (PM) → Winston (Architect). Writes brief, PRD, architecture, epic.yaml to `epics/<id>/`. **Always runs the brief-quality gate first** — the bundled `loom-brief-builder` rubric scores the brief and refuses anything below `policy.agents.min_brief_quality_score` (default 6/10), returning the critique so you can tighten the prompt. Pass `--force` to override the gate for that one invocation — the refiner still runs and its critique is audit-logged (`brief_gate_forced`) before planning. The override is a per-invocation escape hatch, not a disable switch; only the threshold is tunable per repo. |
+| **Plan via the weave intake path (Phase 0)** | `loom weave "<brief>"` | Same brief-quality gate, same Analyst → PM → Architect planner, and the same execution path as `loom epic`. In Phase 0 the two commands produce an identical epic; `loom epic` is unchanged. The intake-classification layer (observe-only verdict: feature / bug / chore + size + confidence) is a future phase — the verdict column is reserved but not yet populated. |
 | **Read the produced artifacts** | `loom artifacts <epic-id>` | Returns brief / PRD / architecture / epic YAML bodies. Web UI renders them inline above the Approve button for `planned` epics. |
 | **Approve a plan** | `loom approve <epic-id> [--run]` | Releases the epic for execution. Approve on its own does **not** dispatch workers — it flips the epic to `approved` and prints `Next: run loom run <epic-id> to dispatch`. Pass the opt-in `--run` flag (explicit epic id required) to chain straight into the same `loom run` dispatch path after approving; bare `loom approve --run` with no id is a usage error. |
 | **Reject a plan** | `loom reject <epic-id> --reason "..."` | Optional reason is audit-logged. |
@@ -307,6 +308,7 @@ truth.
 `loom traces`
 `loom unarchive`
 `loom web`
+`loom weave`
 <!-- coverage:command:end -->
 
 <!-- coverage:knob:start -->
