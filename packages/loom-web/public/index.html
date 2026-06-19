@@ -701,30 +701,44 @@
         // trigger a rebuild — we already do a rebuild below.
         lastEpoch = null;
 
-        // Only visible agents (those with a rendered log pane) are fetched and
-        // rebuilt. Workers not in the current epic view are not touched.
-        var visibleAgentIds = (body && body.agents ? body.agents : []).map(function(a) { return a.id; });
-
         // Fetch the full log for one agent and update its pane + clientOffset.
         async function rebuildAgent(agentId) {
-          var pane = document.getElementById('log-' + agentId);
+          const pane = document.getElementById('log-' + agentId);
           if (!pane) return;
           try {
-            var r = await api('/api/agents/' + encodeURIComponent(agentId) + '/log');
-            if (!r.ok) return;
-            var text = await r.text();
-            var xLen = r.headers.get('x-log-length');
+            const r = await api('/api/agents/' + encodeURIComponent(agentId) + '/log');
+            if (!r.ok) {
+              // Seed a fallback so SSE output events are not silently dropped
+              // while this agent's pane stays dark; gap-detection will trigger
+              // a re-anchor on the next output event with from > 0.
+              clientOffsets.set(agentId, clientOffsets.get(agentId) ?? 0);
+              return;
+            }
+            const text = await r.text();
+            const xLen = r.headers.get('x-log-length');
+            // Capture atBottom before replacing content so the threshold is
+            // measured against the old scroll height, not the new one.
+            const atBottom = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 24;
             pane.textContent = text;
-            clientOffsets.set(agentId, xLen ? parseInt(xLen, 10) : 0);
-            var atBottom = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 24;
+            // Fall back to TextEncoder byte length when X-Log-Length is absent so
+            // the next SSE output event is not treated as a gap, which would
+            // trigger an infinite rebuild loop.
+            clientOffsets.set(agentId, xLen ? parseInt(xLen, 10) : new TextEncoder().encode(text).byteLength);
             if (atBottom) pane.scrollTop = pane.scrollHeight;
-          } catch {}
+          } catch (err) {
+            // Ensure clientOffset stays seeded after a network error so subsequent
+            // SSE output events are not silently dropped (undefined → skip path).
+            clientOffsets.set(agentId, clientOffsets.get(agentId) ?? 0);
+          }
         }
 
         // Rebuild all visible panes from the full-log read path. Called on
         // view-enter/reload and when the server-restart epoch signal fires.
+        // Derives the visible set from the DOM at call time so agents added
+        // after the stream was opened are included in server-restart rebuilds.
         async function rebuildAllVisible() {
-          await Promise.all(visibleAgentIds.map(rebuildAgent));
+          const ids = [...document.querySelectorAll('[id^="log-"]')].map(function(el) { return el.id.slice(4); });
+          await Promise.all(ids.map(rebuildAgent));
         }
 
         // Authoritative rebuild on view-enter / reload.
@@ -737,7 +751,7 @@
         // Force a full rebuild so the client re-anchors to the persisted log.
         eventSource.addEventListener('hello', (ev) => {
           try {
-            var d = JSON.parse(ev.data);
+            const d = JSON.parse(ev.data);
             if (lastEpoch !== null && d.epoch !== lastEpoch) {
               rebuildAllVisible();
             }
@@ -751,12 +765,16 @@
         //   • detect gaps when from > clientOffset (trigger full refetch)
         eventSource.addEventListener('output', (ev) => {
           try {
-            var d = JSON.parse(ev.data);
-            var agentId = d.agent_id;
-            var from = d.from;
-            var bytes = d.bytes;
-            var byteLength = d.byteLength;
-            var clientOffset = clientOffsets.get(agentId);
+            const d = JSON.parse(ev.data);
+            const agentId = d.agent_id;
+            const from = d.from;
+            const bytes = d.bytes;
+            const byteLength = d.byteLength;
+            // Guard against malformed events where byteLength is absent; without
+            // this, `from + undefined` yields NaN which permanently corrupts the
+            // stored offset for this agent.
+            if (typeof byteLength !== 'number') return;
+            const clientOffset = clientOffsets.get(agentId);
             if (clientOffset === undefined) {
               // Rebuild in progress for this pane — skip until seeded.
               return;
@@ -769,16 +787,16 @@
               rebuildAgent(agentId);
               return;
             }
-            var overlap = clientOffset - from;
+            const overlap = clientOffset - from;
             // byte-accurate slice: `from`/`clientOffset` are UTF-8 byte offsets.
             // bytes.slice(overlap) would slice by JS char index which diverges for
             // multi-byte characters; TextEncoder/TextDecoder are available everywhere.
-            var encodedBytes = new TextEncoder().encode(bytes);
-            var newContent = new TextDecoder().decode(encodedBytes.subarray(overlap));
-            var pane = document.getElementById('log-' + agentId);
+            const encodedBytes = new TextEncoder().encode(bytes);
+            const newContent = new TextDecoder().decode(encodedBytes.subarray(overlap));
+            const pane = document.getElementById('log-' + agentId);
             if (newContent && pane) {
+              const atBottom = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 24;
               pane.textContent += newContent;
-              var atBottom = pane.scrollHeight - pane.clientHeight - pane.scrollTop < 24;
               if (atBottom) pane.scrollTop = pane.scrollHeight;
             }
             // Clamp: never regress clientOffset when a stale/buffered event

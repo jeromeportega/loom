@@ -199,8 +199,8 @@ export function eventStreamHandler(opts: EventStreamOptions) {
                     });
                     emittedOffsets.set(a.id, logBytes);
                   }
-                } catch {
-                  // log file temporarily unavailable; retry next tick
+                } catch (err) {
+                  console.error('[events] failed to read log for', a.story_id, err instanceof Error ? err.message : err);
                 }
               }
             }

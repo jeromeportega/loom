@@ -33,7 +33,9 @@ export function reconcileOutput(
   // byte-accurate slice: `from`/`clientOffset` are UTF-8 byte offsets, so we
   // must slice by byte position, not JS character index, which diverges for
   // any multi-byte character (e.g. '…' is 1 JS char but 3 UTF-8 bytes).
-  const append = Buffer.from(bytes, 'utf8').subarray(overlapBytes).toString('utf8');
+  // TextEncoder/TextDecoder are used instead of Buffer so this function is
+  // environment-agnostic (works in both Node.js tests and the browser).
+  const append = new TextDecoder().decode(new TextEncoder().encode(bytes).subarray(overlapBytes));
   // Clamp: when from + byteLength < clientOffset the event covers only
   // already-displayed bytes; returning a regressed newOffset would cause the
   // caller to treat the next SSE event as a gap and trigger a spurious refetch.

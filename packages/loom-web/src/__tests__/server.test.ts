@@ -1129,12 +1129,14 @@ describe('loom-web — SSE planning-output events (story-017-002)', () => {
 
     // Seed tick for this agent runs at offset 0; after that, writing a log
     // file and advancing log_bytes triggers the output event.
+    // 100ms gives the SSE connections time to establish and run their seed
+    // tick before the log write, avoiding a race on slow CI machines.
     setTimeout(() => {
       const content = 'worker running\n';
       const logBytes = Buffer.byteLength(content, 'utf8');
       fs.writeFileSync(path.join(loomdir, 'logs', `${a.story_id}.log`), content, 'utf8');
       agents.updateLogTail(a.id, content, logBytes);
-    }, 30);
+    }, 100);
     const [planningEv, workerEv] = await Promise.all([
       fetch(`${baseUrl}/api/events?token=test-token-123`).then((r) =>
         readUntilEvent(r.body!, isPlanningOutput('epic-001'))
