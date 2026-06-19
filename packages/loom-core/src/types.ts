@@ -491,6 +491,11 @@ export const PolicySchema = z.object({
       // epic shared-client run shipped unreviewed because of this). Default
       // 10 keeps prior behavior; raise it for repos with sizable diffs.
       review_timeout_minutes: z.number().int().min(1).max(60).default(10),
+      // Wall-clock budget for the intake classifier call (`classifyIntake`).
+      // Raised from the old 20s cap to accommodate the session-subprocess
+      // backend's real ~100s latency. The call is best-effort and off the
+      // critical path — a hung call burns up to this budget before failing.
+      intake_timeout_ms: z.number().int().min(1000).default(120_000),
       // Brief-quality gate. Every `loom epic` and `loom_start_epic` runs
       // the BriefRefiner before the planner and refuses briefs whose
       // quality_score is below this threshold, returning the critique so
