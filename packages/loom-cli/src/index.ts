@@ -32,6 +32,7 @@ import { runAutonomy, spec as autonomySpec } from './commands/autonomy.js';
 import { runProjects, spec as projectsSpec } from './commands/projects.js';
 import { runPullGuidance, spec as pullGuidanceSpec } from './commands/pullGuidance.js';
 import { runProject, spec as projectSpec } from './commands/project.js';
+import { runWeave, spec as weaveSpec } from './commands/weave.js';
 import { applySpec } from './describe/applySpec.js';
 import { registerDescribe } from './commands/describe.js';
 import { handleTopLevelError } from './errorHandling.js';
@@ -134,6 +135,12 @@ export function buildProgram(): Command {
   applySpec(program.command('epic'), epicSpec)
     .action(async (brief: string, opts: { force?: boolean; verbose?: boolean }) => {
       await runEpic(brief, { force: opts.force, verbose: opts.verbose });
+    });
+
+  // ─── loom weave ─────────────────────────────────────────────────────────────
+  applySpec(program.command('weave'), weaveSpec)
+    .action(async (brief: string, opts: { force?: boolean; verbose?: boolean }) => {
+      await runWeave(brief, { force: opts.force, verbose: opts.verbose });
     });
 
   // ─── loom approve / reject (human gate) ─────────────────────────────────────

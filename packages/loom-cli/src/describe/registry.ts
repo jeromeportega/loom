@@ -29,6 +29,7 @@ import { spec as webSpec } from '../commands/web.js';
 import { spec as describeSpec } from '../commands/describeSpec.js';
 import { spec as releaseSpec } from '../commands/release.js';
 import { spec as publishSpec } from '../commands/publish.js';
+import { spec as weaveSpec } from '../commands/weave.js';
 // <command specs>
 
 /**
@@ -71,6 +72,7 @@ export function collectSpecs(): CommandDescription[] {
     describeSpec,
     releaseSpec,
     publishSpec,
+    weaveSpec,
     // <command specs>
   ];
 }

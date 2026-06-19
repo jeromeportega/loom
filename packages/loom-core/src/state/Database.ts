@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -378,6 +378,11 @@ export function runMigrations(db: Database.Database): void {
   // flushTails alongside log_tail (never backfilled — pre-v22 rows stay NULL).
   if (!agentCols.some((c) => c.name === 'log_bytes')) {
     db.exec('ALTER TABLE agents ADD COLUMN log_bytes INTEGER');
+  }
+
+  // v23: observe-only intake verdict. Additive; never DROP/TRUNCATE; never read by planning.
+  if (!epicCols.some((c) => c.name === 'intake_verdict')) {
+    db.exec('ALTER TABLE epics ADD COLUMN intake_verdict TEXT');
   }
 
   const row = db
