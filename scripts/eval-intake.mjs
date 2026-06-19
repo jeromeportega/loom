@@ -12,28 +12,28 @@ import {
   loadIntakeEvalSet,
   runIntakeEval,
   computeAxisAccuracy,
+  IntakeJudge,
   createLLMClient,
 } from '../packages/loom-core/dist/index.js';
 
 const backend = process.env.LOOM_EVAL_BACKEND ?? 'claude-cli';
 const classifierModel = process.env.LOOM_EVAL_MODEL ?? 'claude-haiku-4-5-20251001';
-const judgeModel = process.env.LOOM_JUDGE_MODEL ?? 'claude-opus-4-8'; // planning_model default; wired by story-021-003
+const judgeModel = process.env.LOOM_JUDGE_MODEL ?? 'claude-opus-4-8'; // planning_model default
 
 const cases = loadIntakeEvalSet();
 console.log(`\nRunning intake eval — ${cases.length} cases, backend: ${backend}.\n`);
 
-// [INJECT:judge] story-021-003 replaces this stub with:
-//   deps.judge = new IntakeJudge({ llm, model: judgeModel });
-const inconclusiveStub = {
-  judge: async () => ({ status: 'inconclusive', detail: 'judge not yet wired (story-021-003)' }),
-};
+const llm = createLLMClient(backend);
 
-const records = await runIntakeEval(cases, {
-  llm: createLLMClient(backend),
+// [INJECT:judge] wired by story-021-003
+const deps = {
+  llm,
   classifierModel,
   judgeModel,
-  judge: inconclusiveStub,
-});
+  judge: new IntakeJudge({ llm, model: judgeModel }),
+};
+
+const records = await runIntakeEval(cases, deps);
 
 // [INJECT:report] story-021-004 adds scoreIntakeEval + renderIntakeReport here.
 

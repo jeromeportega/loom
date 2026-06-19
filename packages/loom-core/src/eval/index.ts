@@ -17,3 +17,4 @@ export * from './intakeEvalTypes.js';
 export { loadIntakeEvalSet } from './loadIntakeEvalSet.js';
 export { runIntakeEval, computeAxisAccuracy } from './runIntakeEval.js';
 export type { RunIntakeEvalDeps } from './runIntakeEval.js';
+export { IntakeJudge, computeJudgeVsHumanAgreement } from './IntakeJudge.js';
