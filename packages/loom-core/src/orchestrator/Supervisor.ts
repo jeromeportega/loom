@@ -350,7 +350,7 @@ export class Supervisor {
   private static exitHookInstalled = false;
 
   /** Max characters retained in a live tail before truncation. */
-  private static readonly LIVE_TAIL_CHARS = 4096;
+  static readonly LIVE_TAIL_CHARS = 4096;
   /** How often the live tails are flushed to the DB. */
   private static readonly TAIL_FLUSH_MS = 1000;
 

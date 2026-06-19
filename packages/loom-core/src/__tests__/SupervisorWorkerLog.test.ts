@@ -133,8 +133,8 @@ describe('Supervisor onOutput — redaction-before-write', () => {
 
 describe('Supervisor — no-overwrite at completion', () => {
   it('file holds 100% of the streamed content after run completes', async () => {
-    // Generate more than LIVE_TAIL_CHARS (4096) of output
-    const TAIL_CHARS = 4096;
+    // Generate more than LIVE_TAIL_CHARS of output
+    const TAIL_CHARS = Supervisor.LIVE_TAIL_CHARS;
     const NUM_CHUNKS = 20;
     const CHUNK_CONTENT = 'x'.repeat(300);
     const allChunks: string[] = Array.from({ length: NUM_CHUNKS }, (_, i) =>

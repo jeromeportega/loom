@@ -14,10 +14,10 @@ import path from 'node:path';
  */
 export class WorkerLogStore {
   private logsDir: string;
-  // Avoids a mkdirSync syscall on every chunk after the first append.
-  private dirReady = false;
-  // Tracks cumulative byte offsets per story to avoid TOCTOU races between
-  // appendFileSync and a subsequent statSync, and to eliminate the extra stat call.
+  // Tracks cumulative byte offsets per story. Seeded from the on-disk file
+  // size on first access so a process restart does not undercount bytes already
+  // written by a prior process. After seeding, maintained in-memory to avoid a
+  // stat syscall per chunk and to prevent TOCTOU races.
   private offsetMap = new Map<string, number>();
 
   constructor(loomdir: string) {
@@ -26,6 +26,9 @@ export class WorkerLogStore {
 
   /** Absolute path to the log file for a story. */
   pathFor(storyId: string): string {
+    if (storyId.includes('/') || storyId.includes('\\') || storyId.startsWith('.')) {
+      throw new Error(`invalid storyId: ${storyId}`);
+    }
     return path.join(this.logsDir, `${storyId}.log`);
   }
 
@@ -33,16 +36,25 @@ export class WorkerLogStore {
    * Appends redacted content to the story's log file.
    * Creates the file (and parent directory) if absent.
    * Returns the new cumulative post-redaction byte length (i.e. file size).
+   *
+   * On first access per story the accumulator is seeded from the on-disk file
+   * size (0 when absent) so restarts after a partial run yield correct offsets.
+   * The mkdirSync is unconditional so the class is resilient to external removal
+   * of the logs directory (recursive: true makes it a no-op when it already exists).
    */
   append(storyId: string, redacted: string): number {
-    if (!this.dirReady) {
-      fs.mkdirSync(this.logsDir, { recursive: true });
-      this.dirReady = true;
+    fs.mkdirSync(this.logsDir, { recursive: true });
+    if (!this.offsetMap.has(storyId)) {
+      try {
+        this.offsetMap.set(storyId, fs.statSync(this.pathFor(storyId)).size);
+      } catch {
+        this.offsetMap.set(storyId, 0);
+      }
     }
     const filePath = this.pathFor(storyId);
     const chunkBytes = Buffer.byteLength(redacted, 'utf8');
     fs.appendFileSync(filePath, redacted, 'utf8');
-    const newOffset = (this.offsetMap.get(storyId) ?? 0) + chunkBytes;
+    const newOffset = this.offsetMap.get(storyId)! + chunkBytes;
     this.offsetMap.set(storyId, newOffset);
     return newOffset;
   }
@@ -60,21 +72,34 @@ export class WorkerLogStore {
    * Returns bytes in the half-open range [fromOffset, upTo).
    * Defaults: fromOffset=0, upTo=file size. Returns an empty Buffer when
    * the file is absent or the range is empty.
+   *
+   * statSync is only called when upTo is not provided (avoids a wasted syscall
+   * and a TOCTOU window on hot-path reads from loom-web where the range is known).
+   * ENOENT on openSync returns an empty Buffer rather than throwing.
    */
   read(storyId: string, fromOffset?: number, upTo?: number): Buffer {
     const filePath = this.pathFor(storyId);
-    let fileSize: number;
-    try {
-      fileSize = fs.statSync(filePath).size;
-    } catch {
-      return Buffer.alloc(0);
-    }
     const from = fromOffset ?? 0;
-    const to = upTo ?? fileSize;
+    let to: number;
+    if (upTo !== undefined) {
+      to = upTo;
+    } else {
+      try {
+        to = fs.statSync(filePath).size;
+      } catch {
+        return Buffer.alloc(0);
+      }
+    }
     if (from >= to) return Buffer.alloc(0);
     const len = to - from;
     const buf = Buffer.alloc(len);
-    const fd = fs.openSync(filePath, 'r');
+    let fd: number;
+    try {
+      fd = fs.openSync(filePath, 'r');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return Buffer.alloc(0);
+      throw e;
+    }
     try {
       const bytesRead = fs.readSync(fd, buf, 0, len, from);
       return buf.subarray(0, bytesRead);

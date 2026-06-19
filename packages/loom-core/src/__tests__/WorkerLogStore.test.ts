@@ -171,6 +171,73 @@ describe('WorkerLogStore — offset accounting', () => {
   });
 });
 
+// ─── restart-seeding: offsetMap seeded from disk on new instance ─────────────
+
+describe('WorkerLogStore — restart seeding', () => {
+  it('new instance picks up pre-existing file bytes so offsets are not undercounted', () => {
+    const firstStore = new WorkerLogStore(loomdir);
+    firstStore.append('story-restart', 'first chunk');
+
+    // Simulate process restart: new WorkerLogStore instance, same loomdir.
+    const secondStore = new WorkerLogStore(loomdir);
+    const n = secondStore.append('story-restart', ' second chunk');
+
+    const expected = Buffer.byteLength('first chunk second chunk', 'utf8');
+    assert.equal(n, expected, 'accumulated offset must include bytes from prior process');
+    assert.equal(n, fs.statSync(secondStore.pathFor('story-restart')).size);
+    assert.equal(
+      fs.readFileSync(secondStore.pathFor('story-restart'), 'utf8'),
+      'first chunk second chunk'
+    );
+  });
+
+  it('logs/ removal and re-creation is handled transparently (dirReady resilience)', () => {
+    store.append('story-dirrem', 'before');
+    // Simulate external removal of the logs directory (e.g. loom reset).
+    fs.rmSync(path.join(loomdir, 'logs'), { recursive: true, force: true });
+    // Next append must not throw — mkdirSync is unconditional.
+    assert.doesNotThrow(() => store.append('story-dirrem2', 'after'));
+    assert.ok(fs.existsSync(path.join(loomdir, 'logs')));
+  });
+});
+
+// ─── read() with explicit upTo — avoids statSync + guards ENOENT ──────────────
+
+describe('WorkerLogStore.read — explicit upTo path', () => {
+  it('skips statSync when upTo is provided (no TOCTOU window)', () => {
+    store.append('story-explict', 'hello world');
+    // Providing upTo=5 should read only "hello" without calling statSync.
+    const buf = store.read('story-explict', 0, 5);
+    assert.equal(buf.toString('utf8'), 'hello');
+  });
+
+  it('returns empty Buffer when file absent and upTo is provided', () => {
+    // No file exists, but upTo is provided: must not throw.
+    const buf = store.read('story-absent-upto', 0, 10);
+    assert.equal(buf.length, 0, 'absent file with explicit upTo must return empty Buffer');
+  });
+});
+
+// ─── pathFor sanitization ────────────────────────────────────────────────────
+
+describe('WorkerLogStore.pathFor — storyId sanitization', () => {
+  it('throws on storyId containing forward slash', () => {
+    assert.throws(() => store.pathFor('../secrets/foo'), /invalid storyId/);
+  });
+
+  it('throws on storyId containing backslash', () => {
+    assert.throws(() => store.pathFor('foo\\bar'), /invalid storyId/);
+  });
+
+  it('throws on storyId starting with dot', () => {
+    assert.throws(() => store.pathFor('.hidden'), /invalid storyId/);
+  });
+
+  it('accepts a normal story id', () => {
+    assert.doesNotThrow(() => store.pathFor('story-019-001'));
+  });
+});
+
 // ─── byteLength ──────────────────────────────────────────────────────────────
 
 describe('WorkerLogStore.byteLength', () => {
