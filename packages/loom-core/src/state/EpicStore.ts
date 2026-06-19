@@ -8,6 +8,10 @@ import type {
 } from '../types.js';
 import { AutonomyLevelSchema } from '../types.js';
 import { LIVE_TAIL_CHARS } from '../planner/constants.js';
+import {
+  IntakeVerdictSchema,
+  type IntakeVerdict,
+} from '../intake/IntakeClassifier.js';
 
 export class EpicStore {
   constructor(private db: Database.Database) {}
@@ -438,5 +442,37 @@ export class EpicStore {
         `UPDATE epics SET planning_log_tail = ?, updated_at = ? WHERE id = ?`
       )
       .run(bounded, new Date().toISOString(), id);
+  }
+
+  // ─── Intake verdict (v23, epic-020 story-020-003) ─────────────────────────
+
+  /**
+   * Persists a validated intake verdict on the epic row as JSON TEXT. Called
+   * only after classifyIntake succeeds — never on failure (NULL is the
+   * canonical "no verdict" state for pre-existing rows and failed runs).
+   */
+  recordIntakeVerdict(id: string, verdict: IntakeVerdict): void {
+    this.db
+      .prepare('UPDATE epics SET intake_verdict = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(verdict), new Date().toISOString(), id);
+  }
+
+  /**
+   * Returns the stored intake verdict for an epic, or null if absent.
+   * Re-validates via zod on read so corrupt/garbage JSON degrades to null
+   * rather than a default or fabricated class.
+   */
+  getIntakeVerdict(id: string): IntakeVerdict | null {
+    const row = this.db
+      .prepare('SELECT intake_verdict FROM epics WHERE id = ?')
+      .get(id) as { intake_verdict: string | null } | undefined;
+    if (!row || row.intake_verdict === null) return null;
+    try {
+      const raw = JSON.parse(row.intake_verdict);
+      const parsed = IntakeVerdictSchema.safeParse(raw);
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
   }
 }

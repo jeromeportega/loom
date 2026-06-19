@@ -77,7 +77,7 @@ describe('DatabaseMigrationV22 — agents.log_bytes (story-019-001)', () => {
     assert.equal(col.type, 'INTEGER', 'agents.log_bytes type must be INTEGER');
   });
 
-  it('[AC2] SCHEMA_VERSION is 22 after migration', () => {
+  it('[AC2] SCHEMA_VERSION is current after migration', () => {
     const db = new Database(':memory:');
     db.pragma('journal_mode = WAL');
     runMigrations(db);
@@ -86,7 +86,6 @@ describe('DatabaseMigrationV22 — agents.log_bytes (story-019-001)', () => {
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
     assert.equal(row.version, SCHEMA_VERSION);
-    assert.equal(row.version, 22);
   });
 
   it('[AC3] migrates a v21 DB with seeded agent rows — no error, version = 22', () => {
@@ -107,7 +106,7 @@ describe('DatabaseMigrationV22 — agents.log_bytes (story-019-001)', () => {
     const ver = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as {
       version: number;
     };
-    assert.equal(ver.version, 22, 'schema_version must be bumped to 22');
+    assert.equal(ver.version, SCHEMA_VERSION, `schema_version must be bumped to ${SCHEMA_VERSION}`);
   });
 
   it('[AC4] pre-existing agent rows read back log_bytes = NULL with no error', () => {
