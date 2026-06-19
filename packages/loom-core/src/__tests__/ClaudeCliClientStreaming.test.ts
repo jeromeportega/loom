@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { flattenMessages, extractApiErrorStatus, parseClaudeJson, ClaudeCliClient } from '../llm/ClaudeCliClient.js';
+import { flattenMessages, extractApiErrorStatus, parseClaudeJson, buildStreamingArgs, ClaudeCliClient } from '../llm/ClaudeCliClient.js';
 import type { LLMRequest, LLMResponse } from '../llm/LLMClient.js';
 import { EMPTY_USAGE } from '../llm/LLMClient.js';
 
@@ -186,6 +186,31 @@ describe('ClaudeCliClient streaming tap (AC1)', () => {
     const calls: string[] = [];
     processStreamLines(lines, (d) => calls.push(d));
     assert.deepEqual(calls, ['valid']);
+  });
+});
+
+// ─── Regression guard: streaming argv flag contract ───────────────────────────
+// Pins the real-CLI constraint that broke planning post-epic-017 (S24): the
+// `claude` binary rejects `--output-format stream-json` without `--verbose`.
+
+describe('buildStreamingArgs flag contract', () => {
+  it('includes --verbose whenever --output-format stream-json is used', () => {
+    const args = buildStreamingArgs('claude-opus-4-8', 'some system prompt');
+    const fmt = args.indexOf('--output-format');
+    assert.equal(args[fmt + 1], 'stream-json', 'streaming path must use stream-json');
+    assert.ok(args.includes('--verbose'), 'stream-json REQUIRES --verbose or the real CLI exits 1');
+  });
+
+  it('passes the model and appends the system prompt when present', () => {
+    const args = buildStreamingArgs('claude-opus-4-8', 'sys');
+    assert.equal(args[args.indexOf('--model') + 1], 'claude-opus-4-8');
+    assert.equal(args[args.indexOf('--append-system-prompt') + 1], 'sys');
+  });
+
+  it('omits --append-system-prompt when the system text is empty', () => {
+    const args = buildStreamingArgs('claude-opus-4-8', '');
+    assert.ok(!args.includes('--append-system-prompt'));
+    assert.ok(args.includes('--verbose'), '--verbose stays even with no system prompt');
   });
 });
 
