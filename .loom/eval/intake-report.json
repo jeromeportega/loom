@@ -1,0 +1,140 @@
+{
+  "generatedFromCases": 22,
+  "classifierModel": "claude-haiku-4-5-20251001",
+  "judgeModel": "claude-opus-4-8",
+  "axes": [
+    {
+      "axis": "type",
+      "accuracy": {
+        "correct": 8,
+        "scored": 8
+      },
+      "confusion": {
+        "axis": "type",
+        "labels": [
+          "feature",
+          "bug",
+          "chore"
+        ],
+        "counts": {
+          "feature": {
+            "feature": 8,
+            "bug": 0,
+            "chore": 0
+          },
+          "bug": {
+            "feature": 0,
+            "bug": 0,
+            "chore": 0
+          },
+          "chore": {
+            "feature": 0,
+            "bug": 0,
+            "chore": 0
+          }
+        }
+      },
+      "judgeVsClassifier": {
+        "agree": 8,
+        "disagree": 0,
+        "inconclusive": 14
+      },
+      "judgeVsHuman": {
+        "agree": 8,
+        "disagree": 0,
+        "inconclusive": 14
+      },
+      "disagreements": [],
+      "dangerousConfusions": [],
+      "verdict": {
+        "clearsBar": true,
+        "statement": "Type axis: 0 dangerous confusion(s) detected. Clears Phase 1 bar."
+      }
+    },
+    {
+      "axis": "size",
+      "accuracy": {
+        "correct": 3,
+        "scored": 8
+      },
+      "confusion": {
+        "axis": "size",
+        "labels": [
+          "story",
+          "epic"
+        ],
+        "counts": {
+          "story": {
+            "story": 0,
+            "epic": 0
+          },
+          "epic": {
+            "story": 5,
+            "epic": 3
+          }
+        }
+      },
+      "judgeVsClassifier": {
+        "agree": 6,
+        "disagree": 2,
+        "inconclusive": 14
+      },
+      "judgeVsHuman": {
+        "agree": 5,
+        "disagree": 3,
+        "inconclusive": 14
+      },
+      "disagreements": [
+        {
+          "caseId": "epic-003",
+          "labeled": "epic",
+          "predicted": "story",
+          "judge": "epic",
+          "rationale": "Story Dispatch bundles three substantial subsystems (supervisor, worktree isolation, subagent runner) that need coordination beyond a single PR, making it an epic, and the classifier's rationale is incoherent—it describes eval-intake/go-no-go gating from recent commits rather than the dispatch brief it was given."
+        },
+        {
+          "caseId": "epic-004",
+          "labeled": "epic",
+          "predicted": "story",
+          "judge": "epic",
+          "rationale": "Standing up an MCP server with 7 distinct tools across two client integrations is a multi-story effort that needs decomposition (epic), and the classifier's rationale is incoherent—it justifies the verdict from branch/file metadata about an unrelated eval-intake system rather than the brief's actual content, which conflicts with the project's stated direction of removing the MCP surface."
+        }
+      ],
+      "dangerousConfusions": [
+        {
+          "from": "epic",
+          "to": "story",
+          "count": 5,
+          "caseIds": [
+            "epic-003",
+            "epic-004",
+            "epic-008",
+            "epic-013",
+            "epic-015"
+          ]
+        }
+      ],
+      "verdict": {
+        "clearsBar": false,
+        "statement": "Size axis: 5 epic→story under-sizing confusion(s) detected. Does NOT clear Phase 1 bar — costly under-sizing present."
+      }
+    }
+  ],
+  "inconclusiveJudgeCount": 0,
+  "failureCounts": {
+    "timeout": 0,
+    "invalid_output": 14,
+    "llm_error": 0,
+    "scored": 8,
+    "total": 22
+  },
+  "thresholds": {
+    "minScoredCases": 18,
+    "maxClassifierFailureRate": 0.1,
+    "maxJudgeInconclusiveRate": 0.1
+  },
+  "overall": {
+    "decision": "INCONCLUSIVE",
+    "statement": "INCONCLUSIVE: only 8 of 22 case(s) scored (minimum 18 required). Failure breakdown: timeout=0, invalid_output=14, llm_error=0."
+  }
+}
