@@ -446,3 +446,272 @@ describe('scoreIntakeEval — axes order', () => {
     assert.equal(report.axes[1].axis, 'size');
   });
 });
+
+// ── failureCounts — breakdown by classifier reason and judgeInconclusive ─────
+
+describe('scoreIntakeEval — failureCounts', () => {
+  it('all zeros when every case has ok classifier and ok judge', () => {
+    const records: IntakeRunRecord[] = [
+      makeRecord(makeCase('a', 'feature', 'story'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree' }),
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.deepEqual(report.failureCounts, {
+      classifier: { llm_error: 0, timeout: 0, invalid_output: 0 },
+      judgeInconclusive: 0,
+    });
+  });
+
+  it('counts llm_error, timeout, invalid_output classifier failures separately', () => {
+    const caseA = makeCase('a', 'feature', 'story');
+    const caseB = makeCase('b', 'bug', 'story');
+    const caseC = makeCase('c', 'chore', 'epic');
+
+    const records: IntakeRunRecord[] = [
+      { case: caseA, classifier: { ok: false, reason: 'llm_error', detail: 'err' },
+        judge: { status: 'inconclusive', detail: 'classifier_failure: llm_error' } },
+      { case: caseB, classifier: { ok: false, reason: 'timeout', detail: 'timed out' },
+        judge: { status: 'inconclusive', detail: 'classifier_failure: timeout' } },
+      { case: caseC, classifier: { ok: false, reason: 'invalid_output', detail: 'bad json' },
+        judge: { status: 'inconclusive', detail: 'classifier_failure: invalid_output' } },
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.deepEqual(report.failureCounts.classifier, {
+      llm_error: 1,
+      timeout: 1,
+      invalid_output: 1,
+    });
+  });
+
+  it('counts judgeInconclusive including those caused by classifier failure', () => {
+    const records: IntakeRunRecord[] = [
+      makeRecord(makeCase('a', 'feature', 'story'), null),      // classifier fail → judge inconclusive
+      makeRecord(makeCase('b', 'bug', 'story'), { type: 'bug', size: 'story' }, null), // judge inconclusive independently
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.equal(report.failureCounts.judgeInconclusive, 2, 'both records produce inconclusive judge');
+    assert.equal(report.failureCounts.classifier.llm_error, 1, 'one classifier failure');
+  });
+
+  it('judgeInconclusive does not double-count ok judge records', () => {
+    const records: IntakeRunRecord[] = [
+      makeRecord(makeCase('a', 'feature', 'story'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree' }),
+      makeRecord(makeCase('b', 'bug', 'story'), { type: 'bug', size: 'story' }, null),
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.equal(report.failureCounts.judgeInconclusive, 1, 'only the inconclusive judge is counted');
+  });
+});
+
+// ── scoredCases — ok classifier AND conclusive judge ─────────────────────────
+
+describe('scoreIntakeEval — scoredCases', () => {
+  it('is 0 when records array is empty', () => {
+    const report = scoreIntakeEval([]);
+    assert.equal(report.scoredCases, 0);
+  });
+
+  it('counts only records with ok classifier AND ok judge', () => {
+    const records: IntakeRunRecord[] = [
+      makeRecord(makeCase('a', 'feature', 'story'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree' }),   // scored
+      makeRecord(makeCase('b', 'bug', 'story'), { type: 'bug', size: 'story' }, null),  // ok classifier, inconclusive judge → NOT scored
+      makeRecord(makeCase('c', 'chore', 'epic'), null),         // classifier fail → NOT scored
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.equal(report.scoredCases, 1, 'only the fully-graded case counts as scored');
+  });
+
+  it('counts all records when every classifier and judge succeeds', () => {
+    const records: IntakeRunRecord[] = [
+      makeRecord(makeCase('a', 'feature', 'story'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree' }),
+      makeRecord(makeCase('b', 'bug', 'epic'), { type: 'bug', size: 'epic' },
+        { type: 'bug', size: 'epic', grade: 'agree' }),
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.equal(report.scoredCases, 2);
+  });
+});
+
+// ── gate — fail-closed (FR-9, FR-10) ─────────────────────────────────────────
+
+describe('scoreIntakeEval — gate: inconclusive when below minimum scored cases', () => {
+  it('is inconclusive when records is empty', () => {
+    const report = scoreIntakeEval([]);
+    assert.equal(report.gate.decision, 'inconclusive');
+    assert.ok(report.gate.statement.toLowerCase().includes('inconclusive') ||
+      report.gate.statement.toLowerCase().includes('minimum'),
+      `statement should mention minimum, got: "${report.gate.statement}"`);
+  });
+
+  it('is inconclusive when scoredCases < minScoredCases (fewer than 5)', () => {
+    // 4 fully-scored records — one short of the minimum
+    const records: IntakeRunRecord[] = Array.from({ length: 4 }, (_, i) =>
+      makeRecord(makeCase(`a${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree' }),
+    );
+
+    const report = scoreIntakeEval(records);
+    assert.equal(report.gate.decision, 'inconclusive');
+    assert.ok(
+      report.gate.statement.includes('4'),
+      `statement should mention scored count 4, got: "${report.gate.statement}"`,
+    );
+  });
+
+  it('is NOT inconclusive for the min-scored-cases reason when exactly at the threshold', () => {
+    // 5 fully-scored records — exactly at MIN_SCORED_CASES
+    const records: IntakeRunRecord[] = Array.from({ length: 5 }, (_, i) =>
+      makeRecord(makeCase(`a${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree' }),
+    );
+
+    const report = scoreIntakeEval(records);
+    // Should not be inconclusive due to insufficient scored cases; quality bar is met here
+    assert.equal(report.gate.decision, 'proceed');
+  });
+
+  it('gate.minScoredCases is documented (non-zero positive integer)', () => {
+    const report = scoreIntakeEval([]);
+    assert.ok(
+      Number.isInteger(report.gate.minScoredCases) && report.gate.minScoredCases > 0,
+      'minScoredCases must be a positive integer',
+    );
+  });
+});
+
+describe('scoreIntakeEval — gate: inconclusive when classifier failure rate is high', () => {
+  it('is inconclusive when more than 25% of classifiers fail', () => {
+    // 10 records: 3 classifier failures (30% > 25%), 7 ok
+    // Give enough ok records for scoredCases to pass the minimum
+    const records: IntakeRunRecord[] = [
+      ...Array.from({ length: 7 }, (_, i) =>
+        makeRecord(makeCase(`ok${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+          { type: 'feature', size: 'story', grade: 'agree' }),
+      ),
+      ...Array.from({ length: 3 }, (_, i) =>
+        makeRecord(makeCase(`fail${i}`, 'bug', 'story'), null),  // classifier fail
+      ),
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.equal(report.gate.decision, 'inconclusive',
+      'high classifier failure rate must yield inconclusive, not proceed');
+    assert.ok(
+      report.gate.statement.toLowerCase().includes('classifier failure') ||
+      report.gate.statement.toLowerCase().includes('failure rate'),
+      `statement should mention failure rate, got: "${report.gate.statement}"`,
+    );
+  });
+
+  it('proceeds when classifier failure rate is at or below 25%', () => {
+    // 8 records: 2 classifier failures (25% = at threshold), 6 ok
+    // The at-threshold case should NOT trigger the inconclusive path
+    const records: IntakeRunRecord[] = [
+      ...Array.from({ length: 6 }, (_, i) =>
+        makeRecord(makeCase(`ok${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+          { type: 'feature', size: 'story', grade: 'agree' }),
+      ),
+      ...Array.from({ length: 2 }, (_, i) =>
+        makeRecord(makeCase(`fail${i}`, 'bug', 'story'), null),
+      ),
+    ];
+
+    const report = scoreIntakeEval(records);
+    // 25% is exactly the threshold; >25% triggers inconclusive, 25% does not
+    assert.notEqual(report.gate.decision, 'inconclusive',
+      '25% failure rate must not trigger the high-failure-rate inconclusive path');
+  });
+});
+
+describe('scoreIntakeEval — gate: inconclusive when judge-inconclusive rate is high', () => {
+  it('is inconclusive when more than 25% of judges are inconclusive (classifier ok)', () => {
+    // 8 records: 3 judge-inconclusive (37.5% > 25%), 5 ok classifier+judge
+    const records: IntakeRunRecord[] = [
+      ...Array.from({ length: 5 }, (_, i) =>
+        makeRecord(makeCase(`ok${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+          { type: 'feature', size: 'story', grade: 'agree' }),
+      ),
+      ...Array.from({ length: 3 }, (_, i) =>
+        makeRecord(makeCase(`inconc${i}`, 'bug', 'story'), { type: 'bug', size: 'story' }, null),
+      ),
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.equal(report.gate.decision, 'inconclusive',
+      'high judge-inconclusive rate must yield inconclusive');
+    assert.ok(
+      report.gate.statement.toLowerCase().includes('inconclusive'),
+      `statement should mention inconclusive, got: "${report.gate.statement}"`,
+    );
+  });
+});
+
+describe('scoreIntakeEval — gate: proceed and do-not-proceed decisions', () => {
+  function make5GoodRecords(): IntakeRunRecord[] {
+    return Array.from({ length: 5 }, (_, i) =>
+      makeRecord(makeCase(`good${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'story', grade: 'agree' }),
+    );
+  }
+
+  it('is proceed when quality bar is met, scoredCases >= minimum, and failure rates are low', () => {
+    const report = scoreIntakeEval(make5GoodRecords());
+    assert.equal(report.gate.decision, 'proceed');
+    assert.ok(report.gate.statement.toLowerCase().includes('proceed'));
+  });
+
+  it('is do-not-proceed when epic→story under-sizing is detected and failure rates are acceptable', () => {
+    // 4 good records + 1 epic→story confusion = 5 scored cases; 0 classifier failures
+    const records: IntakeRunRecord[] = [
+      ...Array.from({ length: 4 }, (_, i) =>
+        makeRecord(makeCase(`good${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+          { type: 'feature', size: 'story', grade: 'agree' }),
+      ),
+      makeRecord(makeCase('epic-fail', 'feature', 'epic'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'epic', grade: 'disagree', reason: 'Under-sized.' }),
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.equal(report.gate.decision, 'do-not-proceed');
+    assert.ok(
+      report.gate.statement.toLowerCase().includes('do-not-proceed') ||
+      report.gate.statement.toLowerCase().includes('failed') ||
+      report.gate.statement.toLowerCase().includes('under-sizing'),
+      `statement should mention do-not-proceed or failure, got: "${report.gate.statement}"`,
+    );
+  });
+
+  it('gate statement for proceed mentions scored case count', () => {
+    const report = scoreIntakeEval(make5GoodRecords());
+    assert.ok(
+      report.gate.statement.includes('5'),
+      `proceed statement must reference scored count 5, got: "${report.gate.statement}"`,
+    );
+  });
+
+  it('gate statement for do-not-proceed mentions the under-sizing count', () => {
+    const records: IntakeRunRecord[] = [
+      ...Array.from({ length: 4 }, (_, i) =>
+        makeRecord(makeCase(`good${i}`, 'feature', 'story'), { type: 'feature', size: 'story' },
+          { type: 'feature', size: 'story', grade: 'agree' }),
+      ),
+      makeRecord(makeCase('epic-fail', 'feature', 'epic'), { type: 'feature', size: 'story' },
+        { type: 'feature', size: 'epic', grade: 'disagree', reason: 'Under-sized.' }),
+    ];
+
+    const report = scoreIntakeEval(records);
+    assert.ok(
+      report.gate.statement.includes('1'),
+      `do-not-proceed statement must reference the confusion count 1, got: "${report.gate.statement}"`,
+    );
+  });
+});

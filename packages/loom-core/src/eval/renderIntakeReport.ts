@@ -102,6 +102,25 @@ function renderMarkdown(report: IntakeEvalReport): string {
   lines.push('');
   lines.push(report.overall.statement);
   lines.push('');
+  lines.push('---');
+  lines.push('');
+  lines.push('## Gate Decision');
+  lines.push('');
+  lines.push(`**Decision:** \`${report.gate.decision}\``);
+  lines.push('');
+  lines.push(report.gate.statement);
+  lines.push('');
+  lines.push(`**Scored cases (ok classifier + conclusive judge):** ${report.scoredCases} / ${report.generatedFromCases} total (minimum required: ${report.gate.minScoredCases})`);
+  lines.push('');
+  lines.push('### Failure Counts');
+  lines.push('');
+  lines.push('| Category | Count |');
+  lines.push('| --- | --- |');
+  lines.push(`| Classifier: llm_error | ${report.failureCounts.classifier.llm_error} |`);
+  lines.push(`| Classifier: timeout | ${report.failureCounts.classifier.timeout} |`);
+  lines.push(`| Classifier: invalid_output | ${report.failureCounts.classifier.invalid_output} |`);
+  lines.push(`| Judge: inconclusive | ${report.failureCounts.judgeInconclusive} |`);
+  lines.push('');
 
   return lines.join('\n');
 }

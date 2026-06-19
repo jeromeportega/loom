@@ -78,4 +78,15 @@ export interface IntakeEvalReport {
   axes: AxisReport[];           // exactly one per axis: 'type', then 'size'
   inconclusiveJudgeCount: number;
   overall: { proceed: boolean; statement: string };
+  // Additive fields below (story-023-004) — do NOT remove; story-023-006 reads them.
+  failureCounts: {
+    classifier: Record<'llm_error' | 'timeout' | 'invalid_output', number>;
+    judgeInconclusive: number;
+  };
+  scoredCases: number;          // cases with ok classifier AND conclusive judge
+  gate: {
+    decision: 'proceed' | 'do-not-proceed' | 'inconclusive';
+    statement: string;
+    minScoredCases: number;     // justified threshold; gate fails closed below this count
+  };
 }
