@@ -491,12 +491,8 @@ export const PolicySchema = z.object({
       // epic shared-client run shipped unreviewed because of this). Default
       // 10 keeps prior behavior; raise it for repos with sizable diffs.
       review_timeout_minutes: z.number().int().min(1).max(60).default(10),
-      // Wall-clock bound for `loom weave` intake classification. The default
-      // 180 s is comfortably above the ~100 s backend latency. A hard floor of
-      // 120 s (INTAKE_TIMEOUT_FLOOR_MS) is enforced in resolveIntakeTimeoutMs
-      // so even a misconfigured policy cannot cap a single call below backend
-      // latency. Values below 1000 ms are rejected at parse time.
-      intake_classify_timeout_ms: z.number().int().min(1000).optional(),
+      // Wall-clock bound for `loom weave` intake classification; floor 120 s enforced at runtime.
+      intake_classify_timeout_ms: z.number().int().min(120_000).max(600_000).optional(),
       // Brief-quality gate. Every `loom epic` and `loom_start_epic` runs
       // the BriefRefiner before the planner and refuses briefs whose
       // quality_score is below this threshold, returning the critique so
