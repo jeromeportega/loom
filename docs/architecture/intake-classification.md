@@ -124,9 +124,15 @@ measurable.
 
 - **P0 — Observe-only classifier.** Add the cheap intake-triage call; it
   classifies and **only records** its verdict. Nothing changes; everything
-  still full-plans. Measures: how often bug/story/epic, and does the verdict
-  match what the planner actually produced? *(This phase is the most important —
-  it proves the classifier is trustworthy before it decides anything.)*
+  still full-plans. *(This phase is the most important — it proves the
+  classifier is trustworthy before it decides anything.)*
+- **P0.5 — Evaluation harness (go/no-go gate for Phase 1).** Run the
+  evaluation harness (`scripts/eval-intake.mjs`) against the labeled fixture
+  set to measure classifier accuracy and judge agreement. The resulting report
+  (`.loom/eval/intake-report.md`) is the evidence basis for the Phase 1
+  decision. Phase 1 does not land until the report shows the classifier clears
+  the accuracy bar on both the `type` and `size` axes. See "Phase 0.5 scope"
+  below.
 - **P1 — Explicit fast paths, human-chosen.** `loom weave --as bug|story|epic`
   routes to skip/reduced planning. No auto-routing yet. Delivers the cheap-path
   value with zero classifier risk and builds+tests the reduced-planning paths.
@@ -163,6 +169,38 @@ or change because one exists. The verdict is written and surfaced for
 measurement only — mirroring the signal-ledger NFR-1 ("the ledger does NOT
 influence execution"). This is the constraint we will most regret violating;
 pin it with a regression test.
+
+## Phase 0.5 scope (go/no-go gate for Phase 1)
+
+Phase 0.5 is the **named evaluation gate** that sits between P0 observation and
+P1 auto-routing. It formalizes the measurement that P0 collects into a
+structured pass/fail decision backed by machine-generated evidence.
+
+### Deliverables
+
+- **Evaluation harness** — `scripts/eval-intake.mjs` runs `classifyIntake`
+  against a labeled fixture set (`packages/loom-core/eval-cases/intake-classification.yaml`)
+  and an LLM judge (`IntakeJudge`, model: `planning_model`) for every case.
+- **Report artifact** — `.loom/eval/intake-report.md` (human-readable go/no-go
+  document) and `.loom/eval/intake-report.json` (machine-readable). Both are
+  produced by a single `renderIntakeReport` call so they cannot drift (ADR-007).
+- **Accuracy axes** — the report scores independently on `type`
+  (feature/bug/chore) and `size` (story/epic). The Phase 1 decision requires
+  both axes to clear their bars.
+
+### Gate rule (ADR-008 / FR-12)
+
+**Phase 1 is gated on a passing report.** The gate clears when
+`.loom/eval/intake-report.md` shows `overall.proceed = true`. A failing or
+absent report blocks Phase 1. The evaluation is run by an operator (`npm run
+eval:intake`); the report is committed alongside the Phase 1 PR as the
+evidence record.
+
+### What "measurement" means here
+
+This is the measurement that was previously folded into P0's rollout bullet.
+It is now a first-class phase with an explicit artifact trail so the
+Phase 1 decision is traceable and reproducible, not a judgment call.
 
 ---
 
