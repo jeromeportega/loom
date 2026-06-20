@@ -266,7 +266,7 @@ export class Planner {
     // Serialize same-file story groups: derive dependency edges for stories
     // that edit the same file, ensuring they integrate sequentially.
     const audit = new AuditLog(this.opts.db);
-    applySameFileSerialization(architect.epics, this.opts.projectRoot, audit);
+    applySameFileSerialization(architect.epics, this.opts.projectRoot, audit, runId);
 
     return {
       runId,
@@ -302,96 +302,98 @@ export function applySameFileSerialization(
   epics: EpicYaml[],
   projectRoot: string,
   audit: AuditLog,
+  runId?: string,
 ): void {
   if (epics.length === 0) return;
 
-  // All epics in a planning run share the same .loom/planning/<runId>/epics/
-  // directory; the first epic's id IS the runId.
-  const runId = epics[0].epic_id;
-  const paths = planningPaths(projectRoot, runId);
+  // All epics in a planning run share .loom/planning/<runId>/epics/.
+  // The caller passes the true runId; we fall back to epics[0].epic_id for
+  // single-epic callers (tests, standalone) where they are the same.
+  const resolvedRunId = runId ?? epics[0].epic_id;
+  const paths = planningPaths(projectRoot, resolvedRunId);
 
   for (const epic of epics) {
-    let ownerMap;
+    // Per-epic guard: advisory serialization must never abort the planning run.
     try {
-      ownerMap = loadOwnershipMap(projectRoot, epic.epic_id);
-    } catch {
-      continue; // degrade gracefully if contract is unreadable
-    }
-    if (!ownerMap) continue; // no contract → no-op
+      let ownerMap;
+      try {
+        ownerMap = loadOwnershipMap(projectRoot, epic.epic_id);
+      } catch {
+        continue; // no contract file → degrade gracefully
+      }
+      if (!ownerMap) continue;
 
-    const overlaps = computeWithinEpicOverlaps(ownerMap);
-    if (overlaps.length === 0) continue;
+      const overlaps = computeWithinEpicOverlaps(ownerMap);
+      if (overlaps.length === 0) continue;
 
-    const edges = deriveSameFileSerialization(epic.stories, overlaps);
-    if (edges.length === 0) continue;
+      const edges = deriveSameFileSerialization(epic.stories, overlaps);
+      if (edges.length === 0) continue;
 
-    // Build topo index map for chain derivation in audit records.
-    const topoIndexMap = new Map(epic.stories.map((s, i) => [s.id, i]));
+      // Mutate stories in memory: add dependency and provenance.
+      for (const edge of edges) {
+        const story = epic.stories.find((s) => s.id === edge.from);
+        if (!story) continue;
 
-    // Mutate stories in memory: add dependency and provenance.
-    for (const edge of edges) {
-      const story = epic.stories.find((s) => s.id === edge.from);
-      if (!story) continue;
+        if (!story.dependencies.includes(edge.dependsOn)) {
+          story.dependencies.push(edge.dependsOn);
+        }
 
-      if (!story.dependencies.includes(edge.dependsOn)) {
-        story.dependencies.push(edge.dependsOn);
+        if (!story.dependency_reasons) story.dependency_reasons = [];
+        const alreadyRecorded = story.dependency_reasons.some(
+          (r) => r.depends_on === edge.dependsOn && r.path === edge.path
+        );
+        if (!alreadyRecorded) {
+          story.dependency_reasons.push({
+            depends_on: edge.dependsOn,
+            reason: 'same-file-conflict-avoidance',
+            path: edge.path,
+          });
+        }
       }
 
-      if (!story.dependency_reasons) story.dependency_reasons = [];
-      const alreadyRecorded = story.dependency_reasons.some(
-        (r) => r.depends_on === edge.dependsOn && r.path === edge.path
-      );
-      if (!alreadyRecorded) {
-        story.dependency_reasons.push({
-          depends_on: edge.dependsOn,
-          reason: 'same-file-conflict-avoidance',
-          path: edge.path,
+      // Rewrite the epic YAML with the enriched story data.
+      try {
+        fs.writeFileSync(
+          paths.epicFile(epic.epic_id),
+          serializeEpic(epic, 'and serialized (overlap resolution)'),
+        );
+      } catch (err) {
+        // ENOENT means the parent dir doesn't exist yet (e.g. tests that don't
+        // pre-create the YAML). Rethrow anything else (disk full, permissions)
+        // so the outer catch records it and continues gracefully.
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+
+      // One audit row per shared file (Seam-6).
+      const edgesByPath = new Map<string, SerializationEdge[]>();
+      for (const edge of edges) {
+        const list = edgesByPath.get(edge.path);
+        if (list) list.push(edge);
+        else edgesByPath.set(edge.path, [edge]);
+      }
+
+      for (const [filePath, fileEdges] of edgesByPath) {
+        // Reconstruct the total order from fileEdges (already emitted in chain
+        // order by deriveSameFileSerialization) rather than re-sorting
+        // overlap.owners, which may include cross-epic owner entries.
+        const chain: string[] = [];
+        for (const e of fileEdges) {
+          if (!chain.includes(e.dependsOn)) chain.push(e.dependsOn);
+          if (!chain.includes(e.from)) chain.push(e.from);
+        }
+
+        audit.record({
+          action: 'plan_serialize_same_file',
+          command: epic.epic_id,
+          detail: {
+            path: filePath,
+            chain,
+            added_edges: fileEdges.map((e) => ({ from: e.from, dependsOn: e.dependsOn })),
+          },
         });
       }
-    }
-
-    // Rewrite the epic YAML with the enriched story data.
-    try {
-      fs.writeFileSync(
-        paths.epicFile(epic.epic_id),
-        serializeEpic(epic, 'and serialized (overlap resolution)'),
-      );
     } catch {
-      // If the YAML file doesn't exist yet (e.g. in tests that don't write it),
-      // proceed without writing — the in-memory mutation is the authoritative state.
-    }
-
-    // One audit row per shared file (Seam-6).
-    const edgesByPath = new Map<string, SerializationEdge[]>();
-    for (const edge of edges) {
-      const list = edgesByPath.get(edge.path);
-      if (list) list.push(edge);
-      else edgesByPath.set(edge.path, [edge]);
-    }
-
-    for (const [filePath, fileEdges] of edgesByPath) {
-      const overlap = overlaps.find((o) => o.path === filePath);
-      const chain = overlap
-        ? [...overlap.owners]
-            .filter((o) => o.storyId !== undefined)
-            .map((o) => o.storyId as string)
-            .sort((a, b) => {
-              const ai = topoIndexMap.get(a) ?? Infinity;
-              const bi = topoIndexMap.get(b) ?? Infinity;
-              if (ai !== bi) return ai - bi;
-              return a < b ? -1 : a > b ? 1 : 0;
-            })
-        : [...new Set(fileEdges.flatMap((e) => [e.dependsOn, e.from]))];
-
-      audit.record({
-        action: 'plan_serialize_same_file',
-        command: epic.epic_id,
-        detail: {
-          path: filePath,
-          chain,
-          added_edges: fileEdges.map((e) => ({ from: e.from, dependsOn: e.dependsOn })),
-        },
-      });
+      // Unexpected error: skip this epic and continue to the next.
     }
   }
 }
