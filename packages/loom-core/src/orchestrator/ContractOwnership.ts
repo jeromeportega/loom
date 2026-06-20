@@ -188,15 +188,16 @@ export function normalizePath(token: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Cross-epic overlap advisory (story-007-008)
+// Cross-epic overlap advisory (story-007-008) + within-epic detection (story-028-001)
 //
-// Consumes the OwnershipMap above to flag files claimed by more than one epic.
-// This is an ADVISORY: it warns, it never blocks. The comparison is deliberately
-// the dumbest thing that can work — EXACT lexical path equality after the
-// parser's normalization — because the entire epic-007 effort exists to kill the
-// false-failure mode that smarter matching (globbing, directory-prefix
-// inference, semantic analysis) reintroduces. Same-directory-different-filename
-// collisions go unflagged on purpose; that is an accepted trade-off.
+// Consumes the OwnershipMap above to flag files claimed by more than one epic
+// (cross-epic) or by more than one story within the same epic (within-epic).
+// Both advisories are ADVISORY: they warn, they never block. The comparison is
+// deliberately the dumbest thing that can work — EXACT lexical path equality
+// after the parser's normalization — because the entire epic-007 effort exists
+// to kill the false-failure mode that smarter matching (globbing, directory-
+// prefix inference, semantic analysis) reintroduces. Same-directory-different-
+// filename collisions go unflagged on purpose; that is an accepted trade-off.
 // ---------------------------------------------------------------------------
 
 /**
@@ -209,6 +210,26 @@ export interface Overlap {
   path: string;
   /** Every owner claiming `path`, across all compared maps. */
   owners: Array<{ epicId: string; storyId?: string }>;
+}
+
+/**
+ * Builds a path-to-owners index from a flat OwnershipMap, accumulating all
+ * owners for each exact path. Shared by computeOverlaps() and
+ * computeWithinEpicOverlaps() so the indexing loop lives in one place.
+ */
+function groupOwnersByPath(
+  map: OwnershipMap
+): Map<string, Array<{ epicId: string; storyId?: string }>> {
+  const result = new Map<string, Array<{ epicId: string; storyId?: string }>>();
+  for (const entry of map) {
+    const owner: { epicId: string; storyId?: string } = entry.storyId
+      ? { epicId: entry.epicId, storyId: entry.storyId }
+      : { epicId: entry.epicId };
+    const list = result.get(entry.path);
+    if (list) list.push(owner);
+    else result.set(entry.path, [owner]);
+  }
+  return result;
 }
 
 /**
@@ -225,20 +246,10 @@ export function computeOverlaps(
   target: OwnershipMap,
   others: Map<string, OwnershipMap>
 ): Overlap[] {
-  // Index every other map's owners by exact path so each target path is a
-  // single lookup. A path may be claimed by several other epics (or several
-  // stories within one), so the value is a list of owners.
-  const otherOwnersByPath = new Map<string, Array<{ epicId: string; storyId?: string }>>();
-  for (const map of others.values()) {
-    for (const entry of map) {
-      const list = otherOwnersByPath.get(entry.path);
-      const owner = entry.storyId
-        ? { epicId: entry.epicId, storyId: entry.storyId }
-        : { epicId: entry.epicId };
-      if (list) list.push(owner);
-      else otherOwnersByPath.set(entry.path, [owner]);
-    }
-  }
+  // Flatten all other maps and index by path via the shared helper.
+  const otherEntries: OwnershipMap = [];
+  for (const map of others.values()) otherEntries.push(...map);
+  const otherOwnersByPath = groupOwnersByPath(otherEntries);
 
   const overlaps: Overlap[] = [];
   const seen = new Set<string>();
@@ -252,6 +263,36 @@ export function computeOverlaps(
       ? { epicId: entry.epicId, storyId: entry.storyId }
       : { epicId: entry.epicId };
     overlaps.push({ path: entry.path, owners: [targetOwner, ...otherOwners] });
+  }
+
+  return overlaps;
+}
+
+/**
+ * Detects files declared by two or more distinct stories within a single
+ * epic's OwnershipMap, using EXACT lexical path equality — no globbing, no
+ * directory-prefix inference. Only story-attributed entries (storyId present)
+ * participate; epic-level entries without a story are not story-to-story
+ * conflicts. A single story claiming the same path twice is NOT an overlap —
+ * overlap requires ≥2 distinct storyIds.
+ *
+ * Routes through groupOwnersByPath(), the same helper used by computeOverlaps(),
+ * so the indexing logic lives in exactly one place.
+ */
+export function computeWithinEpicOverlaps(map: OwnershipMap): Overlap[] {
+  const ownersByPath = groupOwnersByPath(map);
+  const overlaps: Overlap[] = [];
+
+  for (const [path, owners] of ownersByPath) {
+    // Collect one representative owner per distinct storyId.
+    const byStoryId = new Map<string, { epicId: string; storyId: string }>();
+    for (const o of owners) {
+      if (o.storyId !== undefined && !byStoryId.has(o.storyId)) {
+        byStoryId.set(o.storyId, { epicId: o.epicId, storyId: o.storyId });
+      }
+    }
+    if (byStoryId.size < 2) continue; // single story (or no stories) — not an overlap
+    overlaps.push({ path, owners: [...byStoryId.values()] });
   }
 
   return overlaps;
