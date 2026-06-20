@@ -572,16 +572,17 @@
               tracesByStory.get(key).push(t);
             }
           }
-        } catch {}
+        } catch (err) { console.warn('[loom] traces fetch failed', err); }
 
         // FR-4: fan audit across each agent in the detail view (one agent per
-        // story after listLatestByEpic dedup; handles retry retry via agentId fan-out).
+        // story after listLatestByEpic dedup; handles retry via agentId fan-out).
         const agentAuditMap = new Map();
         await Promise.all(body.agents.map(async function(agent) {
           try {
             const r = await api('/api/agents/' + encodeURIComponent(agent.id) + '/audit');
             agentAuditMap.set(agent.id, r.ok ? (await r.json()).entries || [] : []);
-          } catch {
+          } catch (err) {
+            console.warn('[loom] audit fetch failed for agent', agent.id, err);
             agentAuditMap.set(agent.id, []);
           }
         }));
@@ -1040,9 +1041,9 @@
     <!-- FR-2 (story-027-001): Fleet tab hidden from nav; fleet.js, its server
          routes, and fleet.test.ts remain intact and byte-identical.
          To re-enable: add <script src="fleet.js"></script> here. -->
-    <!-- FR-2 (story-027-001): Inbox tab hidden from nav; inbox.js, its server
-         routes, and inbox.test.ts remain intact and byte-identical.
-         To re-enable: add <script src="inbox.js"></script> here. -->
+    <!-- FR-2 (story-027-001): Inbox tab not yet surfaced — inbox.js, its server
+         routes, and inbox.test.ts are intact and byte-identical but were never
+         included in the nav. To surface: add <script src="inbox.js"></script> here. -->
     <script src="opportunities.js"></script>
     <script src="flywheel.js"></script>
     <script src="skills.js"></script>

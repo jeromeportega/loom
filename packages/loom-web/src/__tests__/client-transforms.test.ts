@@ -117,6 +117,10 @@ describe('mergeAuditsByTimestamp (FR-4/AC4)', () => {
 });
 
 // ─── mutationControl ──────────────────────────────────────────────────────────
+// NOTE: These tests exercise the extracted two-arg form mutationControl(html, readOnly)
+// from client-transforms.ts. The production code in index.html uses a one-arg closure
+// that captures the module-level `readOnly` variable. The two implementations must be
+// kept in sync manually — this test suite does NOT cover the inline closure.
 
 describe('mutationControl (FR-6/AC6)', () => {
   it('when readOnly false, returns html unchanged', () => {

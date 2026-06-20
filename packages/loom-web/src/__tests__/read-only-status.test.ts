@@ -50,7 +50,9 @@ describe('GET /api/status — read_only field (FR-7/AC7)', () => {
   });
 
   it('returns read_only: true when readOnly=true', async () => {
-    const res = await fetch(`${srvReadOnly.baseUrl}/api/status`);
+    const res = await fetch(`${srvReadOnly.baseUrl}/api/status`, {
+      headers: { 'x-loom-token': 'test-ro-token' },
+    });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { read_only?: boolean };
     assert.strictEqual(body.read_only, true, 'read_only must be true in read-only mode');
@@ -79,7 +81,9 @@ describe('GET /api/status — read_only field (FR-7/AC7)', () => {
   });
 
   it('response always includes the epics array alongside read_only', async () => {
-    const res = await fetch(`${srvReadOnly.baseUrl}/api/status`);
+    const res = await fetch(`${srvReadOnly.baseUrl}/api/status`, {
+      headers: { 'x-loom-token': 'test-ro-token' },
+    });
     const body = (await res.json()) as { epics?: unknown[]; read_only?: boolean };
     assert.ok(Array.isArray(body.epics), 'epics array must be present');
     assert.strictEqual(body.read_only, true);

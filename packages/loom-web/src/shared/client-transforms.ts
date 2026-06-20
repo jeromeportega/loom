@@ -1,8 +1,14 @@
 /**
  * Pure helpers used by the loom-web dashboard frontend.
  * Extracted here so they can be unit-tested without a browser.
- * The matching inline logic in index.html is the browser-served version;
- * keep both in sync when editing either.
+ *
+ * IMPORTANT — two copies of mutationControl exist intentionally:
+ *   1. This module: mutationControl(html, readOnly) — explicit param, testable.
+ *   2. index.html inline: function mutationControl(html) — 1-arg closure over
+ *      the module-level `readOnly` variable.
+ * Tests import this module and do NOT exercise the inline closure. If the inline
+ * version drifts (e.g. the captured `readOnly` stops updating), the test suite
+ * will not catch it. Keep both in sync when editing either.
  */
 
 /** Minimal trace shape consumed by the grouping helper. */
@@ -42,12 +48,16 @@ export function groupTracesByStory(traces: TraceRow[]): Map<string, TraceRow[]> 
 export function mergeAuditsByTimestamp(entrySets: AuditRow[][]): AuditRow[] {
   const seen = new Set<string>();
   const merged: AuditRow[] = [];
+  let counter = 0;
   for (const entries of entrySets) {
     for (const e of entries) {
+      // When id is absent, append a monotonic counter so two entries with
+      // agent_id=null and the same timestamp don't silently collapse into one.
       const key =
         e.id != null
           ? String(e.id)
-          : `${e.agent_id ?? ''}:${e.timestamp}`;
+          : `${e.agent_id ?? ''}:${e.timestamp}:${counter}`;
+      counter++;
       if (!seen.has(key)) {
         seen.add(key);
         merged.push(e);

@@ -42,9 +42,9 @@
 
   function trackRecord(skill) {
     const parts = [];
-    if (skill.injected)   parts.push(`${skill.injected} injected`);
-    if (skill.succeeded)  parts.push(`<span style="color:#56d364">${skill.succeeded} ok</span>`);
-    if (skill.failed)     parts.push(`<span style="color:#f85149">${skill.failed} failed</span>`);
+    if (skill.injected)   parts.push(`${esc(String(skill.injected))} injected`);
+    if (skill.succeeded)  parts.push(`<span style="color:#56d364">${esc(String(skill.succeeded))} ok</span>`);
+    if (skill.failed)     parts.push(`<span style="color:#f85149">${esc(String(skill.failed))} failed</span>`);
     return parts.length ? parts.join(' · ') : '<span style="color:#6e7681">no usage yet</span>';
   }
 
@@ -118,7 +118,7 @@
 
     function showList() {
       api('/api/skills')
-        .then((r) => r.json())
+        .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
         .then(({ skills }) => {
           container.innerHTML = renderSkillsList(skills);
           container.querySelectorAll('[data-skill-name]').forEach((el) => {
@@ -135,7 +135,7 @@
       container.innerHTML =
         '<div class="empty" style="padding:32px 0;text-align:center;color:#8b949e">Loading history…</div>';
       api(`/api/skills/${encodeURIComponent(name)}/history`)
-        .then((r) => r.json())
+        .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
         .then(({ rows }) => {
           container.innerHTML = renderSkillHistory(name, rows);
           container.querySelector('#skillsBackLink')
