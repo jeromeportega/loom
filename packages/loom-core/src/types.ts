@@ -612,6 +612,21 @@ export const StorySchema = z.object({
    * populated today.
    */
   images: z.array(z.string()).optional(),
+  /**
+   * Machine-readable provenance for dependency edges added by the same-file
+   * conflict serializer. Each entry corresponds to an entry in `dependencies`
+   * and records WHY that edge was derived. Optional — existing plans that
+   * predate serialization parse successfully without it (ADR-002, NFR-2).
+   */
+  dependency_reasons: z
+    .array(
+      z.object({
+        depends_on: z.string(),
+        reason: z.literal('same-file-conflict-avoidance'),
+        path: z.string().optional(),
+      })
+    )
+    .optional(),
 });
 export type Story = z.infer<typeof StorySchema>;
 

@@ -120,3 +120,12 @@ Rules:
   is usually `small`, and acceptance criteria are "the full build passes" and
   "the entire test suite passes". Skip this story for a single-file or
   single-service epic, where the implementing story's own tests already cover it.
+- **Split stories along independently-developable file/module boundaries.**
+  Single-file-concentrated work (all changes live in one file) or
+  tightly-coupled-region work (a small cluster of files that always move
+  together) must be emitted as ONE story. A worker that owns one cohesive
+  file or module can deliver it without conflict; splitting such work along
+  artificial seams forces unnecessary sequencing. Counter-caution: genuinely
+  separable work that lives in independently-editable files must NOT be
+  collapsed into one oversized story — keep those as distinct stories so
+  workers can run in parallel without blocking each other.

@@ -94,3 +94,10 @@ Rules:
 - Keep it tight: this is injected verbatim into every worker prompt for the epic.
 - If two stories would naturally touch the same file, assign one owner and note how
   the other should extend it (a new module, an injection point) instead.
+- **Apply file/module-boundary discipline when assigning ownership.** Single-file-concentrated
+  work (all changes in one file) or tightly-coupled-region work (a small cluster of files
+  that always move together) must be assigned to ONE story — do not split it across
+  multiple owners. Counter-caution: genuinely separable work that lives in
+  independently-editable files must NOT be collapsed into one oversized story just because
+  the files are near each other. Parallel workers need distinct, non-overlapping ownership
+  to implement concurrently without conflict.
