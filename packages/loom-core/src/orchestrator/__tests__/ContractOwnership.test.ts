@@ -8,7 +8,9 @@ import {
   loadOwnershipMap,
   normalizePath,
   computeOverlaps,
+  computeWithinEpicOverlaps,
   renderOverlapAdvisory,
+  type OwnershipEntry,
   type OwnershipMap,
 } from '../ContractOwnership.js';
 
@@ -445,5 +447,164 @@ describe('advisory-only: renderOverlapAdvisory returns strings and never blocks 
       result!.some((line) => line.toLowerCase().includes('advisory') || line.toLowerCase().includes('not a conflict')),
       'advisory output must include non-blocking framing'
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeWithinEpicOverlaps — story-028-001
+// ---------------------------------------------------------------------------
+
+/** Builds an OwnershipEntry for a story in epic-028. */
+function storyEntry(storyId: string, filePath: string): OwnershipEntry {
+  return { epicId: 'epic-028', storyId, path: filePath };
+}
+
+describe('computeWithinEpicOverlaps — empty and disjoint inputs', () => {
+  it('returns empty for an empty map', () => {
+    assert.deepEqual(computeWithinEpicOverlaps([]), []);
+  });
+
+  it('returns empty when all stories own distinct paths', () => {
+    const map: OwnershipMap = [
+      storyEntry('story-028-001', 'packages/loom-core/src/foo.ts'),
+      storyEntry('story-028-002', 'packages/loom-core/src/bar.ts'),
+    ];
+    assert.deepEqual(computeWithinEpicOverlaps(map), []);
+  });
+});
+
+describe('computeWithinEpicOverlaps — happy path: same-file overlap detection [AC-1]', () => {
+  it('two stories declaring the exact same path produce one Overlap with both storyIds', () => {
+    const map: OwnershipMap = [
+      storyEntry('story-028-001', 'packages/loom-core/src/shared.ts'),
+      storyEntry('story-028-002', 'packages/loom-core/src/shared.ts'),
+    ];
+    const overlaps = computeWithinEpicOverlaps(map);
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].path, 'packages/loom-core/src/shared.ts');
+    const storyIds = overlaps[0].owners.map((o) => o.storyId).sort();
+    assert.deepEqual(storyIds, ['story-028-001', 'story-028-002']);
+  });
+
+  it('all owners in a within-epic Overlap have storyId populated', () => {
+    const map: OwnershipMap = [
+      storyEntry('story-028-001', 'packages/loom-core/src/shared.ts'),
+      storyEntry('story-028-002', 'packages/loom-core/src/shared.ts'),
+    ];
+    const overlaps = computeWithinEpicOverlaps(map);
+    for (const o of overlaps[0].owners) {
+      assert.ok(o.storyId !== undefined, 'every within-epic owner must carry storyId');
+    }
+  });
+});
+
+describe('computeWithinEpicOverlaps — N>2 stories on one path', () => {
+  it('three stories on the same path produce one Overlap carrying all three owners', () => {
+    const map: OwnershipMap = [
+      storyEntry('story-028-001', 'packages/loom-core/src/shared.ts'),
+      storyEntry('story-028-002', 'packages/loom-core/src/shared.ts'),
+      storyEntry('story-028-003', 'packages/loom-core/src/shared.ts'),
+    ];
+    const overlaps = computeWithinEpicOverlaps(map);
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].path, 'packages/loom-core/src/shared.ts');
+    const storyIds = overlaps[0].owners.map((o) => o.storyId).sort();
+    assert.deepEqual(storyIds, ['story-028-001', 'story-028-002', 'story-028-003']);
+  });
+
+  it('reports one Overlap per conflicting path, not one per pair', () => {
+    const map: OwnershipMap = [
+      storyEntry('story-028-001', 'packages/loom-core/src/a.ts'),
+      storyEntry('story-028-002', 'packages/loom-core/src/a.ts'),
+      storyEntry('story-028-003', 'packages/loom-core/src/a.ts'),
+      storyEntry('story-028-004', 'packages/loom-core/src/a.ts'),
+    ];
+    const overlaps = computeWithinEpicOverlaps(map);
+    assert.equal(overlaps.length, 1, 'one Overlap per conflicting path regardless of owner count');
+    assert.equal(overlaps[0].owners.length, 4);
+  });
+});
+
+describe('computeWithinEpicOverlaps — duplicate-entry guard', () => {
+  it('same story declaring the same path twice is NOT an overlap (requires ≥2 distinct storyIds)', () => {
+    const map: OwnershipMap = [
+      storyEntry('story-028-001', 'packages/loom-core/src/foo.ts'),
+      storyEntry('story-028-001', 'packages/loom-core/src/foo.ts'),
+    ];
+    assert.deepEqual(computeWithinEpicOverlaps(map), []);
+  });
+
+  it('same story with multiple paths but no cross-story sharing is not an overlap', () => {
+    const map: OwnershipMap = [
+      storyEntry('story-028-001', 'packages/loom-core/src/foo.ts'),
+      storyEntry('story-028-001', 'packages/loom-core/src/bar.ts'),
+    ];
+    assert.deepEqual(computeWithinEpicOverlaps(map), []);
+  });
+});
+
+describe('computeWithinEpicOverlaps — real-paths-only [AC-2]', () => {
+  it('free-text tokens parsed from a contract do not produce overlaps', () => {
+    // Two stories each own the same bare word and the same code fragment, plus
+    // distinct real paths. parseOwnershipMap filters the non-path tokens, so
+    // computeWithinEpicOverlaps sees only the real paths and finds no shared one.
+    const md =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n' +
+      '| --- | --- |\n' +
+      '| story-028-001 | computeOverlaps · loom · `packages/loom-core/src/foo.ts` |\n' +
+      '| story-028-002 | computeOverlaps · loom · `packages/loom-core/src/bar.ts` |\n';
+    const map = parseOwnershipMap(md, 'epic-028');
+    assert.deepEqual(computeWithinEpicOverlaps(map), []);
+  });
+});
+
+describe('computeWithinEpicOverlaps — normalization [AC-2]', () => {
+  it('./x.ts and x.ts parsed from a contract collapse to the same path and produce one overlap', () => {
+    const md =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n' +
+      '| --- | --- |\n' +
+      '| story-028-001 | `./packages/loom-core/src/foo.ts` |\n' +
+      '| story-028-002 | `packages/loom-core/src/foo.ts` |\n';
+    const map = parseOwnershipMap(md, 'epic-028');
+    const overlaps = computeWithinEpicOverlaps(map);
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].path, 'packages/loom-core/src/foo.ts');
+  });
+
+  it('genuinely different paths do not collapse (exact-lexical equality, no globbing)', () => {
+    const map: OwnershipMap = [
+      storyEntry('story-028-001', 'packages/loom-core/src/foo.ts'),
+      storyEntry('story-028-002', 'packages/loom-core/src/bar.ts'),
+    ];
+    assert.deepEqual(computeWithinEpicOverlaps(map), []);
+  });
+});
+
+describe('computeWithinEpicOverlaps — no-drift: computeOverlaps unchanged after refactor [AC-3][AC-4]', () => {
+  it('computeOverlaps still surfaces a cross-epic shared path after groupOwnersByPath extraction', () => {
+    const targetMd =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n' +
+      '| --- | --- |\n' +
+      '| story-007-001 | packages/loom-core/src/real.ts |\n';
+    const otherMd =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n' +
+      '| --- | --- |\n' +
+      '| story-008-001 | packages/loom-core/src/real.ts |\n';
+    const target = parseOwnershipMap(targetMd, 'epic-007');
+    const others = new Map([['epic-008', parseOwnershipMap(otherMd, 'epic-008')]]);
+    const overlaps = computeOverlaps(target, others);
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].path, 'packages/loom-core/src/real.ts');
+    assert.ok(overlaps[0].owners.length >= 2);
+  });
+
+  it('computeOverlaps returns empty when no path is shared across epics', () => {
+    const target = parseOwnershipMap(fixture('epic-001'), 'epic-001');
+    const others = new Map([['epic-002', parseOwnershipMap(fixture('epic-002'), 'epic-002')]]);
+    assert.deepEqual(computeOverlaps(target, others), []);
   });
 });
