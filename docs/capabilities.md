@@ -317,6 +317,7 @@ truth.
 <!-- coverage:knob:start -->
 `policy.agents.budget_tokens_per_story`
 `policy.agents.context_notes`
+`policy.agents.epic_buildup`
 `policy.agents.cursor_model`
 `policy.agents.handoff`
 `policy.agents.integration_branch`

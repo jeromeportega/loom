@@ -461,6 +461,11 @@ export const PolicySchema = z.object({
       // plan-time interfaces). 'off' (default) writes nothing and keeps the
       // worker prompt byte-identical to the bench baseline.
       context_notes: z.enum(['off', 'on']).default('off'),
+      // Epic-cumulative build-up context (epic-029). When 'on', completed-story
+      // summaries and discovered conventions are injected into subsequent worker
+      // prompts at dispatch time. 'off' (default) writes nothing and keeps the
+      // worker prompt byte-identical to the bench baseline.
+      epic_buildup: z.enum(['off', 'on']).default('off'),
       // QA test planning (PR 4 of the epic-quality plan). When 'advisory',
       // a QA persona (Tessa) runs after the Architect at plan time and writes
       // a concrete, risk-based test_plan onto every story — the test levels,
