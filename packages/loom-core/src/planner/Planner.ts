@@ -1,7 +1,8 @@
+import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { LLMClient, LLMUsage } from '../llm/index.js';
 import { addUsage, EMPTY_USAGE } from '../llm/index.js';
-import { EpicStore } from '../state/index.js';
+import { EpicStore, AuditLog } from '../state/index.js';
 import { SkillSelector } from '../skills/index.js';
 import type { SkillStore } from '../skills/index.js';
 import type { PlannerContext } from './context.js';
@@ -10,9 +11,14 @@ import { PMAgent } from './PMAgent.js';
 import { ArchitectAgent } from './ArchitectAgent.js';
 import { QAAgent } from './QAAgent.js';
 import { SharedContract } from '../orchestrator/SharedContract.js';
-import { epicId, epicNumber, planningRelPaths } from './paths.js';
+import { loadOwnershipMap, computeWithinEpicOverlaps } from '../orchestrator/ContractOwnership.js';
+import { deriveSameFileSerialization } from '../orchestrator/SerializeOverlaps.js';
+import type { SerializationEdge } from '../orchestrator/SerializeOverlaps.js';
+import { epicId, epicNumber, planningPaths, planningRelPaths } from './paths.js';
 import { PlanningOutputSink } from './PlanningOutputSink.js';
 import type { PlanningEvent } from './PlanningEvent.js';
+import { serializeEpic } from './epicSerializer.js';
+import type { EpicYaml } from '../types.js';
 
 export interface PlanResult {
   runId: string;
@@ -257,6 +263,11 @@ export class Planner {
 
     const storyCount = architect.epics.reduce((n, e) => n + e.stories.length, 0);
 
+    // Serialize same-file story groups: derive dependency edges for stories
+    // that edit the same file, ensuring they integrate sequentially.
+    const audit = new AuditLog(this.opts.db);
+    applySameFileSerialization(architect.epics, this.opts.projectRoot, audit);
+
     return {
       runId,
       briefPath: analyst.briefPath,
@@ -268,6 +279,120 @@ export class Planner {
       storiesEnriched: architect.storiesEnriched,
       usage,
     };
+  }
+}
+
+/**
+ * Integration hook called in `persistPlanResult` after Architect Task C and
+ * optional QA enrichment. For each epic that has a shared contract, detects
+ * stories editing the same file (via `computeWithinEpicOverlaps`) and adds
+ * dependency edges that serialize them into a total order, so no two same-file
+ * stories remain mutually unordered at dispatch time.
+ *
+ * Mutates `story.dependencies` (adds the new edge id) and `story.dependency_reasons`
+ * (adds machine-readable provenance). Rewrites the epic YAML on disk. Writes one
+ * `AuditLog.record()` row per serialized file with action
+ * `'plan_serialize_same_file'`.
+ *
+ * No-op when no contract exists for an epic, or when no within-epic overlaps
+ * are detected (ADR-004 degrade path). Never throws — the caller's happy path
+ * must not be blocked by advisory enrichment.
+ */
+export function applySameFileSerialization(
+  epics: EpicYaml[],
+  projectRoot: string,
+  audit: AuditLog,
+): void {
+  if (epics.length === 0) return;
+
+  // All epics in a planning run share the same .loom/planning/<runId>/epics/
+  // directory; the first epic's id IS the runId.
+  const runId = epics[0].epic_id;
+  const paths = planningPaths(projectRoot, runId);
+
+  for (const epic of epics) {
+    let ownerMap;
+    try {
+      ownerMap = loadOwnershipMap(projectRoot, epic.epic_id);
+    } catch {
+      continue; // degrade gracefully if contract is unreadable
+    }
+    if (!ownerMap) continue; // no contract → no-op
+
+    const overlaps = computeWithinEpicOverlaps(ownerMap);
+    if (overlaps.length === 0) continue;
+
+    const edges = deriveSameFileSerialization(epic.stories, overlaps);
+    if (edges.length === 0) continue;
+
+    // Build topo index map for chain derivation in audit records.
+    const topoIndexMap = new Map(epic.stories.map((s, i) => [s.id, i]));
+
+    // Mutate stories in memory: add dependency and provenance.
+    for (const edge of edges) {
+      const story = epic.stories.find((s) => s.id === edge.from);
+      if (!story) continue;
+
+      if (!story.dependencies.includes(edge.dependsOn)) {
+        story.dependencies.push(edge.dependsOn);
+      }
+
+      if (!story.dependency_reasons) story.dependency_reasons = [];
+      const alreadyRecorded = story.dependency_reasons.some(
+        (r) => r.depends_on === edge.dependsOn && r.path === edge.path
+      );
+      if (!alreadyRecorded) {
+        story.dependency_reasons.push({
+          depends_on: edge.dependsOn,
+          reason: 'same-file-conflict-avoidance',
+          path: edge.path,
+        });
+      }
+    }
+
+    // Rewrite the epic YAML with the enriched story data.
+    try {
+      fs.writeFileSync(
+        paths.epicFile(epic.epic_id),
+        serializeEpic(epic, 'and serialized (overlap resolution)'),
+      );
+    } catch {
+      // If the YAML file doesn't exist yet (e.g. in tests that don't write it),
+      // proceed without writing — the in-memory mutation is the authoritative state.
+    }
+
+    // One audit row per shared file (Seam-6).
+    const edgesByPath = new Map<string, SerializationEdge[]>();
+    for (const edge of edges) {
+      const list = edgesByPath.get(edge.path);
+      if (list) list.push(edge);
+      else edgesByPath.set(edge.path, [edge]);
+    }
+
+    for (const [filePath, fileEdges] of edgesByPath) {
+      const overlap = overlaps.find((o) => o.path === filePath);
+      const chain = overlap
+        ? [...overlap.owners]
+            .filter((o) => o.storyId !== undefined)
+            .map((o) => o.storyId as string)
+            .sort((a, b) => {
+              const ai = topoIndexMap.get(a) ?? Infinity;
+              const bi = topoIndexMap.get(b) ?? Infinity;
+              if (ai !== bi) return ai - bi;
+              return a < b ? -1 : a > b ? 1 : 0;
+            })
+        : [...new Set(fileEdges.flatMap((e) => [e.dependsOn, e.from]))];
+
+      audit.record({
+        action: 'plan_serialize_same_file',
+        command: epic.epic_id,
+        detail: {
+          path: filePath,
+          chain,
+          added_edges: fileEdges.map((e) => ({ from: e.from, dependsOn: e.dependsOn })),
+        },
+      });
+    }
   }
 }
 
