@@ -162,3 +162,127 @@ Gate decision: **`inconclusive`**. The 45% classifier failure rate (10/22 cases)
 ---
 
 *Generated output (gitignored): `.loom/eval/intake-report.{md,json}`*
+
+---
+
+## Epic-026 — Post-Merge Operator Run Instructions (2026-06-19)
+
+**Context:** Epic-026 adds two improvements to the intake classifier pipeline before re-measuring:
+- **story-026-001**: bounded retry on unparseable classifier output (`MAX_CLASSIFY_RETRIES = 1`, so up to 2 total `llm.complete` calls per case on `invalid_output`). The epic-023 run saw 45% `invalid_output` failures; this retry is the primary intervention.
+- **story-026-002**: four unrepresentative fragment briefs in `eval-cases/intake-classification.yaml` were rewritten to proper brief form; labels are unchanged.
+
+The long eval is intentionally **NOT** run by the worker agent (NFR-4, ADR-005). A worker cannot honestly mark its own homework. The go/no-go verdict is determined post-merge by an operator.
+
+### Prerequisites
+
+1. Epic-026 branch merged into `main` and built locally:
+   ```
+   npm install
+   npm run build
+   ```
+2. A working LLM backend. The default is `claude-cli` (session-based). If `invalid_output` failures remain high after the retry, re-run with the SDK backend:
+   ```
+   LOOM_EVAL_BACKEND=sdk npm run eval:intake
+   ```
+
+### Running the eval
+
+```bash
+npm run eval:intake
+```
+
+or equivalently:
+
+```bash
+node scripts/eval-intake.mjs
+```
+
+Optional overrides (defaults shown):
+
+```
+LOOM_EVAL_BACKEND=claude-cli        # 'sdk' eliminates CLI prefill-flattening failures
+LOOM_EVAL_MODEL=claude-haiku-4-5-20251001
+LOOM_JUDGE_MODEL=claude-opus-4-8
+```
+
+The eval processes all 22 cases in `packages/loom-core/eval-cases/intake-classification.yaml`. It writes the full report to:
+- `.loom/eval/intake-report.md` (human-readable)
+- `.loom/eval/intake-report.json` (machine-readable; use this for the raw numbers below)
+
+### What to record
+
+Commit the filled-in table below to `.loom/planning/epic-026/eval-run-YYYY-MM-DD.md` after the run.
+
+#### 1. Per-axis accuracy (both axes)
+
+From `intake-report.json` → `axes[].accuracy`, or from the console output:
+
+| Axis   | Correct / Scored | Accuracy | Classifier failures excluded |
+|--------|-----------------|----------|------------------------------|
+| `type` | X / Y           | Z%       | N                            |
+| `size` | X / Y           | Z%       | N                            |
+
+#### 2. ConfusionMatrix counts — type axis
+
+From `intake-report.json` → `axes[0].confusion.counts` (labeled rows × predicted columns):
+
+|                    | predicted:`feature` | predicted:`bug` | predicted:`chore` |
+|--------------------|---------------------|-----------------|-------------------|
+| **labeled:`feature`** | `counts['feature']['feature']` = ? | `counts['feature']['bug']` = ? | `counts['feature']['chore']` = ? |
+| **labeled:`bug`**     | `counts['bug']['feature']` = ?    | `counts['bug']['bug']` = ?    | `counts['bug']['chore']` = ?    |
+| **labeled:`chore`**   | `counts['chore']['feature']` = ?  | `counts['chore']['bug']` = ?  | `counts['chore']['chore']` = ?  |
+
+#### 3. ConfusionMatrix counts — size axis
+
+From `intake-report.json` → `axes[1].confusion.counts`:
+
+|                    | predicted:`story` | predicted:`epic` |
+|--------------------|-------------------|-----------------|
+| **labeled:`story`** | `counts['story']['story']` = ? | `counts['story']['epic']` = ? |
+| **labeled:`epic`**  | `counts['epic']['story']` = ? ← **under-sizing cell (FR-9)** | `counts['epic']['epic']` = ? |
+
+#### 4. Failure-reason counts
+
+From `intake-report.json` → `failureCounts.classifier`:
+
+| Reason           | Count |
+|------------------|-------|
+| `invalid_output` | N     |
+| `timeout`        | N     |
+| `llm_error`      | N     |
+
+After story-026-001's bounded retry, `invalid_output` count should be notably lower than the 10/22 seen in the epic-023 run.
+
+#### 5. GateDecision
+
+From `intake-report.json` → `gate.decision` and `gate.statement`:
+
+```
+gate.decision: proceed | do-not-proceed | inconclusive
+gate.statement: "<copy verbatim>"
+```
+
+The `GateDecision` values mean:
+- **`proceed`**: classifier clears Phase 1 quality bar — failure rate ≤ 25%, scored cases ≥ 5, no dangerous confusions.
+- **`do-not-proceed`**: classifier fails the quality bar — dangerous confusions exceed the threshold.
+- **`inconclusive`**: the run itself is compromised (too many failures or too few scored cases) — re-run or switch backend.
+
+#### 6. Under-sizing check (FR-9)
+
+From the size-axis `ConfusionMatrix`, record:
+
+```
+counts['epic']['story'] = N   ← epics the classifier predicted as story (under-sizing)
+```
+
+**Gate bar: ≤ 2.** If `counts['epic']['story'] > 2`, the size axis does NOT clear the Phase 1 quality bar and `gate.decision` will be `do-not-proceed`.
+
+The epic-023 run recorded 2 epic→story confusions (`epic-009`, `epic-018`). The rewritten briefs in story-026-002 may shift this; record the honest count regardless.
+
+### Recording the honest verdict
+
+Do NOT adjust the verdict based on whether the outcome is favorable. Record the numbers as-is. If `gate.decision` is `inconclusive` or `do-not-proceed`, note the root cause (e.g., still-high `invalid_output` count → switch to SDK backend and re-run; epic→story count > 2 → open a follow-on epic).
+
+This is the "honest gate" per ADR-005: the go/no-go signal arrives out-of-band from a human operator after merge, not from the worker that implemented the changes.
+
+*Generated output (gitignored): `.loom/eval/intake-report.{md,json}`*
