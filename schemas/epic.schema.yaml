@@ -70,3 +70,13 @@ definitions:
       test_plan:
         type: string
         description: "QA-added (Tessa) risk-based test plan for the developer agent; present only when policy.agents.qa_planning='advisory'"
+      dependency_reasons:
+        type: array
+        description: "machine-readable provenance for derived dependency edges"
+        items:
+          type: object
+          required: [depends_on, reason]
+          properties:
+            depends_on: { type: string }
+            reason: { type: string, enum: ["same-file-conflict-avoidance"] }
+            path: { type: string }
