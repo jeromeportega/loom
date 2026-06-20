@@ -69,7 +69,11 @@ cases:
 
   - id: epic-001
     source: epic
-    brief: "Core Engine: loom init, policy engine, SQLite state"
+    brief: >
+      Build the loom core engine: implement the loom init command that scaffolds
+      a new project, a structural policy engine that blocks forbidden shell
+      commands regardless of LLM output, and a SQLite-backed state schema for
+      persisting agent records and the audit log.
     brief_source: "epics/epic-001.yaml"
     label:
       type: feature
@@ -95,7 +99,12 @@ cases:
 
   - id: epic-003
     source: epic
-    brief: "Story Dispatch: supervisor, worktree isolation, subagent runner"
+    brief: >
+      Build loom's autonomous story dispatch system: a supervisor that
+      coordinates story execution across an epic, per-story git worktree
+      isolation so parallel agents cannot interfere with each other, and a
+      subagent runner that invokes the worker CLI inside each isolated
+      worktree.
     brief_source: "epics/epic-003.yaml"
     label:
       type: feature
@@ -121,7 +130,11 @@ cases:
 
   - id: epic-005
     source: epic
-    brief: "Skill System: discovery, loading, injection, and post-story generation"
+    brief: >
+      Build the loom skill subsystem: on-disk skill discovery and schema
+      validation, runtime skill loading and injection into worker contexts,
+      and a post-story generation step that produces new skills from story
+      output and writes them back to the skill corpus.
     brief_source: "epics/epic-005.yaml"
     label:
       type: feature
@@ -266,8 +279,11 @@ cases:
   - id: epic-016
     source: epic
     brief: >
-      Cost governance — context manifests, repo digest, diff-first, full
-      dashboard
+      Add cost governance to loom: context manifests that record token usage
+      per agent call, a repo digest cache that reduces repeated-read costs, a
+      diff-first worker mode that primes context with the current diff before
+      full file reads, and a dashboard command that reports accumulated token
+      spend across an epic.
     brief_source: "epics/epic-016.yaml"
     label:
       type: feature
