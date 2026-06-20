@@ -1,3 +1,5 @@
+import { extractJsonObject } from './jsonExtract.js';
+
 /** The marker a worker emits to share cross-cutting conventions/gotchas. */
 export const CONVENTIONS_MARKER = 'LOOM_CONVENTIONS';
 
@@ -27,28 +29,12 @@ export function parseConventions(output: string): string[] | undefined {
   // Enforce raw payload size cap before any parsing.
   if (afterMarker.length > MAX_CONVENTION_MARKER_CHARS) return undefined;
 
-  // Walk braces to extract the JSON object.
-  const start = afterMarker.indexOf('{');
-  if (start === -1) return undefined;
-
-  let depth = 0;
-  let end = -1;
-  for (let i = start; i < afterMarker.length; i++) {
-    const ch = afterMarker[i];
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        end = i;
-        break;
-      }
-    }
-  }
-  if (end === -1) return undefined;
+  const jsonStr = extractJsonObject(afterMarker);
+  if (jsonStr === undefined) return undefined;
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(afterMarker.slice(start, end + 1));
+    parsed = JSON.parse(jsonStr);
   } catch {
     return undefined;
   }

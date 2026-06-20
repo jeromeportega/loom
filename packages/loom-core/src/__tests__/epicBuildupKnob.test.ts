@@ -78,7 +78,7 @@ describe('epic_buildup knob — invalid values rejected', () => {
   });
 });
 
-// ─── (5) Regression — context_notes is unchanged ─────────────────────────────
+// ─── (4) Regression — context_notes is unchanged ─────────────────────────────
 
 describe('epic_buildup knob — context_notes independence (ADR-001)', () => {
   it('context_notes still defaults to "off" when epic_buildup is absent', () => {

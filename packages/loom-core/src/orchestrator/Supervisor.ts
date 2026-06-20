@@ -43,6 +43,7 @@ import { WorkerWatchdog } from './WorkerWatchdog.js';
 import { StoryHandoff } from './StoryHandoff.js';
 import { StoryContext } from './StoryContext.js';
 import { EpicBuildup } from './EpicBuildup.js';
+import { parseConventions } from './conventionsMarker.js';
 import { gitSafe } from './git.js';
 import type { WorkerInputChannel } from './WorkerInputChannel.js';
 import { SpawnStagger } from './resilience/SpawnStagger.js';
@@ -1056,7 +1057,7 @@ export class Supervisor {
       });
       // Now integrated and visible to dependents — emit its context note.
       this.writeContextNote(task, result.summary);
-      this.appendBuildupEntry(task, result.summary, new Date().toISOString());
+      this.appendBuildupEntry(task, result.summary, new Date().toISOString(), result.logTail);
       this.opts.onWorkerEvent?.({
         type: 'completed',
         storyId: task.story.id,
@@ -1079,7 +1080,7 @@ export class Supervisor {
         // resolution — the transient 'integrating' marker has done its job.
         this.agents.updateStatus(task.agentId, priorStatus);
         this.writeContextNote(task, result.summary);
-        this.appendBuildupEntry(task, result.summary, new Date().toISOString());
+        this.appendBuildupEntry(task, result.summary, new Date().toISOString(), result.logTail);
         this.opts.onWorkerEvent?.({
           type: 'completed',
           storyId: task.story.id,
@@ -1799,15 +1800,24 @@ export class Supervisor {
   /**
    * Appends a build-up entry for a successful story to the epic-cumulative doc
    * at .loom/buildup/<epic-id>.json. Gated on epicBuildup='on'. Best-effort:
-   * never throws into the caller. Records a buildup_appended audit row before
-   * returning (Invariant 5). No extra model calls — entry is built from durable
-   * telemetry via gatherStoryBranchState + StoryContext.render (NFR-1).
+   * never throws into the caller. Records a buildup_appended audit row (Invariant 5)
+   * only when something was actually written (entry added or conventions appended).
+   * No extra model calls — entry body is built from durable telemetry via
+   * gatherStoryBranchState + StoryContext.render (NFR-1).
    */
-  private appendBuildupEntry(task: StoryTask, summary: string, completedAt: string): void {
+  private appendBuildupEntry(
+    task: StoryTask,
+    summary: string,
+    completedAt: string,
+    logTail: string
+  ): void {
     if (this.opts.epicBuildup !== 'on') return;
+
+    // Build entry body from durable telemetry — no model call.
+    const state = this.gatherStoryBranchState(task);
+    let body = '';
     try {
-      const state = this.gatherStoryBranchState(task);
-      const body = StoryContext.render({
+      body = StoryContext.render({
         storyId: task.story.id,
         epicId: task.epicId,
         title: task.story.title,
@@ -1818,28 +1828,48 @@ export class Supervisor {
         traces: this.decisionTraces.getByStory(task.story.id),
         generatedAt: completedAt,
       });
-      const entry = {
+    } catch { /* best-effort render */ }
+
+    // Parse conventions from worker output (never throws).
+    const parsedConventions = parseConventions(logTail) ?? [];
+
+    // Perform FS writes — each in its own try so one failure doesn't block the other.
+    let entryAdded = false;
+    try {
+      entryAdded = EpicBuildup.appendStoryEntry(this.opts.projectRoot, task.epicId, {
         storyId: task.story.id,
         title: task.story.title,
         completedAt,
         body,
-      };
-      EpicBuildup.appendStoryEntry(this.opts.projectRoot, task.epicId, entry);
-      const doc = EpicBuildup.read(this.opts.projectRoot, task.epicId);
-      const bytes = doc ? JSON.stringify(doc).length : 0;
+      });
+    } catch { /* best-effort */ }
+
+    let conventionsAdded = 0;
+    try {
+      if (parsedConventions.length > 0) {
+        conventionsAdded = EpicBuildup.appendConventions(
+          this.opts.projectRoot,
+          task.epicId,
+          task.story.id,
+          completedAt,
+          parsedConventions
+        );
+      }
+    } catch { /* best-effort */ }
+
+    // Audit fires unconditionally after writes (Invariant 5) — outside any catch scope.
+    // Only emitted when something was actually written; no row for idempotent no-ops.
+    if (entryAdded || conventionsAdded > 0) {
       this.audit.record({
         agent_id: task.agentId,
         action: 'buildup_appended',
         command: task.story.id,
         detail: {
           epicId: task.epicId,
-          entryAdded: true,
-          conventionsAdded: 0,
-          bytes,
+          entryAdded,
+          conventionsAdded,
         },
       });
-    } catch {
-      // Best-effort: never fail a story over build-up telemetry.
     }
   }
 
@@ -2222,7 +2252,7 @@ export class Supervisor {
     // integrateStory there; otherwise (legacy topology) write it on success now.
     if (!this.rolling && SUCCESS.has(status)) {
       this.writeContextNote(task, result.summary);
-      this.appendBuildupEntry(task, result.summary, new Date().toISOString());
+      this.appendBuildupEntry(task, result.summary, new Date().toISOString(), result.logTail ?? '');
     }
     // Single-event-per-story contract: in rolling mode a successful worker is
     // not "done" until its branch integrates, so DEFER the completed event to

@@ -5,8 +5,11 @@
  *  (n) on success, appendBuildupEntry fires from applyResult (non-rolling) and
  *      integrateStory (rolling) and emits a buildup_appended audit row (Invariant 5).
  *  (o) with the knob OFF, no file under .loom/buildup/ is created and no audit row.
- *  (p) a worker that emits a bad/absent result still SUCCEEDS — story result unaffected.
+ *  (p) a worker that emits a bad/absent conventions marker still SUCCEEDS — story
+ *      result unaffected (separate case: a completely failed story creates no entry).
  *  (m) entry body is produced with no Anthropic/model client invoked (NFR-1).
+ *  Conventions wiring: a well-formed LOOM_CONVENTIONS marker from the worker is
+ *  parsed and appended to the conventions section of the build-up doc.
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,6 +24,7 @@ import { EpicStore } from '../state/EpicStore.js';
 import { Supervisor } from '../orchestrator/Supervisor.js';
 import { MockWorkerRunner } from '../orchestrator/MockWorkerRunner.js';
 import { EpicBuildup } from '../orchestrator/EpicBuildup.js';
+import { CONVENTIONS_MARKER } from '../orchestrator/conventionsMarker.js';
 import type { Story } from '../types.js';
 
 let repo: string;
@@ -175,7 +179,7 @@ describe('Supervisor epicBuildup — knob off', () => {
   });
 });
 
-// (p) a failed story does not create a build-up entry (only successes do)
+// A completely failed story does not create a build-up entry (only successes do)
 describe('Supervisor epicBuildup — failed story', () => {
   it('does not write a buildup entry for a failed story', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
@@ -287,5 +291,97 @@ describe('Supervisor epicBuildup — rolling mode', () => {
 
     const file = EpicBuildup.pathFor(repo, 'epic-001');
     assert.ok(!fs.existsSync(file), 'no buildup file in rolling mode when knob is off');
+  });
+});
+
+// Conventions wiring: LOOM_CONVENTIONS marker from worker is parsed and appended
+describe('Supervisor epicBuildup — conventions wiring', () => {
+  it('(p) a worker that emits a bad conventions marker still succeeds', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    // Worker emits malformed LOOM_CONVENTIONS — story must still reach 'done'.
+    const result = await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: new MockWorkerRunner(async (a) => {
+        fs.writeFileSync(path.join(a.worktreePath, `${a.storyId}.txt`), `${a.storyId}\n`);
+        gitc(['add', '.'], a.worktreePath);
+        gitc(['commit', '-q', '-m', `${a.storyId}: work`], a.worktreePath);
+        return {
+          status: 'done' as const,
+          commitCount: 1,
+          summary: `built ${a.storyId}`,
+          logTail: `${CONVENTIONS_MARKER} {bad json`,
+        };
+      }),
+      maxConcurrent: 1,
+      epicBuildup: 'on',
+    }).run();
+
+    assert.equal(result.storiesDone, 1, 'story must succeed with bad conventions marker');
+    assert.equal(result.storiesFailed, 0);
+    // No conventions should be written, but the story entry should still be there.
+    const doc = EpicBuildup.read(repo, 'epic-001');
+    assert.ok(doc !== null, 'build-up doc must exist');
+    assert.equal(doc!.entries.length, 1, 'story entry must be written');
+    assert.equal(doc!.conventions.length, 0, 'no conventions for bad marker');
+  });
+
+  it('parses and appends well-formed LOOM_CONVENTIONS from worker logTail', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    const convention1 = 'use ULID not UUID for ids';
+    const convention2 = 'gate feature X behind flag Y';
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: new MockWorkerRunner(async (a) => {
+        fs.writeFileSync(path.join(a.worktreePath, `${a.storyId}.txt`), `${a.storyId}\n`);
+        gitc(['add', '.'], a.worktreePath);
+        gitc(['commit', '-q', '-m', `${a.storyId}: work`], a.worktreePath);
+        return {
+          status: 'done' as const,
+          commitCount: 1,
+          summary: `built ${a.storyId}`,
+          logTail: `done.\n${CONVENTIONS_MARKER} ${JSON.stringify({ conventions: [convention1, convention2] })}`,
+        };
+      }),
+      maxConcurrent: 1,
+      epicBuildup: 'on',
+    }).run();
+
+    const doc = EpicBuildup.read(repo, 'epic-001');
+    assert.ok(doc !== null, 'build-up doc must exist');
+    assert.equal(doc!.conventions.length, 2, 'both conventions must be appended');
+    assert.equal(doc!.conventions[0].text, convention1);
+    assert.equal(doc!.conventions[1].text, convention2);
+    assert.equal(doc!.conventions[0].storyId, 'story-001-001');
+
+    // Audit row should reflect that conventions were added.
+    const row = new AuditLog(db).latestActionByCommand('story-001-001', ['buildup_appended']);
+    assert.ok(row, 'buildup_appended audit row must be written');
+    const detail = JSON.parse(row!.detail ?? '{}') as Record<string, unknown>;
+    assert.equal(detail.conventionsAdded, 2);
+  });
+
+  it('ignores absent conventions marker and writes entry normally', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: committingWorker(), // logTail is '' — no marker
+      maxConcurrent: 1,
+      epicBuildup: 'on',
+    }).run();
+
+    const doc = EpicBuildup.read(repo, 'epic-001');
+    assert.ok(doc !== null);
+    assert.equal(doc!.entries.length, 1, 'story entry written without conventions');
+    assert.equal(doc!.conventions.length, 0, 'no conventions when marker absent');
   });
 });

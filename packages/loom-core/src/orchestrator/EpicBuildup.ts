@@ -63,13 +63,14 @@ export class EpicBuildup {
   /**
    * Appends a story entry to the build-up doc. Idempotent: if entry.storyId
    * is already present, this is a no-op. Synchronous read-modify-write with
-   * atomic tmp+rename.
+   * atomic tmp+rename. Returns true when the entry was newly added, false when
+   * it was already present (so callers can skip the audit row on no-ops).
    */
   static appendStoryEntry(
     projectRoot: string,
     epicId: string,
     entry: BuildupEntry
-  ): void {
+  ): boolean {
     const file = EpicBuildup.pathFor(projectRoot, epicId);
     fs.mkdirSync(path.dirname(file), { recursive: true });
 
@@ -81,17 +82,19 @@ export class EpicBuildup {
     };
 
     // Idempotent: no-op if already present.
-    if (doc.entries.some((e) => e.storyId === entry.storyId)) return;
+    if (doc.entries.some((e) => e.storyId === entry.storyId)) return false;
 
     doc.entries.push(entry);
     atomicWrite(file, doc);
+    return true;
   }
 
   /**
    * Parses, truncates, and dedupes conventions then appends them. Each text is
    * already bounded by the caller (parseConventions enforces per-entry caps);
    * this method enforces store-side dedup by hash so a duplicate convention
-   * from any story is silently ignored.
+   * from any story is silently ignored. Returns the count of conventions
+   * actually appended (0 when all were duplicates or the list was empty).
    */
   static appendConventions(
     projectRoot: string,
@@ -99,8 +102,8 @@ export class EpicBuildup {
     storyId: string,
     recordedAt: string,
     texts: string[]
-  ): void {
-    if (texts.length === 0) return;
+  ): number {
+    if (texts.length === 0) return 0;
     const file = EpicBuildup.pathFor(projectRoot, epicId);
     fs.mkdirSync(path.dirname(file), { recursive: true });
 
@@ -126,8 +129,9 @@ export class EpicBuildup {
       added++;
     }
 
-    if (added === 0) return;
+    if (added === 0) return 0;
     atomicWrite(file, doc);
+    return added;
   }
 
   /**
@@ -137,15 +141,14 @@ export class EpicBuildup {
   static renderForInjection(doc: EpicBuildupDoc, budgetChars = EPIC_BUILDUP_INJECT_BUDGET): string {
     const parts: string[] = [];
 
-    // Conventions block (sub-budget reserved, evicted last).
+    // Conventions block (reserved sub-budget, but always subject to the overall cap).
     if (doc.conventions.length > 0) {
       const convLines = doc.conventions.map((c) => `- [${c.storyId}] ${c.text}`);
       const convBlock =
         '#### Discovered conventions & gotchas\n' + convLines.join('\n');
+      const convCap = Math.min(CONVENTIONS_INJECT_BUDGET, budgetChars);
       const capped =
-        convBlock.length <= CONVENTIONS_INJECT_BUDGET
-          ? convBlock
-          : convBlock.slice(0, CONVENTIONS_INJECT_BUDGET);
+        convBlock.length <= convCap ? convBlock : convBlock.slice(0, convCap);
       parts.push(capped);
     }
 

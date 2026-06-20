@@ -76,20 +76,18 @@ describe('parseConventions', () => {
   });
 
   it('accepts a payload just at the MAX_CONVENTION_MARKER_CHARS boundary', () => {
-    // Build a payload that is exactly at the limit
-    const shortEntry = 'short entry';
-    const filler = `{"conventions":["${shortEntry}"]}`;
-    // Pad with space before the JSON so we hit the limit exactly
-    const padding = ' '.repeat(MAX_CONVENTION_MARKER_CHARS - filler.length);
-    const out = `${CONVENTIONS_MARKER}${padding}${filler}`;
-    // The after-marker portion is exactly MAX_CONVENTION_MARKER_CHARS
-    const afterMarker = out.slice(out.lastIndexOf(CONVENTIONS_MARKER) + CONVENTIONS_MARKER.length);
-    assert.ok(afterMarker.length <= MAX_CONVENTION_MARKER_CHARS, 'test assumption: at boundary');
+    // Build a payload where the JSON starts immediately after a single space so
+    // the result is deterministic. The after-marker portion is the space + json +
+    // trailing, which we size so total == MAX_CONVENTION_MARKER_CHARS.
+    const entry = 'boundary entry';
+    const json = `{"conventions":["${entry}"]}`;
+    // after-marker = ' ' + json + trailing  ⟹  trailing fills to the cap
+    const trailing = ' '.repeat(MAX_CONVENTION_MARKER_CHARS - 1 - json.length);
+    const out = `${CONVENTIONS_MARKER} ${json}${trailing}`;
+    const afterMarker = out.slice(CONVENTIONS_MARKER.length);
+    assert.equal(afterMarker.length, MAX_CONVENTION_MARKER_CHARS, 'test assumption: exactly at boundary');
     const result = parseConventions(out);
-    // Padding shifts the { so we may or may not parse — just assert no throw
-    assert.doesNotThrow(() => parseConventions(out));
-    // The actual result depends on padding, but it must not throw
-    void result;
+    assert.deepEqual(result, [entry]);
   });
 
   // (f) single convention text > MAX_CONVENTION_CHARS → bounded/dropped on ingest
