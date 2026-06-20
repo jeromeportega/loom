@@ -165,7 +165,8 @@ describe('runIntakeEval — classifier failure handling', () => {
   it('records remain accurate across mixed success/failure cases', async () => {
     const cases = [makeCase('a', 'feature', 'story'), makeCase('b', 'bug', 'epic')];
     const llm = new MockLLMClient([
-      'not valid json',                     // case a → classifier failure
+      'not valid json',                     // case a → attempt 1, classifier failure
+      'not valid json',                     // case a → retry (MAX_CLASSIFY_RETRIES=1), still failure
       validVerdictJson('bug', 'epic'),      // case b → success
     ]);
 
@@ -185,9 +186,10 @@ describe('runIntakeEval — classifier failure handling', () => {
     });
 
     assert.equal(records.length, 2);
-    assert.equal(records[0].classifier.ok, false, 'first case should fail');
+    assert.equal(records[0].classifier.ok, false, 'first case should fail after exhausting retries');
     assert.equal(records[1].classifier.ok, true, 'second case should succeed');
-    assert.equal(llm.requests.length, 2, 'still exactly one LLM call per case');
+    // case a used 2 LLM calls (1 initial + 1 retry), case b used 1 — 3 total
+    assert.equal(llm.requests.length, 3, 'failed case uses up to 1+MAX_CLASSIFY_RETRIES calls');
     assert.equal(judgeCallCount, 1, 'judge called only for the successful case');
   });
 });

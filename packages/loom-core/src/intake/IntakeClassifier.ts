@@ -39,6 +39,9 @@ const TYPE_INSTRUCTION = [
 // from '{' rather than prepend prose or markdown fences.
 const ASSISTANT_PREFILL = '{';
 
+// Additional attempts after the first; 1 means 2 total model calls at most.
+const MAX_CLASSIFY_RETRIES = 1;
+
 class TriageTimeoutError extends Error {
   constructor(ms: number) {
     super(`triage call exceeded ${ms}ms`);
@@ -71,7 +74,7 @@ function recoverJsonText(text: string): string {
   return ASSISTANT_PREFILL + trimmed;
 }
 
-export async function classifyIntake(
+async function classifyOnce(
   brief: string,
   opts: { llm: LLMClient; model: string; timeoutMs?: number },
 ): Promise<ClassifyResult> {
@@ -132,4 +135,18 @@ export async function classifyIntake(
       detail: e instanceof Error ? e.message : String(e),
     };
   }
+}
+
+export async function classifyIntake(
+  brief: string,
+  opts: { llm: LLMClient; model: string; timeoutMs?: number },
+): Promise<ClassifyResult> {
+  let r: ClassifyResult | undefined;
+  for (let attempt = 0; attempt <= MAX_CLASSIFY_RETRIES; attempt++) {
+    r = await classifyOnce(brief, opts);
+    if (r.ok) return r;
+    if (r.reason !== 'invalid_output') return r;
+    // parse failure: loop to next attempt
+  }
+  return r!;
 }
