@@ -67,6 +67,17 @@ describe('intakeFragmentRewrite — story-026-002 (fixture/data validation)', ()
       assert.equal(c.label.type, expected.type, `${id}: label.type changed — expected ${expected.type}`);
       assert.equal(c.label.size, expected.size, `${id}: label.size changed — expected ${expected.size}`);
     }
+    // Reverse check: cases added after the snapshot was taken (not in LABEL_SNAPSHOT)
+    // must still carry valid enum values. This prevents a future addition with a
+    // malformed label from slipping through undetected.
+    const VALID_TYPES = new Set(['feature', 'bug', 'chore']);
+    const VALID_SIZES = new Set(['story', 'epic']);
+    for (const c of cases) {
+      if (!(c.id in LABEL_SNAPSHOT)) {
+        assert.ok(VALID_TYPES.has(c.label.type), `${c.id}: label.type "${c.label.type}" is not a valid enum value`);
+        assert.ok(VALID_SIZES.has(c.label.size), `${c.id}: label.size "${c.label.size}" is not a valid enum value`);
+      }
+    }
   });
 
   it('non-empty rewrites: every rewritten brief is non-whitespace', () => {
@@ -86,12 +97,18 @@ describe('intakeFragmentRewrite — story-026-002 (fixture/data validation)', ()
     assert.ok(fs.existsSync(relabelPath), `RELABEL.md not found at ${relabelPath}`);
     const content = fs.readFileSync(relabelPath, 'utf8');
 
+    // Split on '---' section dividers so field-presence checks are scoped to each
+    // id's block, not the document globally. A missing field in one entry that
+    // exists in another would otherwise produce a false pass.
+    const blocks = content.split(/^---$/m);
+
     for (const id of REWRITTEN_IDS) {
-      assert.ok(content.includes(`id:        ${id}`), `RELABEL.md missing "id: ${id}" entry`);
-      assert.ok(content.includes(`original:`), `RELABEL.md missing "original:" field (checked near ${id})`);
-      assert.ok(content.includes(`rewritten:`), `RELABEL.md missing "rewritten:" field`);
-      assert.ok(content.includes(`rationale:`), `RELABEL.md missing "rationale:" field`);
-      assert.ok(content.includes(`UNCHANGED`), `RELABEL.md missing explicit "UNCHANGED" labels assertion`);
+      const block = blocks.find((b) => b.includes(`id:        ${id}`));
+      assert.ok(block !== undefined, `RELABEL.md missing entry for "- id:        ${id}"`);
+      assert.ok(block.includes('original:'),  `RELABEL.md entry for ${id} missing "original:" field`);
+      assert.ok(block.includes('rewritten:'), `RELABEL.md entry for ${id} missing "rewritten:" field`);
+      assert.ok(block.includes('rationale:'), `RELABEL.md entry for ${id} missing "rationale:" field`);
+      assert.ok(block.includes('UNCHANGED'),  `RELABEL.md entry for ${id} missing explicit "UNCHANGED" labels assertion`);
     }
   });
 
