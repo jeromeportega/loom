@@ -42,6 +42,7 @@ import type { EpicFinalizer } from './EpicFinalizer.js';
 import { WorkerWatchdog } from './WorkerWatchdog.js';
 import { StoryHandoff } from './StoryHandoff.js';
 import { StoryContext } from './StoryContext.js';
+import { EpicBuildup } from './EpicBuildup.js';
 import { gitSafe } from './git.js';
 import type { WorkerInputChannel } from './WorkerInputChannel.js';
 import { SpawnStagger } from './resilience/SpawnStagger.js';
@@ -150,6 +151,15 @@ export interface SupervisorOptions {
    * byte-identical to the bench baseline.
    */
   contextNotes?: 'off' | 'on';
+  /**
+   * policy.agents.epic_buildup. When 'on', a concise entry (summary, files
+   * touched, key decisions) is appended to the epic-cumulative build-up doc at
+   * <projectRoot>/.loom/buildup/<epic-id>.json on each successful story. No
+   * extra model calls — all written from the supervisor's single process.
+   * 'off' (default) writes nothing and keeps the worker prompt byte-identical
+   * to the bench baseline (gates appendStoryEntry on success).
+   */
+  epicBuildup?: 'off' | 'on';
   /**
    * policy.agents.distill_context. When 'on', the supervisor runs the
    * doc-distiller over each story's planning artifacts (PRD, epic, architecture,
@@ -1046,6 +1056,7 @@ export class Supervisor {
       });
       // Now integrated and visible to dependents — emit its context note.
       this.writeContextNote(task, result.summary);
+      this.appendBuildupEntry(task, result.summary, new Date().toISOString());
       this.opts.onWorkerEvent?.({
         type: 'completed',
         storyId: task.story.id,
@@ -1068,6 +1079,7 @@ export class Supervisor {
         // resolution — the transient 'integrating' marker has done its job.
         this.agents.updateStatus(task.agentId, priorStatus);
         this.writeContextNote(task, result.summary);
+        this.appendBuildupEntry(task, result.summary, new Date().toISOString());
         this.opts.onWorkerEvent?.({
           type: 'completed',
           storyId: task.story.id,
@@ -1785,6 +1797,53 @@ export class Supervisor {
   }
 
   /**
+   * Appends a build-up entry for a successful story to the epic-cumulative doc
+   * at .loom/buildup/<epic-id>.json. Gated on epicBuildup='on'. Best-effort:
+   * never throws into the caller. Records a buildup_appended audit row before
+   * returning (Invariant 5). No extra model calls — entry is built from durable
+   * telemetry via gatherStoryBranchState + StoryContext.render (NFR-1).
+   */
+  private appendBuildupEntry(task: StoryTask, summary: string, completedAt: string): void {
+    if (this.opts.epicBuildup !== 'on') return;
+    try {
+      const state = this.gatherStoryBranchState(task);
+      const body = StoryContext.render({
+        storyId: task.story.id,
+        epicId: task.epicId,
+        title: task.story.title,
+        summary,
+        branchName: state?.branchName ?? `story/${task.story.id}`,
+        commits: state?.commits ?? [],
+        diffStat: state?.diffStat,
+        traces: this.decisionTraces.getByStory(task.story.id),
+        generatedAt: completedAt,
+      });
+      const entry = {
+        storyId: task.story.id,
+        title: task.story.title,
+        completedAt,
+        body,
+      };
+      EpicBuildup.appendStoryEntry(this.opts.projectRoot, task.epicId, entry);
+      const doc = EpicBuildup.read(this.opts.projectRoot, task.epicId);
+      const bytes = doc ? JSON.stringify(doc).length : 0;
+      this.audit.record({
+        agent_id: task.agentId,
+        action: 'buildup_appended',
+        command: task.story.id,
+        detail: {
+          epicId: task.epicId,
+          entryAdded: true,
+          conventionsAdded: 0,
+          bytes,
+        },
+      });
+    } catch {
+      // Best-effort: never fail a story over build-up telemetry.
+    }
+  }
+
+  /**
    * Reads the durable branch state (commits since base, diffstat, dirty flag)
    * for a story from its worktree. Shared by the handoff doc and the cross-story
    * context note. Returns null when the agent has no recorded worktree.
@@ -2163,6 +2222,7 @@ export class Supervisor {
     // integrateStory there; otherwise (legacy topology) write it on success now.
     if (!this.rolling && SUCCESS.has(status)) {
       this.writeContextNote(task, result.summary);
+      this.appendBuildupEntry(task, result.summary, new Date().toISOString());
     }
     // Single-event-per-story contract: in rolling mode a successful worker is
     // not "done" until its branch integrates, so DEFER the completed event to
