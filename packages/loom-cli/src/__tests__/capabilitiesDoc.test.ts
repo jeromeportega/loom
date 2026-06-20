@@ -158,3 +158,39 @@ describe('capabilities.md — epic-028-005: within-epic same-file serialization'
     assert.match(r, /plan_serialize_same_file/, 'row should name the audit log action');
   });
 });
+
+describe('capabilities.md — epic-029-005: epic build-up knob', () => {
+  const doc = fs.readFileSync(CAPABILITIES, 'utf8');
+
+  it('documents the epic_buildup knob with default-off', () => {
+    const r = row(doc, 'Epic cumulative build-up context');
+    assert.match(r, /epic_buildup/, 'row should reference the policy knob name');
+    assert.match(r, /default `off`|default off/i, 'row should state the default is off');
+    assert.match(r, /off.*keeps the worker prompt byte-identical/i, 'row should state off is byte-identical baseline');
+  });
+
+  it('documents the conventions-and-gotchas channel', () => {
+    const r = row(doc, 'Epic cumulative build-up context');
+    assert.match(r, /LOOM_CONVENTIONS/, 'row should reference the LOOM_CONVENTIONS marker');
+    assert.match(r, /conventions/i, 'row should describe the conventions channel');
+    assert.match(r, /gotcha/i, 'row should mention gotchas');
+  });
+
+  it('states the dispatch-time staleness boundary', () => {
+    const r = row(doc, 'Epic cumulative build-up context');
+    assert.match(r, /dispatch/i, 'row should mention dispatch');
+    assert.match(
+      r,
+      /concurrent|same.wave|not yet reflected/i,
+      'row should describe same-wave sibling invisibility'
+    );
+  });
+
+  it('epic_buildup is listed in the coverage:knob fence', () => {
+    assert.match(
+      doc,
+      /<!-- coverage:knob:start -->[\s\S]*`policy\.agents\.epic_buildup`[\s\S]*<!-- coverage:knob:end -->/,
+      'coverage:knob fence should include policy.agents.epic_buildup'
+    );
+  });
+});
