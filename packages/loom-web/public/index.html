@@ -293,6 +293,10 @@
       // ─── State ──────────────────────────────────────────────────────────
       // currentView is the routing surface: 'list' or `'epic:<id>'`.
       let currentView = 'list';
+      // When true, all mutation controls are hidden (FR-7/AC6).
+      // Set from /api/status .read_only on every 2s poll; defaults to false
+      // so the page remains usable if the server omits the field.
+      let readOnly = false;
       let pollTimer = null;
       // When true, the list view also fetches + shows archived runs (dimmed).
       let showArchived = false;
@@ -316,6 +320,14 @@
         });
       }
       const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+      // ─── Read-only gate (ADR-005) ────────────────────────────────────────
+      // Single chokepoint for all mutation controls. When readOnly is true,
+      // returns '' (hidden). Every approve/reject/stop/archive/kill/retry
+      // button must pass through this function — no direct HTML output.
+      function mutationControl(html) {
+        return readOnly ? '' : html;
+      }
 
       // ─── Renderers ──────────────────────────────────────────────────────
       function fmtCounts(c) {
@@ -441,15 +453,15 @@
               ${a.stall_reason ? `<span class="stall-badge" title="Worker approaching/hitting its ${esc(a.stall_reason)} deadline">⚠ ${esc(a.stall_reason)}</span>` : ''}
               <div style="color:#8b949e;font-size:11px;margin-top:2px;">${esc(a.model ?? 'unknown')}</div>
               ${a.worktree_path ? `<div class="worktree" title="${esc(a.worktree_path)}"><code>${esc(a.branch_name ?? a.worktree_path)}</code></div>` : ''}
-              ${a.status === 'running' ? `
+              ${a.status === 'running' ? mutationControl(`
                 <div class="row-actions" style="margin-top:6px;">
                   <button class="danger" data-kill="${esc(a.id)}">⏻ kill</button>
-                </div>` : ''}
-              ${(a.status === 'failed' || a.status === 'blocked') ? `
+                </div>`) : ''}
+              ${(a.status === 'failed' || a.status === 'blocked') ? mutationControl(`
                 <div class="row-actions" style="margin-top:6px;">
                   <button class="primary" data-retry="${esc(a.story_id)}">↻ retry</button>
                   <button class="danger" data-retry-clean="${esc(a.story_id)}">↻ clean retry</button>
-                </div>` : ''}
+                </div>`) : ''}
             </td>
             <td data-pr="${esc(a.id)}">${a.pr_url ? `<a href="${esc(a.pr_url)}" target="_blank">view</a>` : '—'}</td>
             <td data-tokens="${esc(a.id)}">${a.tokens_total ?? '—'}</td>
@@ -467,12 +479,16 @@
                  <div class="empty">Stories appear once planning completes.</div>`
               : '');
         const archiveLabel = epic.archived ? 'Unarchive' : 'Archive';
+        const readOnlyNotice = readOnly
+          ? '<div style="color:#8b949e;font-size:13px;font-style:italic">Read-only mode — mutations disabled.</div>'
+          : '';
         const controls = `
           <div style="margin-top: 18px;">
-            ${canApprove ? '<button class="primary" id="approveBtn">Approve & dispatch</button>' : ''}
-            ${canApprove ? '<button class="danger" id="rejectBtn">Reject</button>' : ''}
-            ${canStop ? '<button class="danger" id="stopBtn">Stop run (graceful)</button>' : ''}
-            <button id="archiveBtn">${archiveLabel}</button>
+            ${readOnlyNotice}
+            ${canApprove ? mutationControl('<button class="primary" id="approveBtn">Approve &amp; dispatch</button>') : ''}
+            ${canApprove ? mutationControl('<button class="danger" id="rejectBtn">Reject</button>') : ''}
+            ${canStop ? mutationControl('<button class="danger" id="stopBtn">Stop run (graceful)</button>') : ''}
+            ${mutationControl(`<button id="archiveBtn">${archiveLabel}</button>`)}
           </div>`;
         const verdictLabel = epic.intake_verdict
           ? `${esc(epic.intake_verdict.type)}/${esc(epic.intake_verdict.size)} (${esc(epic.intake_verdict.confidence)})`
@@ -492,8 +508,107 @@
             ${briefSection}
             ${artifactsSection}
             ${agentsSection}
+            <div id="storyTracesAudit"></div>
             ${controls}
           </div>`;
+      }
+
+      // ─── Per-story traces and audit (FR-3/FR-4) ─────────────────────────
+      // Renders collapsed <details>/<summary> sections per story.
+      // Pure function — no fetches; receives pre-fetched data.
+      function renderStoryObservability(storyId, traces, auditEntries) {
+        const tracesBody = traces.length === 0
+          ? '<div class="doc-missing">No decision traces recorded.</div>'
+          : traces.map(function(t) {
+              return '<div style="padding:6px 14px;border-top:1px solid #21262d;font-size:12px">' +
+                '<span style="color:#6e7681;font-family:monospace">' + esc(t.timestamp) + '</span>' +
+                '<strong style="margin-left:8px;color:#d29922">' + esc(t.kind) + '</strong>' +
+                (t.subject ? '<span style="color:#8b949e;margin-left:6px">' + esc(t.subject) + '</span>' : '') +
+                '<div style="color:#c9d1d9;margin-top:3px;padding-left:8px;white-space:pre-wrap">' + esc(t.rationale) + '</div>' +
+                '</div>';
+            }).join('');
+        const auditBody = auditEntries.length === 0
+          ? '<div class="doc-missing">No audit entries.</div>'
+          : auditEntries.map(function(e) {
+              const allowedMark = e.allowed != null
+                ? '<span style="margin-left:4px;color:' + (e.allowed ? '#56d364' : '#f85149') + '">' + (e.allowed ? '✓' : '✗') + '</span>'
+                : '';
+              return '<div style="padding:6px 14px;border-top:1px solid #21262d;font-size:12px">' +
+                '<span style="color:#6e7681;font-family:monospace">' + esc(e.timestamp) + '</span>' +
+                '<strong style="margin-left:8px">' + esc(e.action) + '</strong>' +
+                (e.command ? '<code style="margin-left:6px;color:#8b949e">' + esc(e.command) + '</code>' : '') +
+                allowedMark +
+                '</div>';
+            }).join('');
+        return '<div style="margin-bottom:8px">' +
+          '<div style="font-size:12px;color:#6e7681;margin-bottom:4px">' +
+          '<code>' + esc(storyId) + '</code></div>' +
+          '<details class="artifacts">' +
+          '<summary>Decision traces <span style="color:#6e7681;font-weight:400">(' + traces.length + ')</span></summary>' +
+          '<div style="max-height:300px;overflow-y:auto">' + tracesBody + '</div>' +
+          '</details>' +
+          '<details class="artifacts" style="margin-top:4px">' +
+          '<summary>Audit log <span style="color:#6e7681;font-weight:400">(' + auditEntries.length + ')</span></summary>' +
+          '<div style="max-height:300px;overflow-y:auto">' + auditBody + '</div>' +
+          '</details>' +
+          '</div>';
+      }
+
+      // Fired after renderDetail — populates the #storyTracesAudit placeholder
+      // with per-story collapsible traces + audit sections (FR-3/AC3, FR-4/AC4).
+      async function fetchStoryTracesAndAudit(body) {
+        const mount = document.getElementById('storyTracesAudit');
+        if (!mount || !body.agents || body.agents.length === 0) return;
+
+        // FR-3: one fetch for the whole epic (no N+1). Group client-side.
+        let tracesByStory = new Map();
+        try {
+          const tracesRes = await api('/api/epics/' + encodeURIComponent(body.id) + '/traces');
+          if (tracesRes.ok) {
+            const data = await tracesRes.json();
+            for (const t of (data.traces || [])) {
+              const key = t.story_id ?? '(unattributed)';
+              if (!tracesByStory.has(key)) tracesByStory.set(key, []);
+              tracesByStory.get(key).push(t);
+            }
+          }
+        } catch {}
+
+        // FR-4: fan audit across each agent in the detail view (one agent per
+        // story after listLatestByEpic dedup; handles retry retry via agentId fan-out).
+        const agentAuditMap = new Map();
+        await Promise.all(body.agents.map(async function(agent) {
+          try {
+            const r = await api('/api/agents/' + encodeURIComponent(agent.id) + '/audit');
+            agentAuditMap.set(agent.id, r.ok ? (await r.json()).entries || [] : []);
+          } catch {
+            agentAuditMap.set(agent.id, []);
+          }
+        }));
+
+        // Render per-story sections in agent order (same order as stories table).
+        const storyOrder = [];
+        const seen = new Set();
+        for (const a of body.agents) {
+          if (!seen.has(a.story_id)) {
+            seen.add(a.story_id);
+            storyOrder.push(a.story_id);
+          }
+        }
+
+        let html = '<h2 style="margin-top:24px;margin-bottom:10px">Story observability</h2>';
+        for (const storyId of storyOrder) {
+          const traces = tracesByStory.get(storyId) || [];
+          // Merge audit across all agents sharing this story_id, sorted by timestamp.
+          const storyAgents = body.agents.filter(function(a) { return a.story_id === storyId; });
+          const allAudit = [];
+          for (const a of storyAgents) {
+            allAudit.push(...(agentAuditMap.get(a.id) || []));
+          }
+          allAudit.sort(function(a, b) { return a.timestamp.localeCompare(b.timestamp); });
+          html += renderStoryObservability(storyId, traces, allAudit);
+        }
+        mount.innerHTML = html;
       }
 
       // ─── Routing ────────────────────────────────────────────────────────
@@ -525,7 +640,10 @@
           if (res.status === 401) { authError(); return; }
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           if (currentView !== 'list') return; // raced; user navigated away
-          const { epics } = await res.json();
+          const payload = await res.json();
+          // Sync read-only flag every poll cycle (FR-7/AC7).
+          if (typeof payload.read_only === 'boolean') readOnly = payload.read_only;
+          const { epics } = payload;
           const root = document.getElementById('root');
           root.innerHTML = renderList(epics);
           root.querySelectorAll('.epic').forEach((el) => {
@@ -573,6 +691,8 @@
           if (body.status === 'planned') {
             fetchPlanningArtifacts(body.id);
           }
+          // Populate per-story traces + audit collapsibles (FR-3/FR-4).
+          fetchStoryTracesAndAudit(body);
           openEventStream(body);
         } catch (err) {
           root.innerHTML = `<div class="empty">Failed to load epic: ${esc(err.message)}</div>`;
@@ -915,9 +1035,16 @@
       startListPolling();
     </script>
     <!-- View modules — self-register with Loom.registerView on load. -->
-    <script src="autonomy.js"></script>
-    <script src="fleet.js"></script>
+    <!-- FR-1 (story-027-001): autonomy.js deleted; POST /api/epics/:id/autonomy
+         and `loom autonomy` CLI remain fully functional. -->
+    <!-- FR-2 (story-027-001): Fleet tab hidden from nav; fleet.js, its server
+         routes, and fleet.test.ts remain intact and byte-identical.
+         To re-enable: add <script src="fleet.js"></script> here. -->
+    <!-- FR-2 (story-027-001): Inbox tab hidden from nav; inbox.js, its server
+         routes, and inbox.test.ts remain intact and byte-identical.
+         To re-enable: add <script src="inbox.js"></script> here. -->
     <script src="opportunities.js"></script>
     <script src="flywheel.js"></script>
+    <script src="skills.js"></script>
   </body>
 </html>

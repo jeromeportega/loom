@@ -165,7 +165,7 @@ export function createApp(opts: CreateAppOptions): Express {
     }
     // Sort by updated_at desc so newest activity surfaces first.
     result.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-    res.json({ epics: result });
+    res.json({ epics: result, read_only: opts.readOnly ?? false });
   });
 
   // ─── GET /api/epics/:id — one epic with its full agent list ──────────────
