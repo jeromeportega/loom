@@ -137,13 +137,16 @@ describe('classifyIntake — failure modes (never throws)', () => {
   });
 
   it('llm returns non-JSON → {ok:false, reason:"invalid_output"}', async () => {
-    const llm = new FakeLLM(['this is not json at all']);
+    // Two responses needed: one per attempt (1 initial + MAX_CLASSIFY_RETRIES=1).
+    const llm = new FakeLLM(['this is not json at all', 'this is not json at all']);
     const result = await classifyIntake('brief', { llm, model: 'haiku' });
     assertFailure(result, 'invalid_output');
   });
 
   it('llm returns JSON that fails zod → {ok:false, reason:"invalid_output"}', async () => {
-    const llm = new FakeLLM([JSON.stringify({ type: 'unknown', size: 'story', confidence: 'high', rationale: 'x' })]);
+    const badJson = JSON.stringify({ type: 'unknown', size: 'story', confidence: 'high', rationale: 'x' });
+    // Two responses needed: one per attempt (1 initial + MAX_CLASSIFY_RETRIES=1).
+    const llm = new FakeLLM([badJson, badJson]);
     const result = await classifyIntake('brief', { llm, model: 'haiku' });
     assertFailure(result, 'invalid_output');
   });
@@ -171,6 +174,79 @@ describe('classifyIntake — failure modes (never throws)', () => {
       const result = await classifyIntake('brief', { llm, model: 'haiku', timeoutMs: 100 });
       assert.ok(typeof result === 'object' && 'ok' in result, 'should always return a result');
     }
+  });
+});
+
+// ── classifyIntake — bounded retry (story-026-001) ────────────────────────────
+
+describe('classifyIntake — bounded retry', () => {
+  it('invalid-then-valid yields { ok:true } and calls complete exactly 2 times (FR-4, AC5)', async () => {
+    const garbage = 'not valid json at all!!!';
+    const llm = new FakeLLM([garbage, JSON.stringify(VALID_VERDICT)]);
+    const result = await classifyIntake('brief', { llm, model: 'haiku' });
+    assert.equal(result.ok, true, 'second attempt should succeed');
+    if (result.ok) assert.deepEqual(result.verdict, VALID_VERDICT);
+    assert.equal(llm.calls.length, 2, 'complete() must be called exactly twice');
+  });
+
+  it('exhausting all retries returns { ok:false, reason:"invalid_output" } and calls complete exactly 2 times (FR-4, AC6, NFR-1)', async () => {
+    const garbage = 'not valid json at all!!!';
+    // 1 initial + MAX_CLASSIFY_RETRIES(1) = 2 total
+    const llm = new FakeLLM([garbage, garbage]);
+    const result = await classifyIntake('brief', { llm, model: 'haiku' });
+    assertFailure(result, 'invalid_output');
+    assert.equal(llm.calls.length, 2, 'complete() must be called exactly 1 + MAX_CLASSIFY_RETRIES times');
+  });
+
+  it('trigger site (a): JSON parse failure retries → success (ADR-002)', async () => {
+    // Malformed JSON that survives recoverJsonText but fails JSON.parse
+    const malformed = '{"type": "feature", bad json here}';
+    const llm = new FakeLLM([malformed, JSON.stringify(VALID_VERDICT)]);
+    const result = await classifyIntake('brief', { llm, model: 'haiku' });
+    assert.equal(result.ok, true);
+    assert.equal(llm.calls.length, 2);
+  });
+
+  it('trigger site (b): Zod safeParse failure retries → success (ADR-002)', async () => {
+    // Well-formed JSON that fails IntakeVerdictSchema (missing field)
+    const badSchema = JSON.stringify({ type: 'feature', size: 'story', confidence: 'high' }); // no rationale
+    const llm = new FakeLLM([badSchema, JSON.stringify(VALID_VERDICT)]);
+    const result = await classifyIntake('brief', { llm, model: 'haiku' });
+    assert.equal(result.ok, true);
+    assert.equal(llm.calls.length, 2);
+  });
+
+  it('timeout is never retried — complete() called exactly once (FR-2, AC2)', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const llm = new FakeLLM(['hang']);
+    const resultPromise = classifyIntake('brief', { llm, model: 'haiku', timeoutMs: 5000 });
+    t.mock.timers.tick(5001);
+    const result = await resultPromise;
+    assertFailure(result, 'timeout');
+    assert.equal(llm.calls.length, 1, 'timeout must not be retried');
+  });
+
+  it('llm_error is never retried — complete() called exactly once (FR-2, AC2)', async () => {
+    const llm = new FakeLLM([new Error('network refused')]);
+    const result = await classifyIntake('brief', { llm, model: 'haiku' });
+    assertFailure(result, 'llm_error');
+    assert.equal(llm.calls.length, 1, 'llm_error must not be retried');
+  });
+
+  it('retry re-issues the identical request — same prompt, nonAgentic flags, prefill (NFR-2)', async () => {
+    const garbage = 'not valid json at all!!!';
+    const llm = new FakeLLM([garbage, JSON.stringify(VALID_VERDICT)]);
+    await classifyIntake('Add OAuth login', { llm, model: 'haiku' });
+    assert.equal(llm.calls.length, 2);
+    // Both requests must be byte-identical
+    assert.deepEqual(llm.calls[0], llm.calls[1], 'retry must re-issue the exact same request');
+  });
+
+  it('happy path — no retry: valid first response, complete() called exactly once', async () => {
+    const llm = new FakeLLM([JSON.stringify(VALID_VERDICT)]);
+    const result = await classifyIntake('brief', { llm, model: 'haiku' });
+    assert.equal(result.ok, true);
+    assert.equal(llm.calls.length, 1, 'loop must not add calls when first attempt succeeds');
   });
 });
 

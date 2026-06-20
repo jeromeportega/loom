@@ -125,21 +125,24 @@ describe('classifyIntake — JSON recovery from non-pure responses', () => {
 
   it('degrades to invalid_output when fenced content is not valid JSON', async () => {
     const bad = '```json\nnot valid json here\n```';
-    const llm = new FakeLLM([bad]);
+    // Two responses needed: one per attempt (1 initial + MAX_CLASSIFY_RETRIES=1).
+    const llm = new FakeLLM([bad, bad]);
     const result = await classifyIntake('brief', { llm, model: 'haiku', timeoutMs: 5000 });
     assertFailure(result, 'invalid_output');
   });
 
   it('degrades to invalid_output when prose contains no JSON object', async () => {
     const bad = 'I cannot classify this brief without more context.';
-    const llm = new FakeLLM([bad]);
+    // Two responses needed: one per attempt (1 initial + MAX_CLASSIFY_RETRIES=1).
+    const llm = new FakeLLM([bad, bad]);
     const result = await classifyIntake('brief', { llm, model: 'haiku', timeoutMs: 5000 });
     assertFailure(result, 'invalid_output');
   });
 
   it('degrades to invalid_output when the extracted JSON fails schema validation', async () => {
     const prose = 'Here you go:\n' + JSON.stringify({ type: 'request', size: 'story', confidence: 'high', rationale: 'x' });
-    const llm = new FakeLLM([prose]);
+    // Two responses needed: one per attempt (1 initial + MAX_CLASSIFY_RETRIES=1).
+    const llm = new FakeLLM([prose, prose]);
     const result = await classifyIntake('brief', { llm, model: 'haiku', timeoutMs: 5000 });
     assertFailure(result, 'invalid_output');
   });
@@ -294,7 +297,9 @@ describe('classifyIntake — transport failures (AC error cases)', () => {
   });
 
   it('unrecoverable non-JSON → { ok: false, reason: "invalid_output" }', async () => {
-    const llm = new FakeLLM(['this cannot be recovered into JSON at all!!!']);
+    const bad = 'this cannot be recovered into JSON at all!!!';
+    // Two responses needed: one per attempt (1 initial + MAX_CLASSIFY_RETRIES=1).
+    const llm = new FakeLLM([bad, bad]);
     const result = await classifyIntake('brief', { llm, model: 'haiku', timeoutMs: 5000 });
     assertFailure(result, 'invalid_output');
   });
