@@ -199,6 +199,13 @@ export interface CliWorkerOptions {
    * the worker prompt byte-identical to the bench baseline.
    */
   adaptiveCost?: 'on' | 'off';
+  /**
+   * policy.agents.hung_request_seconds × 1000 — tighter kill bound applied
+   * when the subprocess enters `requesting` state and no streamed response
+   * arrives within this window. Forwarded to WorkerTimeoutGuard. 0 or undefined
+   * disables the third budget and leaves existing stall/cap semantics unchanged.
+   */
+  hungRequestMs?: number;
 }
 
 /** Legacy absolute cap used when neither absoluteCapMs nor timeoutMs is given. */
@@ -255,6 +262,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
   private sessionAuth: boolean;
   /** Accumulated worker usage across the spawn (and its revisions). */
   private accumulatedUsage: WorkerUsage | undefined = undefined;
+  /** Tighter kill bound when the subprocess is waiting for a model response; 0/undefined disables. */
+  protected hungRequestMs: number | undefined;
 
   constructor(opts: CliWorkerOptions = {}) {
     // `timeoutMs` is the legacy single knob; it now seeds the absolute cap so
@@ -282,6 +291,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
     this.adaptiveCostEnabled = (opts.adaptiveCost ?? 'off') === 'on';
     this.epicBuildupEnabled = (opts.epicBuildup ?? 'off') === 'on';
     this.sessionAuth = (opts.workerAuth ?? 'inherit') === 'session';
+    this.hungRequestMs = opts.hungRequestMs;
   }
 
   /**
@@ -309,8 +319,15 @@ export abstract class BaseCliWorker implements WorkerRunner {
     traces?: Array<{ kind: string; subject?: string; rationale: string }>;
     /** Executed model id from the system/init event; undefined for backends that don't emit it. */
     model?: string;
+    /**
+     * Guard routing signal for the hung-request liveness path (epic-030).
+     * `{ kind: 'requesting' }` arms the hung-request budget (the subprocess
+     * just submitted a model API call). `{ kind: 'stream_event', label }` disarms
+     * it (the model has started responding). Undefined means no guard action.
+     */
+    guardSignal?: { kind: 'requesting' } | { kind: 'stream_event'; label: string };
   } {
-    return { humanText: line, assistantText: line };
+    return { humanText: line, assistantText: line, guardSignal: { kind: 'stream_event', label: 'text' } };
   }
 
   private resetUsage(): void {
@@ -769,6 +786,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
       timeoutReason?: TimeoutKillReason;
       spawnError?: string;
       budgetExhausted?: boolean;
+      lastStreamEvent?: string;
     },
     logTail: string
   ): WorkerResult | null {
@@ -800,16 +818,25 @@ export abstract class BaseCliWorker implements WorkerRunner {
     if (proc.timedOut) {
       // Commit-on-timeout: convert the catastrophic loss (the whole worktree
       // discarded on SIGTERM) into a resumable wip commit.
-      this.checkpointUncommitted(assignment, `timeout-${proc.timeoutReason ?? 'cap'}`);
+      const checkpointCommitted = this.checkpointUncommitted(
+        assignment,
+        `timeout-${proc.timeoutReason ?? 'cap'}`
+      );
+      const killReason = proc.timeoutReason ?? 'cap';
       const why =
-        proc.timeoutReason === 'stall'
+        killReason === 'stall'
           ? `stalled (no output) for ${Math.round(this.stallMs / 60000)} minutes`
+          : killReason === 'hung_request'
+          ? `hung on model request for ${Math.round((this.hungRequestMs ?? 45000) / 1000)} seconds`
           : `exceeded the ${Math.round(this.absoluteCapMs / 60000)}-minute cap`;
       return {
         status: 'failed',
         commitCount: this.countCommits(assignment),
         summary: `Worker timed out — ${why}. Uncommitted work checkpointed for resume.`,
         logTail,
+        killReason,
+        ...(proc.lastStreamEvent !== undefined ? { lastStreamEvent: proc.lastStreamEvent } : {}),
+        checkpointCommitted,
         ...(this.accumulatedUsage ? { usage: this.accumulatedUsage } : {}),
       };
     }
@@ -1065,6 +1092,12 @@ export abstract class BaseCliWorker implements WorkerRunner {
       suspendDetected?: boolean;
       /** Executed model id from the system/init event; absent when not emitted. */
       model?: string;
+      /**
+       * Label of the last stream event seen by the guard before a timeout kill
+       * (epic-030). Set only when `timedOut` is true; undefined otherwise.
+       * Forwarded to WorkerResult.lastStreamEvent via terminalFailureResult.
+       */
+      lastStreamEvent?: string;
     }
   > {
     const { worktreePath: cwd, onOutput, onPid, onTrace } = assignment;
@@ -1128,17 +1161,30 @@ export abstract class BaseCliWorker implements WorkerRunner {
       if (typeof child.pid === 'number') onPid?.(child.pid);
 
       // Progress-aware timeout: resets on output activity, kills on stall or
-      // absolute cap, escalates SIGTERM -> SIGKILL. Replaces the old blunt
-      // single 30-min wall-clock SIGTERM.
+      // absolute cap (or hung-request when enabled), escalates SIGTERM -> SIGKILL.
+      // Replaces the old blunt single 30-min wall-clock SIGTERM.
       const guard = this.createGuard({
         stallMs,
         absoluteCapMs,
+        hungRequestMs: this.hungRequestMs,
         getPid: () => (typeof child.pid === 'number' ? child.pid : undefined),
         onKill: (reason) => {
           timedOut = true;
           timeoutReason = reason;
         },
-        onWarn: (info) => assignment.onTimeoutWarn?.(info),
+        onWarn: (info) => {
+          // Forward only the reasons the existing onTimeoutWarn contract knows
+          // about ('stall' | 'cap' | 'budget'). The 'hung_request' budget is
+          // new in epic-030; Supervisors without story-030-003 don't handle it.
+          // Reconstruct the object so TypeScript can verify the narrowed reason.
+          if (info.reason === 'stall' || info.reason === 'cap' || info.reason === 'budget') {
+            assignment.onTimeoutWarn?.({
+              reason: info.reason,
+              elapsedMs: info.elapsedMs,
+              remainingMs: info.remainingMs,
+            });
+          }
+        },
         // Sleep-proofing (story-006-005): the guard already re-armed its
         // start/activity instants from the resume moment before this fires, so
         // a streaming worker is NOT killed for the slept gap. We only record
@@ -1196,6 +1242,17 @@ export abstract class BaseCliWorker implements WorkerRunner {
           if (parsed.model !== undefined && executedModel === undefined) {
             executedModel = parsed.model;
           }
+          // Hung-request liveness routing (epic-030): route the guard signal
+          // emitted by parseStreamLine to arm or disarm the third budget.
+          // ADR-002: recordActivity() (raw bytes) already ran before processLines
+          // in the stdout data handler, so the requesting line arms the budget
+          // and the next real chunk's recordActivity disarms it before processLines
+          // even runs.
+          if (parsed.guardSignal?.kind === 'requesting') {
+            guard.onRequestPending();
+          } else if (parsed.guardSignal?.kind === 'stream_event') {
+            guard.recordStreamEvent(parsed.guardSignal.label);
+          }
           // Streaming-input backends keep stdin open until the agent
           // emits its terminal event. Closing stdin tells the held-open
           // session to flush + exit (otherwise the subprocess would
@@ -1230,6 +1287,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
         closeStdinIfOpen();
         channel.close();
         onPid?.(null);
+        const lastStreamEvent = timedOut ? guard.getLastStreamEvent() : undefined;
         resolve({
           code: null,
           output,
@@ -1240,6 +1298,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
           producedOutput,
           suspendDetected,
           model: executedModel,
+          ...(lastStreamEvent !== undefined ? { lastStreamEvent } : {}),
         });
       });
       child.on('close', (code) => {
@@ -1263,7 +1322,10 @@ export abstract class BaseCliWorker implements WorkerRunner {
         closeStdinIfOpen();
         channel.close();
         onPid?.(null);
-        resolve({ code, output, assistantText: assistantText || undefined, timedOut, timeoutReason, budgetExhausted, producedOutput, suspendDetected, ...(executedModel ? { model: executedModel } : {}) });
+        // Capture the last stream event seen by the guard on timeout so
+        // WorkerResult.lastStreamEvent can classify hung-request vs silent kills.
+        const lastStreamEvent = timedOut ? guard.getLastStreamEvent() : undefined;
+        resolve({ code, output, assistantText: assistantText || undefined, timedOut, timeoutReason, budgetExhausted, producedOutput, suspendDetected, ...(lastStreamEvent !== undefined ? { lastStreamEvent } : {}), ...(executedModel ? { model: executedModel } : {}) });
       });
 
       // Initial prompt write. `formatInitialPrompt` is identity for
@@ -1300,9 +1362,9 @@ export abstract class BaseCliWorker implements WorkerRunner {
    *    resolves to (e.g. `<repo>/.git/worktrees/<id>`). Resolving it is what
    *    makes the lock actually findable in production.
    */
-  protected checkpointUncommitted(assignment: WorkerAssignment, reason: string): void {
+  protected checkpointUncommitted(assignment: WorkerAssignment, reason: string): boolean {
     const dirty = gitSafe(assignment.worktreePath, ['status', '--porcelain']);
-    if (!dirty.ok || dirty.output.trim().length === 0) return;
+    if (!dirty.ok || dirty.output.trim().length === 0) return false;
     // Clear a stale index lock left by an interrupted git operation. Resolve
     // the real gitdir first — in a worktree `<worktree>/.git` is a file, so a
     // naive `<worktree>/.git/index.lock` join never matches the actual lock.
@@ -1320,12 +1382,13 @@ export abstract class BaseCliWorker implements WorkerRunner {
       }
     }
     gitSafe(assignment.worktreePath, ['add', '-A']);
-    gitSafe(assignment.worktreePath, [
+    const commit = gitSafe(assignment.worktreePath, [
       'commit',
       '--no-verify',
       '-m',
       `wip: ${reason} checkpoint [loom]`,
     ]);
+    return commit.ok;
   }
 
   /** Counts commits the worker added on its branch since the branch point. */

@@ -402,31 +402,41 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     });
   }
 
-  const supervisor = new Supervisor({
+  // Build worker options as a named variable so TypeScript's structural typing
+  // allows the epic-030 fields (hungRequestMs, declared by story-030-002 on
+  // WorkerFactoryOptions) to pass through without excess-property errors.
+  const workerOpts = {
+    backend: policy.agents.worker_backend,
+    allowedRemotes: policy.git.allowed_remotes,
+    cursorModel: policy.agents.cursor_model,
+    model: policy.agents.model,
+    prStrategy: policy.agents.pr_strategy,
+    reviewAgent,
+    reviewStrategy: policy.agents.review_strategy,
+    reviewReviseTrigger: policy.agents.review_revise_trigger,
+    maxReviewRevisions: policy.agents.review_max_passes,
+    budgetTokensPerStory: policy.agents.budget_tokens_per_story,
+    operatorGuidance: policy.agents.operator_guidance,
+    sharedContract: policy.agents.shared_contract,
+    contextNotes: policy.agents.context_notes,
+    stallMs: policy.agents.story_stall_minutes * 60_000,
+    absoluteCapMs: policy.agents.story_absolute_cap_minutes * 60_000,
+    // epic-030: tighter hung-request bound; seconds→ms (story-030-002 consumes)
+    hungRequestMs: policy.agents.hung_request_seconds * 1000,
+    phases: policy.agents.phases,
+    workerAuth: policy.agents.worker_auth,
+    adaptiveCost: policy.agents.adaptive_cost,
+    db,
+    llm: reviewerLlm,
+  };
+
+  // Build supervisor options as a named variable so the epic-030 field
+  // (autoResumeAttempts, declared by story-030-003 on SupervisorOptions) passes
+  // through TypeScript's structural typing without excess-property errors.
+  const supervisorOpts = {
     projectRoot,
     db,
-    worker: createWorker({
-      backend: policy.agents.worker_backend,
-      allowedRemotes: policy.git.allowed_remotes,
-      cursorModel: policy.agents.cursor_model,
-      model: policy.agents.model,
-      prStrategy: policy.agents.pr_strategy,
-      reviewAgent,
-      reviewStrategy: policy.agents.review_strategy,
-      reviewReviseTrigger: policy.agents.review_revise_trigger,
-      maxReviewRevisions: policy.agents.review_max_passes,
-      budgetTokensPerStory: policy.agents.budget_tokens_per_story,
-      operatorGuidance: policy.agents.operator_guidance,
-      sharedContract: policy.agents.shared_contract,
-      contextNotes: policy.agents.context_notes,
-      stallMs: policy.agents.story_stall_minutes * 60_000,
-      absoluteCapMs: policy.agents.story_absolute_cap_minutes * 60_000,
-      phases: policy.agents.phases,
-      workerAuth: policy.agents.worker_auth,
-      adaptiveCost: policy.agents.adaptive_cost,
-      db,
-      llm: reviewerLlm,
-    }),
+    worker: createWorker(workerOpts),
     maxConcurrent: policy.agents.max_concurrent,
     skillStore,
     skillGenerator,
@@ -455,7 +465,11 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
       policy.agents.worker_backend === 'cursor-cli'
         ? policy.agents.cursor_model
         : policy.agents.model,
-  });
+    // epic-030: auto-resume cap (raw count, not ms; story-030-003 consumes)
+    autoResumeAttempts: policy.agents.auto_resume_attempts,
+  };
+
+  const supervisor = new Supervisor(supervisorOpts);
 
   const target = epicIds.length > 0 ? epicIds.join(', ') : 'all approved epics';
   console.log(`\n  Dispatching story agents for ${target}.`);

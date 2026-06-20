@@ -32,7 +32,7 @@
  */
 import { SUSPEND_POLL_MULTIPLE } from './resilience/constants.js';
 
-export type TimeoutKillReason = 'stall' | 'cap' | 'budget';
+export type TimeoutKillReason = 'stall' | 'cap' | 'budget' | 'hung_request';
 
 export interface WorkerTimeoutGuardOptions {
   /** Kill after this many ms with zero output activity. 0 disables the stall kill. */
@@ -52,11 +52,18 @@ export interface WorkerTimeoutGuardOptions {
   getPid: () => number | undefined;
   /**
    * Invoked exactly once when the guard decides to kill for a wall-clock
-   * reason ('stall' | 'cap'). The worker uses this to flag the run as
-   * timed-out so `run()` can checkpoint + report. Not called for 'budget'
+   * reason ('stall' | 'cap' | 'hung_request'). The worker uses this to flag the
+   * run as timed-out so `run()` can checkpoint + report. Not called for 'budget'
    * (the caller drives that via `terminate('budget')`).
    */
-  onKill?: (reason: 'stall' | 'cap') => void;
+  onKill?: (reason: 'stall' | 'cap' | 'hung_request') => void;
+  /**
+   * Tighter kill bound applied when the subprocess enters the `requesting` state
+   * (a model API call in flight) and no streamed response or stream event arrives
+   * within this many ms. 0 or undefined disables the third budget and leaves the
+   * existing stall/cap semantics unchanged.
+   */
+  hungRequestMs?: number;
   /** One-shot near-deadline warning. */
   onWarn?: (info: { reason: TimeoutKillReason; elapsedMs: number; remainingMs: number }) => void;
   /**
@@ -108,6 +115,12 @@ export class WorkerTimeoutGuard {
   private graceHandle: unknown;
   private warned = false;
   private terminating = false;
+  /** Monotonic instant when the subprocess entered `requesting` state; undefined = budget disarmed. */
+  private requestPendingSinceNs: bigint | undefined = undefined;
+  /** Label of the last stream event seen (for WorkerResult.lastStreamEvent). */
+  private lastStreamEvent = '(none)';
+  /** True once any stream event (assistant delta, tool_use, result, etc.) has been recorded. */
+  private everProducedStream = false;
 
   constructor(private readonly opts: WorkerTimeoutGuardOptions) {
     this.startNs = this.monoNow();
@@ -130,9 +143,50 @@ export class WorkerTimeoutGuard {
     this.pollHandle = setIntervalFn(() => this.check(), this.opts.pollMs ?? DEFAULT_POLL_MS);
   }
 
-  /** Reset the stall clock. Wire into the stdout/stderr data handlers. */
+  /**
+   * Reset the stall clock. Wire into the stdout/stderr data handlers.
+   * Also disarms the hung-request budget: any raw bytes arriving means the
+   * subprocess is still communicating, so a `requesting` window should reset.
+   */
   recordActivity(): void {
     this.lastActivityNs = this.monoNow();
+    this.requestPendingSinceNs = undefined;
+  }
+
+  /**
+   * Arm the hung-request budget. Call when a `system/status status='requesting'`
+   * line is parsed — the subprocess has submitted a model API call and we are
+   * waiting for the first streamed token. Idempotent: repeated calls keep the
+   * EARLIEST arm instant so a chunked `requesting` line never resets the clock.
+   */
+  onRequestPending(): void {
+    if (this.requestPendingSinceNs === undefined) {
+      this.requestPendingSinceNs = this.monoNow();
+      this.lastStreamEvent = 'system/status:requesting';
+    }
+  }
+
+  /**
+   * Record a stream event label (assistant delta, tool_use, result, etc.) and
+   * disarm the hung-request budget. Call for every parsed stream event EXCEPT
+   * the `requesting` status line. A slow-but-streaming worker that keeps emitting
+   * events is never killed by the hung-request path — only by the unchanged
+   * stall/cap deadlines.
+   */
+  recordStreamEvent(label: string): void {
+    this.lastStreamEvent = label;
+    this.everProducedStream = true;
+    this.requestPendingSinceNs = undefined;
+  }
+
+  /** The label of the last stream event seen — for WorkerResult.lastStreamEvent. */
+  getLastStreamEvent(): string {
+    return this.lastStreamEvent;
+  }
+
+  /** True once any parsed stream event (not raw bytes) has been recorded. */
+  getEverProducedStream(): boolean {
+    return this.everProducedStream;
   }
 
   /** Tear down all timers. Idempotent — call from the subprocess close/error handlers. */
@@ -176,12 +230,13 @@ export class WorkerTimeoutGuard {
       wallDeltaMs > suspendThresholdMs &&
       monoDeltaMs <= suspendThresholdMs
     ) {
-      // The machine slept. Forgive the slept gap: re-arm both the absolute and
-      // the stall clocks to the resume instant so neither budget counts the
+      // The machine slept. Forgive the slept gap: re-arm the absolute, stall,
+      // and hung-request clocks to the resume instant so no budget counts the
       // sleep. Monotonic time barely advanced across the sleep, so anchoring to
       // `monoNow` simply discards the small idle delta — exactly the gap.
       this.startNs = monoNow;
       this.lastActivityNs = monoNow;
+      this.requestPendingSinceNs = undefined; // don't count the slept gap toward hung-request
       this.lastTickNs = monoNow;
       this.lastTickWallMs = wallNow;
       this.opts.onSuspendDetected?.({ wallJumpMs: wallDeltaMs });
@@ -197,7 +252,15 @@ export class WorkerTimeoutGuard {
       this.opts.absoluteCapMs > 0 ? this.opts.absoluteCapMs - elapsed : Infinity;
     const stallRemaining =
       this.opts.stallMs > 0 ? this.opts.stallMs - sinceActivity : Infinity;
-    const minRemaining = Math.min(capRemaining, stallRemaining);
+    // Hung-request budget: only active when `hungRequestMs` > 0 AND the budget
+    // is currently armed (requestPendingSinceNs is set by onRequestPending).
+    const hungRequestMs = this.opts.hungRequestMs;
+    const hungRemaining =
+      hungRequestMs && hungRequestMs > 0 && this.requestPendingSinceNs !== undefined
+        ? hungRequestMs - Number((monoNow - this.requestPendingSinceNs) / NS_PER_MS)
+        : Infinity;
+
+    const minRemaining = Math.min(capRemaining, stallRemaining, hungRemaining);
 
     const warnMs = this.opts.warnMs ?? DEFAULT_WARN_MS;
     if (
@@ -209,16 +272,36 @@ export class WorkerTimeoutGuard {
       minRemaining > 0
     ) {
       this.warned = true;
-      const reason: TimeoutKillReason = capRemaining <= stallRemaining ? 'cap' : 'stall';
+      const reason: TimeoutKillReason =
+        capRemaining <= stallRemaining && capRemaining <= hungRemaining
+          ? 'cap'
+          : stallRemaining <= hungRemaining
+          ? 'stall'
+          : 'hung_request';
       this.opts.onWarn({ reason, elapsedMs: elapsed, remainingMs: Math.max(0, minRemaining) });
     }
 
-    if (capRemaining <= 0) {
+    // Fire the earliest-expiring budget. When multiple have expired simultaneously
+    // (possible with a fake clock in tests), the most-negative remaining wins.
+    const hungExpired = hungRemaining <= 0;
+    const capExpired = capRemaining <= 0;
+    const stallExpired = stallRemaining <= 0;
+
+    if (
+      hungExpired &&
+      (!capExpired || hungRemaining <= capRemaining) &&
+      (!stallExpired || hungRemaining <= stallRemaining)
+    ) {
+      this.opts.onKill?.('hung_request');
+      this.terminate('hung_request');
+      return 'hung_request';
+    }
+    if (capExpired && (!stallExpired || capRemaining <= stallRemaining)) {
       this.opts.onKill?.('cap');
       this.terminate('cap');
       return 'cap';
     }
-    if (stallRemaining <= 0) {
+    if (stallExpired) {
       this.opts.onKill?.('stall');
       this.terminate('stall');
       return 'stall';
