@@ -547,6 +547,19 @@ export const PolicySchema = z.object({
       // regardless. Per-complexity scaling lives in the source (engineer-tuned).
       story_stall_minutes: z.number().int().min(1).default(12),
       story_absolute_cap_minutes: z.number().int().min(1).default(60),
+      // Tighter liveness bound (epic-030). After a worker emits
+      // `system/status status=requesting` with no subsequent stream activity for
+      // this many SECONDS, the guard concludes the LLM call has hung and kills
+      // the worker. 0 disables the check (today's behavior). Distinct unit from
+      // the minute-based stall/cap knobs above — intentionally kept in seconds
+      // for a finer-grained, sub-minute threshold.
+      hung_request_seconds: z.number().int().min(0).default(45),
+      // Per-story automatic-resume cap (epic-030). When a worker is killed by the
+      // stall or hung-request guard AND it left a checkpoint commit, the
+      // supervisor auto-resumes it up to this many times within one `loom run`.
+      // 0 disables auto-resume (today's behavior). Volatile: counted per run,
+      // not persisted to the DB.
+      auto_resume_attempts: z.number().int().min(0).default(2),
       // Phased worker pipeline. When 'on', a story runs as discrete agent
       // spawns — implement, then verify (full build/test suite) — each with
       // its OWN fresh stall/cap timer and a checkpoint commit + handoff
