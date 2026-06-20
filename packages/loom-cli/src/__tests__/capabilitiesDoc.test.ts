@@ -137,3 +137,24 @@ describe('capabilities.md — epic-007 changed surfaces (story-007-010)', () => 
     assert.match(doc, /derived\s+placeholder\s+title/i, 'doc should document the derived placeholder title');
   });
 });
+
+describe('capabilities.md — epic-028-005: within-epic same-file serialization', () => {
+  const doc = fs.readFileSync(CAPABILITIES, 'utf8');
+
+  it('documents within-epic same-file serialization as always-on with no operator knob', () => {
+    const r = row(doc, 'Within-epic same-file serialization');
+    assert.match(r, /always.on|always\s+on/i, 'row should say always-on');
+    assert.match(r, /no\s+operator\s+knob|no\s+(?:policy\s+)?knob/i, 'row should state there is no operator knob');
+    assert.match(r, /dependency/i, 'row should mention dependency edges');
+  });
+
+  it('same-file serialization row references ADR-005', () => {
+    const r = row(doc, 'Within-epic same-file serialization');
+    assert.match(r, /ADR-005/, 'row should reference ADR-005');
+  });
+
+  it('same-file serialization row mentions the audit log action', () => {
+    const r = row(doc, 'Within-epic same-file serialization');
+    assert.match(r, /plan_serialize_same_file/, 'row should name the audit log action');
+  });
+});
