@@ -1,6 +1,7 @@
 import type { Story, AgentStatus, SelfAssessment } from '../types.js';
 import type { WorkerInputChannel } from './WorkerInputChannel.js';
 import type { AttemptClass, InfraSignature } from './resilience/types.js';
+import type { TimeoutKillReason } from './WorkerTimeoutGuard.js';
 
 /** A live worker stdout/stderr chunk handler — wired by the Supervisor. */
 export type WorkerOutputCallback = (
@@ -230,6 +231,30 @@ export interface WorkerResult {
    * field is for audit/ledger purposes only.
    */
   conventions?: string[];
+
+  // ── epic-030 stall-recovery fields ────────────────────────────────────────
+
+  /**
+   * Set when a `WorkerTimeoutGuard` kill ended this run ('stall' | 'cap' |
+   * 'hung_request'). Undefined on normal exit, spawn error, or budget exhaustion.
+   * Consumed by story-030-003 (Supervisor resume predicate) and
+   * story-030-004 (StallKillAudit).
+   */
+  killReason?: TimeoutKillReason;
+  /**
+   * Label of the last stream event the guard observed before kill
+   * (e.g. 'system/status:requesting' | 'assistant/delta' | 'result' | '(none)').
+   * '(none)' means the subprocess never emitted a recognized stream event —
+   * useful for classifying fully-silent vs hung-request kills. Set alongside
+   * `killReason`; undefined when the run was not ended by the guard.
+   */
+  lastStreamEvent?: string;
+  /**
+   * True iff a `wip: … [loom]` checkpoint commit was created on the story branch
+   * after the guard kill. story-030-003 gates auto-resume on this being true —
+   * resuming uncommitted work would lose the in-flight edits.
+   */
+  checkpointCommitted?: boolean;
 }
 
 /**
