@@ -221,6 +221,14 @@ export type LiveEvent =
 
 export type { PlanningPhase };
 
+/** Response shape for GET /api/status. */
+export interface EpicStatusResponse {
+  epics: EpicStatus[];
+  /** True when the server is running in read-only mode (LOOM_WEB_READONLY=1 or --read-only).
+   *  Absent on older servers — client treats absence as false. */
+  read_only?: boolean;
+}
+
 export type WorkerEventPayload =
   | { type: 'dispatched'; storyId: string; agentId: string; branchName: string }
   | { type: 'output'; storyId: string; stream: 'stdout' | 'stderr'; chunk: string }
