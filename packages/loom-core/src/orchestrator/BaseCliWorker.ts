@@ -1092,6 +1092,12 @@ export abstract class BaseCliWorker implements WorkerRunner {
       suspendDetected?: boolean;
       /** Executed model id from the system/init event; absent when not emitted. */
       model?: string;
+      /**
+       * Label of the last stream event seen by the guard before a timeout kill
+       * (epic-030). Set only when `timedOut` is true; undefined otherwise.
+       * Forwarded to WorkerResult.lastStreamEvent via terminalFailureResult.
+       */
+      lastStreamEvent?: string;
     }
   > {
     const { worktreePath: cwd, onOutput, onPid, onTrace } = assignment;
@@ -1166,7 +1172,19 @@ export abstract class BaseCliWorker implements WorkerRunner {
           timedOut = true;
           timeoutReason = reason;
         },
-        onWarn: (info) => assignment.onTimeoutWarn?.(info),
+        onWarn: (info) => {
+          // Forward only the reasons the existing onTimeoutWarn contract knows
+          // about ('stall' | 'cap' | 'budget'). The 'hung_request' budget is
+          // new in epic-030; Supervisors without story-030-003 don't handle it.
+          // Reconstruct the object so TypeScript can verify the narrowed reason.
+          if (info.reason === 'stall' || info.reason === 'cap' || info.reason === 'budget') {
+            assignment.onTimeoutWarn?.({
+              reason: info.reason,
+              elapsedMs: info.elapsedMs,
+              remainingMs: info.remainingMs,
+            });
+          }
+        },
         // Sleep-proofing (story-006-005): the guard already re-armed its
         // start/activity instants from the resume moment before this fires, so
         // a streaming worker is NOT killed for the slept gap. We only record
@@ -1269,6 +1287,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
         closeStdinIfOpen();
         channel.close();
         onPid?.(null);
+        const lastStreamEvent = timedOut ? guard.getLastStreamEvent() : undefined;
         resolve({
           code: null,
           output,
@@ -1279,6 +1298,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
           producedOutput,
           suspendDetected,
           model: executedModel,
+          ...(lastStreamEvent !== undefined ? { lastStreamEvent } : {}),
         });
       });
       child.on('close', (code) => {
@@ -1302,7 +1322,10 @@ export abstract class BaseCliWorker implements WorkerRunner {
         closeStdinIfOpen();
         channel.close();
         onPid?.(null);
-        resolve({ code, output, assistantText: assistantText || undefined, timedOut, timeoutReason, budgetExhausted, producedOutput, suspendDetected, ...(executedModel ? { model: executedModel } : {}) });
+        // Capture the last stream event seen by the guard on timeout so
+        // WorkerResult.lastStreamEvent can classify hung-request vs silent kills.
+        const lastStreamEvent = timedOut ? guard.getLastStreamEvent() : undefined;
+        resolve({ code, output, assistantText: assistantText || undefined, timedOut, timeoutReason, budgetExhausted, producedOutput, suspendDetected, ...(lastStreamEvent !== undefined ? { lastStreamEvent } : {}), ...(executedModel ? { model: executedModel } : {}) });
       });
 
       // Initial prompt write. `formatInitialPrompt` is identity for
