@@ -173,20 +173,24 @@ export class ClaudeCodeWorker extends BaseCliWorker {
    * Returns a human-readable summary for live output AND, when the line is
    * the final `type:'result'` event, the cumulative usage snapshot.
    *
-   * Event types we handle: `result`, `assistant`, `system/init`, and
-   * `user` (the `--replay-user-messages` echo of operator-guidance pushes).
+   * Event types we handle: `result`, `assistant`, `system/init`, `system/status`,
+   * and `user` (the `--replay-user-messages` echo of operator-guidance pushes).
    * `--include-partial-messages` adds `stream_event` (wrapping
-   * `message_start` / `content_block_*` deltas) and `system/status` /
+   * `message_start` / `content_block_*` deltas) and other `system/status` /
    * `rate_limit_event` — all correctly fall through to `return {}` (the
    * spike on 2026-06-02 verified that these add no signal we want to
-   * surface).
+   * surface). The `system/status status='requesting'` line IS intercepted
+   * to arm the hung-request liveness budget (epic-030).
    */
   protected parseStreamLine(line: string): {
     humanText?: string;
+    assistantText?: string;
     usage?: WorkerUsage;
     traces?: Array<{ kind: string; subject?: string; rationale: string }>;
     /** Executed model id from the system/init event; undefined for non-emitting backends. */
     model?: string;
+    /** Guard routing signal for the hung-request liveness path (epic-030). */
+    guardSignal?: { kind: 'requesting' } | { kind: 'stream_event'; label: string };
   } {
     let event: unknown;
     try {
@@ -225,6 +229,7 @@ export class ClaudeCodeWorker extends BaseCliWorker {
       return {
         ...(resultText ? { humanText: `(result) ${truncate(resultText, 200)}` } : {}),
         ...(usage ? { usage } : {}),
+        guardSignal: { kind: 'stream_event', label: 'result' },
       };
     }
 
@@ -277,7 +282,18 @@ export class ClaudeCodeWorker extends BaseCliWorker {
         ...(text ? { assistantText: text } : {}),
         ...(this.streamUsageAccum ? { usage: this.streamUsageAccum } : {}),
         ...(traces.length > 0 ? { traces } : {}),
+        guardSignal: { kind: 'stream_event', label: 'assistant/delta' },
       };
+    }
+
+    if (type === 'system' && obj.subtype === 'status') {
+      // Intercept the `requesting` status to arm the hung-request liveness budget
+      // (epic-030). Other system/status values (busy, idle, etc.) fall through
+      // with no guard signal — raw bytes already handled via recordActivity().
+      if (obj.status === 'requesting') {
+        return { guardSignal: { kind: 'requesting' } };
+      }
+      return {};
     }
 
     if (type === 'system' && obj.subtype === 'init') {
@@ -288,6 +304,7 @@ export class ClaudeCodeWorker extends BaseCliWorker {
       return {
         humanText: `(starting ${m ?? 'claude'})`,
         ...(m !== undefined ? { model: m } : {}),
+        guardSignal: { kind: 'stream_event', label: 'system/init' },
       };
     }
 
@@ -321,12 +338,14 @@ export class ClaudeCodeWorker extends BaseCliWorker {
         traces: [
           { kind: 'guidance_received', rationale: truncate(text, 1200) },
         ],
+        guardSignal: { kind: 'stream_event', label: 'user/replay' },
       };
     }
 
-    // Other event types (stream_event partial deltas, system/status,
-    // rate_limit_event, etc.) are intentionally silent — they add noise
-    // without signal for the decision-trace surface.
+    // Other event types (stream_event partial deltas, rate_limit_event, etc.)
+    // are intentionally silent — they add noise without signal for the
+    // decision-trace surface. Raw bytes already disarm the hung-request budget
+    // via recordActivity() in the data handler, so no guardSignal is needed here.
     return {};
   }
 }

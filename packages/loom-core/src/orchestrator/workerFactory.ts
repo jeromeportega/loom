@@ -58,6 +58,12 @@ export interface WorkerFactoryOptions {
   db?: Database.Database;
   /** LLM client — presence gates the Review Forge orchestrated path (FR-7). */
   llm?: LLMClient;
+  /**
+   * policy.agents.hung_request_seconds × 1000 — tighter kill bound after the
+   * subprocess enters `requesting` state with no stream response. 0 or undefined
+   * disables the third budget. Forwarded to WorkerTimeoutGuardOptions.hungRequestMs.
+   */
+  hungRequestMs?: number;
 }
 
 /**
@@ -149,6 +155,7 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
       phases: opts.phases,
       workerAuth: opts.workerAuth,
       adaptiveCost: opts.adaptiveCost,
+      hungRequestMs: opts.hungRequestMs,
       reviewOrchestrator,
     });
   }
@@ -169,6 +176,7 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
     handoff: opts.handoff,
     phases: opts.phases,
     adaptiveCost: opts.adaptiveCost,
+    hungRequestMs: opts.hungRequestMs,
     reviewOrchestrator,
   });
 }

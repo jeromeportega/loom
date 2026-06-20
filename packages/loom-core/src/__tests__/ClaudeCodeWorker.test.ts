@@ -248,16 +248,22 @@ describe('ClaudeCodeWorker — parseStreamLine user-echo handling', () => {
     assert.deepEqual(parsed, {});
   });
 
-  it('silently drops stream_event / system/status / rate_limit_event (no new branches needed)', () => {
+  it('silently drops stream_event / rate_limit_event; routes system/status requesting (epic-030)', () => {
     const w = new TestableClaude();
+    // True silent drops — no guard signal (raw bytes already handle liveness via recordActivity).
     const drops = [
       '{"type":"stream_event","event":{"type":"message_start"}}',
-      '{"type":"system","subtype":"status","status":"requesting"}',
       '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}',
     ];
     for (const line of drops) {
       const parsed = w.exposeParseStreamLine(line);
       assert.deepEqual(parsed, {}, `expected empty parse for ${line.slice(0, 40)}`);
     }
+    // system/status requesting arms the hung-request budget via guardSignal (epic-030).
+    const requesting = w.exposeParseStreamLine('{"type":"system","subtype":"status","status":"requesting"}');
+    assert.deepEqual(requesting, { guardSignal: { kind: 'requesting' } });
+    // Other system/status values still fall through silently.
+    const idle = w.exposeParseStreamLine('{"type":"system","subtype":"status","status":"idle"}');
+    assert.deepEqual(idle, {});
   });
 });
