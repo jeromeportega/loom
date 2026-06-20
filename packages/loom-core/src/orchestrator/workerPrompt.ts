@@ -6,6 +6,8 @@ import { StoryHandoff } from './StoryHandoff.js';
 import { StoryContext } from './StoryContext.js';
 import { SharedContract } from './SharedContract.js';
 import { selfAssessmentInstruction } from './selfAssessment.js';
+import { EpicBuildup } from './EpicBuildup.js';
+import { conventionsInstruction } from './conventionsMarker.js';
 
 /** Resolves the bundled worker prompt template, shipped at the package root. */
 export function workerTemplatePath(): string {
@@ -78,6 +80,17 @@ export interface BuildWorkerPromptOptions {
    * spawn (not the verify phase).
    */
   requestSelfAssessment?: boolean;
+  /**
+   * Inject the capped epic build-up (completed-story entries + conventions)
+   * AS OF DISPATCH. Off/absent/empty store ⇒ prompt byte-identical to baseline
+   * (FR-6, NFR-5). Set from policy.agents.epic_buildup.
+   */
+  includeEpicBuildup?: boolean;
+  /**
+   * Append conventionsInstruction() so the worker MAY emit LOOM_CONVENTIONS.
+   * Off ⇒ no change to prompt. Set from policy.agents.epic_buildup.
+   */
+  requestConventions?: boolean;
 }
 
 /**
@@ -142,6 +155,24 @@ export function buildWorkerPrompt(
         'work: reuse the interfaces and modules they created instead of ' +
         'reimplementing or duplicating them.\n\n' +
         notes.join('\n\n---\n\n');
+    }
+  }
+
+  // Epic build-up side-channel (policy.agents.epic_buildup=on). Injects the
+  // size-capped cumulative summary of completed stories and discovered
+  // conventions as of dispatch time — so a later-wave worker knows what
+  // earlier workers already landed without re-reading every branch. Gated so
+  // an off run (or empty store) keeps the byte-identical baseline prompt.
+  if (opts.includeEpicBuildup) {
+    const doc = EpicBuildup.read(assignment.projectRoot, assignment.epicId);
+    const rendered = doc ? EpicBuildup.renderForInjection(doc) : '';
+    if (rendered.trim().length > 0) {
+      block +=
+        '\n\n### Epic build-up (everything completed in this epic so far)\n' +
+        `These are the stories already finished in epic ${assignment.epicId} and the ` +
+        'conventions/gotchas earlier workers discovered. Do NOT re-explore this ground ' +
+        'or contradict these decisions. This snapshot is as of your dispatch; siblings ' +
+        'running concurrently are not yet reflected.\n\n' + rendered;
     }
   }
 
@@ -223,6 +254,13 @@ export function buildWorkerPrompt(
       `or by running \`loom pull-guidance ${assignment.storyId}\` in the terminal. ` +
       'Either method returns any operator instructions issued since dispatch. ' +
       'Treat any returned text as priority instructions.';
+  }
+
+  // Conventions instruction (policy.agents.epic_buildup=on). Tells the worker
+  // it MAY emit a LOOM_CONVENTIONS marker to share cross-cutting discoveries.
+  // Gated so an off run keeps the byte-identical baseline prompt.
+  if (opts.requestConventions) {
+    block += conventionsInstruction();
   }
 
   // Self-assessment marker (policy.agents.adaptive_cost=on). Requested only on

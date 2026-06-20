@@ -20,6 +20,8 @@ import type {
 import { type WorkerInputChannel, NO_OP_CHANNEL } from './WorkerInputChannel.js';
 import { buildWorkerPrompt, buildIntegratorPrompt } from './workerPrompt.js';
 import { parseSelfAssessment } from './selfAssessment.js';
+import { parseConventions } from './conventionsMarker.js';
+import { EpicBuildup } from './EpicBuildup.js';
 import type { SelfAssessment } from '../types.js';
 import type { Story } from '../types.js';
 import { gitSafe, defaultRemote, remoteUrl } from './git.js';
@@ -159,6 +161,14 @@ export interface CliWorkerOptions {
    */
   contextNotes?: 'off' | 'on';
   /**
+   * policy.agents.epic_buildup — when 'on', the worker prompt includes the
+   * size-capped cumulative build-up (completed stories + conventions) and
+   * requests the LOOM_CONVENTIONS marker. After a successful spawn the
+   * parsed conventions are appended to the build-up store. Default 'off'
+   * keeps the worker prompt byte-identical to the bench baseline.
+   */
+  epicBuildup?: 'off' | 'on';
+  /**
    * policy.agents.handoff — when not 'off', the worker prompt includes the
    * resume handoff at .loom/handoff/<story-id>.md WHEN THAT FILE EXISTS. The
    * file is only present after a prior attempt failed/timed-out (the
@@ -239,6 +249,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
   private phasesEnabled: boolean;
   /** When true, request + parse the worker self-assessment marker (B1). */
   private adaptiveCostEnabled: boolean;
+  /** When true, inject epic build-up and request + parse conventions marker. */
+  private epicBuildupEnabled: boolean;
   /** When true, strip inherited Anthropic API auth from the worker spawn env. */
   private sessionAuth: boolean;
   /** Accumulated worker usage across the spawn (and its revisions). */
@@ -268,6 +280,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
     this.handoffEnabled = (opts.handoff ?? 'telemetry') !== 'off';
     this.phasesEnabled = (opts.phases ?? 'off') === 'on';
     this.adaptiveCostEnabled = (opts.adaptiveCost ?? 'off') === 'on';
+    this.epicBuildupEnabled = (opts.epicBuildup ?? 'off') === 'on';
     this.sessionAuth = (opts.workerAuth ?? 'inherit') === 'session';
   }
 
@@ -499,6 +512,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
       includeOperatorGuidance: this.operatorGuidance === 'on',
       includeSharedContract: this.sharedContractEnabled,
       includeUpstreamContext: this.contextNotesEnabled,
+      includeEpicBuildup: this.epicBuildupEnabled,
+      requestConventions: this.epicBuildupEnabled,
       pullGuidanceHint: this.pullGuidanceHint(),
       includeHandoff: this.handoffEnabled,
       requestSelfAssessment: this.adaptiveCostEnabled,
@@ -522,6 +537,16 @@ export abstract class BaseCliWorker implements WorkerRunner {
     // Observe-only: surfaced on the result for the signal ledger (B1).
     const selfAssessment: SelfAssessment | undefined = this.adaptiveCostEnabled
       ? parseSelfAssessment(proc.assistantText ?? proc.output)
+      : undefined;
+
+    // Parse conventions from the implement-phase output when epic_buildup is on.
+    // Prefer decoded assistant text for the same reason as selfAssessment above.
+    // The parsed list is appended to the build-up store on the success path and
+    // surfaced on WorkerResult for audit/ledger (appendConventions is
+    // synchronous, so there is no event-loop interleaving with the Supervisor's
+    // appendStoryEntry call — NFR-2).
+    const conventions: string[] | undefined = this.epicBuildupEnabled
+      ? parseConventions(proc.assistantText ?? proc.output)
       : undefined;
 
     const implementFailure = this.terminalFailureResult(assignment, proc, logTail);
@@ -548,6 +573,15 @@ export abstract class BaseCliWorker implements WorkerRunner {
       // dependent story fails for lack of foundation, and the audit log still
       // records the empty completion verbatim.
       if (proc.code === 0) {
+        if (conventions && conventions.length > 0) {
+          EpicBuildup.appendConventions(
+            assignment.projectRoot,
+            assignment.epicId,
+            assignment.storyId,
+            new Date().toISOString(),
+            conventions
+          );
+        }
         return {
           status: 'done',
           commitCount: 0,
@@ -556,6 +590,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
           ...(this.accumulatedUsage ? { usage: this.accumulatedUsage } : {}),
           ...(selfAssessment ? { selfAssessment } : {}),
           ...(executedModel ? { model: executedModel } : {}),
+          ...(conventions && conventions.length > 0 ? { conventions } : {}),
         };
       }
       return {
@@ -566,6 +601,18 @@ export abstract class BaseCliWorker implements WorkerRunner {
         ...(this.accumulatedUsage ? { usage: this.accumulatedUsage } : {}),
         ...(executedModel ? { model: executedModel } : {}),
       };
+    }
+
+    // Append conventions from the implement phase before the verify phase
+    // so the verify agent's build-up read can include them.
+    if (conventions && conventions.length > 0) {
+      EpicBuildup.appendConventions(
+        assignment.projectRoot,
+        assignment.epicId,
+        assignment.storyId,
+        new Date().toISOString(),
+        conventions
+      );
     }
 
     // ── Verify phase (policy.agents.phases='on') ─────────────────────────
