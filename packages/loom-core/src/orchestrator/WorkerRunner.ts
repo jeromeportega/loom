@@ -223,6 +223,13 @@ export interface WorkerResult {
    * value written at agent-create time.
    */
   model?: string;
+  /**
+   * Conventions discovered by the worker and emitted via LOOM_CONVENTIONS marker.
+   * Present only when epic_buildup is 'on' and the worker emitted a valid marker.
+   * Conventions are appended to the build-up store in-process regardless; this
+   * field is for audit/ledger purposes only.
+   */
+  conventions?: string[];
 }
 
 /**

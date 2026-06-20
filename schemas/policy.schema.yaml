@@ -280,6 +280,19 @@ properties:
           LLM tokens (a pure telemetry render).
             off — no notes written or injected; prompt byte-identical to baseline (default)
             on  — write a note on success, inject dependency notes into dependents
+      epic_buildup:
+        type: string
+        enum: [off, on]
+        default: off
+        description: |
+          Epic-cumulative build-up context. When 'on', a snapshot of every
+          completed story in the epic (summaries + discovered conventions) is
+          injected into each subsequent worker's prompt at dispatch time so
+          workers can build on prior decisions without re-exploring settled
+          ground. Off (default) writes nothing and keeps the worker prompt
+          byte-identical to the baseline.
+            off — no build-up written or injected; prompt byte-identical to baseline (default)
+            on  — append completed-story entries and discovered conventions to each worker prompt
       qa_planning:
         type: string
         enum: [off, advisory]

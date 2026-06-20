@@ -1,4 +1,5 @@
 import type { SelfAssessment, SignalLevel } from '../types.js';
+import { extractJsonObject } from './jsonExtract.js';
 
 /** The marker a worker emits to self-rate its completed work (B1). */
 export const SELF_ASSESSMENT_MARKER = 'LOOM_SELF_ASSESSMENT';
@@ -27,30 +28,13 @@ export function parseSelfAssessment(output: string): SelfAssessment | undefined 
   const lastIdx = output.lastIndexOf(SELF_ASSESSMENT_MARKER);
   if (lastIdx === -1) return undefined;
 
-  // The JSON object starts at the first '{' after the marker. Walk braces to
-  // find its matching close so trailing prose on the same line doesn't break us.
   const afterMarker = output.slice(lastIdx + SELF_ASSESSMENT_MARKER.length);
-  const start = afterMarker.indexOf('{');
-  if (start === -1) return undefined;
-
-  let depth = 0;
-  let end = -1;
-  for (let i = start; i < afterMarker.length; i++) {
-    const ch = afterMarker[i];
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        end = i;
-        break;
-      }
-    }
-  }
-  if (end === -1) return undefined;
+  const jsonStr = extractJsonObject(afterMarker);
+  if (jsonStr === undefined) return undefined;
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(afterMarker.slice(start, end + 1));
+    parsed = JSON.parse(jsonStr);
   } catch {
     return undefined;
   }
