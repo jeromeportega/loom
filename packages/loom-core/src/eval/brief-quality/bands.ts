@@ -15,12 +15,16 @@
  * BAND_TOLERANCE (τ=1): a score is accepted as agreeing with the expected band
  * if it falls within [lo−τ, hi+τ].  A single-point margin absorbs natural
  * scoring jitter at band edges without masking systematic off-by-one errors.
+ *
+ * high is sourced from READY_BAND (brief/readyBand.ts) — the scorer's SSOT.
+ * ADR-001: one-way dependency eval → brief; never the reverse.
  */
+import { READY_BAND } from '../../brief/readyBand.js';
 
 export const BANDS = {
   low:  [0, 3],
   mid:  [4, 6],
-  high: [7, 10],
+  high: READY_BAND,
 } as const;
 
 export const BAND_TOLERANCE = 1;
