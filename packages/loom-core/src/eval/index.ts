@@ -41,7 +41,7 @@ export { renderIntakeReport, writeIntakeReportFiles } from './renderIntakeReport
 
 // Intake consumer (GateEvalConsumer plug-point implementation)
 export { createIntakeConsumer } from './intakeConsumer.js';
-export type { IntakeMetrics } from './intakeConsumer.js';
+export type { IntakeMetrics, IntakeConsumer } from './intakeConsumer.js';
 
 // Framework re-exports (explicit to avoid collision with orchestrator's GateOutcome).
 // Deep imports via './framework/index.js' also work for internal consumers.

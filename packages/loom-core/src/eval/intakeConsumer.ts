@@ -15,7 +15,8 @@ import type { IntakeEvalCase, IntakeJudgeResult } from './intakeEvalTypes.js';
 import type { IntakeVerdict } from '../intake/IntakeClassifier.js';
 
 // Behavior-preservation constants (FR-5): these numbers must never move into core decide().
-// ADR-002: combined MAX_FAILURE_RATE covers classifier-failure OR judge-inconclusive.
+// ADR-002: each of gate-failure-rate and judge-inconclusive-rate is independently capped
+// at MAX_FAILURE_RATE; they are separate thresholds, not a single shared budget.
 const MIN_SCORED_CASES = 5;
 const MAX_FAILURE_RATE = 0.25;
 
@@ -24,15 +25,19 @@ export interface IntakeMetrics extends CoreMetrics {
 }
 
 /**
+ * Extends GateEvalConsumer with a test-friendly cache primer so the dangerous-confusion
+ * detection path can be exercised without requiring a real fixture file.
+ */
+export interface IntakeConsumer extends GateEvalConsumer<IntakeEvalCase, IntakeVerdict, IntakeJudgeResult, IntakeMetrics> {
+  /** Primes the internal casesById cache directly — intended for use in unit tests. */
+  primeCases(cases: IntakeEvalCase[]): void;
+}
+
+/**
  * Creates the intake GateEvalConsumer. The factory caches loaded cases so
  * score() can look up each case's label for dangerous-confusion detection.
  */
-export function createIntakeConsumer(): GateEvalConsumer<
-  IntakeEvalCase,
-  IntakeVerdict,
-  IntakeJudgeResult,
-  IntakeMetrics
-> {
+export function createIntakeConsumer(): IntakeConsumer {
   const casesById = new Map<string, IntakeEvalCase>();
 
   return {
@@ -96,6 +101,11 @@ export function createIntakeConsumer(): GateEvalConsumer<
     verdict(metrics: IntakeMetrics): 'proceed' | 'do-not-proceed' {
       // Dangerous-confusion rule lives HERE, never in core decide() (ADR-002).
       return metrics.epicsUnderSized === 0 ? 'proceed' : 'do-not-proceed';
+    },
+
+    primeCases(cases: IntakeEvalCase[]): void {
+      casesById.clear();
+      for (const c of cases) casesById.set(c.id, c);
     },
   };
 }

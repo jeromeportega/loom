@@ -246,60 +246,50 @@ describe('intakeConsumer — score: extends CoreMetrics', () => {
 // ── score — dangerous-confusion detection (AC2) ───────────────────────────────
 
 describe('intakeConsumer — score: epic→story dangerous confusion', () => {
-  it('detects zero epic→story confusions for story-labeled cases', () => {
+  it('detects zero epic→story confusions when casesById not primed (no cache hit)', () => {
     const consumer = createIntakeConsumer();
     const c = makeCase('a', 'feature', 'story');
     const verdict: IntakeVerdict = { type: 'feature', size: 'story', confidence: 'high', rationale: '' };
     const judgment: IntakeJudgeResult = { type: 'feature', size: 'story', grade: 'agree', reason: '' };
 
-    // Load the case so score() can look up its label
-    consumer.loadCases = (_path?: string) => {
-      (consumer as any)._cases = [c]; // not a real loadCases — see below
-      return [c];
-    };
-
-    // Use a fresh consumer so casesById is populated via loadCases
-    const consumer2 = createIntakeConsumer();
-    // Manually prime: the factory's closures populate casesById in loadCases
-    // We test via loadCases → score together
-    consumer2.loadCases = undefined as any; // suppress; use score directly with no prior load
-    // Actually we need to use the real consumer; let's build records that don't require label lookup
     const records: RunRecord<IntakeVerdict, IntakeJudgeResult>[] = [
       makeOkRecord(c, verdict, judgment),
     ];
 
-    // Score without loading cases — epicsUnderSized will be 0 because casesById is empty
-    // (gate output says story, no epic label to trigger the rule)
-    const freshConsumer = createIntakeConsumer();
-    const metrics = freshConsumer.score(records);
+    // Score without priming cases — casesById is empty, so epicsUnderSized stays 0.
+    const metrics = consumer.score(records);
     assert.equal(metrics.epicsUnderSized, 0);
   });
 
-  it('detects epic→story confusion when case loaded and gate predicts story for epic case', () => {
+  it('detects epic→story confusion when case IS in primeCases cache and gate predicts story', () => {
     const consumer = createIntakeConsumer();
     const epicCase = makeCase('epic-1', 'feature', 'epic'); // label: epic
     const storyVerdict: IntakeVerdict = { type: 'feature', size: 'story', confidence: 'high', rationale: '' };
     const judgment: IntakeJudgeResult = { type: 'feature', size: 'story', grade: 'agree', reason: '' };
 
-    // Simulate what happens after loadCases: prime the case cache
-    // by overriding the internal map via a test fixture path-less call
-    // We load a real fixture via a temp directory in loadIntakeEvalSet tests;
-    // here we use the consumer as a black box and verify score() alone.
-    //
-    // The consumer only looks up cases that were registered via loadCases().
-    // Since we can't call loadCases() without a real fixture file here,
-    // we verify the gate-output shape is correctly detected when the case IS cached.
+    // Prime the internal casesById cache so score() can look up the label.
+    consumer.primeCases([epicCase]);
 
-    // Build a consumer that has the case in its cache by calling a real loadCases on a temp path
-    // — instead, test score with the gate output directly (epic labeled → story predicted)
-    // by testing the verdict() separately.
-
-    // Test score without loaded cases (no cache hit) — rule doesn't fire
     const records: RunRecord<IntakeVerdict, IntakeJudgeResult>[] = [
       makeOkRecord(epicCase, storyVerdict, judgment),
     ];
-    const metricsNoCacheHit = consumer.score(records);
-    assert.equal(metricsNoCacheHit.epicsUnderSized, 0, 'no cache hit → rule does not fire');
+    const metrics = consumer.score(records);
+    assert.equal(metrics.epicsUnderSized, 1, 'epic labeled + story predicted → epicsUnderSized increments');
+  });
+
+  it('does NOT increment epicsUnderSized when gate predicts epic for an epic-labeled case', () => {
+    const consumer = createIntakeConsumer();
+    const epicCase = makeCase('epic-correct', 'feature', 'epic');
+    const epicVerdict: IntakeVerdict = { type: 'feature', size: 'epic', confidence: 'high', rationale: '' };
+    const judgment: IntakeJudgeResult = { type: 'feature', size: 'epic', grade: 'agree', reason: '' };
+
+    consumer.primeCases([epicCase]);
+
+    const records: RunRecord<IntakeVerdict, IntakeJudgeResult>[] = [
+      makeOkRecord(epicCase, epicVerdict, judgment),
+    ];
+    const metrics = consumer.score(records);
+    assert.equal(metrics.epicsUnderSized, 0, 'correctly-sized epic must not trigger the rule');
   });
 });
 
