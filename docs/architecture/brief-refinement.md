@@ -46,7 +46,15 @@ Internally the `BriefRefiner` returns:
 }
 ```
 
-When `quality_score` is below the policy threshold:
+The gate produces three outcomes based on `quality_score` and `ready`:
+
+| Outcome | Conditions | Meaning |
+|---|---|---|
+| `pass-clean` | `quality_score ≥ threshold` **and** `ready === true` | Brief is in the high (ready) band with no critical planning-blocking gap. Planning proceeds without outstanding operator work. Minor optional questions may still be surfaced alongside a `pass-clean` verdict — they do not block readiness. |
+| `pass-with-clarifications` | `quality_score ≥ threshold` **and** `ready === false` | Brief scored above the threshold but has a critical, planning-blocking gap (a blocking ambiguity or missing-scope item the planner would have to invent requirements to bridge). Planning can be forced with `--force`, but the operator should address the flagged items first. |
+| `below-threshold` | `quality_score < threshold` | Brief is too thin. The planner never runs. |
+
+When the gate does not return `pass-clean`:
 - **CLI**: `loom epic` prints the questions, the critique categories
   with non-empty issues, and (when present) a suggested refined draft.
   Exits non-zero. The operator tightens the brief and re-runs.
@@ -74,11 +82,18 @@ client gathers user answers → re-call `loom_start_epic` with the
 tightened brief. This keeps the gate cheap and the interactive
 intelligence at the client (where it belongs).
 
-**`ready: false` is the conservative default.** If the model returns
-malformed JSON, missing fields, or anything unparseable, the
+**`ready: false` is the conservative default, but `ready: true` is severity-aware.**
+If the model returns malformed JSON, missing fields, or anything unparseable, the
 normalization layer falls back to `ready: false` with the problem in
-`critique.ambiguities`. The user is never blocked by a tool error —
-they're prompted to clarify.
+`critique.ambiguities` — the user is never blocked by a tool error.
+Under the sharpened readiness criteria, `ready === true` when the brief's
+`quality_score` is in the ready band (7–10) **and** no critical, planning-blocking
+gap exists. Minor or optional gaps a planner can reasonably proceed past do not
+block readiness — in particular, the presence of clarification `questions` alone
+does not force `ready = false`. Only a blocking ambiguity or blocking missing-scope
+item (one that would force the planner to invent requirements) triggers
+`ready = false`. This shifts the expected distribution toward more `pass-clean`
+outcomes for well-scoped briefs that happen to have minor polish items.
 
 **Bench harness drops the threshold.** SWE-bench Lite problem
 statements are pre-structured GitHub issues; loom's brief rubric was
