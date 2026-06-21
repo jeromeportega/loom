@@ -2734,3 +2734,315 @@ describe('Supervisor — finalizeAndGateDone: publish_pending routing (story-005
     assert.equal(new EpicStore(db).get('epic-001')?.status, 'publish_pending');
   });
 });
+
+// ─── Auto-resume from stall / hung-request kills (story-032-002) ─────────────
+
+import { AuditLog as AuditLogClass } from '../state/AuditLog.js';
+import type { StoryRetryResult } from '../orchestrator/StoryRetryService.js';
+import { StoryRetryService } from '../orchestrator/StoryRetryService.js';
+
+describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
+  it('resume-with-checkpoint: stall kill + checkpointCommitted → story re-dispatched and succeeds', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    let callCount = 0;
+    const worker = new MockWorkerRunner(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          status: 'failed' as const,
+          commitCount: 0,
+          summary: 'guard killed',
+          logTail: '',
+          killReason: 'stall' as const,
+          checkpointCommitted: true,
+        };
+      }
+      return { status: 'done' as const, commitCount: 1, summary: 'resumed ok', logTail: '' };
+    });
+
+    const result = await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker,
+      maxConcurrent: 1,
+      autoResumeAttempts: 1,
+    }).run();
+
+    // Story should ultimately succeed after auto-resume.
+    assert.equal(result.storiesDone, 1);
+    assert.equal(result.storiesFailed, 0);
+    assert.equal(agentStatus('story-001-001'), 'done');
+    // Worker was dispatched exactly twice: initial kill + one auto-resume.
+    assert.equal(callCount, 2, 'worker called twice (initial + one auto-resume)');
+    // Audit trail: stall-kill row + story_retry row (from prepare()) + two dispatches.
+    const auditLog = new AuditLogClass(db);
+    const stallRows = auditLog.getByCommand('story-001-001', ['worker_stall_kill']);
+    assert.equal(stallRows.length, 1, 'one stall-kill audit row');
+    const retryRows = auditLog.getByCommand('story-001-001', ['story_retry']);
+    assert.equal(retryRows.length, 1, 'one story_retry audit row from prepare()');
+  });
+
+  it('hung_request kill routes through the same path as stall (FR-9 shared budget)', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    let callCount = 0;
+    const worker = new MockWorkerRunner(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          status: 'failed' as const,
+          commitCount: 0,
+          summary: 'hung request kill',
+          logTail: '',
+          killReason: 'hung_request' as const,
+          checkpointCommitted: true,
+        };
+      }
+      return { status: 'done' as const, commitCount: 1, summary: 'resumed ok', logTail: '' };
+    });
+
+    const result = await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker,
+      maxConcurrent: 1,
+      autoResumeAttempts: 1,
+    }).run();
+
+    assert.equal(result.storiesDone, 1);
+    assert.equal(callCount, 2);
+    const auditLog = new AuditLogClass(db);
+    const stallRows = auditLog.getByCommand('story-001-001', ['worker_stall_kill']);
+    assert.equal(stallRows.length, 1);
+    const detail = JSON.parse(stallRows[0].detail ?? '{}');
+    assert.equal(detail.kill_reason, 'hung_request');
+    assert.equal(detail.silence_kind, 'hung_request_no_response');
+  });
+
+  it('no-checkpoint → failed: stall kill without checkpointCommitted leaves story failed', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    let callCount = 0;
+    const worker = new MockWorkerRunner(async () => {
+      callCount++;
+      return {
+        status: 'failed' as const,
+        commitCount: 0,
+        summary: 'guard killed, no checkpoint',
+        logTail: '',
+        killReason: 'stall' as const,
+        checkpointCommitted: false,
+      };
+    });
+
+    const result = await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker,
+      maxConcurrent: 1,
+      autoResumeAttempts: 2,
+    }).run();
+
+    assert.equal(result.storiesFailed, 1);
+    assert.equal(result.storiesDone, 0);
+    assert.equal(agentStatus('story-001-001'), 'failed');
+    // Worker dispatched only once — no retry without a checkpoint.
+    assert.equal(callCount, 1, 'worker called once (no auto-resume without checkpoint)');
+    // Stall-kill audit row written, but no story_retry row (prepare never called).
+    const auditLog = new AuditLogClass(db);
+    assert.equal(auditLog.getByCommand('story-001-001', ['worker_stall_kill']).length, 1);
+    assert.equal(
+      auditLog.getByCommand('story-001-001', ['story_retry']).length,
+      0,
+      'prepare() must NOT be called when no checkpoint exists',
+    );
+  });
+
+  it('cap-exhausted → failed: stall kill after cap reached leaves story failed', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    let callCount = 0;
+    const worker = new MockWorkerRunner(async () => {
+      callCount++;
+      // Both calls return stall kill with checkpoint — the second should be
+      // rejected by the cap.
+      return {
+        status: 'failed' as const,
+        commitCount: 0,
+        summary: `kill attempt ${callCount}`,
+        logTail: '',
+        killReason: 'stall' as const,
+        checkpointCommitted: true,
+      };
+    });
+
+    const result = await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker,
+      maxConcurrent: 1,
+      autoResumeAttempts: 1,  // cap at 1: first kill → resume, second kill → failed
+    }).run();
+
+    assert.equal(result.storiesFailed, 1);
+    assert.equal(result.storiesDone, 0);
+    assert.equal(agentStatus('story-001-001'), 'failed');
+    // Two dispatches: first (killed + resumed) + second (killed, cap reached).
+    assert.equal(callCount, 2, 'worker called twice before cap is exhausted');
+    // Two stall-kill audit rows (one per kill).
+    const auditLog = new AuditLogClass(db);
+    const stallRows = auditLog.getByCommand('story-001-001', ['worker_stall_kill']);
+    assert.equal(stallRows.length, 2, 'one stall-kill row per kill event');
+    // Only one story_retry row (the second kill hits the cap).
+    assert.equal(
+      auditLog.getByCommand('story-001-001', ['story_retry']).length,
+      1,
+      'prepare() called only for the first kill; cap blocks the second',
+    );
+  });
+
+  it('prepare() rejected leaves story failed without incrementing counter', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    // Mock StoryRetryService that always returns rejected.
+    const rejectedResult: StoryRetryResult = {
+      status: 'rejected',
+      storyId: 'story-001-001',
+      cleaned: false,
+      resetStories: [],
+      willResume: false,
+      message: 'another supervisor holds the lease',
+    };
+    const mockRetry = {
+      prepare: (_storyId: string) => rejectedResult,
+    } as unknown as StoryRetryService;
+
+    const worker = new MockWorkerRunner({
+      status: 'failed',
+      killReason: 'stall',
+      checkpointCommitted: true,
+    });
+
+    const result = await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker,
+      maxConcurrent: 1,
+      autoResumeAttempts: 2,
+      retryService: mockRetry,
+    }).run();
+
+    // Prepare rejected → story left failed, no re-dispatch.
+    assert.equal(result.storiesFailed, 1);
+    assert.equal(agentStatus('story-001-001'), 'failed');
+    assert.equal(worker.assignments.length, 1, 'no re-dispatch on prepare() rejection');
+  });
+
+  it('auto-resume disabled when cap is 0 — story left failed even with checkpoint', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    const worker = new MockWorkerRunner({
+      status: 'failed',
+      killReason: 'stall',
+      checkpointCommitted: true,
+    });
+
+    const result = await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker,
+      maxConcurrent: 1,
+      // autoResumeAttempts not set → defaults to 0 inside Supervisor (disabled)
+    }).run();
+
+    assert.equal(result.storiesFailed, 1);
+    assert.equal(worker.assignments.length, 1);
+  });
+
+  it('shared counter: hung_request and stall kills for the same story share the budget', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    let callCount = 0;
+    const killReasons: Array<'stall' | 'hung_request'> = ['stall', 'hung_request'];
+    const worker = new MockWorkerRunner(async () => {
+      const idx = callCount++;
+      if (idx < 2) {
+        return {
+          status: 'failed' as const,
+          commitCount: 0,
+          summary: `kill ${idx + 1}`,
+          logTail: '',
+          killReason: killReasons[idx],
+          checkpointCommitted: true,
+        };
+      }
+      return { status: 'done' as const, commitCount: 1, summary: 'ok', logTail: '' };
+    });
+
+    // Cap 2: stall (resumes, count=1) → hung_request (resumes, count=2) → done.
+    // With cap 1, the second kill would exhaust the budget.
+    const result = await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker,
+      maxConcurrent: 1,
+      autoResumeAttempts: 2,
+    }).run();
+
+    assert.equal(result.storiesDone, 1, 'story eventually succeeds after two auto-resumes');
+    assert.equal(callCount, 3, 'three dispatches total (stall + hung_request + success)');
+    const auditLog = new AuditLogClass(db);
+    assert.equal(
+      auditLog.getByCommand('story-001-001', ['worker_stall_kill']).length,
+      2,
+      'two stall-kill rows (one for stall, one for hung_request)',
+    );
+  });
+
+  it('single dispatch path: re-dispatch sets task.status pending and re-enters existing dispatchLoop', async () => {
+    seedEpic('epic-001', [story('story-001-001'), story('story-001-002')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    const dispatchOrder: string[] = [];
+    let story1Calls = 0;
+    const worker = new MockWorkerRunner(async (a) => {
+      dispatchOrder.push(a.storyId);
+      if (a.storyId === 'story-001-001') {
+        story1Calls++;
+        if (story1Calls === 1) {
+          return {
+            status: 'failed' as const,
+            commitCount: 0,
+            summary: 'stall kill',
+            logTail: '',
+            killReason: 'stall' as const,
+            checkpointCommitted: true,
+          };
+        }
+      }
+      return { status: 'done' as const, commitCount: 1, summary: 'ok', logTail: '' };
+    });
+
+    const result = await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker,
+      maxConcurrent: 1,
+      autoResumeAttempts: 1,
+    }).run();
+
+    assert.equal(result.storiesDone, 2);
+    // story-001-001 runs, gets killed, resumes (same dispatch()), then story-001-002 runs.
+    assert.equal(dispatchOrder[0], 'story-001-001', 'first dispatch is story-001-001');
+    assert.equal(dispatchOrder[1], 'story-001-001', 'second dispatch is same story (auto-resume)');
+    assert.equal(dispatchOrder[2], 'story-001-002', 'third dispatch is story-001-002');
+  });
+});
