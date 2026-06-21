@@ -9,6 +9,7 @@
     "test": "npm run build && npm run test -w @loom-ai/core && npm run test -w loom-ai && npm run test -w @loom-ai/web",
     "eval": "npm run build -w @loom-ai/core && node scripts/eval.mjs",
     "eval:intake": "npm run build -w @loom-ai/core && node scripts/eval-intake.mjs",
+    "eval:brief-quality": "npm run build -w @loom-ai/core && node scripts/eval-brief-quality.mjs",
     "lint": "npm run lint --workspaces --if-present",
     "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules"
   },

@@ -61,6 +61,9 @@ nav:
     - "Decision Traces": architecture/decision-traces.md
     - "Brief Refinement": architecture/brief-refinement.md
     - "Worker Resilience": architecture/worker-resilience.md
+    - "Gate-Eval Framework": architecture/gate-eval-framework.md
+  - "Runbooks":
+    - "Brief-Quality Eval": runbooks/brief-quality-eval.md
   - "Research":
     - "Overview": research/index.md
     - "Live Agent Guidance": research/live-agent-guidance.md
