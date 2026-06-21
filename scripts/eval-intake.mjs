@@ -16,13 +16,19 @@ import {
   IntakeJudge,
   scoreIntakeEval,
   writeIntakeReportFiles,
+  writeIntakeReportDualFiles,
   renderIntakeReport,
   createLLMClient,
+  BriefRefiner,
+  refineEvalCases,
+  runRefinedIntakeEval,
 } from '../packages/loom-core/dist/index.js';
 
 const backend = process.env.LOOM_EVAL_BACKEND ?? 'claude-cli';
 const classifierModel = process.env.LOOM_EVAL_MODEL ?? 'claude-haiku-4-5-20251001';
 const judgeModel = process.env.LOOM_JUDGE_MODEL ?? 'claude-opus-4-8'; // planning_model default
+const refinerModel = process.env.LOOM_REFINER_MODEL ?? 'claude-opus-4-7'; // planning-tier model (ADR-007)
+const REFINED = process.env.LOOM_EVAL_REFINED === '1';
 
 const cases = loadIntakeEvalSet();
 console.log(`\nRunning intake eval — ${cases.length} cases, backend: ${backend}.\n`);
@@ -42,7 +48,25 @@ const records = await runIntakeEval(cases, deps);
 // [INJECT:report] wired by story-021-004
 const report = scoreIntakeEval(records, { classifierModel, judgeModel });
 const outputDir = path.resolve('.loom/eval');
-writeIntakeReportFiles(report, outputDir);
+
+// Refined-brief variant (LOOM_EVAL_REFINED=1 only — off by default, FR-7).
+// Roughly doubles LLM calls per run.
+let refinedReport;
+if (REFINED) {
+  console.log(`\nRunning refined-brief variant (LOOM_EVAL_REFINED=1) with refiner model: ${refinerModel}.\n`);
+  const projectRoot = path.resolve('.');
+  const refiner = new BriefRefiner({ projectRoot, llm, model: refinerModel });
+  const refinedCases = await refineEvalCases(cases, refiner);
+  const refinedRecords = await runRefinedIntakeEval(refinedCases, deps);
+  refinedReport = scoreIntakeEval(refinedRecords, { classifierModel, judgeModel });
+}
+
+// [INJECT:refined-report] — story-037-002
+if (REFINED) {
+  writeIntakeReportDualFiles({ raw: report, refined: refinedReport }, outputDir);
+} else {
+  writeIntakeReportFiles(report, outputDir);
+}
 console.log(`\nReport written to ${outputDir}/intake-report.{md,json}`);
 console.log(`Overall: ${report.overall.proceed ? 'PROCEED' : 'DO NOT PROCEED'} — ${report.overall.statement}`);
 
