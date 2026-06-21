@@ -42,6 +42,7 @@ function makePassRefinement(rough: string): BriefRefinement {
       untestable_claims: [],
       hidden_complexity: [],
     },
+    blocking_gaps: [],
     questions: [],
     delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
   };
@@ -59,6 +60,7 @@ function makeFailRefinement(rough: string): BriefRefinement {
       untestable_claims: [],
       hidden_complexity: [],
     },
+    blocking_gaps: [],
     questions: ['What is the goal?'],
     delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
   };
