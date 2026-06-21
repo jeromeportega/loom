@@ -106,6 +106,7 @@ describe('createBriefQualityConsumer — judge', () => {
     ready: true,
     original: 'Add a --version flag to the CLI.',
     quality_score: 8,
+    blocking_gaps: [],
     critique: {
       strong_points: ['clear scope'],
       ambiguities: [],

@@ -47,13 +47,23 @@ export interface BriefRefinement {
   questions: string[];
   /**
    * MODEL-EMITTED holistic 0-10 quality score, parsed from the same JSON
-   * response as `ready`. It is the refiner's judgment of how ready the
+   * response as `blocking_gaps`. It is the refiner's judgment of how ready the
    * brief is for autonomous planning as a whole — NOT a count of critique
    * items, and never derived from critique-array lengths. normalize()
    * clamps it to [0,10]; a missing or non-numeric value maps to 0
    * (fail closed).
    */
   quality_score: number;
+  /**
+   * Gaps so severe that a planner would have to invent requirements to proceed.
+   * Parsed from the model's `blocking_gaps` output via asStringArray — absent
+   * or malformed input defaults to []. Semantically distinct from
+   * critique.ambiguities, critique.missing_scope, and questions: those capture
+   * minor/optional gaps; this captures only planning-blocking ones.
+   * `ready` is derived in code as (quality_score >= READY_BAND_MIN) AND
+   * (blocking_gaps.length === 0).
+   */
+  blocking_gaps: string[];
   /**
    * What changed between original and refined. Lets the client render a
    * "here's what we tightened, do you agree?" view rather than just

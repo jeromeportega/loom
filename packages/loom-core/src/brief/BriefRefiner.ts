@@ -2,6 +2,7 @@ import type { LLMClient } from '../llm/index.js';
 import { SkillStore } from '../skills/index.js';
 import { extractJsonBlock } from '../planner/util.js';
 import type { BriefRefinement } from './types.js';
+import { READINESS_SCORE_FLOOR } from './readyBand.js';
 
 export interface BriefRefinerOptions {
   projectRoot: string;
@@ -44,9 +45,9 @@ const JSON_SCHEMA_INSTRUCTIONS = [
   '',
   '```json',
   '{',
-  '  "ready": boolean,            // true if the brief is concrete enough to plan',
   '  "quality_score": number,     // holistic 0-10: how ready this brief is for autonomous planning, judged as a whole — NOT a count of critique items',
   '  "refined_brief": string,     // omit ONLY if the input is too underspecified for any honest draft',
+  '  "blocking_gaps": [string],   // ONLY gaps so severe a planner must invent requirements to proceed; empty array [] when none; NOT minor ambiguities, missing scope, or clarification questions (those go in critique/questions)',
   '  "critique": {',
   '    "strong_points": [string],',
   '    "ambiguities": [string],',
@@ -54,7 +55,7 @@ const JSON_SCHEMA_INSTRUCTIONS = [
   '    "untestable_claims": [string],',
   '    "hidden_complexity": [string]',
   '  },',
-  '  "questions": [string],       // minor/optional questions may appear even when ready=true; ordered by importance',
+  '  "questions": [string],       // minor/optional questions; ordered by importance',
   '  "delta": {',
   '    "added_sections": [string],         // section headings you added that the user did not have',
   '    "clarifications": [{ "from": string, "to": string }],',
@@ -64,12 +65,11 @@ const JSON_SCHEMA_INSTRUCTIONS = [
   '```',
   '',
   'Rules:',
-  '- "ready" is true when the brief\'s quality is in the ready band (quality_score 7–10) AND no critical, planning-blocking gap exists. A critical gap is a blocking ambiguity or missing-scope item that would force the planner to invent requirements. Minor or optional gaps a planner can reasonably proceed past do not block readiness.',
-  '- Minor or optional clarification questions may be surfaced in "questions" even when ready=true. The presence of questions alone does not make a brief not ready.',
-  '- If ready=false, "questions" must be non-empty.',
+  '- "blocking_gaps" must contain ONLY gaps so severe that a planner would have to invent requirements to proceed. Do NOT include minor ambiguities, optional clarifications, or scope nuances — those belong in critique.ambiguities, critique.missing_scope, or questions. Use an empty array [] when there are no blocking gaps.',
+  '- Minor or optional clarification questions may be surfaced in "questions". The presence of questions alone does not block readiness.',
   '- "refined_brief" is markdown (no preamble, start at the first `#`). Tag assumptions with `[ASSUMPTION]`.',
   '- Every "delta.clarifications" entry must reference text actually in the original or actually in your refined_brief.',
-  '- Skip the refined_brief entirely if the input is so vague that drafting would be invention. Set ready=false and produce a questions list.',
+  '- Skip the refined_brief entirely if the input is so vague that drafting would be invention. Produce a questions list and leave blocking_gaps empty unless requirements would genuinely need to be invented.',
 ].join('\n');
 
 /**
@@ -207,11 +207,25 @@ export function salvagePartialRefinedBrief(text: string): string | null {
 }
 
 /**
+ * Derives the ready flag in code from the quality score and blocking gaps.
+ * Pure: no model call. Exported for unit testing.
+ *
+ * ready = score in the ready band AND no planning-blocking gaps present.
+ */
+export function deriveReady(
+  qualityScore: number,
+  blockingGaps: string[],
+  readyBandMin: number,
+): boolean {
+  return qualityScore >= readyBandMin && blockingGaps.length === 0;
+}
+
+/**
  * Validates / coerces the model's output into a fully-populated
- * BriefRefinement. Missing arrays default to empty; missing booleans default
- * to false (conservative: forces the operator to acknowledge). quality_score
- * is the model's own holistic judgment, clamped to [0,10]; a missing or
- * non-numeric score maps to 0 (fail closed).
+ * BriefRefinement. Missing arrays default to empty; quality_score is the
+ * model's holistic judgment, clamped to [0,10]; a missing or non-numeric
+ * score maps to 0 (fail closed). `ready` is derived in code via deriveReady()
+ * — the model's `ready` field (if present) is ignored.
  */
 function normalize(raw: Partial<BriefRefinement>, original: string): BriefRefinement {
   const critique = (raw.critique ?? {}) as Partial<BriefRefinement['critique']>;
@@ -223,8 +237,10 @@ function normalize(raw: Partial<BriefRefinement>, original: string): BriefRefine
     untestable_claims: asStringArray(critique.untestable_claims),
     hidden_complexity: asStringArray(critique.hidden_complexity),
   };
+  const quality_score = clampScore(raw.quality_score);
+  const blocking_gaps = asStringArray(raw.blocking_gaps);
   return {
-    ready: typeof raw.ready === 'boolean' ? raw.ready : false,
+    ready: deriveReady(quality_score, blocking_gaps, READINESS_SCORE_FLOOR),
     original,
     refined_brief:
       typeof raw.refined_brief === 'string' && raw.refined_brief.trim().length > 0
@@ -232,7 +248,8 @@ function normalize(raw: Partial<BriefRefinement>, original: string): BriefRefine
         : undefined,
     critique: normalizedCritique,
     questions: asStringArray(raw.questions),
-    quality_score: clampScore(raw.quality_score),
+    quality_score,
+    blocking_gaps,
     delta: {
       added_sections: asStringArray(delta.added_sections),
       clarifications: Array.isArray(delta.clarifications)
@@ -274,6 +291,7 @@ function fallback(rough: string, reason: string): BriefRefinement {
     },
     questions: ['Brief refinement did not complete. Run again or proceed with `loom epic` if confident.'],
     quality_score: FALLBACK_QUALITY_SCORE,
+    blocking_gaps: [],
     delta: {
       added_sections: [],
       clarifications: [],

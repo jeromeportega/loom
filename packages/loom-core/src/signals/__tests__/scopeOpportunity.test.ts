@@ -17,6 +17,7 @@ function makeRefinement(quality_score: number, hasAmbiguities = false): BriefRef
     ready: quality_score >= 7,
     original: 'rough brief',
     refined_brief: '# Refined Brief\n\nA well-scoped plan for reducing CI failures.',
+    blocking_gaps: [],
     critique: {
       strong_points: [],
       ambiguities: hasAmbiguities ? ['too vague to plan autonomously'] : [],

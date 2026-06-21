@@ -6,7 +6,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { LLMClient, LLMRequest, LLMResponse } from '../../llm/LLMClient.js';
-import { BriefRefiner, SALVAGE_QUALITY_SCORE, FALLBACK_QUALITY_SCORE } from '../BriefRefiner.js';
+import { BriefRefiner, SALVAGE_QUALITY_SCORE, FALLBACK_QUALITY_SCORE, deriveReady } from '../BriefRefiner.js';
+import { READY_BAND_MIN, READINESS_SCORE_FLOOR } from '../readyBand.js';
 
 // ── FakeLLM ──────────────────────────────────────────────────────────────────
 
@@ -342,11 +343,299 @@ describe('BriefRefiner — readiness intent (story-035-002)', () => {
   });
 
   it('does not flip ready:true to false based on non-empty critique arrays (over-correction guard)', async () => {
-    // normalize() carries ready verbatim — it must never re-derive it from
-    // critique contents. If it did, any brief with critique items would become
-    // incorrectly not-ready, breaking the severity-aware decoupling.
+    // ready is derived from quality_score + blocking_gaps, never from critique contents.
+    // READY_WITH_NONEMPTY_CRITIQUE has quality_score:7 and no blocking_gaps, so ready===true.
     const fake = new FakeLLM([READY_WITH_NONEMPTY_CRITIQUE]);
     const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
     assert.equal(result.ready, true, 'normalize must not derive ready=false from non-empty critique arrays');
+  });
+});
+
+// ── deriveReady — pure function (story-036-001) ──────────────────────────────
+
+describe('deriveReady — pure derivation function', () => {
+  it('returns true when score >= READY_BAND_MIN and no blocking gaps', () => {
+    assert.equal(deriveReady(8, [], READY_BAND_MIN), true);
+  });
+
+  it('returns false when a blocking gap is present even at high score', () => {
+    assert.equal(deriveReady(9, ['no auth model specified'], READY_BAND_MIN), false);
+  });
+
+  it('returns false when score is below READY_BAND_MIN even with no gaps', () => {
+    assert.equal(deriveReady(6, [], READY_BAND_MIN), false);
+  });
+
+  it('returns true at the exact boundary (score === READY_BAND_MIN)', () => {
+    assert.equal(deriveReady(READY_BAND_MIN, [], READY_BAND_MIN), true);
+  });
+
+  it('returns false one below the boundary', () => {
+    assert.equal(deriveReady(READY_BAND_MIN - 1, [], READY_BAND_MIN), false);
+  });
+
+  it('READY_BAND_MIN is sourced from the readyBand constant, not a literal 7', () => {
+    // Pin the floor to the exported constant so this assertion fails if the SSOT changes.
+    assert.equal(READY_BAND_MIN, 7, 'READY_BAND_MIN must equal 7 per readyBand.ts');
+  });
+});
+
+// ── code-derived readiness (story-036-001) ───────────────────────────────────
+
+/** High band, no blocking_gaps → ready must be true (AC: happy path) */
+const HIGH_SCORE_NO_GAPS = JSON.stringify({
+  quality_score: 8,
+  refined_brief: '# Add OAuth Login\n\nFully scoped OAuth integration.',
+  blocking_gaps: [],
+  critique: {
+    strong_points: ['Clear goal'],
+    ambiguities: [],
+    missing_scope: [],
+    untestable_claims: [],
+    hidden_complexity: [],
+  },
+  questions: [],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+/** High score but with a blocking gap → ready must be false */
+const HIGH_SCORE_WITH_BLOCKING_GAP = JSON.stringify({
+  quality_score: 9,
+  refined_brief: '# Add OAuth Login',
+  blocking_gaps: ['no auth model specified — planner would have to invent the provider'],
+  critique: {
+    strong_points: [],
+    ambiguities: [],
+    missing_scope: [],
+    untestable_claims: [],
+    hidden_complexity: [],
+  },
+  questions: ['Which OAuth provider?'],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+/** Below-band score, no blocking gaps → ready must be false */
+const BELOW_BAND_NO_GAPS = JSON.stringify({
+  quality_score: 4,
+  refined_brief: '# Add OAuth Login',
+  blocking_gaps: [],
+  critique: {
+    strong_points: [],
+    ambiguities: ['Provider unclear'],
+    missing_scope: [],
+    untestable_claims: [],
+    hidden_complexity: [],
+  },
+  questions: ['Which OAuth provider?'],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+/** Model emits ready:true but there's a blocking gap — provenance: model ignored */
+const MODEL_SAYS_READY_BUT_HAS_GAP = JSON.stringify({
+  ready: true,
+  quality_score: 9,
+  blocking_gaps: ['storage strategy not specified — planner must invent it'],
+  critique: {
+    strong_points: [],
+    ambiguities: [],
+    missing_scope: [],
+    untestable_claims: [],
+    hidden_complexity: [],
+  },
+  questions: [],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+/** Model emits ready:false but score is high and no gaps — provenance: model ignored */
+const MODEL_SAYS_NOT_READY_HIGH_BAND_NO_GAPS = JSON.stringify({
+  ready: false,
+  quality_score: 8,
+  blocking_gaps: [],
+  critique: {
+    strong_points: ['Clear scope'],
+    ambiguities: ['Minor token expiry ambiguity'],
+    missing_scope: [],
+    untestable_claims: [],
+    hidden_complexity: [],
+  },
+  questions: ['Should the token TTL be configurable?'],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+/** Populates critique arrays AND blocking_gaps — must be parsed into distinct fields */
+const DISTINCT_FIELDS_RESPONSE = JSON.stringify({
+  quality_score: 5,
+  blocking_gaps: ['no persistence layer specified'],
+  critique: {
+    strong_points: ['Goal is clear'],
+    ambiguities: ['Rate-limit behaviour unclear'],
+    missing_scope: ['Rollback plan not described'],
+    untestable_claims: ['Performance will be fast'],
+    hidden_complexity: ['OAuth token rotation'],
+  },
+  questions: ['Should we use Redis or a database for sessions?'],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+/** Exactly at the readiness score floor */
+const BOUNDARY_AT_FLOOR = JSON.stringify({
+  quality_score: 6,
+  blocking_gaps: [],
+  critique: {
+    strong_points: [], ambiguities: [], missing_scope: [],
+    untestable_claims: [], hidden_complexity: [],
+  },
+  questions: [],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+/** One below the readiness score floor */
+const BOUNDARY_BELOW_FLOOR = JSON.stringify({
+  quality_score: 5,
+  blocking_gaps: [],
+  critique: {
+    strong_points: [], ambiguities: [], missing_scope: [],
+    untestable_claims: [], hidden_complexity: [],
+  },
+  questions: [],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+describe('BriefRefiner — code-derived readiness (story-036-001)', () => {
+  it('HAPPY: high band + no blocking gaps → ready=true', async () => {
+    const fake = new FakeLLM([HIGH_SCORE_NO_GAPS]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.ready, true, 'high score + empty blocking_gaps must yield ready:true');
+    assert.deepEqual(result.blocking_gaps, [], 'blocking_gaps must be empty');
+    assert.equal(result.quality_score, 8);
+  });
+
+  it('BLOCKING GAP: high score but blocking gap present → ready=false', async () => {
+    const fake = new FakeLLM([HIGH_SCORE_WITH_BLOCKING_GAP]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.ready, false, 'blocking gap must yield ready:false even at high score');
+    assert.equal(result.blocking_gaps.length, 1, 'blocking_gaps must contain the gap');
+    assert.equal(result.quality_score, 9);
+  });
+
+  it('BELOW BAND: score below floor + no gaps → ready=false', async () => {
+    const fake = new FakeLLM([BELOW_BAND_NO_GAPS]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.ready, false, 'sub-floor score must yield ready:false');
+    assert.deepEqual(result.blocking_gaps, [], 'blocking_gaps still empty');
+    assert.equal(result.quality_score, 4);
+  });
+
+  it('BOUNDARY: score === READINESS_SCORE_FLOOR → ready=true', async () => {
+    const fake = new FakeLLM([BOUNDARY_AT_FLOOR]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.quality_score, READINESS_SCORE_FLOOR, 'score must equal the floor');
+    assert.equal(result.ready, true, 'score at READINESS_SCORE_FLOOR must yield ready:true');
+  });
+
+  it('BOUNDARY: score === READINESS_SCORE_FLOOR - 1 → ready=false', async () => {
+    const fake = new FakeLLM([BOUNDARY_BELOW_FLOOR]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.quality_score, READINESS_SCORE_FLOOR - 1);
+    assert.equal(result.ready, false, 'one below floor must yield ready:false');
+  });
+
+  it('PROVENANCE: raw ready:true + blocking gap → derived ready=false (model not authoritative)', async () => {
+    const fake = new FakeLLM([MODEL_SAYS_READY_BUT_HAS_GAP]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.ready, false, 'model ready:true must be overridden by blocking gap');
+    assert.equal(result.blocking_gaps.length, 1);
+  });
+
+  it('PROVENANCE: raw ready:false + high band + no gaps → derived ready=true (model not authoritative)', async () => {
+    const fake = new FakeLLM([MODEL_SAYS_NOT_READY_HIGH_BAND_NO_GAPS]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.ready, true, 'model ready:false must be overridden when score is high and no blocking gaps');
+    assert.deepEqual(result.blocking_gaps, []);
+  });
+
+  it('GRACEFUL DEGRADATION: blocking_gaps absent → defaults to [] → score-band-only readiness', async () => {
+    const noGapsField = JSON.stringify({
+      quality_score: 8,
+      critique: { strong_points: [], ambiguities: [], missing_scope: [], untestable_claims: [], hidden_complexity: [] },
+      questions: [],
+      delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+    });
+    const fake = new FakeLLM([noGapsField]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.deepEqual(result.blocking_gaps, [], 'absent blocking_gaps must default to []');
+    assert.equal(result.ready, true, 'high score + absent blocking_gaps → ready=true');
+    assert.equal(typeof result.ready, 'boolean');
+  });
+
+  it('GRACEFUL DEGRADATION: blocking_gaps is a string (malformed) → defaults to []', async () => {
+    const malformedGaps = JSON.stringify({
+      quality_score: 8,
+      blocking_gaps: 'not an array',
+      critique: { strong_points: [], ambiguities: [], missing_scope: [], untestable_claims: [], hidden_complexity: [] },
+      questions: [],
+      delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+    });
+    const fake = new FakeLLM([malformedGaps]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.deepEqual(result.blocking_gaps, []);
+    assert.equal(result.ready, true, 'malformed blocking_gaps collapses to [] → score-band-only readiness');
+  });
+
+  it('GRACEFUL DEGRADATION: blocking_gaps array with non-string entries → filters to []', async () => {
+    const mixedGaps = JSON.stringify({
+      quality_score: 8,
+      blocking_gaps: [42, null, true],
+      critique: { strong_points: [], ambiguities: [], missing_scope: [], untestable_claims: [], hidden_complexity: [] },
+      questions: [],
+      delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+    });
+    const fake = new FakeLLM([mixedGaps]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.deepEqual(result.blocking_gaps, [], 'non-string entries are filtered, resulting in []');
+    assert.equal(result.ready, true);
+  });
+
+  it('DISTINCTNESS: blocking_gaps is parsed into its own field distinct from critique arrays', async () => {
+    const fake = new FakeLLM([DISTINCT_FIELDS_RESPONSE]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.deepEqual(result.blocking_gaps, ['no persistence layer specified']);
+    assert.deepEqual(result.critique.ambiguities, ['Rate-limit behaviour unclear']);
+    assert.deepEqual(result.critique.missing_scope, ['Rollback plan not described']);
+    assert.ok(
+      result.blocking_gaps[0] !== result.critique.ambiguities[0] &&
+      result.blocking_gaps[0] !== result.critique.missing_scope[0],
+      'blocking_gaps must not mirror or absorb critique arrays',
+    );
+  });
+
+  it('PRESERVATION: quality_score, critique arrays, questions, delta, and ready type are unchanged in shape', async () => {
+    const fake = new FakeLLM([DISTINCT_FIELDS_RESPONSE]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.quality_score, 5);
+    assert.ok(Array.isArray(result.critique.strong_points));
+    assert.ok(Array.isArray(result.critique.ambiguities));
+    assert.ok(Array.isArray(result.critique.missing_scope));
+    assert.ok(Array.isArray(result.critique.untestable_claims));
+    assert.ok(Array.isArray(result.critique.hidden_complexity));
+    assert.ok(Array.isArray(result.questions));
+    assert.ok(Array.isArray(result.delta.added_sections));
+    assert.equal(typeof result.ready, 'boolean', 'ready must remain a boolean');
+  });
+
+  it('FAIL-CLOSED: SALVAGE_QUALITY_SCORE is below READY_BAND_MIN → ready=false', () => {
+    assert.ok(
+      SALVAGE_QUALITY_SCORE < READY_BAND_MIN,
+      `SALVAGE_QUALITY_SCORE (${SALVAGE_QUALITY_SCORE}) must be below READY_BAND_MIN (${READY_BAND_MIN})`,
+    );
+    assert.equal(deriveReady(SALVAGE_QUALITY_SCORE, [], READY_BAND_MIN), false);
+  });
+
+  it('FAIL-CLOSED: FALLBACK_QUALITY_SCORE is below READY_BAND_MIN → ready=false', () => {
+    assert.ok(
+      FALLBACK_QUALITY_SCORE < READY_BAND_MIN,
+      `FALLBACK_QUALITY_SCORE (${FALLBACK_QUALITY_SCORE}) must be below READY_BAND_MIN (${READY_BAND_MIN})`,
+    );
+    assert.equal(deriveReady(FALLBACK_QUALITY_SCORE, [], READY_BAND_MIN), false);
   });
 });

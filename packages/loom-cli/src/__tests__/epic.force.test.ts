@@ -63,6 +63,9 @@ function pipelineResponder(opts: {
               hidden_complexity: [],
             }
           : FAILING_CRITIQUE,
+        // Readiness is code-derived (score floor AND blocking_gaps empty); the
+        // model's `ready` is ignored. Surface a blocking gap to drive not-ready.
+        blocking_gaps: opts.ready ? [] : ['critical requirement undefined — planner would have to invent it'],
         questions: opts.ready ? [] : FAILING_QUESTIONS,
         delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
       });

@@ -201,6 +201,10 @@ function passthroughLLM(opts: { ready: boolean; score: number; questions?: strin
             untestable_claims: [],
             hidden_complexity: [],
           },
+          // Readiness is code-derived (score band AND blocking_gaps empty), so the
+          // model's `ready` field above is ignored. To drive a not-ready outcome we
+          // must surface a blocking gap; ready=true means no blocking gaps.
+          blocking_gaps: opts.ready ? [] : ['critical scope is undefined — planner would have to invent requirements'],
           questions: opts.questions ?? MOCK_QUESTIONS,
           delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
         }) +

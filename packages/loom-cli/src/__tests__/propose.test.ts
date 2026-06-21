@@ -33,6 +33,7 @@ function makePassRefinement(rough: string): BriefRefinement {
     refined_brief: '# Proposed\n\nClear brief.',
     quality_score: 8,
     critique: { strong_points: ['clear'], ambiguities: [], missing_scope: [], untestable_claims: [], hidden_complexity: [] },
+    blocking_gaps: [],
     questions: [],
     delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
   };
@@ -44,6 +45,7 @@ function makeFailRefinement(rough: string): BriefRefinement {
     original: rough,
     quality_score: 3,
     critique: { strong_points: [], ambiguities: ['too vague'], missing_scope: [], untestable_claims: [], hidden_complexity: [] },
+    blocking_gaps: [],
     questions: ['What is the goal?'],
     delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
   };
