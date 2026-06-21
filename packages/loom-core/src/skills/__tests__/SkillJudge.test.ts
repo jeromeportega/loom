@@ -1,13 +1,8 @@
-/**
- * Tests for SkillJudge's non-agentic mode migration (story-033-002).
- * Mirrors the IntakeClassifier regression test pattern (IntakeClassifier.test.ts:193-202)
- * and the BriefRefiner pattern (BriefRefiner.test.ts).
- */
-
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { LLMClient, LLMRequest, LLMResponse } from '../../llm/LLMClient.js';
 import { SkillJudge } from '../SkillJudge.js';
+import type { SkillManifest } from '../SkillStore.js';
 
 // ── FakeLLM ──────────────────────────────────────────────────────────────────
 
@@ -56,10 +51,10 @@ function makeJudge(llm: LLMClient): SkillJudge {
   return new SkillJudge({ llm, model: 'haiku' });
 }
 
-// ── non-agentic mode request shape (AC1, AC2 / FR-1, FR-3) ──────────────────
+// ── non-agentic mode request shape ───────────────────────────────────────────
 
 describe('SkillJudge — non-agentic mode request shape', () => {
-  it('sets nonAgentic: { excludeDynamicSections: true } on the complete() call (AC1)', async () => {
+  it('sets nonAgentic.excludeDynamicSections on the complete() call', async () => {
     const fake = new FakeLLM([ACCEPT_RESPONSE]);
     await makeJudge(fake).judge(SKILL_MD, []);
     const req = fake.calls[0];
@@ -70,17 +65,17 @@ describe('SkillJudge — non-agentic mode request shape', () => {
     );
   });
 
-  it('maxTokens is 512 (AC2)', async () => {
+  it('maxTokens is 512', async () => {
     const fake = new FakeLLM([ACCEPT_RESPONSE]);
     await makeJudge(fake).judge(SKILL_MD, []);
     assert.equal(fake.calls[0].maxTokens, 512, 'maxTokens must be exactly 512');
   });
 });
 
-// ── static system prompt (AC3 / FR-4) ───────────────────────────────────────
+// ── static system prompt ──────────────────────────────────────────────────────
 
-describe('SkillJudge — system prompt is self-contained (AC3)', () => {
-  it('system block contains no dynamic environment placeholders', async () => {
+describe('SkillJudge — system prompt is self-contained', () => {
+  it('system block contains no dynamic environment placeholders (cwd, git status, env vars)', async () => {
     const fake = new FakeLLM([ACCEPT_RESPONSE]);
     await makeJudge(fake).judge(SKILL_MD, []);
     const req = fake.calls[0];
@@ -114,7 +109,7 @@ describe('SkillJudge — system prompt is self-contained (AC3)', () => {
     assert.equal(req.system[0].cache, true, 'first system block must be marked cache:true');
   });
 
-  it('system block embeds the candidate skill markdown (AC3)', async () => {
+  it('system block embeds the candidate skill markdown', async () => {
     const fake = new FakeLLM([ACCEPT_RESPONSE]);
     await makeJudge(fake).judge(SKILL_MD, []);
     const req = fake.calls[0];
@@ -126,9 +121,9 @@ describe('SkillJudge — system prompt is self-contained (AC3)', () => {
   });
 });
 
-// ── output schema / parsing / fallback unchanged (AC4, AC6 / FR-6) ──────────
+// ── output schema / parsing / fallback ───────────────────────────────────────
 
-describe('SkillJudge — output schema, parsing, retry, and fallback unchanged (AC4, AC6)', () => {
+describe('SkillJudge — output schema, parsing, retry, and fallback unchanged', () => {
   it('happy path accept: parses valid JSON and returns JudgeResult', async () => {
     const fake = new FakeLLM([ACCEPT_RESPONSE]);
     const result = await makeJudge(fake).judge(SKILL_MD, []);
@@ -144,7 +139,7 @@ describe('SkillJudge — output schema, parsing, retry, and fallback unchanged (
     assert.equal(result.score, 2);
   });
 
-  it('transport error → permissive accept with score 999 (AC6 load-bearing quirk)', async () => {
+  it('transport error → permissive accept with score 999 (load-bearing quirk, do not fix)', async () => {
     const fake = new FakeLLM([new Error('network timeout')]);
     const result = await makeJudge(fake).judge(SKILL_MD, []);
     assert.equal(result.score, 999);
@@ -152,7 +147,7 @@ describe('SkillJudge — output schema, parsing, retry, and fallback unchanged (
     assert.ok(result.reason.includes('judge unavailable'));
   });
 
-  it('unparseable LLM output → permissive accept with score 999 (parse failure quirk)', async () => {
+  it('unparseable LLM output → permissive accept with score 999 (parse-failure quirk, do not fix)', async () => {
     const fake = new FakeLLM(['not json at all']);
     const result = await makeJudge(fake).judge(SKILL_MD, []);
     assert.equal(result.score, 999);
@@ -167,8 +162,8 @@ describe('SkillJudge — output schema, parsing, retry, and fallback unchanged (
 
   it('includes existing skills in the system prompt context', async () => {
     const fake = new FakeLLM([ACCEPT_RESPONSE]);
-    const existingSkills = [
-      { name: 'loom-existing', description: 'An existing skill.', metadata: {}, source: 'global' as const, lifecycle: 'active' as const, file: '/fake/path/SKILL.md' },
+    const existingSkills: SkillManifest[] = [
+      { name: 'loom-existing', description: 'An existing skill.', metadata: {}, source: 'global', lifecycle: 'active', file: '/fake/path/SKILL.md' },
     ];
     await makeJudge(fake).judge(SKILL_MD, existingSkills);
     const req = fake.calls[0];
@@ -190,15 +185,12 @@ describe('SkillJudge — output schema, parsing, retry, and fallback unchanged (
     );
   });
 
-  it('user message is the scoring trigger (Score the candidate skill now.)', async () => {
+  it('user message is the scoring trigger', async () => {
     const fake = new FakeLLM([ACCEPT_RESPONSE]);
     await makeJudge(fake).judge(SKILL_MD, []);
     const req = fake.calls[0];
     const userMsg = req.messages.find(m => m.role === 'user');
     assert.ok(userMsg, 'must have a user message');
-    assert.ok(
-      userMsg.content.includes('Score the candidate skill'),
-      'user message must include the scoring trigger',
-    );
+    assert.ok(userMsg.content.includes('Score the candidate skill'), 'user message must include the scoring trigger');
   });
 });

@@ -7,7 +7,8 @@ import type { SkillManifest } from './SkillStore.js';
 const FALLBACK_JUDGE_PROMPT =
   'You are a strict reviewer. Score a candidate skill 0–10 and decide accept/reject.\n' +
   'Return ONLY a single fenced ```json block:\n' +
-  '```json\n{"score": 0, "verdict": "accept | reject", "reason": "one sentence"}\n```\n\n' +
+  '```json\n{"score": 7, "verdict": "accept", "reason": "one sentence"}\n```\n' +
+  '// verdict must be one of: accept | reject\n\n' +
   '{{CONTEXT}}';
 
 const JudgeResultSchema = z.object({
@@ -71,7 +72,8 @@ export class SkillJudge {
     let promptTemplate: string;
     try {
       promptTemplate = loadBundledPrompt('skill-judge');
-    } catch {
+    } catch (err) {
+      console.warn('[SkillJudge] skill-judge bundled prompt unavailable, using built-in fallback:', err);
       promptTemplate = FALLBACK_JUDGE_PROMPT;
     }
     const prompt = promptTemplate.replace('{{CONTEXT}}', context);
