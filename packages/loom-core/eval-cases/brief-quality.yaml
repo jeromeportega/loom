@@ -1,0 +1,213 @@
+# Labeled eval set for the brief-quality gate (epic-034).
+#
+# Each case stores: the rough brief text, expected readiness verdict,
+# expected quality band, the key critique themes a good reviewer should
+# surface, and a rationale for the label.
+#
+# Band boundaries (FR-11, ADR-003) — see src/eval/brief-quality/bands.ts:
+#   low  0–3  : vague, missing key scope elements, not plan-ready
+#   mid  4–6  : borderline — has structure but gaps remain
+#   high 7–10 : well-scoped, testable criteria, plan-ready
+#
+# Boundary tolerance τ=1: a score s agrees with a band [lo,hi] if
+# s ∈ [lo−τ, hi+τ].  See bands.ts for the authoritative constants.
+#
+# Categories: plan-ready / not-ready / borderline — balanced across all three.
+# All cases validated against BriefQualityCaseSchema at load time.
+
+cases:
+  # ── PLAN-READY ANCHORS ────────────────────────────────────────────────────────
+  # These briefs are concrete, bounded, testable, and carry explicit
+  # constraints. A good BriefRefiner should score them 7–10 and flag ready.
+
+  - id: bq-anchor-clear-ready
+    source: anchor
+    category: plan-ready
+    brief: >
+      Add a --version flag to the loom CLI that reads the version from
+      package.json and prints it to stdout before exiting 0. The flag must work
+      whether or not a .loom directory exists. Add a jest test that spawns the
+      CLI and asserts the output matches the package.json version string.
+    expected_ready: true
+    expected_band: high
+    critique_themes:
+      - well-bounded single-story scope
+      - explicit success criterion with version string assertion
+      - test expectation named concretely
+    rationale: >
+      Classic single-concern CLI addition. Goal is one sentence, success is
+      checkable, out-of-scope is implied by the narrow scope. A planner can
+      produce one story with no ambiguity.
+
+  - id: bq-ready-auth-gate
+    source: anchor
+    category: plan-ready
+    brief: >
+      Add a personal-access-token (PAT) auth gate to the loom web dashboard.
+      The PAT is stored in loom's SQLite state under a new auth_tokens table
+      (hashed with bcrypt, cost factor 12). Every dashboard HTTP request must
+      present the token in the Authorization Bearer header; missing or invalid
+      tokens return HTTP 401 and are written to the audit_log. The first-run
+      experience generates a token, prints it once to stdout, and exits. Out of
+      scope: OAuth, multi-user sessions, token rotation. Success: the dashboard
+      rejects a request with a wrong token; accepts one with the correct token;
+      the audit_log row exists in both cases.
+    expected_ready: true
+    expected_band: high
+    critique_themes:
+      - storage mechanism explicit (SQLite, bcrypt cost factor)
+      - error path specified (401, audit_log)
+      - out-of-scope list prevents scope creep
+      - success criteria are checkable and concrete
+    rationale: >
+      Auth work is high-risk for scope creep and silent failure modes; this brief
+      names the storage, the hash algorithm, the audit path, and the first-run
+      experience. A planner can decompose this to 2–3 stories without guessing.
+
+  - id: bq-ready-cost-dashboard
+    source: derived
+    category: plan-ready
+    brief: >
+      Build a loom cost CLI subcommand that reads the audit_log table and
+      prints a per-epic token-spend summary (input tokens, output tokens, total
+      estimated cost at current Anthropic pricing) to stdout. Output format:
+      aligned columns, one row per epic, a totals row. Accepts an optional
+      --since flag (ISO date) to filter rows. Out of scope: storing pricing in
+      the database, real-time streaming, non-Anthropic models. Success: given a
+      seeded test database, the command outputs the correct totals and respects
+      the --since filter.
+    expected_ready: true
+    expected_band: high
+    critique_themes:
+      - output format specified (aligned columns, totals row)
+      - filter flag behaviour named
+      - test approach is concrete (seeded db, known totals)
+      - out-of-scope list is explicit
+    rationale: >
+      The brief names the data source, the output shape, the filter flag, and a
+      concrete test strategy. No guessing is required for any story acceptance
+      criterion.
+
+  # ── NOT-READY ANCHORS ─────────────────────────────────────────────────────────
+  # These briefs are too vague, too broad, or missing critical constraints.
+  # A good BriefRefiner should score them 0–3 and flag not-ready.
+
+  - id: bq-anchor-vague-one-liner
+    source: anchor
+    category: not-ready
+    brief: >
+      Make loom faster.
+    expected_ready: false
+    expected_band: low
+    critique_themes:
+      - no scope — faster is not an acceptance criterion
+      - no metric or baseline named
+      - no identified bottleneck
+      - untestable as written
+    rationale: >
+      One-line brief with no scoping, no measurement, no named subsystem.
+      The planner has nothing to decompose. The refiner must ask: faster at
+      what, measured how, starting from what baseline?
+
+  - id: bq-not-ready-big-rewrite
+    source: anchor
+    category: not-ready
+    brief: >
+      Rewrite loom in Go for better performance and to make it easier to
+      distribute as a single binary.
+    expected_ready: false
+    expected_band: low
+    critique_themes:
+      - epic-scale scope understated (full runtime rewrite)
+      - no migration strategy or compatibility requirements named
+      - success criterion is architectural not behavioural
+      - no definition of better performance with a target
+    rationale: >
+      Full runtime rewrite is multi-epic scope presented without any planning
+      detail. There is no rollout plan, no compatibility surface defined, no
+      concrete perf target, and no story decomposition possible without
+      substantial scoping work.
+
+  - id: bq-not-ready-vague-observability
+    source: derived
+    category: not-ready
+    brief: >
+      Add better logging to loom so we can debug problems more easily.
+    expected_ready: false
+    expected_band: low
+    critique_themes:
+      - no log format or destination specified
+      - no identified problem scenario to debug
+      - the word better is unactionable without a current-state baseline
+      - no success criterion
+    rationale: >
+      Vague observability brief — common category of not-ready brief. Better
+      logging is a direction, not a requirement. The refiner needs to ask: what
+      specific scenarios are hard to debug today? What should a log line contain?
+      Where should it go (stderr, file, structured JSON)?
+
+  # ── BORDERLINE CASES ──────────────────────────────────────────────────────────
+  # These briefs have real content but also real gaps. A good refiner will score
+  # them 4–6, flag ready=false or ready=true with caveats, and surface the gaps.
+
+  - id: bq-borderline-01
+    source: borderline
+    category: borderline
+    brief: >
+      Add a retry mechanism to the loom worker so that if an LLM call fails
+      due to a rate-limit error, the worker waits and tries again. It should
+      retry up to 3 times with exponential backoff.
+    expected_ready: false
+    expected_band: mid
+    critique_themes:
+      - retry count and backoff named but jitter policy missing
+      - no cap on wait time (runaway backoff risk)
+      - partial-completion state after failure not addressed
+      - which specific errors trigger retry vs hard-fail is undefined
+    rationale: >
+      Has a concrete mechanism (3 retries, exponential backoff) but is missing
+      the details a worker agent needs: what is the base delay? Is there jitter?
+      What is the maximum wait? What happens if the worker has already written
+      files when the error occurs? These gaps are fixable in one clarification
+      round.
+
+  - id: bq-borderline-02
+    source: borderline
+    category: borderline
+    brief: >
+      Build a loom skills marketplace where teams can publish and discover
+      skills. Skills should be versioned and searchable by tag.
+    expected_ready: false
+    expected_band: mid
+    critique_themes:
+      - marketplace implies external service hosting — hosting strategy absent
+      - versioning scheme not named (semver vs content-addressed)
+      - auth for publish not addressed
+      - search backend undefined (full-text vs tag-exact-match)
+      - scope is likely epic but written as a single deliverable
+    rationale: >
+      Has concrete nouns (skills, versioning, tags, search) but the scope spans
+      infrastructure concerns (hosting, auth, search) that are each a non-trivial
+      story. Whether this is a loom-internal index or a hosted external service
+      is the pivotal unanswered question.
+
+  - id: bq-borderline-03
+    source: borderline
+    category: borderline
+    brief: >
+      Add a progress bar to the loom CLI so users can see how far along the
+      epic run is. Show the number of stories completed out of total, the
+      current story name, and an elapsed time.
+    expected_ready: true
+    expected_band: mid
+    critique_themes:
+      - output channel not specified (stdout vs stderr — matters for piping)
+      - TTY detection missing (progress bar should disable in non-TTY)
+      - refresh rate undefined
+      - success criterion could be more concrete (a specific final state string)
+    rationale: >
+      The feature is well-described and small enough to be a single story, but
+      the brief under-specifies terminal behaviour. A planner could proceed but
+      would need to make judgement calls on TTY handling and output channel.
+      Slightly above the ready threshold due to concrete content, but the gaps
+      are worth surfacing.
