@@ -177,6 +177,27 @@ properties:
           Absolute wall-clock ceiling per story regardless of activity — the
           backstop against a worker that streams forever in a useless loop.
           Scaled per story by story_timeout_multipliers.
+      hung_request_seconds:
+        type: integer
+        minimum: 0
+        default: 45
+        description: |
+          Tighter liveness bound (epic-030). After a worker emits
+          system/status status=requesting with no subsequent stream activity
+          for this many SECONDS, the guard concludes the model call has hung
+          and kills the worker — much faster than the minute-based stall path.
+          Any incremental stream activity disarms it, so a streaming-but-slow
+          worker is never killed earlier. 0 disables the check.
+      auto_resume_attempts:
+        type: integer
+        minimum: 0
+        default: 2
+        description: |
+          Per-story automatic-resume cap (epic-030). When a worker is killed by
+          the stall or hung-request guard AND it left a checkpoint commit, the
+          supervisor auto-resumes it from the checkpoint up to this many times
+          within one `loom run` (run-scoped, not persisted). 0 disables
+          auto-resume. Cap exhausted or no checkpoint leaves the story failed.
       story_timeout_multipliers:
         type: object
         description: |
