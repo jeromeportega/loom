@@ -286,3 +286,88 @@ Do NOT adjust the verdict based on whether the outcome is favorable. Record the 
 This is the "honest gate" per ADR-005: the go/no-go signal arrives out-of-band from a human operator after merge, not from the worker that implemented the changes.
 
 *Generated output (gitignored): `.loom/eval/intake-report.{md,json}`*
+
+---
+
+## Refined-Brief Variant (`LOOM_EVAL_REFINED=1`)
+
+**Added:** epic-037
+
+This optional variant runs `BriefRefiner` on each case brief **before** the
+classifier sees it, then re-runs the full classifier + judge pipeline on the
+refined text. The result is a side-by-side dual report: raw accuracy vs.
+refined accuracy. It measures how much the classifier's performance improves
+when the brief is improved first.
+
+### Why it exists
+
+The intake classifier scores briefs as written by operators, which are often
+rough. The refined variant answers: **would a polished brief produce better
+classifier decisions?** That signal guides whether investing in brief
+pre-processing upstream is worth the additional cost.
+
+### How to run it
+
+```bash
+LOOM_EVAL_REFINED=1 npm run eval:intake
+```
+
+or equivalently:
+
+```bash
+LOOM_EVAL_REFINED=1 node scripts/eval-intake.mjs
+```
+
+**The flag is off by default.** A run without `LOOM_EVAL_REFINED=1` produces
+output logically identical to a plain eval run — no extra LLM calls, no
+dual-report section.
+
+### Operational cost
+
+The refined variant **roughly doubles the eval's LLM calls and runtime**:
+
+| Phase | Plain eval (per case) | Refined eval (per case) |
+|---|---|---|
+| Refiner call (planning-tier model) | 0 | 1 |
+| Classifier call | 1 | 1 (on refined brief) |
+| Judge call | ≤1 | ≤1 (on refined brief) |
+| **Total calls** | **≤2** | **≤3** |
+
+For the default 22-case fixture: plain ≤44 LLM calls; refined ≤66 LLM calls.
+Wall-clock is proportionally longer because the refiner and classifier+judge
+calls run sequentially per case.
+
+### Env-var overrides
+
+All plain-eval overrides still apply. The refiner's model is set separately:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LOOM_EVAL_BACKEND` | `claude-cli` | LLM backend for all calls |
+| `LOOM_EVAL_MODEL` | `claude-haiku-4-5-20251001` | Classifier model |
+| `LOOM_JUDGE_MODEL` | `claude-opus-4-8` | Judge model |
+| `LOOM_REFINER_MODEL` | planning-tier model (policy-derived) | Refiner model override; the refiner uses the planning-tier model from loom's policy by default — set this only to override |
+
+### Output
+
+With `LOOM_EVAL_REFINED=1` the writer produces a **dual report** written to the
+same paths:
+
+- `.loom/eval/intake-report.md` — includes the standard raw section **plus** a
+  "Refined-brief variant" section and a raw-vs-refined comparison table.
+- `.loom/eval/intake-report.json` — carries `{ raw: IntakeEvalReport, refined:
+  IntakeEvalReport, comparison: { ... } }`.
+
+Cases where the refiner returns no `refined_brief` (too underspecified to
+draft) are recorded as classifier failures in the refined set, the same way
+classifier `invalid_output` failures are handled in the raw set. These refiner
+failures are excluded from per-axis accuracy counts (the scored denominator),
+so accuracy percentages between raw and refined may differ even though both
+sets cover the same N fixture cases.
+
+### When to run it
+
+Run the refined variant when investigating whether brief quality is a root
+cause of classifier errors seen in the plain eval. It is intentionally **not
+the default** — the plain eval is the canonical gate measurement; the refined
+variant is an auxiliary diagnostic.
