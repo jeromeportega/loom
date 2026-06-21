@@ -2,7 +2,7 @@ import type { LLMClient } from '../llm/index.js';
 import { SkillStore } from '../skills/index.js';
 import { extractJsonBlock } from '../planner/util.js';
 import type { BriefRefinement } from './types.js';
-import { READY_BAND_MIN } from './readyBand.js';
+import { READINESS_SCORE_FLOOR } from './readyBand.js';
 
 export interface BriefRefinerOptions {
   projectRoot: string;
@@ -240,7 +240,7 @@ function normalize(raw: Partial<BriefRefinement>, original: string): BriefRefine
   const quality_score = clampScore(raw.quality_score);
   const blocking_gaps = asStringArray(raw.blocking_gaps);
   return {
-    ready: deriveReady(quality_score, blocking_gaps, READY_BAND_MIN),
+    ready: deriveReady(quality_score, blocking_gaps, READINESS_SCORE_FLOOR),
     original,
     refined_brief:
       typeof raw.refined_brief === 'string' && raw.refined_brief.trim().length > 0

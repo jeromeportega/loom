@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { LLMClient, LLMRequest, LLMResponse } from '../../llm/LLMClient.js';
 import { BriefRefiner, SALVAGE_QUALITY_SCORE, FALLBACK_QUALITY_SCORE, deriveReady } from '../BriefRefiner.js';
-import { READY_BAND_MIN } from '../readyBand.js';
+import { READY_BAND_MIN, READINESS_SCORE_FLOOR } from '../readyBand.js';
 
 // ── FakeLLM ──────────────────────────────────────────────────────────────────
 
@@ -416,7 +416,7 @@ const HIGH_SCORE_WITH_BLOCKING_GAP = JSON.stringify({
 
 /** Below-band score, no blocking gaps → ready must be false */
 const BELOW_BAND_NO_GAPS = JSON.stringify({
-  quality_score: 6,
+  quality_score: 4,
   refined_brief: '# Add OAuth Login',
   blocking_gaps: [],
   critique: {
@@ -477,9 +477,9 @@ const DISTINCT_FIELDS_RESPONSE = JSON.stringify({
   delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
 });
 
-/** Exactly at the ready-band floor */
+/** Exactly at the readiness score floor */
 const BOUNDARY_AT_FLOOR = JSON.stringify({
-  quality_score: 7,
+  quality_score: 6,
   blocking_gaps: [],
   critique: {
     strong_points: [], ambiguities: [], missing_scope: [],
@@ -489,9 +489,9 @@ const BOUNDARY_AT_FLOOR = JSON.stringify({
   delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
 });
 
-/** One below the ready-band floor */
+/** One below the readiness score floor */
 const BOUNDARY_BELOW_FLOOR = JSON.stringify({
-  quality_score: 6,
+  quality_score: 5,
   blocking_gaps: [],
   critique: {
     strong_points: [], ambiguities: [], missing_scope: [],
@@ -523,20 +523,20 @@ describe('BriefRefiner — code-derived readiness (story-036-001)', () => {
     const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
     assert.equal(result.ready, false, 'sub-floor score must yield ready:false');
     assert.deepEqual(result.blocking_gaps, [], 'blocking_gaps still empty');
-    assert.equal(result.quality_score, 6);
+    assert.equal(result.quality_score, 4);
   });
 
-  it('BOUNDARY: score === READY_BAND_MIN → ready=true', async () => {
+  it('BOUNDARY: score === READINESS_SCORE_FLOOR → ready=true', async () => {
     const fake = new FakeLLM([BOUNDARY_AT_FLOOR]);
     const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
-    assert.equal(result.quality_score, READY_BAND_MIN, 'score must equal the floor');
-    assert.equal(result.ready, true, 'score at READY_BAND_MIN must yield ready:true');
+    assert.equal(result.quality_score, READINESS_SCORE_FLOOR, 'score must equal the floor');
+    assert.equal(result.ready, true, 'score at READINESS_SCORE_FLOOR must yield ready:true');
   });
 
-  it('BOUNDARY: score === READY_BAND_MIN - 1 → ready=false', async () => {
+  it('BOUNDARY: score === READINESS_SCORE_FLOOR - 1 → ready=false', async () => {
     const fake = new FakeLLM([BOUNDARY_BELOW_FLOOR]);
     const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
-    assert.equal(result.quality_score, READY_BAND_MIN - 1);
+    assert.equal(result.quality_score, READINESS_SCORE_FLOOR - 1);
     assert.equal(result.ready, false, 'one below floor must yield ready:false');
   });
 
