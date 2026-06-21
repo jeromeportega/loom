@@ -194,10 +194,20 @@ export async function runEpic(
 
   // Classify the intake brief best-effort before planning (observe-only, ADR-001).
   // Blocks planning start until classification resolves or times out; never throws.
+  //
+  // Classify the REFINED brief when available (falling back to the raw brief). The
+  // refiner — which already ran above for the quality gate, so there is no extra
+  // LLM cost — surfaces hidden scope/complexity that a one-paragraph raw brief
+  // lacks. The intake eval's refined-brief variant showed this eliminates
+  // epic→story under-sizing (raw: 2 confusions → refined: 0, clearing the Phase 1
+  // bar) and cuts classifier invalid_output failures (7 → 1). The audit still
+  // records the raw `brief` for intake traceability. Still observe-only: this only
+  // improves the recorded verdict's accuracy; it never gates planning.
   await recordIntakeClassification({
     db,
     epicId: reservedId,
     brief,
+    classifyBrief: refinement.refined_brief ?? brief,
     llm,
     model: modelFor(policy, 'planning'),
     timeoutMs: policy.agents.intake_timeout_ms,

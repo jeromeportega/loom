@@ -12,18 +12,27 @@ import { classifyIntake, INTAKE_AUDIT_ACTION, EpicStore, AuditLog } from '@loom-
 export async function recordIntakeClassification(deps: {
   db: Database.Database;
   epicId: string;
+  /** Raw user brief — recorded in the audit log for intake traceability. */
   brief: string;
+  /**
+   * Brief actually classified — the REFINED brief when available. The intake
+   * eval's refined-brief variant showed classifying the refined brief eliminates
+   * epic→story under-sizing (raw: 2 → refined: 0). Defaults to `brief`. The audit
+   * still records the raw `brief` so the user's original intake stays traceable.
+   */
+  classifyBrief?: string;
   llm: LLMClient;
   model: string;
   timeoutMs: number;
 }): Promise<void> {
-  const { db, epicId, brief, llm, model, timeoutMs } = deps;
+  const { db, epicId, brief, classifyBrief, llm, model, timeoutMs } = deps;
+  const briefToClassify = classifyBrief ?? brief;
 
   let result: ClassifyResult | undefined;
   // classifyIntake catches LLM errors and returns {ok:false}; this outer catch
   // is for unexpected internal errors only (e.g. a bug inside classifyIntake).
   try {
-    result = await classifyIntake(brief, { llm, model, timeoutMs });
+    result = await classifyIntake(briefToClassify, { llm, model, timeoutMs });
   } catch {
     // Unexpected error — still write a failure audit entry so the event is
     // traceable, then swallow so planning is unaffected.

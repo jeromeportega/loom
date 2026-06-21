@@ -278,4 +278,50 @@ describe('FR-4 observe-only invariant — planner output identical with vs witho
       }
     }
   });
+
+  // The intake eval's refined-brief variant showed classifying the REFINED brief
+  // eliminates epic→story under-sizing (raw: 2 → refined: 0). Production must feed
+  // the classifier the refined brief (when the refiner produced one), not the raw.
+  it('classifies the REFINED brief (not the raw brief) when the refiner produces one', async () => {
+    const REFINED = '# Refined Brief\n\n## Goal\nA fully-scoped, refiner-produced brief surfacing hidden scope.';
+    let classifiedBrief: string | null = null;
+
+    const responder = (req: LLMRequest): string => {
+      const last = req.messages[req.messages.length - 1];
+      // Intake classifier: assistant prefill '{' — capture the brief it received
+      // (the preceding user message), then return a verdict.
+      if (last.role === 'assistant' && last.content === '{') {
+        classifiedBrief = req.messages[req.messages.length - 2].content as string;
+        return `"type":"feature","size":"epic","confidence":"high","rationale":"refined-brief flow"}`;
+      }
+      // Brief refiner: return a DISTINCTIVE refined_brief.
+      if ((last.content as string).includes('Apply the discipline above')) {
+        return jsonBlock({
+          ready: true,
+          quality_score: 9,
+          refined_brief: REFINED,
+          critique: { strong_points: ['clear'], ambiguities: [], missing_scope: [], untestable_claims: [], hidden_complexity: [] },
+          blocking_gaps: [],
+          questions: [],
+          delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+        });
+      }
+      return makePlanningResponder(EPIC_TITLE)(req);
+    };
+
+    const dir = makeLoomRepo('loom-observe-only-refined-');
+    try {
+      process.chdir(dir);
+      resetDatabaseForTest();
+      const { exitCode } = await runInProcess(() => runEpic(BRIEF, { llm: new MockLLMClient(responder), force: true }));
+      assert.ok(exitCode === null || exitCode === 0, 'run must exit cleanly');
+      assert.ok(classifiedBrief !== null, 'classifier must have been called');
+      assert.equal(classifiedBrief, REFINED, 'classifier must receive the refined brief');
+      assert.notEqual(classifiedBrief, BRIEF, 'classifier must NOT receive the raw brief when a refined brief exists');
+    } finally {
+      resetDatabaseForTest();
+      process.chdir(prevCwd);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
