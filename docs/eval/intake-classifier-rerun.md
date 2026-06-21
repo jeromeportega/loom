@@ -319,7 +319,8 @@ LOOM_EVAL_REFINED=1 node scripts/eval-intake.mjs
 ```
 
 **The flag is off by default.** A run without `LOOM_EVAL_REFINED=1` produces
-output byte-identical to the plain eval — no extra calls, no dual report.
+output logically identical to a plain eval run — no extra LLM calls, no
+dual-report section.
 
 ### Operational cost
 
@@ -345,7 +346,7 @@ All plain-eval overrides still apply. The refiner's model is set separately:
 | `LOOM_EVAL_BACKEND` | `claude-cli` | LLM backend for all calls |
 | `LOOM_EVAL_MODEL` | `claude-haiku-4-5-20251001` | Classifier model |
 | `LOOM_JUDGE_MODEL` | `claude-opus-4-8` | Judge model |
-| `LOOM_REFINER_MODEL` | `claude-opus-4-7` | Refiner model (planning tier, ADR-007) |
+| `LOOM_REFINER_MODEL` | planning-tier model (policy-derived) | Refiner model override; the refiner uses the planning-tier model from loom's policy by default — set this only to override |
 
 ### Output
 
@@ -358,10 +359,11 @@ same paths:
   IntakeEvalReport, comparison: { ... } }`.
 
 Cases where the refiner returns no `refined_brief` (too underspecified to
-draft) are recorded as classifier failures in the refined set and excluded from
-accuracy counts, the same way classifier `invalid_output` failures are handled
-in the raw set. The refined set always has the same N as the raw set so the
-counts are directly comparable.
+draft) are recorded as classifier failures in the refined set, the same way
+classifier `invalid_output` failures are handled in the raw set. These refiner
+failures are excluded from per-axis accuracy counts (the scored denominator),
+so accuracy percentages between raw and refined may differ even though both
+sets cover the same N fixture cases.
 
 ### When to run it
 
