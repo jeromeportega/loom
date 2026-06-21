@@ -56,6 +56,10 @@ import { investigateAndRoute } from '../failure/investigateAndRoute.js';
 import { computeHeuristics, buildStorySignals } from './signalLedger.js';
 import { SignalLedger } from './signalStore.js';
 import { redactSecrets } from '../util/redact.js';
+import { AutoResumeCounter } from './AutoResumeCounter.js';
+import { StoryRetryService } from './StoryRetryService.js';
+import { shouldAutoResume } from './autoResume.js';
+import { recordStallKill } from './StallKillAudit.js';
 
 export interface SupervisorOptions {
   projectRoot: string;
@@ -235,6 +239,19 @@ export interface SupervisorOptions {
    * keep the requested value as the final record.
    */
   workerModel?: string;
+  /**
+   * Per-story automatic-resume cap (policy.agents.auto_resume_attempts; 0 disables).
+   * When a worker is killed by the stall or hung-request guard AND it left a
+   * checkpoint commit, auto-resume re-dispatches it up to this many times within
+   * one `loom run`. Volatile: counted in-run, not persisted to the DB. Default 0
+   * (disabled) when not provided.
+   */
+  autoResumeAttempts?: number;
+  /**
+   * Injectable StoryRetryService for tests. Defaults to a resume-mode (clean=false)
+   * instance built from projectRoot + db.
+   */
+  retryService?: StoryRetryService;
 }
 
 export interface SupervisorResult {
@@ -332,6 +349,10 @@ export class Supervisor {
   private logBytes = new Map<string, number>();
   /** Maps agentId → storyId so flushTails can look up the log_bytes offset. */
   private agentToStory = new Map<string, string>();
+  /** Run-scoped auto-resume attempt counter, keyed per story (story-032-001). */
+  private autoResumeCounter = new AutoResumeCounter();
+  /** Shared retry-preparation path for auto-resume (story-032-002). */
+  private retryService!: StoryRetryService;
 
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
@@ -414,6 +435,11 @@ export class Supervisor {
     this.decisionTraces = new DecisionTraceStore(opts.db);
     this.lease = new LeaseStore(opts.db);
     this.signalLedger = new SignalLedger({ db: opts.db, projectRoot: opts.projectRoot });
+    this.retryService = opts.retryService ?? new StoryRetryService({
+      projectRoot: opts.projectRoot,
+      db: opts.db,
+      leaseStore: this.lease,
+    });
   }
 
   async run(epicIds?: string[]): Promise<SupervisorResult> {
@@ -2297,6 +2323,31 @@ export class Supervisor {
         return manifest;
       });
       this.skillGenPromises.push(promise);
+    }
+
+    // Auto-resume from stall / hung-request kills that left a checkpoint commit
+    // (story-032-002). Audit-first so the kill row lands even when prep later
+    // rejects. Flows through the existing StoryRetryService.prepare() with
+    // clean=false (resume disposition), then re-enters the same dispatchLoop by
+    // setting task.status='pending' and returning early. No second dispatch path.
+    if (result.killReason === 'stall' || result.killReason === 'hung_request') {
+      const attempt = this.autoResumeCounter.attemptsFor(task.story.id);
+      recordStallKill(this.audit, {
+        agentId: task.agentId,
+        storyId: task.story.id,
+        result,
+        resumeAttempt: attempt,
+      });
+      const cap = this.opts.autoResumeAttempts ?? 0;
+      if (shouldAutoResume(result, attempt, cap)) {
+        const prep = this.retryService.prepare(task.story.id);
+        if (prep.status === 'ready' && prep.willResume) {
+          this.autoResumeCounter.record(task.story.id);
+          task.status = 'pending';
+          return;
+        }
+      }
+      // No checkpoint, cap reached, or prep rejected → leave the story failed.
     }
   }
 
