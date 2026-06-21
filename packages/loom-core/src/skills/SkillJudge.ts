@@ -4,6 +4,12 @@ import { loadBundledPrompt } from '../planner/PersonaLoader.js';
 import { extractJsonBlock } from '../planner/util.js';
 import type { SkillManifest } from './SkillStore.js';
 
+const FALLBACK_JUDGE_PROMPT =
+  'You are a strict reviewer. Score a candidate skill 0–10 and decide accept/reject.\n' +
+  'Return ONLY a single fenced ```json block:\n' +
+  '```json\n{"score": 0, "verdict": "accept | reject", "reason": "one sentence"}\n```\n\n' +
+  '{{CONTEXT}}';
+
 const JudgeResultSchema = z.object({
   score: z.number(),
   verdict: z.enum(['accept', 'reject']),
@@ -62,12 +68,20 @@ export class SkillJudge {
       existingList,
     ].join('\n');
 
-    const prompt = loadBundledPrompt('skill-judge').replace('{{CONTEXT}}', context);
+    let promptTemplate: string;
+    try {
+      promptTemplate = loadBundledPrompt('skill-judge');
+    } catch {
+      promptTemplate = FALLBACK_JUDGE_PROMPT;
+    }
+    const prompt = promptTemplate.replace('{{CONTEXT}}', context);
 
     const response = await this.opts.llm.complete({
       model: this.opts.model,
       system: [{ text: prompt, cache: true }],
       messages: [{ role: 'user', content: 'Score the candidate skill now.' }],
+      maxTokens: 512,
+      nonAgentic: { excludeDynamicSections: true },
     });
 
     return JudgeResultSchema.parse(extractJsonBlock(response.text));
