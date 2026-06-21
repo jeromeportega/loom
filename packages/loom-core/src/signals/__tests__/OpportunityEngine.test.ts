@@ -326,6 +326,73 @@ describe('OpportunityEngine — validation (FR-10)', () => {
   });
 });
 
+// ─── Non-agentic mode — request shape (story-033-004) ────────────────────────
+
+describe('OpportunityEngine — non-agentic mode request shape', () => {
+  it('[FR-1] cluster call sets nonAgentic: { excludeDynamicSections: true } (AC1)', async () => {
+    const db = createDatabase(':memory:');
+    const auditLog = new AuditLog(db);
+    const mockLLM = new MockLLMClient([
+      JSON.stringify([
+        { title: 'T', signal_ids: [1], impact: 0.5, effort: 0.5, confidence: 0.5, rationale: 'R' },
+      ]),
+    ]);
+    const engine = new OpportunityEngine({ db, llm: mockLLM, model: 'm', auditLog });
+
+    await engine.generate([makeSignal({ id: 1, key: 'k1', title: 'T1' })]);
+
+    assert.deepEqual(
+      mockLLM.calls[0].nonAgentic,
+      { excludeDynamicSections: true },
+      'calls[0] must carry nonAgentic: { excludeDynamicSections: true }'
+    );
+  });
+
+  it('[FR-5] repair re-prompt also sets nonAgentic: { excludeDynamicSections: true } (AC2)', async () => {
+    const db = createDatabase(':memory:');
+    const auditLog = new AuditLog(db);
+    const mockLLM = new MockLLMClient([
+      'not json at all',
+      JSON.stringify([
+        { title: 'T', signal_ids: [1], impact: 0.5, effort: 0.5, confidence: 0.5, rationale: 'R' },
+      ]),
+    ]);
+    const engine = new OpportunityEngine({ db, llm: mockLLM, model: 'm', auditLog });
+
+    await engine.generate([makeSignal({ id: 1, key: 'k1', title: 'T1' })]);
+
+    assert.equal(mockLLM.calls.length, 2, 'repair path must produce exactly 2 calls');
+    assert.deepEqual(
+      mockLLM.calls[0].nonAgentic,
+      { excludeDynamicSections: true },
+      'calls[0] (cluster call) must carry nonAgentic'
+    );
+    assert.deepEqual(
+      mockLLM.calls[1].nonAgentic,
+      { excludeDynamicSections: true },
+      'calls[1] (repair call) must carry nonAgentic'
+    );
+  });
+
+  it('[FR-3] maxTokens is 4096 on every captured call', async () => {
+    const db = createDatabase(':memory:');
+    const auditLog = new AuditLog(db);
+    const mockLLM = new MockLLMClient([
+      'not json',
+      JSON.stringify([
+        { title: 'T', signal_ids: [1], impact: 0.5, effort: 0.5, confidence: 0.5, rationale: 'R' },
+      ]),
+    ]);
+    const engine = new OpportunityEngine({ db, llm: mockLLM, model: 'm', auditLog });
+
+    await engine.generate([makeSignal({ id: 1, key: 'k1', title: 'T1' })]);
+
+    for (const call of mockLLM.calls) {
+      assert.equal(call.maxTokens, 4096, 'every call must carry maxTokens: 4096');
+    }
+  });
+});
+
 // ─── Malformed JSON — repair re-prompt (FR-10) ───────────────────────────────
 
 describe('OpportunityEngine — malformed JSON repair (FR-10)', () => {
