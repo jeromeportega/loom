@@ -105,6 +105,8 @@ export class BriefRefiner {
         model: this.opts.model,
         system: [{ text: systemText, cache: true }],
         messages: [{ role: 'user', content: userMsg }],
+        maxTokens: 8192,
+        nonAgentic: { excludeDynamicSections: true },
       });
     } catch (err) {
       return fallback(rough, `refinement call failed: ${(err as Error).message}`);
