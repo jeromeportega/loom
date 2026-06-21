@@ -26,6 +26,8 @@ export interface JudgeResult {
 export interface SkillJudgeOptions {
   llm: LLMClient;
   model: string;
+  /** Override prompt loader — used in tests to exercise the fallback path. */
+  loadPrompt?: (name: string) => string;
 }
 
 /**
@@ -69,9 +71,10 @@ export class SkillJudge {
       existingList,
     ].join('\n');
 
+    const loader = this.opts.loadPrompt ?? loadBundledPrompt;
     let promptTemplate: string;
     try {
-      promptTemplate = loadBundledPrompt('skill-judge');
+      promptTemplate = loader('skill-judge');
     } catch (err) {
       console.warn('[SkillJudge] skill-judge bundled prompt unavailable, using built-in fallback:', err);
       promptTemplate = FALLBACK_JUDGE_PROMPT;

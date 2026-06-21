@@ -194,3 +194,30 @@ describe('SkillJudge — output schema, parsing, retry, and fallback unchanged',
     assert.ok(userMsg.content.includes('Score the candidate skill'), 'user message must include the scoring trigger');
   });
 });
+
+// ── loadBundledPrompt failure fallback ────────────────────────────────────────
+
+describe('SkillJudge — loadBundledPrompt failure fallback', () => {
+  const failingLoader = (_name: string): string => { throw new Error('prompt file missing'); };
+
+  it('still returns a valid JudgeResult when the prompt loader throws', async () => {
+    const fake = new FakeLLM([ACCEPT_RESPONSE]);
+    const judge = new SkillJudge({ llm: fake, model: 'haiku', loadPrompt: failingLoader });
+    const result = await judge.judge(SKILL_MD, []);
+    assert.ok(result.verdict === 'accept' || result.verdict === 'reject', 'verdict must be accept or reject');
+    assert.ok(typeof result.score === 'number', 'score must be a number');
+    assert.ok(typeof result.reason === 'string', 'reason must be a string');
+  });
+
+  it('system prompt contains built-in fallback wording when prompt loader throws', async () => {
+    const fake = new FakeLLM([ACCEPT_RESPONSE]);
+    const judge = new SkillJudge({ llm: fake, model: 'haiku', loadPrompt: failingLoader });
+    await judge.judge(SKILL_MD, []);
+    const req = fake.calls[0];
+    const systemText = req.system.map(b => b.text).join('\n');
+    assert.ok(
+      systemText.includes('You are a strict reviewer'),
+      'system prompt must contain fallback wording when prompt file is missing',
+    );
+  });
+});
