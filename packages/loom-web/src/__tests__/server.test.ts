@@ -886,7 +886,18 @@ async function collectEvents(
   const deadline = Date.now() + timeoutMs;
   const found: Array<{ event: string; data: unknown }> = [];
   while (Date.now() < deadline) {
-    const { value, done } = await reader.read();
+    // Race each read against the remaining deadline. Without this, a reader.read()
+    // on an idle-but-open SSE stream blocks forever (the deadline is only checked
+    // between reads), so a NEGATIVE assertion — "no further event arrives" — hangs
+    // the whole suite instead of rejecting at timeoutMs.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<'__timeout__'>((resolve) => {
+      timer = setTimeout(() => resolve('__timeout__'), Math.max(0, deadline - Date.now()));
+    });
+    const result = await Promise.race([reader.read(), timeout]);
+    clearTimeout(timer);
+    if (result === '__timeout__') break;
+    const { value, done } = result;
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     const blocks = buf.split('\n\n');
