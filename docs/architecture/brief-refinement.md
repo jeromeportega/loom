@@ -27,8 +27,9 @@ Internally the `BriefRefiner` returns:
 
 ```
 {
-  ready: boolean,
-  quality_score: number,       // 0–10, derived from the critique
+  ready: boolean,             // DERIVED IN CODE — see "Code-derived readiness" below
+  blocking_gaps: string[],    // model-emitted; empty [] when none
+  quality_score: number,      // 0–10, model-emitted holistic score
   refined_brief?: string,
   critique: {
     strong_points: string[],
@@ -46,12 +47,16 @@ Internally the `BriefRefiner` returns:
 }
 ```
 
+The model emits `blocking_gaps` and `quality_score`; it no longer emits `ready`.
+`ready` is synthesised in `normalize()` after the model call — see
+[Code-derived readiness](#code-derived-readiness) below.
+
 The gate produces three outcomes based on `quality_score` and `ready`:
 
 | Outcome | Conditions | Meaning |
 |---|---|---|
-| `pass-clean` | `quality_score ≥ threshold` **and** `ready === true` | Brief is in the high (ready) band with no critical planning-blocking gap. Planning proceeds without outstanding operator work. Minor optional questions may still be surfaced alongside a `pass-clean` verdict — they do not block readiness. |
-| `pass-with-clarifications` | `quality_score ≥ threshold` **and** `ready === false` | Brief scored above the threshold but has a critical, planning-blocking gap (a blocking ambiguity or missing-scope item the planner would have to invent requirements to bridge). Planning can be forced with `--force`, but the operator should address the flagged items first. |
+| `pass-clean` | `quality_score ≥ threshold` **and** `ready === true` | Brief is in the ready band (`quality_score ≥ READY_BAND_MIN = 7`) with no planning-blocking gaps. Planning proceeds without outstanding operator work. Minor optional questions may still be surfaced alongside a `pass-clean` verdict — they do not block readiness. |
+| `pass-with-clarifications` | `quality_score ≥ threshold` **and** `ready === false` | Brief scored above the gate threshold but `ready` is `false` — either `quality_score` is below `READY_BAND_MIN` (7) or `blocking_gaps` is non-empty. Planning can be forced with `--force`, but the operator should address the flagged items first. |
 | `below-threshold` | `quality_score < threshold` | Brief is too thin. The planner never runs. |
 
 When the gate does not return `pass-clean`:
@@ -62,6 +67,66 @@ When the gate does not return `pass-clean`:
   `{status: "rejected", quality_score, min_quality_score, critique,
   questions, refined_brief, message}` so the chat client can walk the
   user through tightening the brief and re-call.
+
+## Code-derived readiness
+
+`ready` is not emitted by the model. It is derived deterministically in code by
+`deriveReady()` inside `normalize()`, after the model call returns:
+
+```typescript
+// packages/loom-core/src/brief/BriefRefiner.ts
+export function deriveReady(
+  qualityScore: number,
+  blockingGaps: string[],
+  readyBandMin: number,
+): boolean {
+  return qualityScore >= readyBandMin && blockingGaps.length === 0;
+}
+```
+
+The model's job is to emit:
+- **`quality_score`** — a holistic 0–10 assessment of planning readiness.
+- **`blocking_gaps`** — an array of gaps so severe that the planner would have to
+  invent requirements to proceed. An empty array `[]` when there are none. Minor
+  ambiguities, optional clarifications, and scope nuances go into `critique.*` and
+  `questions` instead, not into `blocking_gaps`.
+
+`ready` then follows from those two model outputs: `true` when
+`quality_score >= READY_BAND_MIN` **and** `blocking_gaps` is empty.
+
+### Two distinct thresholds — do not conflate (ADR-005)
+
+There are exactly two numeric thresholds in play; they serve different purposes and
+must not be confused:
+
+| Threshold | Source | Default | Role |
+|---|---|---|---|
+| `min_brief_quality_score` | `policy.agents.min_brief_quality_score` | **6** | Gate policy threshold. `evaluateBriefGate` compares `quality_score` against this value; below it, the planner never runs (`below-threshold`). Operator-tunable per repo. |
+| `READY_BAND_MIN` | `src/brief/readyBand.ts` (= `BANDS.high[0]`) | **7** | High-band floor for `deriveReady()`. A brief must score **at or above 7** to be considered "in the ready band" for `ready=true`. A code constant — not a policy knob. |
+
+A brief can pass the gate (`quality_score ≥ 6`, default) but still have
+`ready === false` if `quality_score` is 6 (below `READY_BAND_MIN = 7`) or if
+`blocking_gaps` is non-empty. That produces `pass-with-clarifications` rather than
+`pass-clean`.
+
+`READY_BAND_MIN` is the single source of truth for the high-band floor. It lives in
+`src/brief/readyBand.ts` and is imported by `bands.ts` as `BANDS.high[0]` — the
+two names refer to the same constant.
+
+### Fail-closed behaviour on malformed output
+
+If the model returns malformed JSON, a missing `blocking_gaps` field, or a
+non-array value, `normalize()` coerces `blocking_gaps` to `[]` and the salvage /
+fallback score paths clamp `quality_score` to values below `READY_BAND_MIN`:
+
+- **Salvage path** (truncated response with a parseable `refined_brief` but no
+  score): `quality_score` is set to `SALVAGE_QUALITY_SCORE = 3`. `3 < 7`, so
+  `deriveReady` returns `false` regardless of `blocking_gaps`.
+- **Full failure path** (unparseable response): `quality_score` is set to
+  `FALLBACK_QUALITY_SCORE = 0`. Same result.
+
+In both cases the user is never silently passed through — the refiner fails closed
+without blocking on a tool error.
 
 ## Design choices worth noting
 
@@ -82,18 +147,14 @@ client gathers user answers → re-call `loom_start_epic` with the
 tightened brief. This keeps the gate cheap and the interactive
 intelligence at the client (where it belongs).
 
-**`ready: false` is the conservative default, but `ready: true` is severity-aware.**
-If the model returns malformed JSON, missing fields, or anything unparseable, the
-normalization layer falls back to `ready: false` with the problem in
-`critique.ambiguities` — the user is never blocked by a tool error.
-Under the sharpened readiness criteria, `ready === true` when the brief's
-`quality_score` is in the ready band (7–10) **and** no critical, planning-blocking
-gap exists. Minor or optional gaps a planner can reasonably proceed past do not
-block readiness — in particular, the presence of clarification `questions` alone
-does not force `ready = false`. Only a blocking ambiguity or blocking missing-scope
-item (one that would force the planner to invent requirements) triggers
-`ready = false`. This shifts the expected distribution toward more `pass-clean`
-outcomes for well-scoped briefs that happen to have minor polish items.
+**`ready` is derived in code, not model-asserted.** Prior to story-036-001 the
+model emitted a `ready` boolean directly; that created a single point where the
+model's imprecise judgment of "readiness" could override the code's structural
+checks. Now `ready` is a pure function of `quality_score` and `blocking_gaps` —
+both of which the model still emits, but which are composed deterministically in
+code. The model cannot assert `ready=true` while also emitting a blocking gap or a
+low score. On malformed output the normalization layer is fail-closed (see above),
+so a tool error never passes a brief through silently.
 
 **Bench harness drops the threshold.** SWE-bench Lite problem
 statements are pre-structured GitHub issues; loom's brief rubric was
