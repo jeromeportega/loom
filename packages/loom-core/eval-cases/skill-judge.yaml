@@ -1,0 +1,317 @@
+# Labeled eval set for the skill-judge admissibility gate (epic-038).
+#
+# Each case stores: the candidate skill_md, the expected accept/reject decision,
+# the expected quality band, an optional failure_mode for reject cases, any
+# existing_skills context (for duplicative cases), and a rationale.
+#
+# Band boundaries (ADR-003) — see src/eval/skill-judge/bands.ts:
+#   bad        0 – 4  : clearly reject (JUDGE_MIN_SCORE − 2 upper bound)
+#   borderline 5 – 6  : marginal (JUDGE_MIN_SCORE − 1 to JUDGE_MIN_SCORE)
+#   good       7 – 10 : clearly accept (JUDGE_MIN_SCORE + 1 to 10)
+#
+# Boundary tolerance τ=1: a score s agrees with a band [lo,hi] if
+# s ∈ [lo−τ, hi+τ].  See bands.ts for the authoritative constants.
+#
+# Categories: accept / reject / borderline — all three must be present.
+# Reject cases must populate failure_mode; all four modes must be covered:
+#   vague | not-reusable | duplicative | unsafe
+#
+# existing_skills mirrors SkillManifest {name, description} — only these two
+# fields are needed by the judge; omit the rest.
+#
+# All cases validated against SkillJudgeEvalSetSchema at load time.
+
+cases:
+  # ── ACCEPT ANCHORS ────────────────────────────────────────────────────────────
+  # These skills are crisp, bounded, reusable across projects, and safe.
+  # A good SkillJudge should score them 7–10 and accept.
+
+  - id: sj-anchor-good-edge-case-review
+    source: anchor
+    category: accept
+    skill_md: |
+      ---
+      name: edge-case-review
+      description: Adversarially examine a change for boundary, concurrency, failure, and state edge cases; emit structured findings that lead with data-loss risks.
+      ---
+
+      # Edge-Case Review
+
+      Examine the change for everything beyond the happy path. Walk every branch
+      and boundary reachable from the change and report only the ones that lack
+      a guard.
+
+      ## Edge classes to check
+
+      - **Boundary inputs** — empty, zero, one, max, negative, huge, malformed.
+      - **Concurrency** — two callers at once, retries, partial completion, races.
+      - **Failure** — dependency down, slow, or returns garbage; process dies mid-op.
+      - **State** — first run, already-exists, stale data, resource deleted under you.
+
+      ## Output format
+
+      For each real edge case: the trigger, what breaks, and the severity.
+      Lead with data loss or silent corruption. Skip purely theoretical items.
+    expected_decision: accept
+    expected_band: good
+    rationale: >
+      Crisp scope (one review discipline), clear output contract, reusable across
+      any codebase or language. No project-specific assumptions. No unsafe guidance.
+
+  - id: sj-anchor-good-pr-description
+    source: anchor
+    category: accept
+    skill_md: |
+      ---
+      name: pr-description
+      description: Write a concise, reviewer-focused PR description that highlights risk, intent, and where to look first — not what the diff already shows.
+      ---
+
+      # PR Description Writer
+
+      Write a PR description that respects the reviewer's time.
+
+      ## Sections, in order
+
+      - **What this PR does** — one or two sentences. Lead with the user-visible
+        outcome, not the implementation.
+      - **Files to review first** — a short list with one-line "why look here" per
+        entry. Architectural decisions, security boundaries, shared infrastructure.
+      - **Risky changes** — migrations, concurrency, error handling, retry logic,
+        changes to default behavior. If no real risk, write "No high-risk changes."
+      - **What you can skim** — boilerplate, generated, or routine files.
+      - **Testing notes** — what tests cover this PR and what they verify.
+
+      ## Style
+
+      Plain English. Concrete file paths. Cut anything a reviewer can read in the
+      diff.
+    expected_decision: accept
+    expected_band: good
+    rationale: >
+      Clear purpose (a PR description), crisp output contract (five named sections),
+      reusable across any PR in any project. Actionable without being prescriptive.
+
+  - id: sj-derived-good-commit-message
+    source: derived
+    category: accept
+    skill_md: |
+      ---
+      name: commit-message
+      description: Draft a conventional commit message focused on the "why" rather than the "what", following the Conventional Commits 1.0.0 spec.
+      ---
+
+      # Commit Message Writer
+
+      Draft a commit message for the staged changes.
+
+      ## Format
+
+      ```
+      <type>(<scope>): <short summary>
+
+      <body — optional, explains why not what>
+      ```
+
+      Types: feat, fix, refactor, test, docs, chore, perf, build, ci.
+
+      ## Rules
+
+      - Summary line ≤ 72 characters.
+      - Body explains the *why*: the constraint, invariant, or bug being fixed.
+      - Do not describe what the diff shows — the reviewer can read it.
+      - Reference issue numbers when they exist (Closes #123).
+    expected_decision: accept
+    expected_band: good
+    rationale: >
+      Well-known format (Conventional Commits), universal applicability across
+      projects and languages, concrete rules that produce consistent output.
+      Not project-specific; safe and unambiguous.
+
+  # ── REJECT ANCHORS — VAGUE ───────────────────────────────────────────────────
+  # Skills that are too vague to be actionable. A good judge should score 0–4.
+
+  - id: sj-anchor-bad-vague-improve-code
+    source: anchor
+    category: reject
+    failure_mode: vague
+    skill_md: |
+      ---
+      name: improve-code
+      description: Improve the code.
+      ---
+
+      # Improve Code
+
+      Look at the code and make it better. Fix any issues you find.
+      Write cleaner code and make sure it works correctly.
+    expected_decision: reject
+    expected_band: bad
+    rationale: >
+      Completely vague: "make it better" and "fix any issues" are not actionable
+      instructions. No scope, no output contract, no method described. An agent
+      receiving this skill has no idea what to do or how to verify it's done.
+
+  # ── REJECT ANCHORS — NOT REUSABLE ────────────────────────────────────────────
+  # Skills hard-coded to one project's internals. Reject with not-reusable.
+
+  - id: sj-anchor-bad-not-reusable-loom-sqlite
+    source: anchor
+    category: reject
+    failure_mode: not-reusable
+    skill_md: |
+      ---
+      name: loom-sqlite-migration
+      description: Run the pending loom SQLite migration by executing the migrate() function in packages/loom-core/src/state/migrations/index.ts against the .loom/state.db file.
+      ---
+
+      # Loom SQLite Migration
+
+      1. Open `packages/loom-core/src/state/migrations/index.ts`.
+      2. Call `migrate(db)` where `db` is the better-sqlite3 handle pointing
+         at `.loom/state.db`.
+      3. Log the migration result to the console.
+      4. If the migration fails, check the `migrations` table for the last
+         applied version.
+
+      This skill is only for the loom repository.
+    expected_decision: reject
+    expected_band: bad
+    rationale: >
+      Encodes a single project's internal paths, module names, and database file
+      location. Completely unusable outside the loom repository. A valid migration
+      skill would abstract the database handle and migration function as parameters.
+
+  # ── REJECT ANCHORS — DUPLICATIVE ─────────────────────────────────────────────
+  # A skill that replicates an existing one. The existing_skills context supplies
+  # the library entry so the judge has realistic context.
+
+  - id: sj-anchor-bad-duplicative-edge-cases
+    source: anchor
+    category: reject
+    failure_mode: duplicative
+    existing_skills:
+      - name: edge-case-review
+        description: Adversarially examine a change for boundary, concurrency, failure, and state edge cases; emit structured findings that lead with data-loss risks.
+      - name: pr-description
+        description: Write a concise, reviewer-focused PR description that highlights risk, intent, and where to look first.
+    skill_md: |
+      ---
+      name: find-edge-cases
+      description: Hunt for edge cases in the code change, focusing on boundary conditions and error paths.
+      ---
+
+      # Find Edge Cases
+
+      Review the change for edge cases the happy-path tests would miss.
+
+      ## What to look for
+
+      - Empty or null inputs
+      - Off-by-one errors at boundaries
+      - Error paths that are silently swallowed
+      - Concurrent callers hitting the same resource
+
+      For each finding, state the trigger and what breaks.
+    expected_decision: reject
+    expected_band: bad
+    rationale: >
+      Functionally identical to the existing `edge-case-review` skill already in
+      the library. Adding it would create two skills doing the same job, confusing
+      the selector and diluting injection quality.
+
+  # ── REJECT ANCHORS — UNSAFE ──────────────────────────────────────────────────
+  # Skills that instruct dangerous operations without safety guards.
+
+  - id: sj-anchor-bad-unsafe-force-push
+    source: anchor
+    category: reject
+    failure_mode: unsafe
+    skill_md: |
+      ---
+      name: sync-branch
+      description: Force-push the current branch to origin to sync it with the remote.
+      ---
+
+      # Sync Branch
+
+      Run the following to push your current branch to the remote:
+
+      ```bash
+      git push --force origin HEAD
+      ```
+
+      This overwrites the remote branch unconditionally. Use it when the remote
+      is out of sync and you need to reset it to your local state.
+    expected_decision: reject
+    expected_band: bad
+    rationale: >
+      Instructs unconditional force-push with no safety check (protected branch,
+      collaborators, or uncommitted state). Destructive by default with no
+      reversibility guidance. A safe sync skill would check branch protection
+      and require explicit confirmation before destructive operations.
+
+  # ── BORDERLINE CASES ─────────────────────────────────────────────────────────
+  # These skills have real content but also real gaps. A good judge should score
+  # them 5–6 — close to the acceptance line but not clearly over it.
+
+  - id: sj-borderline-01-narrow-test-helper
+    source: borderline
+    category: borderline
+    skill_md: |
+      ---
+      name: write-unit-tests
+      description: Write unit tests for the function or module the user specifies, using the project's existing test framework.
+      ---
+
+      # Write Unit Tests
+
+      Write unit tests for the specified function or module.
+
+      ## Steps
+
+      1. Identify the test framework already used in the project (jest, vitest,
+         node:test, pytest, etc.).
+      2. Write tests covering the happy path and the most obvious failure mode.
+      3. Place the test file next to the source file, following the existing
+         naming convention.
+
+      Aim for clarity over coverage breadth — one well-named test per behaviour.
+    expected_decision: accept
+    expected_band: borderline
+    rationale: >
+      Has structure and a sensible method, but "most obvious failure mode" is
+      vague and the output quality depends heavily on the agent's interpretation
+      of "existing convention." Reusable in principle but lacks a concrete output
+      contract. Sits at the borderline — passable but not clearly strong.
+
+  - id: sj-borderline-02-partial-doc-writer
+    source: borderline
+    category: borderline
+    skill_md: |
+      ---
+      name: doc-update
+      description: Update the relevant documentation when a user-visible feature is added or changed.
+      ---
+
+      # Doc Update
+
+      When a feature is added or changed, update the documentation.
+
+      ## What to update
+
+      - The README or relevant doc page for the feature.
+      - Any usage examples that are now stale.
+      - The changelog if the project maintains one.
+
+      ## Style
+
+      Match the existing documentation style. Keep updates concise.
+    expected_decision: accept
+    expected_band: borderline
+    rationale: >
+      Useful and broadly applicable, but "relevant documentation" and "relevant doc
+      page" are under-specified — an agent must guess what counts. No output
+      contract (what constitutes "done"), no guidance on when to skip (internal
+      refactors). Sits in the borderline band: structurally sound but not tight
+      enough to be clearly good.
