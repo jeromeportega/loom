@@ -29,11 +29,15 @@ export type {
   ConfusionMatrix,
   AxisReport,
   IntakeEvalReport,
+  RefinedCaseResult,
+  DualIntakeReport,
 } from './intakeEvalTypes.js';
 
 export { loadIntakeEvalSet } from './loadIntakeEvalSet.js';
 export { runIntakeEval, computeAxisAccuracy } from './runIntakeEval.js';
 export type { RunIntakeEvalDeps } from './runIntakeEval.js';
+export { refineEvalCases } from './refineEvalCases.js';
+export { runRefinedIntakeEval } from './runRefinedIntakeEval.js';
 export { IntakeJudge, computeJudgeVsHumanAgreement } from './IntakeJudge.js';
 export { scoreIntakeEval } from './scoreIntakeEval.js';
 export type { ScoreIntakeEvalMeta } from './scoreIntakeEval.js';

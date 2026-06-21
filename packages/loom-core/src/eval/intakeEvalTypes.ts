@@ -71,6 +71,32 @@ export interface AxisReport {
   verdict: { clearsBar: boolean; statement: string };
 }
 
+// ── Refined-brief eval types (story-037-001) ─────────────────────────────────
+
+/**
+ * Per-case outcome of the refiner pre-step.  The label is kept as ground truth
+ * (ADR-003); only the brief text is replaced with refinement.refined_brief.
+ */
+export type RefinedCaseResult =
+  | { ok: true;  case: IntakeEvalCase; qualityScore: number }
+  | { ok: false; caseId: string; reason: 'no_refined_brief' | 'refiner_error'; detail: string };
+
+/**
+ * Dual-report carrier.  `refined === undefined` MUST mean flag-off / legacy
+ * output (FR-7, FR-8).  `comparison` is derived by renderIntakeReportDual
+ * (story-037-002) and need not be populated by the script.
+ */
+export interface DualIntakeReport {
+  raw: IntakeEvalReport;
+  refined?: IntakeEvalReport;
+  comparison?: {
+    typeAccuracy: { raw: { correct: number; scored: number }; refined: { correct: number; scored: number } };
+    sizeAccuracy: { raw: { correct: number; scored: number }; refined: { correct: number; scored: number } };
+    underSizing:  { raw: number; refined: number };
+    refinerFailures: number;
+  };
+}
+
 export interface IntakeEvalReport {
   generatedFromCases: number;
   classifierModel: string;
