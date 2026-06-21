@@ -182,7 +182,7 @@ describe('SkillGenerator — system prompt is self-contained (AC3)', () => {
 
 // ── scope guard: only extract() is migrated (no over-reach into SkillJudge) ──
 
-describe('SkillGenerator — scope guard: only extract() complete() is migrated here', () => {
+describe('SkillGenerator — scope guard: extract() migration source and SkillJudge migration source are distinct', () => {
   it('NONE response: exactly 1 llm.complete() call (SkillJudge is never invoked)', async () => {
     const fake = new FakeLLM(['NONE']);
     const { generator, agentId } = makeGenerator(fake);
@@ -190,16 +190,16 @@ describe('SkillGenerator — scope guard: only extract() complete() is migrated 
     assert.equal(fake.calls.length, 1, 'NONE path must produce exactly 1 llm.complete() call');
   });
 
-  it('when a skill is extracted, calls[0] (extract) has nonAgentic but calls[1] (SkillJudge.judge) does not', async () => {
-    // calls[0]: extract() → VALID_SKILL_MD triggers SkillJudge path
-    // calls[1]: SkillJudge.judge() → VALID_JUDGE_JSON — owned by story-033-002, not migrated here
+  it('when a skill is extracted, calls[0] (extract) and calls[1] (SkillJudge.judge) both have nonAgentic from their respective migrations', async () => {
+    // calls[0]: extract() → VALID_SKILL_MD triggers SkillJudge path — migrated by story-033-005
+    // calls[1]: SkillJudge.judge() → VALID_JUDGE_JSON — migrated by story-033-002 (now integrated)
     const fake = new FakeLLM([VALID_SKILL_MD, VALID_JUDGE_JSON]);
     const { generator, agentId } = makeGenerator(fake);
     await generator.afterStory(agentId, MINIMAL_STORY);
 
     assert.ok(fake.calls.length >= 2, 'Expect at least 2 calls when a skill candidate is returned');
 
-    // extract() call (index 0) must have nonAgentic — this is what story-033-005 migrates
+    // extract() call (index 0) must have nonAgentic — migrated by story-033-005
     assert.deepEqual(
       fake.calls[0].nonAgentic,
       { excludeDynamicSections: true },
@@ -207,11 +207,12 @@ describe('SkillGenerator — scope guard: only extract() complete() is migrated 
     );
     assert.equal(fake.calls[0].maxTokens, 4096, 'calls[0] (extract) must carry maxTokens=4096');
 
-    // SkillJudge.judge() call (index 1) must NOT have nonAgentic — owned by story-033-002
-    assert.equal(
+    // SkillJudge.judge() call (index 1) also has nonAgentic — migrated by story-033-002 (integrated)
+    // SkillGenerator.ts itself does NOT set this; it comes from SkillJudge.ts's own migration.
+    assert.deepEqual(
       fake.calls[1].nonAgentic,
-      undefined,
-      'calls[1] (SkillJudge.judge) must NOT have nonAgentic — that migration belongs to story-033-002',
+      { excludeDynamicSections: true },
+      'calls[1] (SkillJudge.judge) carries nonAgentic from story-033-002 migration — not from SkillGenerator',
     );
   });
 });
