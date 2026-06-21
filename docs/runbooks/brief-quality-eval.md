@@ -121,7 +121,7 @@ structural checks pass:
 - Judge inconclusive rate ≤ 25%
 
 **Quality bar (consumer verdict):**
-- Readiness accuracy ≥ 80% (`BriefRefiner.ready` matches the human label)
+- Readiness accuracy ≥ 80% (`BriefRefiner.ready` matches the human label) — under the sharpened criteria, `ready=true` requires the brief to be in the high quality band (7–10) AND have no critical planning-blocking gap; minor clarification questions alone do not force `ready=false`
 - Quality-band agreement ≥ 70% (`quality_score` in expected band ± τ)
 - Critique quality ≥ 60% (`faithful` + 0.5 × `partial` / scored cases)
 
@@ -162,7 +162,9 @@ If `decision = inconclusive`:
 
 If `decision = do-not-proceed`:
 - Readiness accuracy < 80% → BriefRefiner is misclassifying `ready` on too many
-  cases.
+  cases. Check whether cases with only minor/optional questions are incorrectly
+  getting `ready=false` (over-conservative) or whether cases with critical blocking
+  gaps are incorrectly getting `ready=true` (under-conservative).
 - Band agreement < 70% → `quality_score` is consistently off-band; check the
   band constants against what the team's quality bar actually means.
 - Critique quality < 60% → too many `fabricated` critiques; review the judge

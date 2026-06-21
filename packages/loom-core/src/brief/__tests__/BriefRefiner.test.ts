@@ -220,3 +220,133 @@ describe('BriefRefiner — output schema, parsing, retry, and fallback unchanged
     assert.ok(userMsg.content.includes(rough), 'user message must include the rough brief');
   });
 });
+
+// ── readiness intent — severity-aware criteria (story-035-002) ───────────────
+
+/** ready:true with minor/optional questions — the happy "pass-clean" path */
+const READY_WITH_QUESTIONS = JSON.stringify({
+  ready: true,
+  quality_score: 8,
+  refined_brief: '# Add OAuth Login\n\nIntegrate Google OAuth for user authentication.',
+  critique: {
+    strong_points: ['Clear user-facing goal', 'Scope is bounded'],
+    ambiguities: [],
+    missing_scope: [],
+    untestable_claims: [],
+    hidden_complexity: [],
+  },
+  questions: [
+    'Which OAuth provider should we target first?',
+    'Should refresh tokens be stored server-side or in cookies?',
+  ],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+/** ready:true despite minor non-blocking ambiguity — planner can proceed */
+const READY_WITH_MINOR_GAPS = JSON.stringify({
+  ready: true,
+  quality_score: 7,
+  refined_brief: '# Add OAuth Login\n\nIntegrate OAuth for user authentication.',
+  critique: {
+    strong_points: ['Clear goal'],
+    ambiguities: ['Token expiry handling not specified — minor, planner can default to 1h'],
+    missing_scope: [],
+    untestable_claims: [],
+    hidden_complexity: [],
+  },
+  questions: ['Should the token expiry default to 1 hour or be configurable?'],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: ['OAuth token TTL defaults to 1h'] },
+});
+
+/** ready:false because the provider is unspecified — planner would have to invent it */
+const NOT_READY_CRITICAL_AMBIGUITY = JSON.stringify({
+  ready: false,
+  quality_score: 5,
+  refined_brief: '# Add OAuth Login\n\nSome OAuth integration.',
+  critique: {
+    strong_points: [],
+    ambiguities: [
+      'No authentication provider specified — the planner cannot determine which OAuth provider to integrate without inventing this requirement.',
+    ],
+    missing_scope: [],
+    untestable_claims: [],
+    hidden_complexity: [],
+  },
+  questions: ['Which OAuth provider should we integrate (Google, GitHub, Auth0)?'],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+/** ready:false because the session-storage strategy is unspecified — a blocking missing-scope */
+const NOT_READY_CRITICAL_MISSING_SCOPE = JSON.stringify({
+  ready: false,
+  quality_score: 4,
+  refined_brief: '# Add OAuth Login\n\nOAuth integration.',
+  critique: {
+    strong_points: [],
+    ambiguities: [],
+    missing_scope: [
+      'No session storage strategy specified — the planner cannot design the persistence layer without inventing this requirement.',
+    ],
+    untestable_claims: [],
+    hidden_complexity: [],
+  },
+  questions: ['Where should session tokens be stored — database, Redis, or encrypted cookies?'],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+/**
+ * ready:true even though critique arrays are non-empty — normalize() must carry
+ * ready verbatim and must NOT re-derive it from critique contents.
+ */
+const READY_WITH_NONEMPTY_CRITIQUE = JSON.stringify({
+  ready: true,
+  quality_score: 7,
+  refined_brief: '# Add OAuth Login\n\nWell-scoped integration with minor open items.',
+  critique: {
+    strong_points: ['Clear scope'],
+    ambiguities: ['Rate-limit behaviour not specified'],
+    missing_scope: ['Rollback plan not described'],
+    untestable_claims: [],
+    hidden_complexity: [],
+  },
+  questions: [],
+  delta: { added_sections: [], clarifications: [], flagged_assumptions: [] },
+});
+
+describe('BriefRefiner — readiness intent (story-035-002)', () => {
+  it('preserves ready:true when model emits questions alongside ready=true (FR-3 / AC-1)', async () => {
+    const fake = new FakeLLM([READY_WITH_QUESTIONS]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.ready, true, 'ready must remain true when model emits ready:true with questions');
+    assert.ok(result.questions.length > 0, 'questions must be preserved when present');
+  });
+
+  it('preserves ready:true when only minor non-blocking gaps are present (AC-1)', async () => {
+    const fake = new FakeLLM([READY_WITH_MINOR_GAPS]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.ready, true, 'minor optional gaps must not flip ready to false');
+  });
+
+  it('preserves ready:false when model reports a critical planning-blocking ambiguity (AC-2)', async () => {
+    const fake = new FakeLLM([NOT_READY_CRITICAL_AMBIGUITY]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.ready, false, 'critical ambiguity must yield ready:false');
+    assert.ok(result.questions.length > 0, 'questions must be non-empty when ready:false');
+  });
+
+  it('preserves ready:false when model reports a critical missing-scope gap (AC-2 / NFR-3)', async () => {
+    const fake = new FakeLLM([NOT_READY_CRITICAL_MISSING_SCOPE]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.ready, false, 'critical missing-scope gap must yield ready:false');
+    assert.ok(result.questions.length > 0, 'questions must be non-empty when ready:false');
+  });
+
+  it('does not flip ready:true to false based on non-empty critique arrays (over-correction guard)', async () => {
+    // normalize() carries ready verbatim — it must never re-derive it from
+    // critique contents. If it did, any brief with critique items would become
+    // incorrectly not-ready, breaking the severity-aware decoupling.
+    const fake = new FakeLLM([READY_WITH_NONEMPTY_CRITIQUE]);
+    const result = await makeRefiner(fake).refine(ROUGH_BRIEF);
+    assert.equal(result.ready, true, 'normalize must not derive ready=false from non-empty critique arrays');
+  });
+});
