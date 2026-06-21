@@ -60,11 +60,16 @@ describe('BriefRefiner.refine — model-emitted quality_score', () => {
     assert.equal(r.quality_score, 0);
   });
 
-  it('maps a missing or non-boolean ready to false', async () => {
+  it('derives ready from quality_score and blocking_gaps — raw.ready is ignored', async () => {
+    // High score + no blocking_gaps → ready=true, regardless of raw.ready being absent
     const missing = await refineRaw({ quality_score: 9, critique: {} });
-    assert.equal(missing.ready, false);
+    assert.equal(missing.ready, true);
+    // Non-boolean raw.ready is also ignored; derivation from score+gaps wins
     const nonBool = await refineRaw({ ready: 'yes', quality_score: 9, critique: {} });
-    assert.equal(nonBool.ready, false);
+    assert.equal(nonBool.ready, true);
+    // Sub-floor score → ready=false (fail closed via derivation, not via raw.ready)
+    const subFloor = await refineRaw({ quality_score: 0, critique: {} });
+    assert.equal(subFloor.ready, false);
   });
 
   it('falls back to ready=false and FALLBACK_QUALITY_SCORE when the response is unparseable', async () => {

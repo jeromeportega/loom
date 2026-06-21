@@ -39,6 +39,7 @@ function makeRefinement(overrides: Partial<BriefRefinement> = {}): BriefRefineme
     ready:         true,
     original:      'Add a --version flag to the CLI.',
     quality_score: 8,
+    blocking_gaps: [],
     critique: {
       strong_points:      ['well-bounded scope'],
       ambiguities:        [],

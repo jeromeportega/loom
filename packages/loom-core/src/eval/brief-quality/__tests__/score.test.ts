@@ -15,6 +15,7 @@ function makeRefinement(quality_score = 8): BriefRefinement {
     ready: true,
     original: 'brief',
     quality_score,
+    blocking_gaps: [],
     critique: {
       strong_points: [],
       ambiguities: [],

@@ -30,6 +30,7 @@ function makePassRefinement(rough: string): BriefRefinement {
     original: rough,
     refined_brief: '# Proposed Epic\n\nA well-structured plan.',
     quality_score: 8,
+    blocking_gaps: [],
     critique: {
       strong_points: ['clear goal'],
       ambiguities: [],
@@ -47,6 +48,7 @@ function makeFailRefinement(rough: string): BriefRefinement {
     ready: false,
     original: rough,
     quality_score: 3,
+    blocking_gaps: [],
     critique: {
       strong_points: [],
       ambiguities: ['too vague', 'no success criteria'],
