@@ -3,13 +3,18 @@ import type { RunRecord } from '../framework/types.js';
 import type { BriefRefinement } from '../../brief/types.js';
 import type { BriefQualityJudgment, BriefQualityMetrics } from './judgeTypes.js';
 
+type ScoredRecord = RunRecord<BriefRefinement, BriefQualityJudgment> & {
+  gate:  { status: 'ok'; output: BriefRefinement };
+  judge: { status: 'ok'; judgment: BriefQualityJudgment };
+};
+
 export function scoreBriefQuality(
   records: RunRecord<BriefRefinement, BriefQualityJudgment>[],
 ): BriefQualityMetrics {
   const base = coreMetrics(records);
 
   const scored = records.filter(
-    (r) => r.gate.status === 'ok' && r.judge.status === 'ok',
+    (r): r is ScoredRecord => r.gate.status === 'ok' && r.judge.status === 'ok',
   );
 
   if (scored.length === 0) {
@@ -22,7 +27,6 @@ export function scoreBriefQuality(
   let partial = 0;
 
   for (const r of scored) {
-    if (r.judge.status !== 'ok') continue;
     const j = r.judge.judgment;
     if (j.readiness_correct) readinessCorrect++;
     if (j.quality_in_band) qualityInBand++;

@@ -14,11 +14,10 @@ function wrapJson(obj: unknown): string {
 }
 
 function makeLLMJudgment(
-  readiness_correct: boolean,
   critique_fidelity: 'faithful' | 'partial' | 'fabricated',
   reason = 'Test reason.',
 ): string {
-  return wrapJson({ readiness_correct, critique_fidelity, reason });
+  return wrapJson({ critique_fidelity, reason });
 }
 
 function makeCase(overrides: Partial<BriefQualityCase> = {}): BriefQualityCase {
@@ -63,7 +62,7 @@ const DEPS = { llm: new MockLLMClient([]) as LLMClient, judgeModel: 'judge-model
 
 describe('judgeBriefQuality — prompt wiring', () => {
   it('uses the brief-quality-judge persona (cache: true on system block)', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(true, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     const result = await judgeBriefQuality(makeCase(), makeRefinement(), { llm, judgeModel: 'j' });
 
     assert.equal(result.status, 'ok');
@@ -72,20 +71,20 @@ describe('judgeBriefQuality — prompt wiring', () => {
   });
 
   it('passes judgeModel to the LLM request', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(true, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     await judgeBriefQuality(makeCase(), makeRefinement(), { llm, judgeModel: 'my-judge-model' });
     assert.equal(llm.requests[0].model, 'my-judge-model');
   });
 
   it('includes the brief text in the user message', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(true, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     await judgeBriefQuality(makeCase({ brief: 'Unique brief text XYZ.' }), makeRefinement(), { llm, judgeModel: 'j' });
     const userMsg = llm.requests[0].messages[0].content;
     assert.ok(userMsg.includes('Unique brief text XYZ.'), 'brief should appear in user message');
   });
 
   it('includes expected_ready and expected_band in the user message', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(true, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     await judgeBriefQuality(makeCase({ expected_ready: false, expected_band: 'low' }), makeRefinement(), { llm, judgeModel: 'j' });
     const userMsg = llm.requests[0].messages[0].content;
     assert.ok(userMsg.includes('expected_ready: false'));
@@ -93,7 +92,7 @@ describe('judgeBriefQuality — prompt wiring', () => {
   });
 
   it('includes BriefRefiner ready and quality_score in the user message', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(true, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     await judgeBriefQuality(makeCase(), makeRefinement({ ready: false, quality_score: 3 }), { llm, judgeModel: 'j' });
     const userMsg = llm.requests[0].messages[0].content;
     assert.ok(userMsg.includes('ready: false'));
@@ -105,28 +104,30 @@ describe('judgeBriefQuality — prompt wiring', () => {
 
 describe('judgeBriefQuality — parsing', () => {
   it('returns ok judgment with all four axes on valid LLM response', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(true, 'faithful', 'Good critique.')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful', 'Good critique.')]);
+    // makeCase: expected_ready=true, makeRefinement: ready=true → readiness_correct=true (deterministic)
     const result = await judgeBriefQuality(makeCase(), makeRefinement({ quality_score: 8 }), { llm, judgeModel: 'j' });
 
     assert.equal(result.status, 'ok');
     if (result.status !== 'ok') return;
-    assert.equal(result.judgment.readiness_correct, true);
+    assert.equal(result.judgment.readiness_correct, true, 'readiness_correct computed from ready===expected_ready');
     assert.equal(result.judgment.critique_fidelity, 'faithful');
     assert.equal(result.judgment.reason, 'Good critique.');
     assert.equal(typeof result.judgment.quality_in_band, 'boolean', 'quality_in_band is a boolean');
   });
 
   it('parses partial fidelity correctly', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(false, 'partial')]);
+    const llm = new MockLLMClient([makeLLMJudgment('partial')]);
+    // makeCase: expected_ready=true, makeRefinement: ready=true → readiness_correct=true (deterministic)
     const result = await judgeBriefQuality(makeCase(), makeRefinement(), { llm, judgeModel: 'j' });
     assert.equal(result.status, 'ok');
     if (result.status !== 'ok') return;
-    assert.equal(result.judgment.readiness_correct, false);
+    assert.equal(result.judgment.readiness_correct, true, 'readiness_correct is deterministic, not from LLM');
     assert.equal(result.judgment.critique_fidelity, 'partial');
   });
 
   it('parses fabricated fidelity correctly', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(false, 'fabricated')]);
+    const llm = new MockLLMClient([makeLLMJudgment('fabricated')]);
     const result = await judgeBriefQuality(makeCase(), makeRefinement(), { llm, judgeModel: 'j' });
     assert.equal(result.status, 'ok');
     if (result.status !== 'ok') return;
@@ -138,7 +139,7 @@ describe('judgeBriefQuality — parsing', () => {
 
 describe('judgeBriefQuality — quality_in_band (computed in TypeScript, not from LLM)', () => {
   it('high band [7,10] with score=8: in band', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(true, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     const result = await judgeBriefQuality(makeCase({ expected_band: 'high' }), makeRefinement({ quality_score: 8 }), { llm, judgeModel: 'j' });
     assert.equal(result.status, 'ok');
     if (result.status !== 'ok') return;
@@ -146,7 +147,7 @@ describe('judgeBriefQuality — quality_in_band (computed in TypeScript, not fro
   });
 
   it('high band [7,10] with score=6: in band (τ=1 → lo-1=6)', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(true, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     const result = await judgeBriefQuality(makeCase({ expected_band: 'high' }), makeRefinement({ quality_score: 6 }), { llm, judgeModel: 'j' });
     assert.equal(result.status, 'ok');
     if (result.status !== 'ok') return;
@@ -154,7 +155,7 @@ describe('judgeBriefQuality — quality_in_band (computed in TypeScript, not fro
   });
 
   it('high band [7,10] with score=5: out of band', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(true, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     const result = await judgeBriefQuality(makeCase({ expected_band: 'high' }), makeRefinement({ quality_score: 5 }), { llm, judgeModel: 'j' });
     assert.equal(result.status, 'ok');
     if (result.status !== 'ok') return;
@@ -162,7 +163,7 @@ describe('judgeBriefQuality — quality_in_band (computed in TypeScript, not fro
   });
 
   it('low band [0,3] with score=4: in band (τ=1 → hi+1=4)', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(false, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     const result = await judgeBriefQuality(makeCase({ expected_band: 'low', expected_ready: false }), makeRefinement({ quality_score: 4 }), { llm, judgeModel: 'j' });
     assert.equal(result.status, 'ok');
     if (result.status !== 'ok') return;
@@ -170,7 +171,7 @@ describe('judgeBriefQuality — quality_in_band (computed in TypeScript, not fro
   });
 
   it('low band [0,3] with score=5: out of band', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(false, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     const result = await judgeBriefQuality(makeCase({ expected_band: 'low', expected_ready: false }), makeRefinement({ quality_score: 5 }), { llm, judgeModel: 'j' });
     assert.equal(result.status, 'ok');
     if (result.status !== 'ok') return;
@@ -178,7 +179,7 @@ describe('judgeBriefQuality — quality_in_band (computed in TypeScript, not fro
   });
 
   it('mid band [4,6] with score=7: in band (τ=1 → hi+1=7, the 6-vs-7 edge)', async () => {
-    const llm = new MockLLMClient([makeLLMJudgment(true, 'faithful')]);
+    const llm = new MockLLMClient([makeLLMJudgment('faithful')]);
     const result = await judgeBriefQuality(makeCase({ expected_band: 'mid' }), makeRefinement({ quality_score: 7 }), { llm, judgeModel: 'j' });
     assert.equal(result.status, 'ok');
     if (result.status !== 'ok') return;
@@ -203,6 +204,12 @@ describe('scoreInBand — boundary math (τ=1)', () => {
   it('mid [4,6]: s=3 agrees (lo-1)', () => { assert.equal(scoreInBand(3, 'mid'), true); });
   it('mid [4,6]: s=2 misses', () => { assert.equal(scoreInBand(2, 'mid'), false); });
   it('mid [4,6]: s=8 misses', () => { assert.equal(scoreInBand(8, 'mid'), false); });
+
+  it('negative score is always rejected (floor guard)', () => {
+    assert.equal(scoreInBand(-1, 'low'), false, 'negative score must not match low band despite lo-τ=-1');
+    assert.equal(scoreInBand(-1, 'mid'), false);
+    assert.equal(scoreInBand(-1, 'high'), false);
+  });
 });
 
 // ── Failure / inconclusive ────────────────────────────────────────────────────

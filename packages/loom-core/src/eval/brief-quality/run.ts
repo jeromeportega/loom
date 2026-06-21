@@ -9,10 +9,11 @@ import { DEFAULT_JUDGE_MODEL } from '../framework/models.js';
 import { runGateEval } from '../framework/runGateEval.js';
 import { decide } from '../framework/decide.js';
 import type { RunRecord, Decision } from '../framework/types.js';
-import { loadBriefQualityCases } from './loadCases.js';
 import { createBriefQualityConsumer } from './consumer.js';
 import type { BriefRefinement } from '../../brief/types.js';
 import type { BriefQualityJudgment, BriefQualityMetrics } from './judgeTypes.js';
+
+const DEFAULT_GATE_MODEL = 'claude-opus-4-8';
 
 export interface EvalReport {
   metrics:  BriefQualityMetrics;
@@ -80,13 +81,13 @@ function pct(rate: number): string {
 }
 
 export async function main(opts: MainOptions = {}): Promise<EvalReport> {
-  const gateModel  = opts.gateModel  ?? process.env.LOOM_EVAL_GATE_MODEL  ?? 'claude-opus-4-8';
+  const gateModel  = opts.gateModel  ?? process.env.LOOM_EVAL_GATE_MODEL  ?? DEFAULT_GATE_MODEL;
   const judgeModel = opts.judgeModel ?? process.env.LOOM_EVAL_JUDGE_MODEL ?? DEFAULT_JUDGE_MODEL;
   const llm        = opts.llm        ?? createLLMClient('claude-cli');
   const projectRoot = opts.projectRoot ?? process.cwd();
 
   const consumer = createBriefQualityConsumer({ projectRoot });
-  const cases    = loadBriefQualityCases(opts.fixturePath);
+  const cases    = consumer.loadCases(opts.fixturePath);
   const deps     = { llm, gateModel, judgeModel };
 
   const perCase  = await runGateEval(cases, consumer, deps);

@@ -7,16 +7,21 @@ import type { BriefQualityCase, QualityBandType } from './caseSchema.js';
 import type { BriefQualityJudgment } from './judgeTypes.js';
 import { BANDS, BAND_TOLERANCE } from './bands.js';
 
+// readiness_correct is omitted — computed deterministically after the LLM call
 const BriefQualityLLMOutputSchema = z.object({
-  readiness_correct: z.boolean(),
   critique_fidelity: z.enum(['faithful', 'partial', 'fabricated']),
   reason: z.string(),
 });
 
 export function scoreInBand(score: number, band: QualityBandType): boolean {
+  if (score < 0) return false;
   const [lo, hi] = BANDS[band];
   return score >= lo - BAND_TOLERANCE && score <= hi + BAND_TOLERANCE;
 }
+
+// Load the persona once at module evaluation time — a missing file is a hard
+// infrastructure error and must not be silently swallowed per invocation.
+const JUDGE_SYSTEM_PROMPT = loadBundledPrompt('brief-quality-judge');
 
 export async function judgeBriefQuality(
   c: BriefQualityCase,
@@ -24,8 +29,6 @@ export async function judgeBriefQuality(
   deps: JudgeDeps,
 ): Promise<JudgeOutcome<BriefQualityJudgment>> {
   try {
-    const systemPrompt = loadBundledPrompt('brief-quality-judge');
-
     const userContent = [
       '## Brief under evaluation',
       c.brief,
@@ -47,7 +50,7 @@ export async function judgeBriefQuality(
 
     const response = await deps.llm.complete({
       model: deps.judgeModel,
-      system: [{ text: systemPrompt, cache: true }],
+      system: [{ text: JUDGE_SYSTEM_PROMPT, cache: true }],
       messages: [{ role: 'user', content: userContent }],
       maxTokens: 512,
       nonAgentic: { excludeDynamicSections: true },
@@ -55,9 +58,11 @@ export async function judgeBriefQuality(
 
     const parsed = BriefQualityLLMOutputSchema.parse(extractJsonBlock(response.text));
     const quality_in_band = scoreInBand(output.quality_score, c.expected_band);
+    // readiness_correct is deterministic — BriefRefiner.ready must match the human label
+    const readiness_correct = output.ready === c.expected_ready;
 
     const judgment: BriefQualityJudgment = {
-      readiness_correct: parsed.readiness_correct,
+      readiness_correct,
       quality_in_band,
       critique_fidelity: parsed.critique_fidelity,
       reason: parsed.reason,

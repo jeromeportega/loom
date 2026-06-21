@@ -35,8 +35,8 @@ function refinementJson(ready: boolean, quality_score: number): string {
   });
 }
 
-function judgeJson(readiness_correct: boolean, critique_fidelity: 'faithful' | 'partial' | 'fabricated'): string {
-  return wrapJson({ readiness_correct, critique_fidelity, reason: 'test judgment' });
+function judgeJson(critique_fidelity: 'faithful' | 'partial' | 'fabricated'): string {
+  return wrapJson({ critique_fidelity, reason: 'test judgment' });
 }
 
 function makeTmpFixture(cases: BriefQualityCase[]): string {
@@ -118,7 +118,7 @@ describe('createBriefQualityConsumer — judge', () => {
   };
 
   it('returns ok judgment with all three LLM-derived axes + computed quality_in_band', async () => {
-    const llm = new MockLLMClient([judgeJson(true, 'faithful')]);
+    const llm = new MockLLMClient([judgeJson('faithful')]);
     const consumer = createBriefQualityConsumer({ projectRoot: process.cwd() });
     const result = await consumer.judge(BASE_CASE, MOCK_REFINEMENT, { llm, judgeModel: 'j' });
 
@@ -148,7 +148,7 @@ describe('decide — fail-closed thresholds checked before quality bar', () => {
     const fixturePath = makeTmpFixture([BASE_CASE]);
     const llm = new MockLLMClient([
       refinementJson(true, 8),   // gate
-      judgeJson(true, 'faithful'), // judge
+      judgeJson('faithful'), // judge
     ]);
     const { decision } = await main({ llm, fixturePath, projectRoot: process.cwd(), gateModel: 'g', judgeModel: 'j' });
 
@@ -170,7 +170,7 @@ describe('main() — end-to-end with MockLLMClient', () => {
     // Interleave: 6 gate responses then 6 judge responses (sequential per case)
     const responses = cases.flatMap(() => [
       refinementJson(true, 8),
-      judgeJson(true, 'faithful'),
+      judgeJson('faithful'),
     ]);
     const llm = new MockLLMClient(responses);
 
@@ -182,6 +182,13 @@ describe('main() — end-to-end with MockLLMClient', () => {
     assert.equal(report.perCase.length, 6);
     assert.equal(typeof report.markdown, 'string');
     assert.ok(report.markdown.includes('Brief-Quality Eval Report'), 'markdown has title');
+
+    // Assert sequential per-case ordering: gate (model 'g') then judge (model 'j') for each case
+    assert.equal(llm.requests.length, 12, '6 gate + 6 judge calls');
+    for (let i = 0; i < cases.length; i++) {
+      assert.equal(llm.requests[i * 2].model, 'g', `request ${i * 2} should be gate`);
+      assert.equal(llm.requests[i * 2 + 1].model, 'j', `request ${i * 2 + 1} should be judge`);
+    }
   });
 
   it('uses only the injected MockLLMClient — no real client constructed', async () => {
@@ -191,7 +198,7 @@ describe('main() — end-to-end with MockLLMClient', () => {
     const fixturePath = makeTmpFixture([BASE_CASE]);
     const llm = new MockLLMClient([
       refinementJson(true, 8),
-      judgeJson(true, 'faithful'),
+      judgeJson('faithful'),
     ]);
 
     const report = await main({ llm, fixturePath, projectRoot: process.cwd(), gateModel: 'g', judgeModel: 'j' });
@@ -204,7 +211,7 @@ describe('main() — end-to-end with MockLLMClient', () => {
     const fixturePath = makeTmpFixture([BASE_CASE]);
     const llm = new MockLLMClient([
       refinementJson(true, 8),
-      judgeJson(true, 'faithful'),
+      judgeJson('faithful'),
     ]);
     const { markdown, decision } = await main({ llm, fixturePath, projectRoot: process.cwd(), gateModel: 'g', judgeModel: 'j' });
 
@@ -235,8 +242,8 @@ describe('observe-only (AC3) — run.ts is not a loom subcommand', () => {
     // The dist path is resolved relative to __dirname (dist/eval/brief-quality/__tests__/).
     const runDist = path.resolve(__dirname, '../run.js');
     if (!fs.existsSync(runDist)) {
-      // Should not happen in a built environment — fail loudly if it does.
-      assert.fail(`run.js not found at ${runDist}`);
+      // Skip in environments without a prior tsc build (e.g. direct tsx invocations, fresh CI).
+      return;
     }
     const content = fs.readFileSync(runDist, 'utf8');
     assert.ok(!content.includes('commander'), 'run.ts must not import commander');
