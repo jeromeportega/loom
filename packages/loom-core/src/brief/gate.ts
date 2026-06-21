@@ -6,8 +6,8 @@ import type { BriefRefinement } from './types.js';
  * in the root barrel (both packages export via export *).
  */
 export type BriefGateOutcome =
-  | 'pass-clean'               // quality_score >= threshold && ready === true
-  | 'pass-with-clarifications' // quality_score >= threshold && ready === false
+  | 'pass-clean'               // quality_score >= threshold && ready === true  (high band, no critical blocking gap)
+  | 'pass-with-clarifications' // quality_score >= threshold && ready === false (critical planning-blocking gap present; minor questions may still coexist with pass-clean)
   | 'below-threshold';         // quality_score <  threshold
 
 /**
@@ -34,7 +34,7 @@ export interface GateVerdict {
  *
  * Invariants:
  *   outcome === 'pass-clean'               iff quality_score >= minScore && ready === true
- *   outcome === 'pass-with-clarifications' iff quality_score >= minScore && ready !== true
+ *   outcome === 'pass-with-clarifications' iff quality_score >= minScore && ready !== true   (critical planning-blocking gap; minor questions may still appear in pass-clean)
  *   outcome === 'below-threshold'          iff quality_score <  minScore
  *   pass === (outcome === 'pass-clean')    always
  */
