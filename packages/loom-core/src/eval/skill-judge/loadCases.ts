@@ -3,18 +3,34 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { SkillJudgeEvalSetSchema, type SkillJudgeEvalCase } from './caseSchema.js';
 
+// CJS package: __dirname is available. The compiled output lives at
+// dist/eval/skill-judge/, so ../../../ resolves to the package root.
+const DEFAULT_FIXTURE = path.resolve(
+  __dirname,
+  '../../../eval-cases/skill-judge.yaml',
+);
+const CWD_FIXTURE = path.resolve(
+  process.cwd(),
+  'packages/loom-core/eval-cases/skill-judge.yaml',
+);
+
 function defaultFixturePath(): string {
-  const candidates = [
-    path.resolve(__dirname, '../../../eval-cases/skill-judge.yaml'),
-    path.resolve(__dirname, '../../eval-cases/skill-judge.yaml'),
-    path.resolve(process.cwd(), 'packages/loom-core/eval-cases/skill-judge.yaml'),
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
+  if (fs.existsSync(DEFAULT_FIXTURE)) return DEFAULT_FIXTURE;
+  if (fs.existsSync(CWD_FIXTURE)) return CWD_FIXTURE;
   throw new Error(
-    `skill-judge.yaml not found. Looked in:\n  ${candidates.join('\n  ')}`,
+    `skill-judge.yaml not found. Looked in:\n  ${DEFAULT_FIXTURE}\n  ${CWD_FIXTURE}`,
   );
+}
+
+function readFile(file: string): string {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`Skill-judge eval fixture not found: ${file}`);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -24,9 +40,8 @@ function defaultFixturePath(): string {
  */
 export function loadSkillJudgeCases(fixturePath?: string): SkillJudgeEvalCase[] {
   const file = fixturePath ?? defaultFixturePath();
-  if (fixturePath && !fs.existsSync(file)) {
-    throw new Error(`Skill-judge eval fixture not found: ${file}`);
-  }
-  const parsed = SkillJudgeEvalSetSchema.parse(yaml.load(fs.readFileSync(file, 'utf8')));
+  const parsed = SkillJudgeEvalSetSchema.parse(
+    yaml.load(readFile(file), { schema: yaml.JSON_SCHEMA }),
+  );
   return parsed.cases;
 }

@@ -315,3 +315,35 @@ cases:
       contract (what constitutes "done"), no guidance on when to skip (internal
       refactors). Sits in the borderline band: structurally sound but not tight
       enough to be clearly good.
+
+  - id: sj-borderline-03-vague-method-below-bar
+    source: borderline
+    category: borderline
+    failure_mode: vague
+    skill_md: |
+      ---
+      name: code-cleanup
+      description: Clean up the code in the area you are working on before committing.
+      ---
+
+      # Code Cleanup
+
+      Before you commit your changes, take a quick pass to clean up the surrounding
+      code.
+
+      ## What to do
+
+      - Remove dead or commented-out code.
+      - Fix inconsistent indentation.
+      - Rename variables that are hard to understand.
+
+      There is no specific output contract; use your judgment on what needs fixing.
+    expected_decision: reject
+    expected_band: borderline
+    rationale: >
+      Has recognisable structure and a real purpose, but "use your judgment" as the
+      output contract is too vague for reliable agent execution — an agent has no
+      stopping condition and no way to verify it is done. The method steps are
+      present but too generic to distinguish a good cleanup from an arbitrary
+      refactor. Falls just below the acceptance line (JUDGE_MIN_SCORE − 1 side
+      of the borderline band).
