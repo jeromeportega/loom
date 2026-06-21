@@ -67,6 +67,8 @@ export class LessonExtractor {
         model: this.model,
         system: [{ text: systemText, cache: true }],
         messages: [{ role: 'user', content: userContent }],
+        maxTokens: 2048,
+        nonAgentic: { excludeDynamicSections: true },
       });
       try {
         const raw = extractJsonBlock(response.text) as { lessons?: unknown[] };

@@ -4,6 +4,13 @@ import { loadBundledPrompt } from '../planner/PersonaLoader.js';
 import { extractJsonBlock } from '../planner/util.js';
 import type { SkillManifest } from './SkillStore.js';
 
+const FALLBACK_JUDGE_PROMPT =
+  'You are a strict reviewer. Score a candidate skill 0–10 and decide accept/reject.\n' +
+  'Return ONLY a single fenced ```json block:\n' +
+  '```json\n{"score": 7, "verdict": "accept", "reason": "one sentence"}\n```\n' +
+  '// verdict must be one of: accept | reject\n\n' +
+  '{{CONTEXT}}';
+
 const JudgeResultSchema = z.object({
   score: z.number(),
   verdict: z.enum(['accept', 'reject']),
@@ -19,6 +26,8 @@ export interface JudgeResult {
 export interface SkillJudgeOptions {
   llm: LLMClient;
   model: string;
+  /** Override prompt loader — used in tests to exercise the fallback path. */
+  loadPrompt?: (name: string) => string;
 }
 
 /**
@@ -62,12 +71,22 @@ export class SkillJudge {
       existingList,
     ].join('\n');
 
-    const prompt = loadBundledPrompt('skill-judge').replace('{{CONTEXT}}', context);
+    const loader = this.opts.loadPrompt ?? loadBundledPrompt;
+    let promptTemplate: string;
+    try {
+      promptTemplate = loader('skill-judge');
+    } catch (err) {
+      console.warn('[SkillJudge] skill-judge bundled prompt unavailable, using built-in fallback:', err);
+      promptTemplate = FALLBACK_JUDGE_PROMPT;
+    }
+    const prompt = promptTemplate.replace('{{CONTEXT}}', context);
 
     const response = await this.opts.llm.complete({
       model: this.opts.model,
       system: [{ text: prompt, cache: true }],
       messages: [{ role: 'user', content: 'Score the candidate skill now.' }],
+      maxTokens: 512,
+      nonAgentic: { excludeDynamicSections: true },
     });
 
     return JudgeResultSchema.parse(extractJsonBlock(response.text));

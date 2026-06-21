@@ -105,6 +105,8 @@ export class SkillGenerator {
       messages: [
         { role: 'user', content: 'Decide now. Output NONE or a single SKILL.md.' },
       ],
+      maxTokens: 4096,
+      nonAgentic: { excludeDynamicSections: true },
     });
 
     const text = response.text.trim();
