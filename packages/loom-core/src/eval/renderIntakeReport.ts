@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { IntakeEvalReport, AxisReport, ConfusionMatrix } from './intakeEvalTypes.js';
+import type { IntakeEvalReport, AxisReport, ConfusionMatrix, DualIntakeReport } from './intakeEvalTypes.js';
 
 function renderConfusionMatrix(matrix: ConfusionMatrix): string {
   const { labels, counts } = matrix;
@@ -146,6 +146,109 @@ export function renderIntakeReport(report: IntakeEvalReport): { markdown: string
  */
 export function writeIntakeReportFiles(report: IntakeEvalReport, outputDir: string): void {
   const { markdown, json } = renderIntakeReport(report);
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.writeFileSync(path.join(outputDir, 'intake-report.md'), markdown, 'utf8');
+  fs.writeFileSync(path.join(outputDir, 'intake-report.json'), json, 'utf8');
+}
+
+// ── Dual (raw + refined) rendering ──────────────────────────────────────────
+
+function computeUnderSizingCount(report: IntakeEvalReport): number {
+  const sizeAxis = report.axes.find(a => a.axis === 'size');
+  if (!sizeAxis) return 0;
+  const dc = sizeAxis.dangerousConfusions.find(d => d.from === 'epic' && d.to === 'story');
+  return dc?.count ?? 0;
+}
+
+function renderComparisonTable(comparison: NonNullable<DualIntakeReport['comparison']>): string {
+  const { typeAccuracy, sizeAccuracy, underSizing, refinerFailures } = comparison;
+
+  const pct = (c: number, s: number) => (s > 0 ? Math.round((c / s) * 100) : 0);
+
+  const rawTypePct = pct(typeAccuracy.raw.correct, typeAccuracy.raw.scored);
+  const refinedTypePct = pct(typeAccuracy.refined.correct, typeAccuracy.refined.scored);
+  const rawSizePct = pct(sizeAccuracy.raw.correct, sizeAccuracy.raw.scored);
+  const refinedSizePct = pct(sizeAccuracy.refined.correct, sizeAccuracy.refined.scored);
+
+  return [
+    '| Metric | Raw brief | Refined brief |',
+    '| --- | --- | --- |',
+    `| Type accuracy | ${typeAccuracy.raw.correct}/${typeAccuracy.raw.scored} (${rawTypePct}%) | ${typeAccuracy.refined.correct}/${typeAccuracy.refined.scored} (${refinedTypePct}%) |`,
+    `| Size accuracy | ${sizeAccuracy.raw.correct}/${sizeAccuracy.raw.scored} (${rawSizePct}%) | ${sizeAccuracy.refined.correct}/${sizeAccuracy.refined.scored} (${refinedSizePct}%) |`,
+    `| Epic→story under-sizing | ${underSizing.raw} | ${underSizing.refined} |`,
+    `| Refiner failures | — | ${refinerFailures} |`,
+  ].join('\n');
+}
+
+/**
+ * Renders a DualIntakeReport to markdown and JSON.
+ *
+ * Off-path (dual.refined === undefined): MUST return renderIntakeReport(dual.raw) verbatim,
+ * byte-for-byte identical, so intake-report.{md,json} are unchanged when the flag is off (FR-8).
+ *
+ * On-path (dual.refined present): appends a clearly-labeled "Refined-brief variant" section and
+ * a raw-vs-refined comparison table; the JSON gains top-level `refined` and `comparison` keys
+ * while `raw` stays untouched (additive only).
+ */
+export function renderIntakeReportDual(dual: DualIntakeReport): { markdown: string; json: string } {
+  if (dual.refined === undefined) {
+    return renderIntakeReport(dual.raw);
+  }
+
+  const refined = dual.refined;
+
+  const rawTypeAxis = dual.raw.axes.find(a => a.axis === 'type')!;
+  const rawSizeAxis = dual.raw.axes.find(a => a.axis === 'size')!;
+  const refinedTypeAxis = refined.axes.find(a => a.axis === 'type')!;
+  const refinedSizeAxis = refined.axes.find(a => a.axis === 'size')!;
+
+  const comparison: NonNullable<DualIntakeReport['comparison']> = {
+    typeAccuracy: { raw: rawTypeAxis.accuracy, refined: refinedTypeAxis.accuracy },
+    sizeAccuracy: { raw: rawSizeAxis.accuracy, refined: refinedSizeAxis.accuracy },
+    underSizing: {
+      raw: computeUnderSizingCount(dual.raw),
+      refined: computeUnderSizingCount(refined),
+    },
+    // refinerFailures: use pre-populated value if caller supplied it; otherwise fall back
+    // to the refined report's llm_error classifier count (refiner failures are synthesized
+    // as llm_error records — ADR-005 — so this is the best proxy from the reports alone).
+    refinerFailures: dual.comparison?.refinerFailures ?? refined.failureCounts.classifier.llm_error,
+  };
+
+  const rawMarkdown = renderMarkdown(dual.raw);
+
+  // Render the refined report and drop its "# Intake Classifier Evaluation Report\n\n" heading
+  // so the section nests cleanly under the "## Refined-brief variant" H2.
+  const refinedFull = renderMarkdown(refined);
+  const refinedBody = refinedFull.split('\n').slice(2).join('\n');
+
+  const markdown = [
+    rawMarkdown,
+    '',
+    '---',
+    '',
+    '## Refined-brief variant',
+    '',
+    refinedBody,
+    '---',
+    '',
+    '## Raw vs Refined Comparison',
+    '',
+    renderComparisonTable(comparison),
+  ].join('\n');
+
+  const json = JSON.stringify({ raw: dual.raw, refined, comparison }, null, 2);
+
+  return { markdown, json };
+}
+
+/**
+ * Writes intake-report.md and intake-report.json from a DualIntakeReport.
+ * Off-path (no refined): output is byte-identical to writeIntakeReportFiles (FR-8).
+ * On-path (refined present): the dual markdown and additive JSON are written instead.
+ */
+export function writeIntakeReportDualFiles(dual: DualIntakeReport, outputDir: string): void {
+  const { markdown, json } = renderIntakeReportDual(dual);
   fs.mkdirSync(outputDir, { recursive: true });
   fs.writeFileSync(path.join(outputDir, 'intake-report.md'), markdown, 'utf8');
   fs.writeFileSync(path.join(outputDir, 'intake-report.json'), json, 'utf8');

@@ -16,6 +16,7 @@ import {
   IntakeJudge,
   scoreIntakeEval,
   writeIntakeReportFiles,
+  writeIntakeReportDualFiles,
   renderIntakeReport,
   createLLMClient,
   BriefRefiner,
@@ -61,7 +62,11 @@ if (REFINED) {
 }
 
 // [INJECT:refined-report] — story-037-002
-writeIntakeReportFiles(report, outputDir);
+if (REFINED) {
+  writeIntakeReportDualFiles({ raw: report, refined: refinedReport }, outputDir);
+} else {
+  writeIntakeReportFiles(report, outputDir);
+}
 console.log(`\nReport written to ${outputDir}/intake-report.{md,json}`);
 console.log(`Overall: ${report.overall.proceed ? 'PROCEED' : 'DO NOT PROCEED'} — ${report.overall.statement}`);
 

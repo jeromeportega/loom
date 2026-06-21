@@ -41,7 +41,7 @@ export { runRefinedIntakeEval } from './runRefinedIntakeEval.js';
 export { IntakeJudge, computeJudgeVsHumanAgreement } from './IntakeJudge.js';
 export { scoreIntakeEval } from './scoreIntakeEval.js';
 export type { ScoreIntakeEvalMeta } from './scoreIntakeEval.js';
-export { renderIntakeReport, writeIntakeReportFiles } from './renderIntakeReport.js';
+export { renderIntakeReport, writeIntakeReportFiles, renderIntakeReportDual, writeIntakeReportDualFiles } from './renderIntakeReport.js';
 
 // Intake consumer (GateEvalConsumer plug-point implementation)
 export { createIntakeConsumer } from './intakeConsumer.js';
