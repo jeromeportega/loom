@@ -106,6 +106,7 @@ export class OpportunityEngine {
       system: [{ text: CLUSTER_SYSTEM_PROMPT, cache: true }],
       messages: [{ role: 'user', content: userPrompt }],
       maxTokens: 4096,
+      nonAgentic: { excludeDynamicSections: true },
     });
 
     let proposals: ClusterProposal[] | null = null;
@@ -126,6 +127,7 @@ export class OpportunityEngine {
           },
         ],
         maxTokens: 4096,
+        nonAgentic: { excludeDynamicSections: true },
       });
       try {
         proposals = parseClusterProposals(resp2.text);
