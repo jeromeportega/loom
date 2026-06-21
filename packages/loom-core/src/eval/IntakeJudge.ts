@@ -30,6 +30,8 @@ export class IntakeJudge implements IntakeJudgeLike {
         model: this.opts.model,
         system: [{ text: systemPrompt, cache: true }],
         messages: [{ role: 'user', content: userContent }],
+        maxTokens: 512,
+        nonAgentic: { excludeDynamicSections: true },
       });
 
       const result = IntakeJudgeResultSchema.parse(extractJsonBlock(response.text));

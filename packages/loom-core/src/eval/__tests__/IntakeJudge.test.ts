@@ -291,6 +291,36 @@ describe('IntakeJudge — bundled prompt (intake-judge.md) loaded via loadBundle
   });
 });
 
+// ── Non-agentic mode request shape (AC1, AC2, FR-1, FR-3) ────────────────────
+
+describe('IntakeJudge — non-agentic mode request shape (AC1, AC2)', () => {
+  it('sets nonAgentic: { excludeDynamicSections: true } on the complete() call (FR-1)', async () => {
+    const llm = new MockLLMClient([validJudgeJson('feature', 'story', 'agree')]);
+    const judge = new IntakeJudge({ llm, model: PLANNING_MODEL });
+
+    await judge.judge(SAMPLE_BRIEF, SAMPLE_VERDICT);
+
+    assert.deepEqual(
+      llm.requests[0]?.nonAgentic,
+      { excludeDynamicSections: true },
+      'complete() must carry nonAgentic: { excludeDynamicSections: true }',
+    );
+  });
+
+  it('sets maxTokens to 512 on the complete() call (FR-3)', async () => {
+    const llm = new MockLLMClient([validJudgeJson('feature', 'story', 'agree')]);
+    const judge = new IntakeJudge({ llm, model: PLANNING_MODEL });
+
+    await judge.judge(SAMPLE_BRIEF, SAMPLE_VERDICT);
+
+    assert.equal(
+      llm.requests[0]?.maxTokens,
+      512,
+      'complete() must carry maxTokens: 512',
+    );
+  });
+});
+
 // ── computeJudgeVsHumanAgreement — unit ──────────────────────────────────────
 
 describe('computeJudgeVsHumanAgreement — type axis', () => {
