@@ -77,11 +77,14 @@ export function scoreLessonExtractor(
   };
 }
 
+const MAX_OVER_EXTRACTION_RATE = 0.20;
+
 // ADR-007: quality bars; called by decide() after structural checks pass
 export function lessonExtractorVerdict(m: LessonExtractorMetrics): 'proceed' | 'do-not-proceed' {
-  if (m.faithfulness < 0.80)     return 'do-not-proceed';
-  if (m.usefulness < 0.70)       return 'do-not-proceed';
-  if (m.coverage < 0.70)         return 'do-not-proceed';
-  if (m.hallucinationRate > 0.10) return 'do-not-proceed';
+  if (m.faithfulness < 0.80)                          return 'do-not-proceed';
+  if (m.usefulness < 0.70)                            return 'do-not-proceed';
+  if (m.coverage < 0.70)                              return 'do-not-proceed';
+  if (m.hallucinationRate > 0.10)                     return 'do-not-proceed';
+  if (m.overExtractionRate > MAX_OVER_EXTRACTION_RATE) return 'do-not-proceed';
   return 'proceed';
 }

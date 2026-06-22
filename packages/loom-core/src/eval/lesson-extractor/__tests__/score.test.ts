@@ -363,6 +363,24 @@ describe('lessonExtractorVerdict — quality threshold bars', () => {
   it('hallucinationRate exactly 0.10 → proceed (boundary not exceeded)', () => {
     assert.equal(lessonExtractorVerdict(passingMetrics({ hallucinationRate: 0.10 })), 'proceed');
   });
+
+  it('overExtractionRate > 0.20 → do-not-proceed', () => {
+    assert.equal(lessonExtractorVerdict(passingMetrics({ overExtractionRate: 0.21 })), 'do-not-proceed');
+  });
+
+  it('overExtractionRate exactly 0.20 → proceed (boundary not exceeded)', () => {
+    assert.equal(lessonExtractorVerdict(passingMetrics({ overExtractionRate: 0.20 })), 'proceed');
+  });
+
+  it('hallucinationRate alone just above 0.10 drives do-not-proceed (all other metrics pass)', () => {
+    const m = passingMetrics({ hallucinationRate: 0.11 });
+    assert.equal(lessonExtractorVerdict(m), 'do-not-proceed');
+  });
+
+  it('overExtractionRate alone above 0.20 drives do-not-proceed (all other metrics pass)', () => {
+    const m = passingMetrics({ overExtractionRate: 0.21 });
+    assert.equal(lessonExtractorVerdict(m), 'do-not-proceed');
+  });
 });
 
 // ── AC-mandated pair: degraded → fail, good → pass ────────────────────────────
@@ -443,22 +461,42 @@ describe('decide() + LESSON_EXTRACTOR_THRESHOLDS — structural fail-closed', ()
   });
 
   it('gateFailureRate > 0.25 → inconclusive', () => {
-    const d = decide(passingMetrics({ gateFailureRate: 0.26 }), LESSON_EXTRACTOR_THRESHOLDS, lessonExtractorVerdict);
+    // totalCases=6, gateFailures=2, scoredCases=4 → gateFailureRate=2/6≈0.333>0.25; self-consistent
+    const d = decide(
+      passingMetrics({ totalCases: 6, gateFailures: 2, scoredCases: 4, gateFailureRate: 2 / 6 }),
+      LESSON_EXTRACTOR_THRESHOLDS,
+      lessonExtractorVerdict,
+    );
     assert.equal(d.verdict, 'inconclusive');
   });
 
   it('gateFailureRate exactly 0.25 → not inconclusive on gateFailureRate alone', () => {
-    const d = decide(passingMetrics({ gateFailureRate: 0.25 }), LESSON_EXTRACTOR_THRESHOLDS, lessonExtractorVerdict);
+    // totalCases=4, gateFailures=1, scoredCases=3 → gateFailureRate=1/4=0.25; self-consistent
+    const d = decide(
+      passingMetrics({ totalCases: 4, gateFailures: 1, scoredCases: 3, gateFailureRate: 0.25 }),
+      LESSON_EXTRACTOR_THRESHOLDS,
+      lessonExtractorVerdict,
+    );
     assert.notEqual(d.verdict, 'inconclusive');
   });
 
   it('judgeInconclusiveRate > 0.25 → inconclusive', () => {
-    const d = decide(passingMetrics({ judgeInconclusiveRate: 0.26 }), LESSON_EXTRACTOR_THRESHOLDS, lessonExtractorVerdict);
+    // totalCases=6, judgeInconclusive=2, scoredCases=4 → judgeInconclusiveRate=2/6≈0.333>0.25; self-consistent
+    const d = decide(
+      passingMetrics({ totalCases: 6, judgeInconclusive: 2, scoredCases: 4, judgeInconclusiveRate: 2 / 6 }),
+      LESSON_EXTRACTOR_THRESHOLDS,
+      lessonExtractorVerdict,
+    );
     assert.equal(d.verdict, 'inconclusive');
   });
 
   it('judgeInconclusiveRate exactly 0.25 → not inconclusive on judgeInconclusiveRate alone', () => {
-    const d = decide(passingMetrics({ judgeInconclusiveRate: 0.25 }), LESSON_EXTRACTOR_THRESHOLDS, lessonExtractorVerdict);
+    // totalCases=4, judgeInconclusive=1, scoredCases=3 → judgeInconclusiveRate=1/4=0.25; self-consistent
+    const d = decide(
+      passingMetrics({ totalCases: 4, judgeInconclusive: 1, scoredCases: 3, judgeInconclusiveRate: 0.25 }),
+      LESSON_EXTRACTOR_THRESHOLDS,
+      lessonExtractorVerdict,
+    );
     assert.notEqual(d.verdict, 'inconclusive');
   });
 
