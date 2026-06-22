@@ -96,6 +96,11 @@ export function scoreSkillGenerator(
   // Zero none-expected cases means no false positives are possible → rate = 0
   const spuriousGenerationRate = noneExpected === 0 ? 0 : noneExpectedGenerated / noneExpected;
 
+  // scoredCases here means 'decision-scored cases' (every gate-ok case, NONE included),
+  // not the judge-coupled default from coreMetrics. Other framework consumers leave
+  // scoredCases judge-coupled; this override is intentional and local (ADR-003).
+  const scoredCases = okGate.length;
+
   // LLM-derived path: quality metrics over judged generate-cases only.
   // Skipped (decision='none'), gate-failed, and judge-inconclusive records
   // are excluded from these means.
@@ -104,10 +109,7 @@ export function scoreSkillGenerator(
   if (judgedGenerate.length === 0) {
     return {
       ...base,
-      // scoredCases here means 'decision-scored cases' (every gate-ok case, NONE included),
-      // not the judge-coupled default from coreMetrics. Other framework consumers leave
-      // scoredCases judge-coupled; this override is intentional and local (ADR-003).
-      scoredCases: okGate.length,
+      scoredCases,
       decisionCorrectness,
       spuriousGenerationRate,
       skillQuality:  0,  // fail-closed: no quality data → 0, below every min bar
@@ -131,10 +133,7 @@ export function scoreSkillGenerator(
 
   return {
     ...base,
-    // scoredCases here means 'decision-scored cases' (every gate-ok case, NONE included),
-    // not the judge-coupled default from coreMetrics. Other framework consumers leave
-    // scoredCases judge-coupled; this override is intentional and local (ADR-003).
-    scoredCases: okGate.length,
+    scoredCases,
     decisionCorrectness,
     spuriousGenerationRate,
     skillQuality:  sumSkillQuality / n,

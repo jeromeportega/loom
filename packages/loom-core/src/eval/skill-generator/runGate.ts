@@ -12,7 +12,7 @@ import type { LLMClient, LLMRequest, LLMResponse } from '../../llm/LLMClient.js'
 import type { GateOutcome, GateDeps } from '../framework/types.js';
 import type { Story } from '../../types.js';
 import type { SkillGeneratorCase } from './caseSchema.js';
-import type { SkillGeneratorGateOutput } from './score.js';
+import type { SkillGeneratorDecisionMeta, SkillGeneratorGateOutput } from './score.js';
 
 /**
  * Drives the production SkillGenerator over one eval case, observe-only (ADR-002).
@@ -138,10 +138,14 @@ export async function runSkillGeneratorGate(
     // trailing explanation). Exact-match would miss legitimate "NONE — reason"
     // outputs. Risk of false-positive for skill bodies that open with the word
     // "none" is accepted as a spec-documented trade-off.
+    const evalMeta: SkillGeneratorDecisionMeta = {
+      expectedDecision: c.rubric.expected_decision,
+      source: c.source,
+    };
     const decision: SkillGeneratorGateOutput =
       raw.length === 0 || raw.toUpperCase().startsWith('NONE')
-        ? { decision: 'none', skillMd: null, _eval: { expectedDecision: c.rubric.expected_decision, source: c.source } }
-        : { decision: 'generate', skillMd: raw, _eval: { expectedDecision: c.rubric.expected_decision, source: c.source } };
+        ? { decision: 'none', skillMd: null, _eval: evalMeta }
+        : { decision: 'generate', skillMd: raw, _eval: evalMeta };
 
     return { status: 'ok', output: decision };
   } catch (e) {
