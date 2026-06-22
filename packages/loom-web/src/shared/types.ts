@@ -22,6 +22,12 @@ export interface EpicStatus {
     | 'done'
     | 'rejected';
   /**
+   * Set to 'standalone' when this entry represents a standalone story, not a
+   * full multi-story epic. The `id` field is the story id (story-NNN) and
+   * `stories` contains exactly one entry. Absent for normal epics.
+   */
+  kind?: 'standalone';
+  /**
    * When status='planning', which persona is currently running. Cleared
    * (null) once the planner completes.
    */

@@ -14,6 +14,7 @@ import {
   openDatabase,
   createDatabase,
   deriveBlocked,
+  STANDALONE_KIND,
   type IntakeVerdict,
 } from '@loom-ai/core';
 import type {
@@ -565,6 +566,10 @@ export function createApp(opts: CreateAppOptions): Express {
  * Maps a project's EpicStore + AgentStore rows to EpicStatus[] tagged with
  * the project attribution. Shared by the current-project pass and every
  * federated peer pass in /api/status.
+ *
+ * Standalone containers (kind='standalone') are surfaced as their single story
+ * with story framing — id=story_id, kind='standalone' — never as "epic-NNN".
+ * Normal epics are returned unchanged.
  */
 function rollupEpics(
   epicStore: EpicStore,
@@ -573,24 +578,60 @@ function rollupEpics(
   isCurrent: boolean,
   includeArchived = false
 ): EpicStatus[] {
-  const epics = epicStore.list({ includeArchived });
-  const verdicts = epicStore.getIntakeVerdicts(epics.map((e) => e.id));
-  return epics.map((epic) => ({
-    id: epic.id,
-    title: epic.title,
-    status: epic.status,
-    planning_phase: (epic.planning_phase ?? null) as EpicStatus['planning_phase'],
-    // Per-story dedup so the list-view counts match the detail view: a
-    // retried-blocked-now-done story counts as 1 done, not 1 blocked + 1 done.
-    stories: countByStatus(agentStore.listLatestByEpic(epic.id)),
-    updated_at: epic.updated_at,
-    project_name: path.basename(projectRoot),
-    project_root: projectRoot,
-    is_current_project: isCurrent,
-    archived: epic.archived_at != null,
-    ...(deriveBlocked(epic) ?? {}),
-    intake_verdict: verdicts.get(epic.id) ?? null,
-  }));
+  const allRows = epicStore.list({ includeArchived, includeStandalone: true });
+  const allIds = allRows.map((e) => e.id);
+  const verdicts = epicStore.getIntakeVerdicts(allIds);
+  const result: EpicStatus[] = [];
+
+  for (const epic of allRows) {
+    if (epic.kind === STANDALONE_KIND) {
+      // Standalone — surface the story id with story framing.
+      const agents = agentStore.listLatestByEpic(epic.id);
+      // When an agent exists, read the persisted story_id (story-NNN). For
+      // pre-dispatch containers (no agent yet), fall back to deriving the
+      // story id from the container id so the container id never leaks as a
+      // top-level entry.
+      const storyId = agents.length > 0
+        ? agents[0].story_id
+        : epic.id.replace(/^epic-/, 'story-');
+      const storyTitle = agents.length > 0 ? (agents[0].story_title ?? epic.title) : epic.title;
+      const storyStatus = agents.length > 0 ? (agents[0].status as EpicStatus['status']) : epic.status;
+      result.push({
+        id: storyId,
+        title: storyTitle,
+        status: storyStatus,
+        kind: 'standalone',
+        planning_phase: (epic.planning_phase ?? null) as EpicStatus['planning_phase'],
+        stories: countByStatus(agents),
+        updated_at: epic.updated_at,
+        project_name: path.basename(projectRoot),
+        project_root: projectRoot,
+        is_current_project: isCurrent,
+        archived: epic.archived_at != null,
+        intake_verdict: verdicts.get(epic.id) ?? null,
+      });
+      continue;
+    }
+
+    result.push({
+      id: epic.id,
+      title: epic.title,
+      status: epic.status,
+      planning_phase: (epic.planning_phase ?? null) as EpicStatus['planning_phase'],
+      // Per-story dedup so the list-view counts match the detail view: a
+      // retried-blocked-now-done story counts as 1 done, not 1 blocked + 1 done.
+      stories: countByStatus(agentStore.listLatestByEpic(epic.id)),
+      updated_at: epic.updated_at,
+      project_name: path.basename(projectRoot),
+      project_root: projectRoot,
+      is_current_project: isCurrent,
+      archived: epic.archived_at != null,
+      ...(deriveBlocked(epic) ?? {}),
+      intake_verdict: verdicts.get(epic.id) ?? null,
+    });
+  }
+
+  return result;
 }
 
 /**
