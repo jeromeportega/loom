@@ -83,7 +83,11 @@ export class StandaloneStoryAgent {
 
       try {
         const json = extractJsonBlock(response.text);
-        const story = StorySchema.parse(json);
+        const parsed = StorySchema.parse(json);
+        // Enforce the derived id regardless of model compliance — the system
+        // prompt asks the model to use it verbatim, but code-level enforcement
+        // ensures the DB row and on-disk YAML are always consistent (ADR-001 §5).
+        const story = parsed.id === storyId ? parsed : { ...parsed, id: storyId };
         return { story, usage };
       } catch (err) {
         lastError =

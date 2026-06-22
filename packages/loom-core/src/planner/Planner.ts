@@ -21,16 +21,17 @@ import type { PlanningEvent } from './PlanningEvent.js';
 import { serializeEpic } from './epicSerializer.js';
 import type { EpicYaml } from '../types.js';
 import type { EffectiveRouting } from '../intake/routing.js';
-// Physical-separation invariant: Planner.js must not contain value imports from the
-// classifier module (see the "physical separation" suite in __tests__). These three
-// helpers mirror the canonical definitions in routing.ts and are re-implemented here
-// so the compiled JS stays free of those module references. StandaloneStoryAgent
-// imports standaloneStoryId from routing.ts directly — it is not covered by the check.
+// Physical-separation invariant: Planner.js must not contain value imports from
+// the classifier module or the broader intake module tree (enforced at test time).
+// These three helpers mirror the canonical definitions in routing.ts and are inlined
+// here so the compiled JS carries no such references. A sync-check test in
+// planner/__tests__/physicalSeparation.test.ts asserts equal outputs so any
+// drift between the two copies is caught automatically.
 function isStandalone(routing?: EffectiveRouting): boolean {
   return routing !== undefined && routing.size === 'story';
 }
-function standaloneStoryId(epicId: string): string {
-  return epicId.replace(/^epic-/, 'story-');
+function standaloneStoryId(containerEpicId: string): string {
+  return containerEpicId.replace(/^epic-/, 'story-');
 }
 function standaloneBranch(storyId: string): string {
   return `story/${storyId}`;
@@ -273,13 +274,16 @@ export class Planner {
     const rel = planningRelPaths(runId);
     const paths = planningPaths(this.opts.projectRoot, runId);
 
-    // Flip the reserved row to 'planned' with the real title and mark kind='standalone'.
-    // The UPDATE for kind uses the raw DB handle since EpicStore has no updateKind method;
-    // this is the only site that needs it (ADR-001 §5 single producer).
-    epicStore.completePlanning(runId, story.title);
-    this.opts.db
-      .prepare(`UPDATE epics SET kind = 'standalone', updated_at = ? WHERE id = ?`)
-      .run(now, runId);
+    // Atomically flip the reserved row to 'planned' + kind='standalone'.
+    // Wrapping both statements in a transaction prevents a crash between them
+    // from leaving the row with status='planned' but kind=NULL, which would
+    // cause EpicStore.isStandalone() to return false for the container (ADR-001 §5).
+    this.opts.db.transaction(() => {
+      epicStore.completePlanning(runId, story.title);
+      this.opts.db
+        .prepare(`UPDATE epics SET kind = 'standalone', updated_at = ? WHERE id = ?`)
+        .run(now, runId);
+    })();
     epicStore.updatePaths(runId, { brief_path: rel.brief });
     epicStore.updateTokens(runId, usage, durationMs);
 

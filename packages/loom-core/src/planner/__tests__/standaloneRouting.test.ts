@@ -131,8 +131,16 @@ function epicPipelineResponder(req: LLMRequest): string {
 function standalonePipelineResponder(req: LLMRequest): string {
   const last = req.messages[req.messages.length - 1].content;
   if (last.includes('brief to analyze') || last.includes('Produce the project brief document')) return ANALYST_BRIEF;
-  if (last.includes('Produce a single story definition in JSON'))
-    return '```json\n' + STANDALONE_STORY_JSON + '\n```';
+  if (last.includes('Produce a single story definition in JSON')) {
+    // Parse the story id from the prompt so the fixture matches the actual
+    // derived storyId (standaloneStoryId(runId)) rather than hard-coding 'story-001'.
+    // StandaloneStoryAgent overwrites the id anyway, but injecting the correct id
+    // here keeps the mock consistent and avoids silent divergence in YAML assertions.
+    const match = /Story id: "([^"]+)"/.exec(last);
+    const storyId = match?.[1] ?? 'story-001';
+    const json = { ...JSON.parse(STANDALONE_STORY_JSON), id: storyId };
+    return '```json\n' + JSON.stringify(json) + '\n```';
+  }
   throw new Error(`Unexpected standalone planning message: ${last.slice(0, 80)}`);
 }
 
@@ -261,7 +269,8 @@ describe('Planner.run — standalone path (advisory, size=story)', () => {
     const yamlPath = result.epicPaths[0];
     assert.ok(fs.existsSync(yamlPath), `YAML file must exist at ${yamlPath}`);
     const content = fs.readFileSync(yamlPath, 'utf8');
-    assert.ok(content.includes('story-001'), 'YAML must contain the standalone story id');
+    const expectedStoryId = standaloneStoryId(result.runId);
+    assert.ok(content.includes(expectedStoryId), `YAML must contain the standalone story id (${expectedStoryId})`);
     assert.ok(content.includes('Add email and password login form'), 'YAML must contain the story title');
     assert.ok(content.includes('acceptance_criteria'), 'YAML must contain acceptance_criteria');
     assert.ok(content.includes('tech_notes'), 'YAML must contain tech_notes');
