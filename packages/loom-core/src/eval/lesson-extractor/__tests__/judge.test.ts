@@ -217,6 +217,14 @@ describe('judgeLessonExtraction — hallucinated_lessons ≤ total_lessons invar
     const result = await judgeLessonExtraction(makeCase(), makeOutput(2), { llm, judgeModel: 'j' });
     assert.equal(result.status, 'ok');
   });
+
+  it('returns inconclusive when total_lessons does not equal output.length (schema rejects mismatch)', async () => {
+    // model claims 5 lessons but only 3 were passed — cross-count mismatch must fail closed
+    const judgment = { ...HAPPY_JUDGMENT, total_lessons: 5, hallucinated_lessons: 0 };
+    const llm = new MockLLMClient([wrapJson(judgment)]);
+    const result = await judgeLessonExtraction(makeCase(), makeOutput(3), { llm, judgeModel: 'j' });
+    assert.equal(result.status, 'inconclusive', 'total_lessons mismatch must not produce a fabricated ok');
+  });
 });
 
 // ── Fail-closed ───────────────────────────────────────────────────────────────
@@ -289,8 +297,10 @@ describe('model defaults', () => {
   });
 
   it('DEFAULT_JUDGE_MODEL differs from gate haiku default (mitigates circularity)', () => {
-    const GATE_DEFAULT = 'claude-haiku-4-5-20251001';
-    assert.notEqual(DEFAULT_JUDGE_MODEL, GATE_DEFAULT, 'judge and gate defaults must be distinct');
+    // Gate default defined by story-041-003/models.ts; kept as a local literal here
+    // because that module doesn't yet exist on this branch. Update if gate default changes.
+    const GATE_DEFAULT_HAIKU = 'claude-haiku-4-5-20251001';
+    assert.notEqual(DEFAULT_JUDGE_MODEL, GATE_DEFAULT_HAIKU, 'judge and gate defaults must be distinct');
   });
 });
 
