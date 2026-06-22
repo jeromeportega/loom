@@ -216,6 +216,7 @@ operator-facing `loom` CLI.
 | **Cross-run comparison** | `loom-bench compare <a.json> <b.json>` | Held / gained / regressed / shifted breakdown across two runs. |
 | **Outcome variance** | `loom-bench variance <K runs>` | Distribution across K runs of the same configuration. |
 | **Planning eval** | `node scripts/eval.mjs` | Runs the bundled planning eval cases through the planner; pass/score report. |
+| **Skill-judge gate eval** | `npm run eval:skill-judge` | Runs `SkillJudge` against the labeled 10-case fixture and produces a go/no-go verdict. Reports `decisionAccuracy`, `bandAgreement`, `independentAgreement`, and `failOpenObserved`. Gate model defaults to Haiku (`LOOM_EVAL_GATE_MODEL`); judge model to Opus (`LOOM_EVAL_JUDGE_MODEL`) — different models by design to prevent the gate grading its own homework. Offline-from-CI, operator-run, observe-only — never dispatched by loom (ADR-006). Report written to `.loom/eval/skill-judge-report.{md,json}`. |
 
 ## Integration & deployment
 
