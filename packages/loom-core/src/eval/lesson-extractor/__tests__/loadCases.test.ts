@@ -10,9 +10,9 @@ import { LessonExtractorCaseSchema, type LessonExtractorCase } from '../caseSche
 import type { GateEvalCase } from '../../framework/types.js';
 
 // Compile-time check: LessonExtractorCase must structurally satisfy GateEvalCase.
-// If this type assignment fails to compile, the case shape diverged from the framework contract.
-type _AssertExtendsGateEvalCase = LessonExtractorCase extends GateEvalCase ? true : false;
-const _typeCheck: _AssertExtendsGateEvalCase = true;
+// If _assertGateEvalCase fails to compile, the case shape diverged from the framework contract.
+type _GateEvalCaseCheck = LessonExtractorCase extends GateEvalCase ? true : never;
+type _assertGateEvalCase = _GateEvalCaseCheck;
 
 // ── Minimal fixture helpers ───────────────────────────────────────────────────
 
@@ -375,7 +375,16 @@ describe('loadLessonExtractorCases — rubric pass-through', () => {
 // ── Default path resolves production fixture ──────────────────────────────────
 
 let productionFixturePresent: boolean;
-try { defaultFixturePath(); productionFixturePresent = true; } catch { productionFixturePresent = false; }
+try {
+  defaultFixturePath();
+  productionFixturePresent = true;
+} catch (err) {
+  if (err instanceof Error && /not found/i.test(err.message)) {
+    productionFixturePresent = false;
+  } else {
+    throw err;
+  }
+}
 
 describe('loadLessonExtractorCases — default fixture path', () => {
   it('loads lesson-extractor.yaml with no argument and returns validated cases', (t) => {
