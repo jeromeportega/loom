@@ -14,7 +14,7 @@ export interface SignalInput {
 
 export interface RubricExpectation {
   expected_themes: string[];
-  force_clustering_traps: string[];  // ≥1 required — see OpportunityEngineCaseSchema
+  force_clustering_traps: string[];
 }
 
 export interface OpportunityEngineCase {
@@ -39,7 +39,7 @@ const SignalInputSchema = z.object({
 export const OpportunityEngineCaseSchema: z.ZodType<OpportunityEngineCase> = z.object({
   id:       z.string(),
   source:   z.enum(['separable', 'noise', 'mixed']),
-  signals:  z.array(SignalInputSchema),
+  signals:  z.array(SignalInputSchema).min(1),
   rubric:   z.object({
     expected_themes:        z.array(z.string()),
     force_clustering_traps: z.array(z.string().min(1)).min(1),

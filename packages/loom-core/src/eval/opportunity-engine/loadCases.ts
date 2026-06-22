@@ -3,9 +3,13 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { OpportunityEngineCaseSetSchema, type OpportunityEngineCase } from './caseSchema.js';
 
-// CJS package: __dirname is available at runtime. Paths are computed lazily
-// inside defaultFixturePath() so process.cwd() is read at call time, not
-// at import time — tests that change cwd before calling load() get fresh values.
+// CJS module: packages/loom-core has "type":"commonjs" in its package.json and
+// emits CommonJS via tsconfig module:Node16 — __dirname is a module-load-time
+// constant (not call-time).  process.cwd() inside defaultFixturePath() IS read
+// at call time, so tests that change cwd before calling load() get fresh values.
+// If this package is ever migrated to ESM, replace __dirname with
+//   path.dirname(fileURLToPath(import.meta.url))
+// and add `import { fileURLToPath } from 'node:url';`.
 export function defaultFixturePath(): string {
   // Compiled output at dist/eval/opportunity-engine/ — three levels up to package root
   const distPath = path.resolve(__dirname, '../../../eval-cases/opportunity-engine.yaml');
@@ -39,6 +43,7 @@ function readFile(file: string): string {
  */
 export function loadOpportunityEngineCases(fixturePath?: string): OpportunityEngineCase[] {
   const file = fixturePath ?? defaultFixturePath();
+  // JSON_SCHEMA disallows YAML anchors/aliases — fixture authors must not use them.
   const parsed = OpportunityEngineCaseSetSchema.parse(
     yaml.load(readFile(file), { schema: yaml.JSON_SCHEMA }),
   );

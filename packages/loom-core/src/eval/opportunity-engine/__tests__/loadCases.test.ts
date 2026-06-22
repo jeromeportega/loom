@@ -10,8 +10,10 @@ import { OpportunityEngineCaseSchema, OpportunityEngineCaseSetSchema, type Oppor
 import type { GateEvalCase } from '../../framework/types.js';
 
 // Compile-time check: OpportunityEngineCase must structurally satisfy GateEvalCase.
+// _GateEvalCaseCheck resolves to `never` if the constraint breaks; assigning `true`
+// to a `never`-typed const is a compile error, so this IS a real guard.
 type _GateEvalCaseCheck = OpportunityEngineCase extends GateEvalCase ? true : never;
-type _assertGateEvalCase = _GateEvalCaseCheck;
+const _enforceGateEvalCase: _GateEvalCaseCheck = true;
 
 // ── Minimal fixture helpers ───────────────────────────────────────────────────
 
@@ -156,6 +158,11 @@ describe('OpportunityEngineCaseSchema — rejects missing required fields', () =
   it('rejects when rationale is missing', () => {
     const { rationale: _, ...noRationale } = validSeparableCase();
     assert.ok(!OpportunityEngineCaseSchema.safeParse(noRationale).success, 'missing rationale must be rejected');
+  });
+
+  it('rejects when signals is an empty array (min(1) required)', () => {
+    const result = OpportunityEngineCaseSchema.safeParse({ ...validSeparableCase(), signals: [] });
+    assert.ok(!result.success, 'empty signals array must be rejected — a case with zero signals is semantically invalid');
   });
 });
 
@@ -402,6 +409,17 @@ describe('loadOpportunityEngineCases — throws on malformed fixture (AC3)', () 
       cleanup(tmp);
     }
   });
+
+  it('throws (zod) when signals array is empty (min(1) required)', () => {
+    const tmp = makeTmp();
+    try {
+      const c = { ...validSeparableCase(), signals: [] };
+      const fp = writeFixture(tmp, 'empty-signals.yaml', { cases: [c] });
+      assert.throws(() => loadOpportunityEngineCases(fp), 'empty signals array must throw');
+    } finally {
+      cleanup(tmp);
+    }
+  });
 });
 
 // ── Reuse — thin wrapper over framework case loader (AC3) ─────────────────────
@@ -503,9 +521,10 @@ describe('loadOpportunityEngineCases — fixture sanity (rubric content quality)
     const cases = loadOpportunityEngineCases();
     const mixedCase = cases.find((c) => c.source === 'mixed');
     assert.ok(mixedCase, 'mixed case must exist');
-    assert.ok(
-      mixedCase.rubric.expected_themes.length >= 1,
-      'mixed case must have at least one expected theme for the related signals',
+    assert.equal(
+      mixedCase.rubric.expected_themes.length,
+      1,
+      'mixed case must have exactly one expected theme (related cluster only, not noise signals)',
     );
   });
 
