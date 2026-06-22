@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -58,6 +58,55 @@ describe('docs/capabilities.md — signal ledger (story-010-004)', () => {
     assert.ok(
       /PR body|epic PR/i.test(surrounding),
       '"Build signal analysis" entry must mention the PR body or epic PR'
+    );
+  });
+});
+
+// ─── Standalone-story routing (epic-047, story-047-006) ──────────────────────
+
+describe('docs/capabilities.md — standalone-story routing (story-047-006)', () => {
+  let body: string;
+
+  before(() => {
+    const p = findCapabilitiesMd();
+    body = fs.readFileSync(p, 'utf8');
+  });
+
+  it('documents standalone-story routing in the intake_routing row', () => {
+    assert.ok(
+      /standalone.story routing|standalone.*path/i.test(body),
+      'must document standalone-story routing'
+    );
+  });
+
+  it('describes the trigger: intake_routing advisory/confirm with effective size=story', () => {
+    const hasAdvisoryOrConfirm = /intake_routing=advisory.*confirm|advisory.*or.*confirm/i.test(body);
+    const hasSizeStory = /size.*story|effective.*size.*story|resolves to.*story/i.test(body);
+    assert.ok(
+      hasAdvisoryOrConfirm || /advisory.*confirm.*size.*story|intake_routing.*advisory.*confirm.*story/i.test(body),
+      'must mention advisory/confirm trigger'
+    );
+    assert.ok(hasSizeStory, 'must mention effective size=story as the trigger condition');
+  });
+
+  it('describes the lightweight planning: no PRD and no decomposition', () => {
+    assert.ok(
+      /no.*PRD|no.*decomposition|no PM/i.test(body),
+      'must describe lightweight planning (no PRD, no decomposition)'
+    );
+  });
+
+  it('describes the single-story / single-PR outcome', () => {
+    assert.ok(
+      /one PR|single.*PR|produces.*PR|one.*worker|single.*story.*container/i.test(body),
+      'must describe the single-PR outcome'
+    );
+  });
+
+  it('states that intake_routing=off always uses the normal epic path', () => {
+    assert.ok(
+      /intake_routing=off.*normal|off.*always|off.*epic path/i.test(body),
+      'must clarify that intake_routing=off bypasses standalone routing'
     );
   });
 });
