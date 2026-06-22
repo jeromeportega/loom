@@ -146,10 +146,78 @@ Output is written to `.loom/eval/brief-quality-report.{md,json}` (gitignored).
 For a full operator runbook including what to record and how to interpret the verdict,
 see [`docs/runbooks/brief-quality-eval.md`](../runbooks/brief-quality-eval.md).
 
+## Per-consumer sub-barrel topology
+
+Every eval consumer lives in its own directory under `src/eval/`, each
+exposing exactly one public entry — an `index.ts` that the top barrel
+(`eval/index.ts`) and external callers import from. Today there are four
+directories:
+
+| Directory | Role |
+|---|---|
+| `framework/` | Shared plug-point core — types, `runGateEval`, `coreMetrics`, `decide`, model resolution. Uses `export *` across its own modules internally; registered at the top barrel via explicit named list (see collision guard below). |
+| `brief-quality/` | Brief-quality gate consumer. `index.ts` uses `export *` from safe modules and re-exports `EvalReport` and `MainOptions` from `run.ts` by explicit name to avoid collision with `eval/types.ts`'s `EvalReport`. Not re-exported at the package root (ADR-004). |
+| `skill-judge/` | Skill-quality judge consumer. Same pattern as `brief-quality/`. Not re-exported at the package root (ADR-004). |
+| `intake/` | Intake classifier consumer. Promoted from the flat `eval/` surface (epic-040). `index.ts` uses explicit named re-exports throughout; `JudgeOutcome` is intentionally omitted to avoid collision with `framework/types.ts`'s generic `JudgeOutcome<T>`. Re-exported at the package root via `export * from './intake/index.js'` (baseline diff confirmed no name collision). |
+
+### Convention: wire internally, expose one entry
+
+Inside any consumer directory, modules import each other by direct relative
+path (`import { X } from './sibling.js'`), never through any barrel. The
+`index.ts` is the only public door:
+
+```
+eval/
+  intake/
+    intakeConsumer.ts    ← imports { IntakeJudge } from './IntakeJudge.js'
+    IntakeJudge.ts       ← imports { ... } from './intakeEvalTypes.js'
+    intakeEvalTypes.ts
+    index.ts             ← re-exports the consumer's public surface only
+```
+
+Callers outside `intake/` (including the top barrel and test files) import
+only from `intake/index.ts`. This keeps internal helpers invisible to the
+outside and makes the public surface explicit and auditable.
+
+### Collision guard at the top barrel
+
+Two pairs of names exist with structurally different shapes in eval vs. the
+broader orchestrator surface:
+
+- **`GateOutcome<T>` and `JudgeOutcome<T>`** — defined in `framework/types.ts`
+  (generic, eval-internal). The orchestrator (`src/brief/gate.ts`) also exports
+  a `GateOutcome` with a different shape. Both are **never re-exported** by
+  `eval/index.ts`.
+- **`EvalReport` in `brief-quality/run.ts` and `skill-judge/run.ts`** — each is
+  structurally distinct from `EvalReport` in `eval/types.ts`. The consumer
+  sub-barrels re-export it by explicit name (`export type { EvalReport } from './run.js'`);
+  the top barrel does not re-export `brief-quality` or `skill-judge` at all
+  (ADR-004), so neither consumer-local `EvalReport` ever reaches the package root.
+
+The rule: **`eval/index.ts` re-exports framework by explicit named list only** —
+`export *` from `./framework/*` is forbidden at the top barrel. `export *`
+is permitted only *inside* a consumer sub-barrel, and from `./intake/index.js`
+only because the story-040-001 baseline diff confirmed no intake name collides
+at the package root.
+
+### Adding a new consumer costs at most one top-barrel line
+
+Because every consumer funnels its entire public surface through its own
+`index.ts`, registering it at the package root is a single statement:
+
+```typescript
+// eval/index.ts — add at most one line:
+export * from './my-consumer/index.js';            // no name collision at root
+// or:
+export { X, Y, Z } from './my-consumer/index.js'; // explicit group if any name collides
+```
+
+The blast radius of a new consumer is bounded to that one line.
+
 ## Adding a new consumer
 
-1. Implement `GateEvalConsumer<TCase, TOut, TJudg, TMetrics>` in a new
-   `src/eval/<name>/consumer.ts`.
+1. Create a directory `src/eval/<name>/` for the consumer's modules. Implement
+   `GateEvalConsumer<TCase, TOut, TJudg, TMetrics>` in `src/eval/<name>/consumer.ts`.
 2. Define your case schema (structurally extending `GateEvalCase` — must have
    `id: string` and `source: string`) and a YAML fixture file.
 3. Wire the plug points: `loadCases` → fixture loader, `runGate` → your gate,
@@ -161,8 +229,16 @@ see [`docs/runbooks/brief-quality-eval.md`](../runbooks/brief-quality-eval.md).
    const metrics  = consumer.score(records);
    const decision = decide(metrics, consumer.thresholds, m => consumer.verdict(m));
    ```
-5. Add a `scripts/eval-<name>.mjs` runner and a `npm run eval:<name>` script.
-6. Document the run steps and expected cost/runtime in `docs/runbooks/`.
+5. Create `src/eval/<name>/index.ts` that re-exports the consumer's public
+   surface. If any exported name collides with the frozen root surface (check
+   against `.loom/planning/epic-040/surface-baseline.md`), re-export it by
+   explicit name instead of `export *`. Wire internal cross-module imports by
+   direct relative path only — never through any barrel.
+6. Register the consumer at the top barrel with at most one line in
+   `eval/index.ts` (see "Adding a new consumer costs at most one top-barrel line"
+   above).
+7. Add a `scripts/eval-<name>.mjs` runner and a `npm run eval:<name>` script.
+8. Document the run steps and expected cost/runtime in `docs/runbooks/`.
 
 The brief-quality consumer (`src/eval/brief-quality/`) and the intake consumer
-(`src/eval/intakeConsumer.ts`) are the two reference implementations.
+(`src/eval/intake/`) are the two reference implementations.
