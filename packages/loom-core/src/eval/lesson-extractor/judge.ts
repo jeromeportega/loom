@@ -23,15 +23,18 @@ const LessonExtractorLLMOutputSchema = z.object({
   }
 });
 
-const JUDGE_SYSTEM_PROMPT = loadBundledPrompt('lesson-extractor-judge');
-
 export async function judgeLessonExtraction(
   c: LessonExtractorCase,
   output: Lesson[],
   deps: JudgeDeps,
 ): Promise<JudgeOutcome<LessonExtractorJudgment>> {
   try {
+    const systemPrompt = loadBundledPrompt('lesson-extractor-judge');
+
     const userContent = [
+      '## Telemetry',
+      JSON.stringify(c.telemetry, null, 2),
+      '',
       '## Rubric',
       `expected_themes: ${JSON.stringify(c.rubric.expected_themes)}`,
       `over_extraction_traps: ${JSON.stringify(c.rubric.over_extraction_traps)}`,
@@ -44,9 +47,9 @@ export async function judgeLessonExtraction(
 
     const response = await deps.llm.complete({
       model:    deps.judgeModel,
-      system:   [{ text: JUDGE_SYSTEM_PROMPT, cache: true }],
+      system:   [{ text: systemPrompt, cache: true }],
       messages: [{ role: 'user', content: userContent }],
-      maxTokens: 512,
+      maxTokens: 1024,
       nonAgentic: { excludeDynamicSections: true },
     });
 

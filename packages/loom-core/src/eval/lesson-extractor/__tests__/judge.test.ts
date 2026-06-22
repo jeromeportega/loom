@@ -134,6 +134,32 @@ describe('judgeLessonExtraction — rubric is used in the prompt', () => {
     const userMsg = llm.requests[0].messages[0].content as string;
     assert.ok(userMsg.includes('unique-rule-string-abc123'), 'prompt must contain extracted lessons');
   });
+
+  it('includes telemetry from c.telemetry in the prompt (required for faithfulness scoring)', async () => {
+    const llm = new MockLLMClient([wrapJson(HAPPY_JUDGMENT)]);
+    const c = makeCase({
+      telemetry: {
+        epic_id:         'epic-test-001',
+        final_status:    'done',
+        decision_traces: [{
+          id:        1,
+          agent_id:  null,
+          epic_id:   null,
+          story_id:  null,
+          kind:      'decision',
+          subject:   null,
+          rationale: 'unique-trace-rationale-faithfulness-xyz',
+          metadata:  null,
+          timestamp: '2026-01-01T00:00:00.000Z',
+        }],
+        agents:     [],
+        audit_tail: [],
+      },
+    });
+    await judgeLessonExtraction(c, makeOutput(), { llm, judgeModel: 'j' });
+    const userMsg = llm.requests[0].messages[0].content as string;
+    assert.ok(userMsg.includes('unique-trace-rationale-faithfulness-xyz'), 'prompt must contain telemetry decision_traces for faithfulness scoring');
+  });
 });
 
 // ── Both flags exercised ──────────────────────────────────────────────────────
