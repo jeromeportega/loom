@@ -16,7 +16,7 @@ import { main } from '../packages/loom-core/dist/eval/skill-judge/run.js';
 const gateModel  = process.env.LOOM_EVAL_GATE_MODEL  ?? 'claude-haiku-4-5-20251001';
 const judgeModel = process.env.LOOM_EVAL_JUDGE_MODEL ?? 'claude-opus-4-8';
 
-console.log(`\nRunning skill-judge eval — 10 cases (default fixture).`);
+console.log(`\nRunning skill-judge eval (default fixture).`);
 console.log(`  Gate model:  ${gateModel}`);
 console.log(`  Judge model: ${judgeModel}\n`);
 

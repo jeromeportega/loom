@@ -16,7 +16,7 @@ import { main } from '../packages/loom-core/dist/eval/brief-quality/run.js';
 const gateModel  = process.env.LOOM_EVAL_GATE_MODEL  ?? 'claude-opus-4-8';
 const judgeModel = process.env.LOOM_EVAL_JUDGE_MODEL ?? 'claude-opus-4-8';
 
-console.log(`\nRunning brief-quality eval — 9 cases (default fixture).`);
+console.log(`\nRunning brief-quality eval (default fixture).`);
 console.log(`  Gate model:  ${gateModel}`);
 console.log(`  Judge model: ${judgeModel}\n`);
 

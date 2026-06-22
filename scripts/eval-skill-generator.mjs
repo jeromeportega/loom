@@ -17,7 +17,7 @@ const judgeModel  = process.env.LOOM_EVAL_JUDGE_MODEL ?? 'claude-opus-4-8';
 // Resolve to workspace root (CWD when run via `npm run eval:skill-generator` from repo root).
 const projectRoot = path.resolve('.');
 
-console.log(`\nRunning skill-generator eval — 8 cases (default fixture).`);
+console.log(`\nRunning skill-generator eval (default fixture).`);
 console.log(`  Gate model:  ${gateModel}`);
 console.log(`  Judge model: ${judgeModel}\n`);
 
