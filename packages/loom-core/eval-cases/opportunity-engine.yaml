@@ -1,0 +1,244 @@
+# eval-cases/opportunity-engine.yaml
+# Fixture cases for the opportunity-engine eval consumer (epic-042).
+#
+# Each case pairs signal inputs with rubric expectations:
+#   expected_themes — cluster themes that SHOULD surface as distinct opportunities
+#   force_clustering_traps — signal pairs/groups that must NOT be forced together
+#
+# Cases never specify an exact expected clustering — only rubric expectations.
+# Schema: OpportunityEngineCaseSchema (src/eval/opportunity-engine/caseSchema.ts)
+
+cases:
+
+  # ── SEPARABLE CASE ────────────────────────────────────────────────────────────
+  # Signals fall cleanly into two non-overlapping themes: authentication security
+  # and database performance. A correct engine clusters these into at least two
+  # distinct opportunities; any model that forces them into one "backend work"
+  # cluster has collapsed orthogonal concerns.
+
+  - id: oe-separable-auth-perf
+    source: separable
+    rationale: >
+      Five signals spanning two non-overlapping problem domains: auth security
+      (JWT validation, session fixation, CSRF) and query performance (N+1 on
+      the users endpoint, missing DB index on audit_log). The separability trap
+      is that both domains are backend concerns — a model tempted to abstract
+      them into "backend health" misses that their remediation paths, owners,
+      and urgency are entirely different. A correct engine produces at least two
+      opportunities: one addressing authentication hardening, one addressing
+      query performance. The force-clustering trap text names the specific cross-
+      domain pair most likely to be incorrectly merged.
+    signals:
+      - key: auth-jwt-expiry-unchecked
+        source: github-issues
+        kind: security
+        title: JWT tokens never expire — no expiry claim validated on the server
+        detail: >
+          The /api/verify-token endpoint accepts any structurally valid JWT
+          regardless of the exp claim. A token issued two years ago passes
+          validation. Reported by a penetration tester during the Q1 audit.
+
+      - key: auth-session-fixation-risk
+        source: code-debt
+        kind: security
+        title: Session ID not regenerated after successful login
+        detail: >
+          packages/loom-web/src/middleware/auth.ts: the session ID set before
+          authentication is reused after the user logs in successfully. A
+          pre-auth attacker who can observe or share a session ID can fix it
+          and gain authenticated access after the victim logs in.
+
+      - key: auth-csrf-token-absent
+        source: audit-introspection
+        kind: security
+        title: POST /api/agents/approve has no CSRF token validation
+        detail: >
+          The approve endpoint mutates state (marks an agent action approved)
+          but does not validate a CSRF token. The audit log shows a worker
+          agent invoking this endpoint directly from a crafted URL inside
+          a redirect chain in one test run.
+
+      - key: perf-n-plus-one-users-list
+        source: github-issues
+        kind: performance
+        title: "N+1 query on GET /api/agents: one DB hit per agent to fetch owner"
+        detail: >
+          Profiling shows that listing 50 agents issues 51 queries — one for
+          the agent list, then one per row to resolve the owner display name
+          from the users table. A single JOIN eliminates all 50 extra round
+          trips. Filed after the dashboard became noticeably slow with > 30
+          concurrent agents.
+
+      - key: perf-audit-log-index-missing
+        source: code-debt
+        kind: performance
+        title: audit_log table lacks index on (agent_id, timestamp) — full-scan on every tail fetch
+        detail: >
+          Every call to getAuditTail() scans the full audit_log table because
+          there is no composite index on (agent_id, timestamp). At 50k rows
+          (normal after one week of activity) this takes ~120 ms per request.
+          The fix is a single CREATE INDEX statement in the migration path.
+
+    rubric:
+      expected_themes:
+        - authentication and session security hardening
+        - database query performance optimisation
+      force_clustering_traps:
+        - >
+          Authentication security signals (JWT expiry, session fixation, CSRF)
+          and database performance signals (N+1 query, missing index) must NOT
+          be merged into a single opportunity simply because both categories
+          affect the backend. They address orthogonal system properties, have
+          different owners, and require completely different remediations.
+
+
+  # ── NOISE CASE ───────────────────────────────────────────────────────────────
+  # Signals are genuinely unrelated: a dependency version bump, a cosmetic CSS
+  # value typo, stale install instructions in a README, and a leftover debug log
+  # statement. No two signals share a remediation path, owner, or system surface.
+  # A correct engine produces zero or very few low-confidence opportunities;
+  # clustering any two of these signals into a single opportunity is the trap.
+
+  - id: oe-noise-maintenance-backlog
+    source: noise
+    rationale: >
+      Four signals from unrelated system surfaces with no shared remediation or
+      owner: a transitive dependency bump (security advisory on lodash), a CSS
+      colour value typo (wrong hex in the dashboard), stale install instructions
+      in the contributing guide, and a debug logging statement left in a hot
+      path. The force-clustering trap is that a model might label them all as
+      "maintenance work" and collapse them into one opportunity. That abstraction
+      destroys the information — a dependency bump is an infosec task, a CSS
+      typo is a UI task, stale docs are a DX task, and debug logging is a
+      performance/observability task. Grouping them means no one takes ownership
+      and nothing ships.
+    signals:
+      - key: dep-lodash-security-advisory
+        source: code-debt
+        kind: dependency
+        title: lodash@4.17.20 has known prototype pollution CVE — upgrade to 4.17.21
+        detail: >
+          Dependabot flagged CVE-2021-23337. The fix is a one-line version bump
+          in package.json. No API surface changes. Risk of grouping: this is an
+          infosec-owned task with a specific CVE SLA; bundling it with cosmetic
+          tasks can delay a security-mandatory fix.
+
+      - key: css-dashboard-bg-typo
+        source: code-debt
+        kind: cosmetic
+        title: "Dashboard sidebar background uses #1a1b2e instead of #1a1b2c — off-by-two hex"
+        detail: >
+          packages/loom-web/public/style.css line 47: the sidebar background
+          colour is #1a1b2e, which is two shades off from the design system
+          token #1a1b2c. Visually indistinguishable in most lighting but fails
+          automated design-token lint. Fix: change one hex value.
+
+      - key: docs-contributing-install-stale
+        source: github-issues
+        kind: documentation
+        title: CONTRIBUTING.md install steps reference Node 18 — project requires Node 20+
+        detail: >
+          New contributors hit an error during setup because CONTRIBUTING.md
+          says "install Node.js 18 or later" while package.json engines specifies
+          ">= 20.0.0". Fix: update the version number in one markdown sentence.
+          No code change required.
+
+      - key: log-debug-left-in-hot-path
+        source: audit-introspection
+        kind: observability
+        title: console.debug() call left in getSignals() inner loop — fires on every DB row
+        detail: >
+          Audit replay shows getSignals() emitting a debug log line for every
+          row returned from the database. At 1k signals this is 1000 log lines
+          per request. The statement was added during a debugging session in
+          story-039-002 and never removed. Fix: delete one console.debug() call.
+
+    rubric:
+      expected_themes: []
+      force_clustering_traps:
+        - >
+          A dependency security advisory, a CSS colour typo, stale documentation,
+          and a stray debug log statement must NOT be grouped into a single
+          "maintenance" or "housekeeping" opportunity. They involve different
+          system surfaces (infosec, UI, docs, observability), different owners,
+          and have different SLAs. Collapsing them destroys ownership clarity
+          and can delay a security-mandatory fix.
+        - >
+          The lodash CVE and the CSS typo must NOT be clustered together as
+          "dependency and style cleanup" — one is a security-mandatory upgrade
+          with a CVE SLA and the other is a cosmetic pixel discrepancy.
+
+
+  # ── MIXED CASE ────────────────────────────────────────────────────────────────
+  # Three auth-related signals that belong together plus one documentation signal
+  # that is superficially adjacent (it mentions "auth" in its title) but whose
+  # remediation is entirely separate. A correct engine produces one auth-security
+  # opportunity from the three auth signals and either no opportunity or a
+  # separate low-priority opportunity for the docs signal.
+
+  - id: oe-mixed-auth-and-stale-docs
+    source: mixed
+    rationale: >
+      Three signals address concrete authentication security gaps (missing rate
+      limit on login, weak password policy, bcrypt rounds too low) that share
+      a remediation owner and can be delivered together. One signal — an
+      outdated CONTRIBUTING.md section titled "Authenticating with loom" — is
+      superficially adjacent because it uses the word "auth" and lives near the
+      auth codebase, but its fix is a docs edit with no security impact. The
+      force-clustering trap is that the engine might pull the docs signal into
+      the auth security opportunity because of keyword proximity, inflating the
+      cluster with a task that has a completely different owner (docs/DX) and
+      urgency (none vs. security SLA).
+    signals:
+      - key: auth-login-rate-limit-absent
+        source: code-debt
+        kind: security
+        title: POST /api/login has no rate limiting — brute-force attack surface
+        detail: >
+          The login endpoint accepts unlimited password attempts with no delay,
+          CAPTCHA, or account lockout. A simple script can attempt 10k passwords
+          per minute. Fix requires adding a rate-limiting middleware and an
+          account lockout policy. Security team flagged this as P1 in the Q2
+          review.
+
+      - key: auth-password-min-length-too-short
+        source: github-issues
+        kind: security
+        title: Minimum password length is 6 characters — NIST SP 800-63B requires 8
+        detail: >
+          The registration flow allows passwords as short as 6 characters.
+          NIST SP 800-63B sets an 8-character minimum for memorised secrets.
+          Raising the minimum requires updating the validation rule and adding
+          a migration notice for existing short passwords on next login.
+
+      - key: auth-bcrypt-rounds-too-low
+        source: audit-introspection
+        kind: security
+        title: bcrypt rounds set to 8 — OWASP recommends 10+ for modern hardware
+        detail: >
+          packages/loom-core/src/auth/hashPassword.ts hashes passwords with
+          bcrypt at cost factor 8. At that cost, a modern GPU can crack ~50k
+          hashes/sec. OWASP guidelines recommend 10 rounds minimum as of 2024.
+          Increasing cost factor requires a one-line config change; existing
+          password hashes upgrade transparently on next login.
+
+      - key: docs-auth-section-outdated
+        source: github-issues
+        kind: documentation
+        title: CONTRIBUTING.md "Authenticating with loom" section references removed OAuth flow
+        detail: >
+          A two-paragraph section in CONTRIBUTING.md describes an OAuth2 device
+          flow that was removed in v4.0. New contributors following these steps
+          get a 404. The fix is deleting the section and updating the link in
+          the table of contents. No code change required. Not a security issue.
+
+    rubric:
+      expected_themes:
+        - authentication security hardening
+      force_clustering_traps:
+        - >
+          The stale CONTRIBUTING.md documentation about an obsolete OAuth flow
+          must NOT be grouped into the authentication security opportunity. Its
+          fix is a docs edit with no security impact, a different owner (DX team),
+          and no urgency SLA — including it inflates the security cluster with a
+          distractor and obscures the P1 remediation priority of the auth signals.
