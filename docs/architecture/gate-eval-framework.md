@@ -202,11 +202,67 @@ encountered exactly this failure with another consumer).
 For a full operator runbook including what to record and how to interpret the
 verdict, see [`docs/runbooks/lesson-extractor-eval.md`](../runbooks/lesson-extractor-eval.md).
 
+## Running the opportunity-engine eval (out-of-band)
+
+The opportunity-engine eval measures how accurately `OpportunityEngine` clusters
+open signals into improvement opportunities against a human-labeled rubric case
+set. It is **not a `loom` subcommand** (ADR-006) — invoke it directly after
+building `loom-core`:
+
+```bash
+npm run build -w @loom-ai/core
+node scripts/eval-opportunity-engine.mjs
+```
+
+or via the workspace shortcut:
+
+```bash
+npm run eval:opportunity-engine
+```
+
+**Optional env-var overrides (defaults shown):**
+
+```bash
+LOOM_EVAL_GATE_MODEL=claude-haiku-4-5-20251001  # model for OpportunityEngine (the gate)
+LOOM_EVAL_JUDGE_MODEL=claude-opus-4-8           # model for the Opus rubric judge
+```
+
+**Expected cost and runtime (8-case default fixture):**
+
+Each of the 8 cases incurs **exactly one gate call** (OpportunityEngine) and, when
+the gate returns `ok`, **exactly one Opus judge call**. With `claude-cli` session-
+based backend (no metered tokens), the run has **no metered API cost**. With an
+API key backend, budget for ≤16 calls (≤8 gate + ≤8 judge); wall-clock time is
+typically **5–15 minutes** for 8 cases processed sequentially.
+
+**Pass/fail thresholds:**
+
+The run resolves to `'proceed'` only when all of the following hold:
+
+- ≥ 3 scored cases (both gate ok and judge ok)
+- Gate failure rate ≤ 25%
+- Judge inconclusive rate ≤ 25%
+- Coherence ≥ 80%
+- Score reasonableness ≥ 70%
+- Grounding ≥ 90%
+- Forced clustering rate ≤ 20%
+- Hallucination rate ≤ 10%
+
+Output is written to `.loom/eval/opportunity-engine-report.{md,json}` (gitignored).
+
+The consumer is reached by **deep import only** — `import { main } from
+'./opportunity-engine/run.js'` — not through the top barrel `src/eval/index.ts`.
+This is ADR-001: matching the lesson-extractor reference, the opportunity-engine
+wildcard is not registered at the top barrel to prevent name-collision failures.
+
+For a full operator runbook including what to record and how to interpret the
+verdict, see [`docs/runbooks/opportunity-engine-eval.md`](../runbooks/opportunity-engine-eval.md).
+
 ## Per-consumer sub-barrel topology
 
 Every eval consumer lives in its own directory under `src/eval/`, each
 exposing exactly one public entry — an `index.ts` that the top barrel
-(`src/eval/index.ts`) and external callers import from. Today there are four
+(`src/eval/index.ts`) and external callers import from. Today there are five
 directories:
 
 | Directory | Role |
@@ -216,6 +272,7 @@ directories:
 | `skill-judge/` | Skill-quality judge consumer. Same pattern as `brief-quality/`. Not re-exported at the package root — consumer implementation details are not part of the public API surface. |
 | `intake/` | Intake classifier consumer. Promoted from the flat `eval/` surface (epic-040). `index.ts` uses explicit named re-exports throughout; `JudgeOutcome` is intentionally omitted to avoid collision with `framework/types.ts`'s generic `JudgeOutcome<T>`. Re-exported at the package root via `export * from './intake/index.js'` (verified: no intake exported name appears in `src/eval/index.ts`'s explicit export list). |
 | `lesson-extractor/` | Lesson-extractor gate consumer (epic-041). `index.ts` uses `export *` from safe modules and re-exports `EvalReport` and `MainOptions` from `run.ts` by explicit name. **Not re-exported at the top barrel** (ADR-001, dogfooding S41) — reached by deep import only (`./lesson-extractor/run.js`) to avoid wildcard-collision failure; `createLessonExtractorConsumer` and scorer symbols never reach `src/eval/index.ts`. |
+| `opportunity-engine/` | Opportunity-engine gate consumer (epic-042). `index.ts` uses `export *` from safe modules and re-exports `EvalReport` and `MainOptions` from `run.ts` by explicit name. **Not re-exported at the top barrel** (ADR-001) — reached by deep import only (`./opportunity-engine/run.js`) to avoid wildcard-collision failure; `createOpportunityEngineConsumer` and scorer symbols never reach `src/eval/index.ts`. Quality-bar thresholds overridable via `LOOM_EVAL_OPP_*` env vars. |
 
 ### Convention: wire internally, expose one entry
 
