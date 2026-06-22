@@ -7,15 +7,15 @@ import {
   resolveSkillGeneratorBar,
   SKILL_GENERATOR_THRESHOLDS,
   type SkillGeneratorMetrics,
-  type SkillGeneratorDecisionMeta,
+  type SkillGeneratorGateOutput,
 } from '../score.js';
 import { decide } from '../../framework/decide.js';
 import type { RunRecord } from '../../framework/types.js';
-import type { SkillGeneratorDecision, SkillGeneratorJudgment } from '../judgeTypes.js';
+import type { SkillGeneratorJudgment } from '../judgeTypes.js';
 
 // ── Record builders ────────────────────────────────────────────────────────────
 
-type TestDecision = SkillGeneratorDecision & { _eval?: SkillGeneratorDecisionMeta };
+type TestDecision = SkillGeneratorGateOutput;
 
 function makeDecision(
   decision: 'generate' | 'none',
@@ -47,7 +47,7 @@ function generateRecord(
   expectedDecision: 'generate' | 'none' | 'either',
   source: 'worthy' | 'trivial' | 'borderline',
   judgment: Partial<SkillGeneratorJudgment> = {},
-): RunRecord<SkillGeneratorDecision, SkillGeneratorJudgment> {
+): RunRecord<SkillGeneratorGateOutput, SkillGeneratorJudgment> {
   return {
     caseId: id,
     gate:   { status: 'ok', output: makeDecision('generate', expectedDecision, source) },
@@ -59,7 +59,7 @@ function noneRecord(
   id: string,
   expectedDecision: 'generate' | 'none' | 'either',
   source: 'worthy' | 'trivial' | 'borderline',
-): RunRecord<SkillGeneratorDecision, SkillGeneratorJudgment> {
+): RunRecord<SkillGeneratorGateOutput, SkillGeneratorJudgment> {
   return {
     caseId: id,
     gate:   { status: 'ok', output: makeDecision('none', expectedDecision, source) },
@@ -67,7 +67,7 @@ function noneRecord(
   };
 }
 
-function gateFailedRecord(id: string): RunRecord<SkillGeneratorDecision, SkillGeneratorJudgment> {
+function gateFailedRecord(id: string): RunRecord<SkillGeneratorGateOutput, SkillGeneratorJudgment> {
   return {
     caseId: id,
     gate:   { status: 'failed', detail: 'llm error' },
@@ -79,7 +79,7 @@ function judgeInconclusiveRecord(
   id: string,
   decision: 'generate' | 'none' = 'generate',
   expectedDecision: 'generate' | 'none' | 'either' = 'generate',
-): RunRecord<SkillGeneratorDecision, SkillGeneratorJudgment> {
+): RunRecord<SkillGeneratorGateOutput, SkillGeneratorJudgment> {
   return {
     caseId: id,
     gate:   { status: 'ok', output: makeDecision(decision, expectedDecision) },
@@ -131,13 +131,15 @@ describe('scoreSkillGenerator — empty input', () => {
     assert.equal(m.lowQualityRate, 0);
   });
 
-  it('returns zero metrics when all judges inconclusive', () => {
+  it('returns zero quality metrics when all judges inconclusive', () => {
+    // scoredCases = okGate.length (ADR-003): gate-ok records count even when judge is inconclusive.
+    // Quality metrics are 0 because there are no judged generate-cases.
     const records = [
       judgeInconclusiveRecord('c1'),
       judgeInconclusiveRecord('c2'),
     ];
     const m = scoreSkillGenerator(records);
-    assert.equal(m.scoredCases, 0);
+    assert.equal(m.scoredCases, 2);
     assert.equal(m.skillQuality, 0);
     assert.equal(m.faithfulness, 0);
     assert.equal(m.lowQualityRate, 0);
@@ -202,13 +204,15 @@ describe('scoreSkillGenerator — decisionCorrectness', () => {
     assert.equal(m.decisionCorrectness, 0);
   });
 
-  it('decisionCorrectness = 0 when no _eval metadata is present (fail-closed)', () => {
-    const noMeta: RunRecord<SkillGeneratorDecision, SkillGeneratorJudgment> = {
-      caseId: 'c1',
-      gate:   { status: 'ok', output: { decision: 'generate', skillMd: '# S' } },
-      judge:  { status: 'ok', judgment: makeJudgment() },
-    };
-    const m = scoreSkillGenerator([noMeta, noMeta]);
+  it('decisionCorrectness = 0 when all cases generated spuriously (fail-closed)', () => {
+    // _eval is now required by the type (ADR-002); the "no metadata" scenario is compile-time
+    // prevented. This test covers the analogous fail-closed path: all gate-ok cases expected
+    // 'none' but generated → 0 correct decisions → decisionCorrectness = 0.
+    const records = [
+      generateRecord('t1', 'none', 'trivial'),
+      generateRecord('t2', 'none', 'trivial'),
+    ];
+    const m = scoreSkillGenerator(records);
     assert.equal(m.decisionCorrectness, 0);
   });
 
@@ -315,14 +319,15 @@ describe('scoreSkillGenerator — LLM-derived quality metrics', () => {
   });
 
   it('none-decision records (judge=skipped) are excluded from quality means', () => {
+    // scoredCases counts all gate-ok records (ADR-003), including NONE/skipped.
+    // Quality means use only judged generate-cases.
     const records = [
       generateRecord('w1', 'generate', 'worthy', { faithfulness: 0.9, low_quality: false }),
-      noneRecord('t1', 'none', 'trivial'),    // skipped — must NOT appear in denominator
-      noneRecord('t2', 'none', 'trivial'),    // skipped — must NOT appear in denominator
+      noneRecord('t1', 'none', 'trivial'),    // gate-ok, judge=skipped → counts in scoredCases, not quality
+      noneRecord('t2', 'none', 'trivial'),    // gate-ok, judge=skipped → counts in scoredCases, not quality
     ];
     const m = scoreSkillGenerator(records);
-    // Only 1 generate-case contributes
-    assert.equal(m.scoredCases, 1);
+    assert.equal(m.scoredCases, 3);  // all 3 gate-ok records count
     assert.ok(Math.abs(m.faithfulness - 0.9) < 1e-9);
     assert.equal(m.lowQualityRate, 0);
   });
@@ -339,13 +344,15 @@ describe('scoreSkillGenerator — LLM-derived quality metrics', () => {
   });
 
   it('judge-inconclusive records are excluded from quality means', () => {
+    // scoredCases counts gate-ok records including judge-inconclusive (ADR-003).
+    // Quality means only use records with judge='ok' and decision='generate'.
     const records = [
       generateRecord('w1', 'generate', 'worthy', { faithfulness: 0.9 }),
       judgeInconclusiveRecord('x1'),
       judgeInconclusiveRecord('x2'),
     ];
     const m = scoreSkillGenerator(records);
-    assert.equal(m.scoredCases, 1);
+    assert.equal(m.scoredCases, 3);  // all 3 gate-ok records count
     assert.ok(Math.abs(m.faithfulness - 0.9) < 1e-9);
   });
 
@@ -531,17 +538,18 @@ describe('FAIL-CLOSED: scoreSkillGenerator + decide() never pass on missing/ambi
     assert.ok(d.reasons.some(r => r.includes('scoredCases')));
   });
 
-  it('zero scored records → decide() returns inconclusive (all-skipped)', () => {
-    const records = [
-      noneRecord('t1', 'none', 'trivial'),
-      noneRecord('t2', 'none', 'trivial'),
-      noneRecord('t3', 'none', 'trivial'),
-    ];
-    // All judge=skipped → scoredCases=0 < minScoredCases=2
+  it('scoredCases < minScoredCases → decide() returns inconclusive', () => {
+    // Under ADR-003, scoredCases = okGate.length. A single gate-ok NONE record gives
+    // scoredCases=1 < minScoredCases=2 → inconclusive.
+    const records = [noneRecord('t1', 'none', 'trivial')];
     const m = scoreSkillGenerator(records);
-    assert.equal(m.scoredCases, 0);
+    assert.equal(m.scoredCases, 1);
     const d = decide(m, SKILL_GENERATOR_THRESHOLDS, skillGeneratorVerdict);
     assert.equal(d.verdict, 'inconclusive');
+    assert.ok(
+      d.reasons.some((r) => r.includes('scoredCases')),
+      `expected a reason about scoredCases, got: ${JSON.stringify(d.reasons)}`,
+    );
   });
 
   it('empty record list → decide() returns inconclusive', () => {
@@ -550,13 +558,16 @@ describe('FAIL-CLOSED: scoreSkillGenerator + decide() never pass on missing/ambi
     assert.equal(d.verdict, 'inconclusive');
   });
 
-  it('missing _eval metadata on all records → decisionCorrectness=0 → verdict do-not-proceed', () => {
-    const noMeta: RunRecord<SkillGeneratorDecision, SkillGeneratorJudgment> = {
+  it('all records generated spuriously (expected none) → decisionCorrectness=0 → verdict do-not-proceed', () => {
+    // _eval is now required at the type level (ADR-002), so the "missing _eval" scenario is
+    // compile-time prevented. This test covers the equivalent fail-closed path: all records
+    // produced a generate when none was expected → 0 correct decisions → do-not-proceed.
+    const spuriousRecord: RunRecord<SkillGeneratorGateOutput, SkillGeneratorJudgment> = {
       caseId: 'c1',
-      gate:   { status: 'ok', output: { decision: 'generate', skillMd: '# S' } },
+      gate:   { status: 'ok', output: { decision: 'generate', skillMd: '# S', _eval: { expectedDecision: 'none', source: 'trivial' } } },
       judge:  { status: 'ok', judgment: makeJudgment({ faithfulness: 0.9, well_formed: 0.9, reusable: 0.9, scope_appropriateness: 0.9 }) },
     };
-    const records = [noMeta, noMeta, noMeta];
+    const records = [spuriousRecord, spuriousRecord, spuriousRecord];
     const m = scoreSkillGenerator(records);
     // scoredCases=3 ≥ minScoredCases, but decisionCorrectness=0 < 0.80
     const d = decide(m, SKILL_GENERATOR_THRESHOLDS, skillGeneratorVerdict);
