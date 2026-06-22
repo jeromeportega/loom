@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createDatabase } from '../../state/Database.js';
 import { AgentStore } from '../../state/AgentStore.js';
 import { AuditLog } from '../../state/AuditLog.js';
+import { EpicStore } from '../../state/EpicStore.js';
 import { SkillGenerator } from '../../skills/SkillGenerator.js';
 import { SkillStore } from '../../skills/SkillStore.js';
 import { EMPTY_USAGE } from '../../llm/LLMClient.js';
@@ -28,14 +29,20 @@ export async function runSkillGeneratorGate(
   c: SkillGeneratorCase,
   deps: GateDeps,
 ): Promise<GateOutcome<SkillGeneratorDecision>> {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-eval-sg-'));
+  // Declare outside try so the finally block can clean up even if mkdtemp fails.
+  let tmpDir = '';
   try {
+    // Non-blocking mkdtemp — avoids stalling the event loop under parallel eval runs.
+    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'loom-eval-sg-'));
+
     // Fresh :memory: db per case — no cross-case leakage (NFR-1).
     const db = createDatabase(':memory:');
 
-    // FK: agents.epic_id → epics.id — insert a minimal epic row first.
+    // FK: agents.epic_id → epics.id — use EpicStore so schema evolution is handled
+    // automatically (raw INSERT would silently fail if a future migration adds a
+    // NOT NULL column without a default).
     const epicId = `eval-epic-${c.id}`;
-    db.prepare('INSERT INTO epics (id, title) VALUES (?, ?)').run(epicId, `eval-${c.id}`);
+    new EpicStore(db).create(epicId, `eval-${c.id}`);
 
     // Seed the agent row: log_tail = diff_context is what SkillGenerator reads as
     // "Output tail" when building the extraction context prompt.
@@ -66,7 +73,11 @@ export async function runSkillGeneratorGate(
           recordedRaw = response.text;
           return response;
         }
-        // Canned accept for SkillJudge: format satisfies JudgeResultSchema via extractJsonBlock.
+        // Canned accept for SkillJudge — format must satisfy JudgeResultSchema (the
+        // schema parsed by extractJsonBlock inside SkillGenerator). COUPLING: if
+        // JudgeResultSchema renames 'verdict' or drops 'score', parsing silently fails
+        // and the generator returns null, making every eval case return { status:'failed' }.
+        // If that happens, check SkillGenerator's internal JudgeResultSchema first.
         return {
           text: '```json\n{"score": 10, "verdict": "accept", "reason": "eval harness canned accept"}\n```',
           model: deps.gateModel,
@@ -109,6 +120,11 @@ export async function runSkillGeneratorGate(
     // use an explicit cast since we've just checked for null above.
     const raw = recordedRaw as string;
 
+    // Intentional startsWith('NONE') per story spec (test plan, ADR-002): the
+    // production extractor emits either a SKILL.md body or "NONE" (possibly with
+    // trailing explanation). Exact-match would miss legitimate "NONE — reason"
+    // outputs. Risk of false-positive for skill bodies that open with the word
+    // "none" is accepted as a spec-documented trade-off.
     const decision: SkillGeneratorDecision =
       raw.length === 0 || raw.toUpperCase().startsWith('NONE')
         ? { decision: 'none', skillMd: null }
@@ -118,6 +134,8 @@ export async function runSkillGeneratorGate(
   } catch (e) {
     return { status: 'failed', detail: String(e) };
   } finally {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    if (tmpDir) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
   }
 }

@@ -227,8 +227,11 @@ describe('runSkillGeneratorGate — isolation (T2, NFR-1/4)', () => {
 
     await runSkillGeneratorGate(c, { llm, gateModel: 'haiku-test' });
 
-    // The repo's .loom/skills/ must be untouched — any write would be a bug.
-    const repoSkillsDir = path.join(process.cwd(), '.loom', 'skills');
+    // Anchor to the monorepo root via __dirname (CJS) so this resolves correctly
+    // regardless of which directory the test runner is invoked from.
+    // Compiled path: dist/eval/skill-generator/__tests__/ → 6 levels up = repo root
+    const repoRoot = path.resolve(__dirname, '../../../../../../');
+    const repoSkillsDir = path.join(repoRoot, '.loom', 'skills');
     if (fs.existsSync(repoSkillsDir)) {
       const files = fs.readdirSync(repoSkillsDir);
       const evalWritten = files.filter((f) => f.includes('eval-test'));
@@ -261,8 +264,8 @@ describe('runSkillGeneratorGate — isolation (T2, NFR-1/4)', () => {
 
     // Each case uses its own fresh :memory: db.
     const [r1, r2] = await Promise.all([
-      runSkillGeneratorGate(c1, { llm: makeMockLLM([VALID_SKILL_MD]), gateModel: 'haiku' }),
-      runSkillGeneratorGate(c2, { llm: makeMockLLM(['NONE']), gateModel: 'haiku' }),
+      runSkillGeneratorGate(c1, { llm: makeMockLLM([VALID_SKILL_MD]), gateModel: DEFAULT_GATE_MODEL }),
+      runSkillGeneratorGate(c2, { llm: makeMockLLM(['NONE']), gateModel: DEFAULT_GATE_MODEL }),
     ]);
 
     assert.equal(r1.status, 'ok', 'case 1 must succeed independently');
