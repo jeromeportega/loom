@@ -1,6 +1,7 @@
 import type { AuditLog, IntakeVerdict, EffectiveRouting } from '@loom-ai/core';
 import type { IntakeClassificationResult } from './recordIntakeClassification.js';
 import { confirmRouting } from './confirmRouting.js';
+import { recordIntakeRouted } from './recordIntakeRouted.js';
 
 /**
  * Routing brain: given a classification result and the policy level, decides
@@ -16,9 +17,7 @@ export async function resolveIntakeRouting(opts: {
   classification: IntakeClassificationResult;
   level: 'off' | 'advisory' | 'confirm';
   isTTY: boolean;
-  /** TODO(045-004): wire recordIntakeRouted here for confirm-path provenance. */
   audit: AuditLog;
-  /** TODO(045-004): wire recordIntakeRouted here for confirm-path provenance. */
   epicId: string;
   /** Injected output stream for testable printing. Defaults to process.stdout. */
   out?: NodeJS.WritableStream;
@@ -41,16 +40,21 @@ export async function resolveIntakeRouting(opts: {
       return printAndRoute(verdict, out);
 
     case 'confirm':
-      // audit + epicId: seam parameters consumed by story-045-004 (recordIntakeRouted)
-      void opts.audit; void opts.epicId;
       if (!opts.isTTY) {
         // Non-interactive degrade (ADR-004): warn loudly and route as advisory so
         // headless/CI planning is never stalled (mode:'confirm-degraded-advisory').
         out.write('  [warn] intake_routing=confirm: non-interactive terminal — routing as advisory instead\n');
+        recordIntakeRouted(opts.audit, opts.epicId, {
+          mode:       'confirm-degraded-advisory',
+          decision:   'accepted',
+          original:   { type: verdict.type, size: verdict.size },
+          routed:     { type: verdict.type, size: verdict.size },
+          confidence: verdict.confidence,
+        });
         return printAndRoute(verdict, out);
       }
       // Interactive path: prompt operator to accept or override (AC1, AC3).
-      return resolveConfirm(verdict, out, opts.input);
+      return resolveConfirm(verdict, out, opts.input, opts.audit, opts.epicId);
 
     default: {
       const _: never = level;
@@ -61,15 +65,24 @@ export async function resolveIntakeRouting(opts: {
 }
 
 /**
- * Interactive confirm path: delegate to confirmRouting, then build EffectiveRouting.
- * source:'operator-override' when the operator changed type or size; 'classifier' otherwise.
+ * Interactive confirm path: delegate to confirmRouting, record provenance, then
+ * build EffectiveRouting. source:'operator-override' when type or size changed.
  */
 async function resolveConfirm(
   verdict: IntakeVerdict,
   out: NodeJS.WritableStream,
-  input?: NodeJS.ReadableStream,
+  input: NodeJS.ReadableStream | undefined,
+  audit: AuditLog,
+  epicId: string,
 ): Promise<EffectiveRouting> {
   const result = await confirmRouting(verdict, { out, input });
+  recordIntakeRouted(audit, epicId, {
+    mode:       'confirm',
+    decision:   result.decision,
+    original:   { type: verdict.type, size: verdict.size },
+    routed:     { type: result.type,  size: result.size },
+    confidence: verdict.confidence,
+  });
   return {
     type:       result.type,
     size:       result.size,
