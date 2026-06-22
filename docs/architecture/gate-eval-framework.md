@@ -150,15 +150,15 @@ see [`docs/runbooks/brief-quality-eval.md`](../runbooks/brief-quality-eval.md).
 
 Every eval consumer lives in its own directory under `src/eval/`, each
 exposing exactly one public entry — an `index.ts` that the top barrel
-(`eval/index.ts`) and external callers import from. Today there are four
+(`src/eval/index.ts`) and external callers import from. Today there are four
 directories:
 
 | Directory | Role |
 |---|---|
 | `framework/` | Shared plug-point core — types, `runGateEval`, `coreMetrics`, `decide`, model resolution. Uses `export *` across its own modules internally; registered at the top barrel via explicit named list (see collision guard below). |
-| `brief-quality/` | Brief-quality gate consumer. `index.ts` uses `export *` from safe modules and re-exports `EvalReport` and `MainOptions` from `run.ts` by explicit name to avoid collision with `eval/types.ts`'s `EvalReport`. Not re-exported at the package root (ADR-004). |
-| `skill-judge/` | Skill-quality judge consumer. Same pattern as `brief-quality/`. Not re-exported at the package root (ADR-004). |
-| `intake/` | Intake classifier consumer. Promoted from the flat `eval/` surface (epic-040). `index.ts` uses explicit named re-exports throughout; `JudgeOutcome` is intentionally omitted to avoid collision with `framework/types.ts`'s generic `JudgeOutcome<T>`. Re-exported at the package root via `export * from './intake/index.js'` (baseline diff confirmed no name collision). |
+| `brief-quality/` | Brief-quality gate consumer. `index.ts` uses `export *` from safe modules and re-exports `EvalReport` and `MainOptions` from `run.ts` by explicit name to avoid collision with `eval/types.ts`'s `EvalReport`. Not re-exported at the package root — consumer implementation details are not part of the public API surface. |
+| `skill-judge/` | Skill-quality judge consumer. Same pattern as `brief-quality/`. Not re-exported at the package root — consumer implementation details are not part of the public API surface. |
+| `intake/` | Intake classifier consumer. Promoted from the flat `eval/` surface (epic-040). `index.ts` uses explicit named re-exports throughout; `JudgeOutcome` is intentionally omitted to avoid collision with `framework/types.ts`'s generic `JudgeOutcome<T>`. Re-exported at the package root via `export * from './intake/index.js'` (verified: no intake exported name appears in `src/eval/index.ts`'s explicit export list). |
 
 ### Convention: wire internally, expose one entry
 
@@ -185,20 +185,21 @@ Two pairs of names exist with structurally different shapes in eval vs. the
 broader orchestrator surface:
 
 - **`GateOutcome<T>` and `JudgeOutcome<T>`** — defined in `framework/types.ts`
-  (generic, eval-internal). The orchestrator (`src/brief/gate.ts`) also exports
-  a `GateOutcome` with a different shape. Both are **never re-exported** by
-  `eval/index.ts`.
+  (generic, eval-internal). These names are excluded from the package root to
+  prevent future ambiguity with any orchestrator-layer type of the same name.
+  The orchestrator's `src/brief/gate.ts` was itself prefixed (`BriefGateOutcome`)
+  for exactly this reason. Both are **never re-exported** by `src/eval/index.ts`.
 - **`EvalReport` in `brief-quality/run.ts` and `skill-judge/run.ts`** — each is
   structurally distinct from `EvalReport` in `eval/types.ts`. The consumer
   sub-barrels re-export it by explicit name (`export type { EvalReport } from './run.js'`);
-  the top barrel does not re-export `brief-quality` or `skill-judge` at all
-  (ADR-004), so neither consumer-local `EvalReport` ever reaches the package root.
+  the top barrel does not re-export `brief-quality` or `skill-judge` at all,
+  so neither consumer-local `EvalReport` ever reaches the package root.
 
-The rule: **`eval/index.ts` re-exports framework by explicit named list only** —
+The rule: **`src/eval/index.ts` re-exports framework by explicit named list only** —
 `export *` from `./framework/*` is forbidden at the top barrel. `export *`
 is permitted only *inside* a consumer sub-barrel, and from `./intake/index.js`
-only because the story-040-001 baseline diff confirmed no intake name collides
-at the package root.
+only because no intake exported name appears in `src/eval/index.ts`'s existing
+explicit export list (verified by inspection).
 
 ### Adding a new consumer costs at most one top-barrel line
 
@@ -206,7 +207,7 @@ Because every consumer funnels its entire public surface through its own
 `index.ts`, registering it at the package root is a single statement:
 
 ```typescript
-// eval/index.ts — add at most one line:
+// src/eval/index.ts — add at most one line:
 export * from './my-consumer/index.js';            // no name collision at root
 // or:
 export { X, Y, Z } from './my-consumer/index.js'; // explicit group if any name collides
@@ -230,12 +231,13 @@ The blast radius of a new consumer is bounded to that one line.
    const decision = decide(metrics, consumer.thresholds, m => consumer.verdict(m));
    ```
 5. Create `src/eval/<name>/index.ts` that re-exports the consumer's public
-   surface. If any exported name collides with the frozen root surface (check
-   against `.loom/planning/epic-040/surface-baseline.md`), re-export it by
-   explicit name instead of `export *`. Wire internal cross-module imports by
-   direct relative path only — never through any barrel.
+   surface. To check for name collisions: run `tsc --noEmit` in `packages/loom-core/`
+   and compare your exported names against the explicit export list in
+   `src/eval/index.ts`. Any name already exported there must be re-exported
+   by explicit name rather than `export *` to avoid shadowing. Wire internal
+   cross-module imports by direct relative path only — never through any barrel.
 6. Register the consumer at the top barrel with at most one line in
-   `eval/index.ts` (see "Adding a new consumer costs at most one top-barrel line"
+   `src/eval/index.ts` (see "Adding a new consumer costs at most one top-barrel line"
    above).
 7. Add a `scripts/eval-<name>.mjs` runner and a `npm run eval:<name>` script.
 8. Document the run steps and expected cost/runtime in `docs/runbooks/`.
