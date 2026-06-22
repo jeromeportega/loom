@@ -65,3 +65,10 @@ site/
 .cursor/mcp.json
 .cursor/rules/loom.mdc
 # <<< loom-managed <<<
+
+# Track epic-040 planning artifacts (and any future epic planning files).
+# Each new epic's artifacts need a corresponding !.loom/planning/<epic>/ and
+# !.loom/planning/<epic>/** pair, or just add !.loom/planning/**/** to cover all.
+!.loom/planning/
+!.loom/planning/epic-040/
+!.loom/planning/epic-040/**
