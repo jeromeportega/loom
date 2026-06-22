@@ -92,8 +92,8 @@ describe('intakeFragmentRewrite — story-026-002 (fixture/data validation)', ()
 
   it('documentation completeness (AC5): RELABEL.md contains an entry for each rewritten id', () => {
     // Resolve RELABEL.md relative to the compiled output directory.
-    // Compiled test lives at dist/eval/__tests__/; eval-cases is three levels up at packages/loom-core/.
-    const relabelPath = path.resolve(__dirname, '../../../eval-cases/RELABEL.md');
+    // Compiled test lives at dist/eval/intake/__tests__/; eval-cases is four levels up at packages/loom-core/.
+    const relabelPath = path.resolve(__dirname, '../../../../eval-cases/RELABEL.md');
     assert.ok(fs.existsSync(relabelPath), `RELABEL.md not found at ${relabelPath}`);
     const content = fs.readFileSync(relabelPath, 'utf8');
 

@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { loadIntakeEvalSet } from '../../src/eval/loadIntakeEvalSet.js';
-import { runIntakeEval } from '../../src/eval/runIntakeEval.js';
-import { scoreIntakeEval } from '../../src/eval/scoreIntakeEval.js';
+import { loadIntakeEvalSet } from '../../src/eval/intake/loadIntakeEvalSet.js';
+import { runIntakeEval } from '../../src/eval/intake/runIntakeEval.js';
+import { scoreIntakeEval } from '../../src/eval/intake/scoreIntakeEval.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

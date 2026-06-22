@@ -270,8 +270,8 @@ describe('recoverBriefText — unrecoverable epic is excluded', () => {
 
 describe('intake-classification.yaml — data integrity', () => {
   // Resolve the fixture path relative to this compiled test file.
-  // dist/eval/__tests__/recoverBriefText.test.js → ../../../eval-cases/intake-classification.yaml
-  const fixturePath = path.resolve(__dirname, '..', '..', '..', 'eval-cases', 'intake-classification.yaml');
+  // dist/eval/intake/__tests__/recoverBriefText.test.js → ../../../../eval-cases/intake-classification.yaml
+  const fixturePath = path.resolve(__dirname, '..', '..', '..', '..', 'eval-cases', 'intake-classification.yaml');
 
   it('fixture file exists', () => {
     assert.ok(fs.existsSync(fixturePath), `Fixture not found at: ${fixturePath}`);

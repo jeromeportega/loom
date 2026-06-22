@@ -25,7 +25,7 @@ const FIXTURE_PATH = path.join(REPO_ROOT, 'packages', 'loom-core', 'eval-cases',
 // recoverBriefText inline — bootstrap copy (avoids a TS→JS compilation
 // dependency at build time so this script runs before `npm run build`).
 //
-// KEEP IN SYNC WITH packages/loom-core/src/eval/recoverBriefText.ts —
+// KEEP IN SYNC WITH packages/loom-core/src/eval/intake/recoverBriefText.ts —
 // if you add or change a resolution path there, update this copy too.
 // ---------------------------------------------------------------------------
 function recoverBriefText(epicId, root) {

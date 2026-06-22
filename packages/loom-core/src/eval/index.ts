@@ -14,40 +14,15 @@ export type {
   EvalReport,
 } from './types.js';
 
-// Intake eval types — exported individually to avoid name collision with the
-// generic JudgeOutcome<T> and other framework types that share names with
-// orchestrator types exported in src/index.ts.
-// Callers needing the intake JudgeOutcome can import from './intakeEvalTypes.js'.
-export type { ClassifyResult, IntakeVerdict } from './intakeEvalTypes.js';
-export { IntakeEvalCaseSchema, IntakeEvalSetSchema, IntakeJudgeResultSchema } from './intakeEvalTypes.js';
-export type {
-  IntakeEvalCase,
-  IntakeEvalSet,
-  IntakeJudgeResult,
-  IntakeJudgeLike,
-  IntakeRunRecord,
-  ConfusionMatrix,
-  AxisReport,
-  IntakeEvalReport,
-  RefinedCaseResult,
-  DualIntakeReport,
-} from './intakeEvalTypes.js';
+// Intake consumer surface — routed through its own sub-barrel.
+// No wildcard collision: the intake surface was diffed against the frozen
+// baseline (story-040-001) and no intake name collides at the root.
+// JudgeOutcome (intake-internal) and RecoverBriefResult are excluded by
+// intake/index.ts's explicit named exports.
+export * from './intake/index.js';
 
-export { loadIntakeEvalSet } from './loadIntakeEvalSet.js';
-export { runIntakeEval, computeAxisAccuracy } from './runIntakeEval.js';
-export type { RunIntakeEvalDeps } from './runIntakeEval.js';
-export { refineEvalCases } from './refineEvalCases.js';
-export { runRefinedIntakeEval } from './runRefinedIntakeEval.js';
-export { IntakeJudge, computeJudgeVsHumanAgreement } from './IntakeJudge.js';
-export { scoreIntakeEval } from './scoreIntakeEval.js';
-export type { ScoreIntakeEvalMeta } from './scoreIntakeEval.js';
-export { renderIntakeReport, writeIntakeReportFiles, renderIntakeReportDual, writeIntakeReportDualFiles } from './renderIntakeReport.js';
-
-// Intake consumer (GateEvalConsumer plug-point implementation)
-export { createIntakeConsumer } from './intakeConsumer.js';
-export type { IntakeMetrics, IntakeConsumer } from './intakeConsumer.js';
-
-// Framework re-exports (explicit to avoid collision with orchestrator's GateOutcome).
+// Framework re-exports (explicit named list to avoid collision with the
+// orchestrator's GateOutcome exported from src/index.ts).
 // Deep imports via './framework/index.js' also work for internal consumers.
 export type {
   GateEvalCase,

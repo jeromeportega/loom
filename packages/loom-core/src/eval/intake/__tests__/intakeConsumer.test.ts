@@ -1,14 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MockLLMClient } from '../../llm/MockLLMClient.js';
-import type { LLMClient, LLMRequest, LLMResponse } from '../../llm/LLMClient.js';
+import { MockLLMClient } from '../../../llm/MockLLMClient.js';
+import type { LLMClient, LLMRequest, LLMResponse } from '../../../llm/LLMClient.js';
 import { createIntakeConsumer } from '../intakeConsumer.js';
 import type { IntakeMetrics } from '../intakeConsumer.js';
-import { decide } from '../framework/decide.js';
-import type { RunRecord } from '../framework/types.js';
+import { decide } from '../../framework/decide.js';
+import type { RunRecord } from '../../framework/types.js';
 import type { IntakeEvalCase, IntakeJudgeResult } from '../intakeEvalTypes.js';
-import type { IntakeVerdict } from '../../intake/IntakeClassifier.js';
+import type { IntakeVerdict } from '../../../intake/IntakeClassifier.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
