@@ -1,7 +1,7 @@
 import { z } from 'zod';
 // IntakeClassifier.ts is a Phase-0 seam (already delivered); if it ever moves,
 // this import will fail at compile time — do not suppress the error, fix the path.
-import type { ClassifyResult, IntakeVerdict } from '../intake/IntakeClassifier.js';
+import type { ClassifyResult, IntakeVerdict } from '../../intake/IntakeClassifier.js';
 
 export type { ClassifyResult, IntakeVerdict };
 

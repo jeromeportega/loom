@@ -5,8 +5,8 @@ import { IntakeEvalSetSchema, type IntakeEvalCase } from './intakeEvalTypes.js';
 
 function defaultFixturePath(): string {
   const candidates = [
+    path.resolve(__dirname, '../../../eval-cases/intake-classification.yaml'),
     path.resolve(__dirname, '../../eval-cases/intake-classification.yaml'),
-    path.resolve(__dirname, '../eval-cases/intake-classification.yaml'),
     path.resolve(process.cwd(), 'packages/loom-core/eval-cases/intake-classification.yaml'),
   ];
   for (const p of candidates) {

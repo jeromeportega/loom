@@ -1,7 +1,7 @@
-import { runGateEval } from './framework/runGateEval.js';
-import type { GateOutcome, JudgeOutcome as FrameworkJudgeOutcome } from './framework/types.js';
-import type { LLMClient } from '../llm/LLMClient.js';
-import type { IntakeVerdict, ClassifyResult } from '../intake/IntakeClassifier.js';
+import { runGateEval } from '../framework/runGateEval.js';
+import type { GateOutcome, JudgeOutcome as FrameworkJudgeOutcome } from '../framework/types.js';
+import type { LLMClient } from '../../llm/LLMClient.js';
+import type { IntakeVerdict, ClassifyResult } from '../../intake/IntakeClassifier.js';
 import type {
   IntakeEvalCase,
   IntakeJudgeLike,

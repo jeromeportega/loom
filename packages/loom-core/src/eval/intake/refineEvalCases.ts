@@ -1,5 +1,5 @@
 import type { IntakeEvalCase, RefinedCaseResult } from './intakeEvalTypes.js';
-import type { BriefRefiner } from '../brief/BriefRefiner.js';
+import type { BriefRefiner } from '../../brief/BriefRefiner.js';
 
 /**
  * Pre-processes each eval case through the production BriefRefiner (one call
