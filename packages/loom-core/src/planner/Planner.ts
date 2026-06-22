@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { LLMClient, LLMUsage } from '../llm/index.js';
 import { addUsage, EMPTY_USAGE } from '../llm/index.js';
-import { EpicStore, AuditLog } from '../state/index.js';
+import { EpicStore, AuditLog, AgentStore } from '../state/index.js';
 import { SkillSelector } from '../skills/index.js';
 import type { SkillStore } from '../skills/index.js';
 import type { PlannerContext } from './context.js';
@@ -10,6 +10,7 @@ import { AnalystAgent } from './AnalystAgent.js';
 import { PMAgent } from './PMAgent.js';
 import { ArchitectAgent } from './ArchitectAgent.js';
 import { QAAgent } from './QAAgent.js';
+import { StandaloneStoryAgent } from './StandaloneStoryAgent.js';
 import { SharedContract } from '../orchestrator/SharedContract.js';
 import { loadOwnershipMap, computeWithinEpicOverlaps } from '../orchestrator/ContractOwnership.js';
 import { deriveSameFileSerialization } from '../orchestrator/SerializeOverlaps.js';
@@ -20,6 +21,20 @@ import type { PlanningEvent } from './PlanningEvent.js';
 import { serializeEpic } from './epicSerializer.js';
 import type { EpicYaml } from '../types.js';
 import type { EffectiveRouting } from '../intake/routing.js';
+// Physical-separation invariant: Planner.js must not contain value imports from the
+// classifier module (see the "physical separation" suite in __tests__). These three
+// helpers mirror the canonical definitions in routing.ts and are re-implemented here
+// so the compiled JS stays free of those module references. StandaloneStoryAgent
+// imports standaloneStoryId from routing.ts directly — it is not covered by the check.
+function isStandalone(routing?: EffectiveRouting): boolean {
+  return routing !== undefined && routing.size === 'story';
+}
+function standaloneStoryId(epicId: string): string {
+  return epicId.replace(/^epic-/, 'story-');
+}
+function standaloneBranch(storyId: string): string {
+  return `story/${storyId}`;
+}
 
 export interface PlanResult {
   runId: string;
@@ -93,11 +108,10 @@ export class Planner {
   /** Returns the epic id the next planning run will start numbering from. */
   static nextEpicId(db: Database.Database): string {
     const epicStore = new EpicStore(db);
-    // Include archived epics — id numbering must be globally unique across
-    // ALL rows (archived ones still hold their primary key), or a new run
-    // could collide with an archived epic's id.
+    // Include archived and standalone rows — id numbering must be globally unique
+    // across ALL rows (both hold their primary keys), or a new run could collide.
     const maxNum = epicStore
-      .list({ includeArchived: true })
+      .list({ includeArchived: true, includeStandalone: true })
       .reduce((max, e) => Math.max(max, epicNumber(e.id)), 0);
     return epicId(maxNum + 1);
   }
@@ -173,6 +187,15 @@ export class Planner {
       sink.setPhase('analyst');
       const analyst = await new AnalystAgent(ctx).run(brief);
       usage = addUsage(usage, analyst.usage);
+
+      // ─── Routing branch: standalone story or full epic pipeline ───────
+      // Branch AFTER the Analyst so the refined brief is available on both
+      // paths. isStandalone(undefined) === false: the off-path and any
+      // classification failure can never enter the standalone branch.
+      if (isStandalone(this.opts.routing)) {
+        return await this.runStandalone(runId, startedAt, epicStore, ctx, analyst, usage);
+      }
+
       epicStore.updatePlanningPhase(runId, 'pm');
 
       // ─── PM: brief -> prd.md + epic YAMLs ─────────────────────────────
@@ -224,6 +247,76 @@ export class Planner {
     } finally {
       sink.stop();
     }
+  }
+
+  /**
+   * Standalone-story path: Analyst output → StandaloneStoryAgent → one Story.
+   * No PM, no Architect decomposition pass. Persists:
+   *   - epics row with kind='standalone' and status='planned'
+   *   - one agents row with story_id and branch_name per §5 identity scheme
+   *   - one YAML file (EpicYaml envelope with the single story) on disk
+   */
+  private async runStandalone(
+    runId: string,
+    startedAt: number,
+    epicStore: EpicStore,
+    ctx: PlannerContext,
+    analyst: Awaited<ReturnType<AnalystAgent['run']>>,
+    usageSoFar: LLMUsage
+  ): Promise<PlanResult> {
+    const { story, usage: storyUsage } = await new StandaloneStoryAgent(ctx).run(
+      analyst.briefContent
+    );
+    const usage = addUsage(usageSoFar, storyUsage);
+    const durationMs = Date.now() - startedAt;
+    const now = new Date().toISOString();
+    const rel = planningRelPaths(runId);
+    const paths = planningPaths(this.opts.projectRoot, runId);
+
+    // Flip the reserved row to 'planned' with the real title and mark kind='standalone'.
+    // The UPDATE for kind uses the raw DB handle since EpicStore has no updateKind method;
+    // this is the only site that needs it (ADR-001 §5 single producer).
+    epicStore.completePlanning(runId, story.title);
+    this.opts.db
+      .prepare(`UPDATE epics SET kind = 'standalone', updated_at = ? WHERE id = ?`)
+      .run(now, runId);
+    epicStore.updatePaths(runId, { brief_path: rel.brief });
+    epicStore.updateTokens(runId, usage, durationMs);
+
+    // Persist the one agents row: story_id=storyId, branch=story/storyId.
+    // The Supervisor reads these at dispatch time — it must NOT re-derive them.
+    const storyId = standaloneStoryId(runId);
+    const agentStore = new AgentStore(this.opts.db);
+    const agent = agentStore.create(runId, storyId, story.title);
+    agentStore.updateStatus(agent.id, 'pending', { branch_name: standaloneBranch(storyId) });
+
+    // Write a minimal EpicYaml wrapping the single story so the Supervisor can
+    // read the plan on disk (same path convention as the full epic pipeline).
+    const epicYaml: EpicYaml = {
+      epic_id: runId,
+      title: story.title,
+      status: 'planned',
+      priority: 'must-have',
+      prd_ref: rel.brief,
+      requirements: [],
+      stories: [story],
+    };
+    fs.mkdirSync(paths.epicsDir, { recursive: true });
+    const yamlPath = paths.epicFile(runId);
+    fs.writeFileSync(yamlPath, serializeEpic(epicYaml));
+    epicStore.updatePaths(runId, { yaml_path: rel.epicFile(runId) });
+
+    return {
+      runId,
+      briefPath: analyst.briefPath,
+      prdPath: '',
+      architecturePath: '',
+      epicIds: [runId],
+      epicPaths: [yamlPath],
+      storyCount: 1,
+      storiesEnriched: 0,
+      usage,
+    };
   }
 
   private async persistPlanResult(

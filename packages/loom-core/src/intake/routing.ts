@@ -16,6 +16,40 @@ export interface EffectiveRouting {
 }
 
 /**
+ * True iff the planner should take the standalone-story path (epic-047).
+ * `routing === undefined` (intake_routing:off or classifier failure) ALWAYS
+ * returns false — the off-path and classification-failure path can never enter
+ * the standalone branch (ADR-001, NFR-1).
+ *
+ * This is the SINGLE source of truth for the branch gate; every site that needs
+ * to check "are we standalone?" must import and call this function rather than
+ * comparing routing.size inline.
+ */
+export function isStandalone(routing?: EffectiveRouting): boolean {
+  return routing !== undefined && routing.size === 'story';
+}
+
+/**
+ * Derives the flat story id for a standalone container.
+ * Producer: called ONCE in Planner.runStandalone at planning time.
+ * Consumers (Supervisor dispatch, presentation sites) read the persisted
+ * agents.story_id — they MUST NOT re-derive this value.
+ *
+ * Example: 'epic-047' → 'story-047'  (same NNN, no phantom sub-id)
+ */
+export function standaloneStoryId(containerEpicId: string): string {
+  return containerEpicId.replace(/^epic-/, 'story-');
+}
+
+/**
+ * Derives the git branch name for a standalone story worktree.
+ * Example: 'story-047' → 'story/story-047'  (flat, no phantom epic id segment)
+ */
+export function standaloneBranch(storyId: string): string {
+  return `story/${storyId}`;
+}
+
+/**
  * Builds the sizing constraint block appended to the PM agent's task B prompt.
  * One builder, reused verbatim by both advisory and confirm — never duplicated.
  *
