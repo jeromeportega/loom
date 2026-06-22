@@ -15,6 +15,13 @@ export const SkillJudgeEvalCaseSchema = z.object({
   expected_band:     SkillQualityBand,
   failure_mode:      z.enum(['vague', 'not-reusable', 'duplicative', 'unsafe']).optional(),
   rationale:         z.string().min(1),
+}).superRefine((c, ctx) => {
+  if (c.failure_mode === 'duplicative' && c.existing_skills.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'duplicative failure_mode requires at least one existing_skill entry',
+    });
+  }
 });
 
 export const SkillJudgeEvalSetSchema = z.object({ cases: z.array(SkillJudgeEvalCaseSchema).min(1) });

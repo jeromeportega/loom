@@ -38,5 +38,7 @@ export const BAND_TOLERANCE = 1;
 export function scoreInBand(score: number, band: SkillQualityBandType): boolean {
   if (score < 0) return false;
   const [lo, hi] = BANDS[band];
-  return score >= lo - BAND_TOLERANCE && score <= hi + BAND_TOLERANCE;
+  const effectiveLo = Math.max(lo - BAND_TOLERANCE, 0);
+  const effectiveHi = Math.min(hi + BAND_TOLERANCE, 10);
+  return score >= effectiveLo && score <= effectiveHi;
 }

@@ -47,6 +47,28 @@ describe('bands — derived from JUDGE_MIN_SCORE (AC4)', () => {
   it('BAND_TOLERANCE is 1 (τ=1, ADR-003)', () => {
     assert.equal(BAND_TOLERANCE, 1);
   });
+
+  it('JUDGE_MIN_SCORE matches skill_judge_min_score default in policy.schema.yaml', () => {
+    // Resolve schema relative to compiled dist location (dist/eval/skill-judge/__tests__)
+    const candidates = [
+      path.resolve(__dirname, '../../../../../../schemas/policy.schema.yaml'),
+      path.resolve(process.cwd(), 'schemas/policy.schema.yaml'),
+      path.resolve(process.cwd(), '../../schemas/policy.schema.yaml'),
+    ];
+    const schemaPath = candidates.find((p) => fs.existsSync(p));
+    if (!schemaPath) {
+      // Skip if schema file is not available in this checkout
+      return;
+    }
+    const schema = yaml.load(fs.readFileSync(schemaPath, 'utf8')) as Record<string, unknown>;
+    const agents = (schema as any).properties?.agents?.properties;
+    const policyDefault = agents?.skill_judge_min_score?.default;
+    assert.equal(
+      JUDGE_MIN_SCORE,
+      policyDefault,
+      `JUDGE_MIN_SCORE (${JUDGE_MIN_SCORE}) must match skill_judge_min_score default (${policyDefault}) in policy.schema.yaml`,
+    );
+  });
 });
 
 // ── scoreInBand — band boundary math with τ=1 tolerance ──────────────────────
@@ -56,8 +78,9 @@ describe('scoreInBand — good band [7,10] boundary math (τ=1)', () => {
   it('s=6 (lo−τ) in band', () => { assert.equal(scoreInBand(6, 'good'), true); });
   it('s=5 (lo−τ−1) out of band', () => { assert.equal(scoreInBand(5, 'good'), false); });
   it('s=10 (hi) in band', () => { assert.equal(scoreInBand(10, 'good'), true); });
-  it('s=11 (hi+τ) in band', () => { assert.equal(scoreInBand(11, 'good'), true); });
-  it('s=12 (hi+τ+1) out of band', () => { assert.equal(scoreInBand(12, 'good'), false); });
+  // Upper bound is capped at 10 — scores above 10 are always out of band (systematic judge error)
+  it('s=11 (above hi, upper cap at 10) out of band', () => { assert.equal(scoreInBand(11, 'good'), false); });
+  it('s=12 (well above hi) out of band', () => { assert.equal(scoreInBand(12, 'good'), false); });
 });
 
 describe('scoreInBand — bad band [0,4] boundary math (τ=1)', () => {
@@ -161,6 +184,36 @@ describe('SkillJudgeEvalCaseSchema — validates existing_skills shape', () => {
       rationale:         'Duplicates existing skill.',
     });
     assert.ok(!result.success, 'should reject existing_skills entry missing description');
+  });
+
+  it('rejects duplicative failure_mode with empty existing_skills', () => {
+    const result = SkillJudgeEvalCaseSchema.safeParse({
+      id:                'sj-test-dup-no-context',
+      source:            'anchor',
+      category:          'reject',
+      skill_md:          '# Dup\n\nSame as existing.',
+      existing_skills:   [],
+      expected_decision: 'reject',
+      expected_band:     'bad',
+      failure_mode:      'duplicative',
+      rationale:         'Duplicates existing skill.',
+    });
+    assert.ok(!result.success, 'duplicative case with no existing_skills must fail validation');
+  });
+
+  it('accepts duplicative failure_mode when existing_skills is non-empty', () => {
+    const result = SkillJudgeEvalCaseSchema.safeParse({
+      id:                'sj-test-dup-with-context',
+      source:            'anchor',
+      category:          'reject',
+      skill_md:          '# Dup\n\nSame as existing.',
+      existing_skills:   [{ name: 'edge-case-review', description: 'Examine a change for edge cases.' }],
+      expected_decision: 'reject',
+      expected_band:     'bad',
+      failure_mode:      'duplicative',
+      rationale:         'Duplicates existing skill.',
+    });
+    assert.ok(result.success, `duplicative case with existing_skills should pass: ${!result.success ? JSON.stringify(result.error) : ''}`);
   });
 });
 

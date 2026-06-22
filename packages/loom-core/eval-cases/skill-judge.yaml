@@ -4,10 +4,11 @@
 # the expected quality band, an optional failure_mode for reject cases, any
 # existing_skills context (for duplicative cases), and a rationale.
 #
-# Band boundaries (ADR-003) — see src/eval/skill-judge/bands.ts:
-#   bad        0 – 4  : clearly reject (JUDGE_MIN_SCORE − 2 upper bound)
-#   borderline 5 – 6  : marginal (JUDGE_MIN_SCORE − 1 to JUDGE_MIN_SCORE)
-#   good       7 – 10 : clearly accept (JUDGE_MIN_SCORE + 1 to 10)
+# Band boundaries (ADR-003) — resolved values in src/eval/skill-judge/bands.ts:
+#   bad        0 – (JUDGE_MIN_SCORE − 2)       : clearly reject
+#   borderline (JUDGE_MIN_SCORE − 1) – JUDGE_MIN_SCORE : marginal
+#   good       (JUDGE_MIN_SCORE + 1) – 10      : clearly accept
+# (Hard-coded numbers are intentionally absent — see bands.ts for the authoritative values.)
 #
 # Boundary tolerance τ=1: a score s agrees with a band [lo,hi] if
 # s ∈ [lo−τ, hi+τ].  See bands.ts for the authoritative constants.

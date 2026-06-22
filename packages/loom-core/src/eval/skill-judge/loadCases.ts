@@ -3,22 +3,21 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { SkillJudgeEvalSetSchema, type SkillJudgeEvalCase } from './caseSchema.js';
 
-// CJS package: __dirname is available. The compiled output lives at
-// dist/eval/skill-judge/, so ../../../ resolves to the package root.
-const DEFAULT_FIXTURE = path.resolve(
-  __dirname,
-  '../../../eval-cases/skill-judge.yaml',
-);
-const CWD_FIXTURE = path.resolve(
-  process.cwd(),
-  'packages/loom-core/eval-cases/skill-judge.yaml',
-);
-
+// CJS package: __dirname is available at runtime. Paths are computed lazily
+// inside defaultFixturePath() so process.cwd() is read at call time, not
+// at import time — tests that change cwd before calling load() get fresh values.
 function defaultFixturePath(): string {
-  if (fs.existsSync(DEFAULT_FIXTURE)) return DEFAULT_FIXTURE;
-  if (fs.existsSync(CWD_FIXTURE)) return CWD_FIXTURE;
+  // Compiled output at dist/eval/skill-judge/ — three levels up to package root
+  const distPath = path.resolve(__dirname, '../../../eval-cases/skill-judge.yaml');
+  if (fs.existsSync(distPath)) return distPath;
+  // Monorepo root (e.g. `npm test` from repo root)
+  const monorepoPath = path.resolve(process.cwd(), 'packages/loom-core/eval-cases/skill-judge.yaml');
+  if (fs.existsSync(monorepoPath)) return monorepoPath;
+  // Package root (e.g. `npm test` from packages/loom-core/)
+  const pkgPath = path.resolve(process.cwd(), 'eval-cases/skill-judge.yaml');
+  if (fs.existsSync(pkgPath)) return pkgPath;
   throw new Error(
-    `skill-judge.yaml not found. Looked in:\n  ${DEFAULT_FIXTURE}\n  ${CWD_FIXTURE}`,
+    `skill-judge.yaml not found. Looked in:\n  ${distPath}\n  ${monorepoPath}\n  ${pkgPath}`,
   );
 }
 
