@@ -39,10 +39,14 @@ const SignalInputSchema = z.object({
 export const OpportunityEngineCaseSchema: z.ZodType<OpportunityEngineCase> = z.object({
   id:       z.string(),
   source:   z.enum(['separable', 'noise', 'mixed']),
-  signals:  z.array(SignalInputSchema),
+  signals:  z.array(SignalInputSchema).min(1),
   rubric:   z.object({
     expected_themes:        z.array(z.string()),
-    force_clustering_traps: z.array(z.string()),
+    force_clustering_traps: z.array(z.string().min(1)).min(1),
   }),
   rationale: z.string(),
+});
+
+export const OpportunityEngineCaseSetSchema = z.object({
+  cases: z.array(OpportunityEngineCaseSchema).min(1),
 });
