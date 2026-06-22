@@ -6,6 +6,11 @@ import type { AttemptClass } from './orchestrator/resilience/types.js';
 export const AutonomyLevelSchema = z.enum(['full-auto', 'checkpoint', 'manual']);
 export type AutonomyLevel = z.infer<typeof AutonomyLevelSchema>;
 
+// ─── Standalone story container kind (v24, epic-047) ─────────────────────────
+
+export const STANDALONE_KIND = 'standalone' as const;
+export type EpicKind = 'epic' | 'standalone';
+
 // ─── Agent / Epic Status ────────────────────────────────────────────────────
 
 export const AgentStatusSchema = z.enum([
@@ -227,6 +232,12 @@ export interface EpicRecord {
    * Never read by planning, gate, or execution code (NFR-1).
    */
   intake_verdict: string | null;
+  /**
+   * Container kind marker (v24, epic-047). NULL or 'epic' = normal epic;
+   * 'standalone' = internal single-story container. Never compare inline
+   * literals — import STANDALONE_KIND from types.ts instead.
+   */
+  kind?: EpicKind | null;
 }
 
 export interface AuditLogEntry {
@@ -627,7 +638,7 @@ export interface StatusTree {
 // ─── Epic/Story YAML schema ─────────────────────────────────────────────────
 
 export const StorySchema = z.object({
-  id: z.string().regex(/^story-\d{3}-\d{3}$/),
+  id: z.string().regex(/^story-\d{3}(-\d{3})?$/),
   title: z.string().min(5).max(100),
   description: z.string(),
   acceptance_criteria: z.array(z.string()).min(1),

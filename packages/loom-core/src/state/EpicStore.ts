@@ -6,7 +6,7 @@ import type {
   FinalizePhase,
   PlanningPhase,
 } from '../types.js';
-import { AutonomyLevelSchema } from '../types.js';
+import { AutonomyLevelSchema, STANDALONE_KIND } from '../types.js';
 import { LIVE_TAIL_CHARS } from '../planner/constants.js';
 import {
   IntakeVerdictSchema,
@@ -25,6 +25,30 @@ export class EpicStore {
       )
       .run(id, title, yamlPath ?? null, now, now);
     return this.get(id)!;
+  }
+
+  /**
+   * Inserts an internal container row for a standalone story (v24, epic-047).
+   * The row has kind='standalone' so list() and presentation sites can exclude
+   * or render it separately. The FK agents.epic_id points to this container id,
+   * keeping the agents schema unchanged (ADR-002).
+   */
+  createStandalone(epicId: string, title: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO epics (id, title, status, kind, created_at, updated_at)
+         VALUES (?, ?, 'planned', ?, ?, ?)`
+      )
+      .run(epicId, title, STANDALONE_KIND, now, now);
+  }
+
+  /** Returns true iff the given epic row is a standalone story container. */
+  isStandalone(epicId: string): boolean {
+    const row = this.db
+      .prepare('SELECT kind FROM epics WHERE id = ?')
+      .get(epicId) as { kind: string | null } | undefined;
+    return row?.kind === STANDALONE_KIND;
   }
 
   /**
@@ -96,13 +120,17 @@ export class EpicStore {
   }
 
   /**
-   * Lists epics newest-first. Archived epics are EXCLUDED by default so the
-   * status / web / MCP views stay scoped to the runs an operator still cares
-   * about; pass `{ includeArchived: true }` for an unfiltered list (e.g. the
-   * "show archived" toggle or cost roll-ups that must count everything).
+   * Lists epics newest-first. Archived and standalone-container rows are
+   * EXCLUDED by default so the status / web / MCP views stay scoped to the
+   * runs an operator still cares about. Pass opts to override:
+   * - `{ includeArchived: true }` — include archived epics
+   * - `{ includeStandalone: true }` — include kind='standalone' containers
    */
-  list(opts?: { includeArchived?: boolean }): EpicRecord[] {
-    const where = opts?.includeArchived ? '' : 'WHERE archived_at IS NULL';
+  list(opts?: { includeArchived?: boolean; includeStandalone?: boolean }): EpicRecord[] {
+    const clauses: string[] = [];
+    if (!opts?.includeArchived) clauses.push('archived_at IS NULL');
+    if (!opts?.includeStandalone) clauses.push(`(kind IS NULL OR kind != '${STANDALONE_KIND}')`);
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
     return this.db
       .prepare(`SELECT * FROM epics ${where} ORDER BY created_at DESC`)
       .all() as EpicRecord[];
