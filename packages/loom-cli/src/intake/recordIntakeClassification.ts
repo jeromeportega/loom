@@ -4,8 +4,12 @@ import { classifyIntake, INTAKE_AUDIT_ACTION, EpicStore, AuditLog } from '@loom-
 
 // Compile-time assertion: ClassifyResult must be structurally assignable to
 // IntakeClassificationResult so the assignment below is type-safe even if the
-// two types are defined independently.
+// two types are defined independently. The const forces a type error if _AssertCompat
+// resolves to never (i.e. the types diverged).
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 type _AssertCompat = ClassifyResult extends IntakeClassificationResult ? true : never;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _assertCompat: true = true as _AssertCompat;
 
 export type IntakeClassificationResult =
   | { ok: true;  verdict: IntakeVerdict }

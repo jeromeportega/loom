@@ -368,10 +368,12 @@ properties:
       intake_timeout_ms:
         type: integer
         default: 120000
+        minimum: 1000
         description: |
           Wall-clock budget in milliseconds for the intake classifier call.
           The call is best-effort and off the critical path — a hung call burns
           up to this budget before failing. Default 120 000 ms (2 min).
+          Minimum 1 000 ms to prevent immediate timeouts on valid LLM round-trips.
       intake_routing:
         type: string
         enum: ['off', 'advisory', 'confirm']

@@ -68,7 +68,9 @@ const EPIC_ROUTING: EffectiveRouting = {
 // ── Suite 1: routing absent → no block (re-asserts NFR-1 seam) ───────────────
 
 // Shared across suites so Suite 2 can compare relative to this baseline.
-let noRoutingRequestCount: number;
+// Initialized to -1 so Suite 2 can assert this was set before being read
+// (guards against concurrency with --test-concurrency or Suite 1 before() failure).
+let noRoutingRequestCount: number = -1;
 
 describe('PMAgent routing injection — routing absent (NFR-1 seam)', () => {
   let tmpDir: string;
@@ -144,6 +146,11 @@ describe('PMAgent routing injection — story-sized routing present (AC1, AC2)',
   after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
   it('routing does not add LLM calls vs the no-routing baseline (not a parallel pipeline)', () => {
+    assert.notEqual(
+      noRoutingRequestCount,
+      -1,
+      'Suite 1 before() must complete before this test — noRoutingRequestCount was never set'
+    );
     assert.equal(
       requestCount,
       noRoutingRequestCount,
