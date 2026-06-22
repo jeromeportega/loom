@@ -74,11 +74,11 @@ describe('docs/capabilities.md — weave entry', () => {
     const doc = readDoc();
     const weaveRow = doc
       .split('\n')
-      .find((line) => line.includes('loom weave') && line.trimStart().startsWith('|'));
+      .find((line) => line.includes('**Plan via the weave intake path**') && line.trimStart().startsWith('|'));
     assert.ok(weaveRow, 'weave row must exist');
     assert.ok(
-      weaveRow.includes('intake_routing') || weaveRow.includes('runEpic'),
-      'capabilities.md weave entry must reference intake_routing or its shared runEpic path'
+      weaveRow.includes('intake_routing'),
+      'capabilities.md weave entry must reference intake_routing'
     );
   });
 
@@ -86,7 +86,7 @@ describe('docs/capabilities.md — weave entry', () => {
     const doc = readDoc();
     const weaveRow = doc
       .split('\n')
-      .find((line) => line.includes('loom weave') && line.trimStart().startsWith('|'));
+      .find((line) => line.includes('**Plan via the weave intake path**') && line.trimStart().startsWith('|'));
     assert.ok(weaveRow, 'weave row must exist');
     assert.ok(
       weaveRow.includes('byte-identical'),
