@@ -70,24 +70,27 @@ describe('docs/capabilities.md — weave entry', () => {
     );
   });
 
-  it('weave entry states the P0 verdict is observe-only', () => {
+  it('weave entry references intake_routing behavior', () => {
     const doc = readDoc();
+    const weaveRow = doc
+      .split('\n')
+      .find((line) => line.includes('loom weave') && line.trimStart().startsWith('|'));
+    assert.ok(weaveRow, 'weave row must exist');
     assert.ok(
-      doc.includes('observe-only'),
-      'capabilities.md weave entry must contain "observe-only"'
+      weaveRow.includes('intake_routing') || weaveRow.includes('runEpic'),
+      'capabilities.md weave entry must reference intake_routing or its shared runEpic path'
     );
   });
 
-  it('weave entry explicitly states the P0 verdict does not influence planning or execution', () => {
+  it('weave entry states byte-identical output when intake_routing is off', () => {
     const doc = readDoc();
-    const mentionsPlanningOrExecution =
-      doc.includes('does not influence planning') ||
-      doc.includes('does not influence planning or execution') ||
-      doc.includes('does not influence planning, gate') ||
-      doc.includes('not influence planning');
+    const weaveRow = doc
+      .split('\n')
+      .find((line) => line.includes('loom weave') && line.trimStart().startsWith('|'));
+    assert.ok(weaveRow, 'weave row must exist');
     assert.ok(
-      mentionsPlanningOrExecution,
-      'capabilities.md weave entry must explicitly state the P0 verdict does not influence planning or execution'
+      weaveRow.includes('byte-identical'),
+      'capabilities.md weave entry must state byte-identical output when intake_routing=off (default)'
     );
   });
 });
