@@ -111,7 +111,7 @@ describe('recordIntakeRouted — direct write to audit_log', () => {
 // decision=accepted, original==routed==classifier verdict, mode=confirm.
 
 describe('resolveIntakeRouting — accepted run (AC1, AC2)', () => {
-  it('writes exactly one intake_routed row', async () => {
+  it('writes exactly one intake_routed row with all required fields', async () => {
     const db = makeDb();
     const audit = new AuditLog(db);
     await resolveIntakeRouting({
@@ -125,65 +125,11 @@ describe('resolveIntakeRouting — accepted run (AC1, AC2)', () => {
     });
     const rows = audit.getByCommand('epic-001', ['intake_routed']);
     assert.equal(rows.length, 1, 'accepted confirm run must write exactly one intake_routed row');
-  });
-
-  it('detail.decision === accepted', async () => {
-    const db = makeDb();
-    const audit = new AuditLog(db);
-    await resolveIntakeRouting({
-      classification: OK_CLASSIFICATION,
-      level: 'confirm', isTTY: true, audit, epicId: 'epic-001',
-      input: makeInput('a'), out: devNull(),
-    });
-    const detail = parsedDetail(audit.getByCommand('epic-001', ['intake_routed'])[0]);
+    const detail = parsedDetail(rows[0]);
     assert.equal(detail.decision, 'accepted');
-  });
-
-  it('detail.original matches classifier verdict', async () => {
-    const db = makeDb();
-    const audit = new AuditLog(db);
-    await resolveIntakeRouting({
-      classification: OK_CLASSIFICATION,
-      level: 'confirm', isTTY: true, audit, epicId: 'epic-001',
-      input: makeInput('a'), out: devNull(),
-    });
-    const detail = parsedDetail(audit.getByCommand('epic-001', ['intake_routed'])[0]);
     assert.deepEqual(detail.original, { type: 'feature', size: 'story' });
-  });
-
-  it('detail.routed matches original (unchanged on accept)', async () => {
-    const db = makeDb();
-    const audit = new AuditLog(db);
-    await resolveIntakeRouting({
-      classification: OK_CLASSIFICATION,
-      level: 'confirm', isTTY: true, audit, epicId: 'epic-001',
-      input: makeInput('a'), out: devNull(),
-    });
-    const detail = parsedDetail(audit.getByCommand('epic-001', ['intake_routed'])[0]);
-    assert.deepEqual(detail.routed, { type: 'feature', size: 'story' });
-  });
-
-  it('detail.confidence present', async () => {
-    const db = makeDb();
-    const audit = new AuditLog(db);
-    await resolveIntakeRouting({
-      classification: OK_CLASSIFICATION,
-      level: 'confirm', isTTY: true, audit, epicId: 'epic-001',
-      input: makeInput('a'), out: devNull(),
-    });
-    const detail = parsedDetail(audit.getByCommand('epic-001', ['intake_routed'])[0]);
+    assert.deepEqual(detail.routed,   { type: 'feature', size: 'story' });
     assert.equal(detail.confidence, 'high');
-  });
-
-  it('detail.mode === confirm', async () => {
-    const db = makeDb();
-    const audit = new AuditLog(db);
-    await resolveIntakeRouting({
-      classification: OK_CLASSIFICATION,
-      level: 'confirm', isTTY: true, audit, epicId: 'epic-001',
-      input: makeInput('a'), out: devNull(),
-    });
-    const detail = parsedDetail(audit.getByCommand('epic-001', ['intake_routed'])[0]);
     assert.equal(detail.mode, 'confirm');
   });
 });
@@ -230,17 +176,17 @@ describe('resolveIntakeRouting — overridden run (AC1, AC2)', () => {
     assert.deepEqual(detail.routed, { type: 'bug', size: 'story' });
   });
 
-  it('detail.routed reflects the overridden size', async () => {
+  it('detail.routed reflects the overridden size (both type and size changed)', async () => {
     const db = makeDb();
     const audit = new AuditLog(db);
-    // 'o' = override, '' = keep type, 'epic' = new size
+    // 'o' = override, 'bug' = new type, 'epic' = new size
     await resolveIntakeRouting({
       classification: OK_CLASSIFICATION,
       level: 'confirm', isTTY: true, audit, epicId: 'epic-001',
-      input: makeInput('o', '', 'epic'), out: devNull(),
+      input: makeInput('o', 'bug', 'epic'), out: devNull(),
     });
     const detail = parsedDetail(audit.getByCommand('epic-001', ['intake_routed'])[0]);
-    assert.deepEqual(detail.routed, { type: 'feature', size: 'epic' });
+    assert.deepEqual(detail.routed, { type: 'bug', size: 'epic' });
   });
 });
 

@@ -44,6 +44,7 @@ export async function resolveIntakeRouting(opts: {
         // Non-interactive degrade (ADR-004): warn loudly and route as advisory so
         // headless/CI planning is never stalled (mode:'confirm-degraded-advisory').
         out.write('  [warn] intake_routing=confirm: non-interactive terminal — routing as advisory instead\n');
+        const degradedRouting = printAndRoute(verdict, out);
         recordIntakeRouted(opts.audit, opts.epicId, {
           mode:       'confirm-degraded-advisory',
           decision:   'accepted',
@@ -51,7 +52,7 @@ export async function resolveIntakeRouting(opts: {
           routed:     { type: verdict.type, size: verdict.size },
           confidence: verdict.confidence,
         });
-        return printAndRoute(verdict, out);
+        return degradedRouting;
       }
       // Interactive path: prompt operator to accept or override (AC1, AC3).
       return resolveConfirm(verdict, out, opts.input, opts.audit, opts.epicId);
