@@ -105,6 +105,9 @@ inline bootstrap copy of `recoverBriefText` logic maintained manually. It is **n
 relocation breaker** — the comment string has no runtime effect and requires only a
 manual text update to the comment itself if the source path changes.
 
+**Story-040-002 obligation:** Update this comment's path to reference
+`src/eval/intake/recoverBriefText.ts` when the module is relocated.
+
 ---
 
 #### Group E — Package-root importer: NOT a deep importer
@@ -149,7 +152,7 @@ and therefore importable from the package root (`@loom-ai/core`).
 
 Value-export presence was verified at runtime against `dist/index.js` on 2026-06-21
 (all 27 value exports confirmed present). Type-export presence was verified against
-`dist/eval/index.d.ts` (all 22 type-only exports confirmed present via explicit
+`dist/eval/index.d.ts` (all 30 type-only exports confirmed present via explicit
 `export type { ... }` statements).
 
 ### Frozen surface — sorted by category
@@ -175,6 +178,9 @@ EvalReport          // sourced from eval/types.ts
 ```
 
 #### Intake surface (today flat eval/*.ts; after 040-002 = eval/intake/*.ts)
+
+Note: `recoverBriefText` is an internal helper not exported from `eval/index.ts` — intentionally
+absent from the public surface. Story-040-002 must **not** add it to the public exports.
 
 ```ts
 // Values
@@ -253,8 +259,13 @@ EvalReport (brief-quality variant)
 
 ### Machine-checkable sorted name list
 
-Alphabetically sorted union of all value exports + type-only exports through `eval/index.ts`.
+Case-insensitive sort (`sort -f`) of all value exports + type-only exports through `eval/index.ts`.
 This is the diff oracle for story-040-002 post-refactor surface check.
+
+Reproduced by:
+```sh
+printf '%s\n' <name1> <name2> ... | sort -f
+```
 
 ```
 AxisReport
@@ -300,16 +311,16 @@ loadEvalSuite
 loadIntakeEvalSet
 PlanningExpectation
 PlanningExpectationSchema
-refineEvalCases
 RefinedCaseResult
+refineEvalCases
 renderIntakeReport
 renderIntakeReportDual
 resolveEvalModels
 runGateEval
 runIntakeEval
-runRefinedIntakeEval
 RunIntakeEvalDeps
 RunRecord
+runRefinedIntakeEval
 scoreIntakeEval
 ScoreIntakeEvalMeta
 writeIntakeReportDualFiles
