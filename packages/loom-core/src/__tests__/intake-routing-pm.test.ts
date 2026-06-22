@@ -25,6 +25,19 @@ const BRIEF = 'Add a user login form with email and password fields.';
 // Task A response. Must start with '#' so trimToFirstHeading returns it unchanged.
 const TASK_A_PRD = '# Login Form PRD\n\n## Goals\nShip a minimal login form.';
 
+// Shared trigger phrases used by both the mock dispatcher and the assertions.
+// Update here if PMAgent renames a task prompt — single-point change.
+const TASK_A_TRIGGER = 'Headless task A: produce the PRD';
+const TASK_B_TRIGGER = 'Headless task B: produce the epic';
+
+// Snapshot of PMAgent task B user message. Compared byte-for-byte on each run.
+// To regenerate: delete the .snap file and re-run the tests — the file is
+// written on first run (tests pass), then committed and used for comparison.
+const SNAPSHOT_FILE = path.resolve(
+  __dirname,
+  '../../src/__tests__/__snapshots__/task-b-baseline.snap'
+);
+
 const EPICS_JSON = JSON.stringify({
   epics: [
     {
@@ -58,9 +71,8 @@ describe('NFR-1 off-path PM message output-equivalence (story-045-001)', () => {
 
     const llm = new MockLLMClient((req: LLMRequest): string => {
       const last = req.messages[req.messages.length - 1].content;
-      if (last.includes('Headless task A: produce the PRD')) return TASK_A_PRD;
-      if (last.includes('Headless task B: produce the epic'))
-        return '```json\n' + EPICS_JSON + '\n```';
+      if (last.includes(TASK_A_TRIGGER)) return TASK_A_PRD;
+      if (last.includes(TASK_B_TRIGGER)) return '```json\n' + EPICS_JSON + '\n```';
       throw new Error(`Unexpected PM call: ${last.slice(0, 80)}`);
     });
 
@@ -89,45 +101,39 @@ describe('NFR-1 off-path PM message output-equivalence (story-045-001)', () => {
 
   it('task B user message is byte-identical to the known baseline (no routing block appended)', () => {
     const taskBReq = capturedRequests.find((r) =>
-      r.messages.some((m) => m.role === 'user' && m.content.includes('Headless task B'))
+      r.messages.some((m) => m.role === 'user' && m.content.includes(TASK_B_TRIGGER))
     );
     assert.ok(taskBReq, 'Task B request must be present in captured calls');
 
     const taskBUserContent = taskBReq.messages.find(
-      (m) => m.role === 'user' && m.content.includes('Headless task B')
+      (m) => m.role === 'user' && m.content.includes(TASK_B_TRIGGER)
     )!.content;
 
-    // Construct the expected baseline — exactly what PMAgent.generateEpics builds today.
-    // epicId(1) = 'epic-001', epicId(2) = 'epic-002', 'epic-001'.slice(5) = '001'
-    const firstId = 'epic-001';
-    const secondId = 'epic-002';
-    const numPart = '001';
-    const expectedBaseline =
-      'Perform Headless task B: produce the epic/story breakdown JSON.\n\n' +
-      `IMPORTANT: number epics sequentially starting at "${firstId}". ` +
-      `The first epic is "${firstId}", the next "${secondId}", and so on. ` +
-      `Each story id uses its epic's number — e.g. the stories of "${firstId}" are ` +
-      `"story-${numPart}-001", "story-${numPart}-002", etc.\n\n` +
-      'PROJECT BRIEF:\n---\n' +
-      BRIEF +
-      '\n\nPRD:\n---\n' +
-      TASK_A_PRD;
+    // Snapshot-based assertion. If missing, the file is written on first run
+    // (tests pass) — commit the generated file. To regenerate after an
+    // intentional PM prompt change: delete task-b-baseline.snap and re-run.
+    if (!fs.existsSync(SNAPSHOT_FILE)) {
+      fs.mkdirSync(path.dirname(SNAPSHOT_FILE), { recursive: true });
+      fs.writeFileSync(SNAPSHOT_FILE, taskBUserContent, 'utf8');
+    }
+    const expectedBaseline = fs.readFileSync(SNAPSHOT_FILE, 'utf8');
 
     assert.equal(
       taskBUserContent,
       expectedBaseline,
-      'Task B user message must be byte-identical to the no-routing baseline'
+      'Task B user message differs from snapshot (task-b-baseline.snap). ' +
+        'If the PM prompt changed intentionally, delete the snapshot file and re-run to regenerate.'
     );
   });
 
   it('task B message contains no routing-specific text — PlannerOptions.routing is absent on the off-path', () => {
     const taskBReq = capturedRequests.find((r) =>
-      r.messages.some((m) => m.role === 'user' && m.content.includes('Headless task B'))
+      r.messages.some((m) => m.role === 'user' && m.content.includes(TASK_B_TRIGGER))
     );
     assert.ok(taskBReq, 'Task B request must be present');
 
     const content = taskBReq.messages.find(
-      (m) => m.role === 'user' && m.content.includes('Headless task B')
+      (m) => m.role === 'user' && m.content.includes(TASK_B_TRIGGER)
     )!.content;
 
     // If story-045-002 accidentally injects routing on the off-path, these

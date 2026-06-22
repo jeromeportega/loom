@@ -22,15 +22,14 @@ import { classifyIntake } from '../../src/intake/IntakeClassifier.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/** Walk up from __dirname until schemas/policy.schema.yaml is found. */
+/**
+ * Deterministic path to schemas/policy.schema.yaml from the compiled location
+ * dist-test/test/guardrails/ (5 levels up to the repo root).
+ * Avoids the directory-walk approach that could resolve the wrong file in a
+ * monorepo when the schema exists at multiple levels.
+ */
 function findPolicySchema(): string {
-  let dir = __dirname;
-  for (let i = 0; i < 12; i++) {
-    const candidate = path.join(dir, 'schemas', 'policy.schema.yaml');
-    if (fs.existsSync(candidate)) return candidate;
-    dir = path.dirname(dir);
-  }
-  throw new Error('Could not locate schemas/policy.schema.yaml');
+  return path.resolve(__dirname, '../../../../../schemas/policy.schema.yaml');
 }
 
 // ── AC1: schema default and valid levels ─────────────────────────────────────

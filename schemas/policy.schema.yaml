@@ -367,20 +367,18 @@ properties:
           documents the field exists without advertising it as a policy knob.
       intake_routing:
         type: string
-        enum: [off, advisory, confirm]
-        default: off
+        enum: ['off', 'advisory', 'confirm']
+        default: 'off'
         description: |
           Intake-routing mode. Controls whether the classifier verdict
           influences how the PM agent sizes the work:
             off      — classifier runs observe-only; verdict is recorded but
                        never reaches PlannerOptions. Planning path is
                        byte-identical to today. (default)
-            advisory — classifier verdict is surfaced to the operator and used
-                       to inject a sizing constraint into the PM prompt, but
-                       the operator is not asked to confirm.
-            confirm  — operator is prompted to accept or override the
-                       classifier verdict before the PM prompt is built;
-                       falls back to advisory when stdin is not a TTY.
+            advisory — value is accepted and validated; routing behavior is
+                       not yet active (wired in story-045-002).
+            confirm  — value is accepted and validated; interactive checkpoint
+                       is not yet active (wired in story-045-003).
 
   mcp:
     type: object
