@@ -19,6 +19,7 @@ import { PlanningOutputSink } from './PlanningOutputSink.js';
 import type { PlanningEvent } from './PlanningEvent.js';
 import { serializeEpic } from './epicSerializer.js';
 import type { EpicYaml } from '../types.js';
+import type { EffectiveRouting } from '../intake/routing.js';
 
 export interface PlanResult {
   runId: string;
@@ -60,6 +61,12 @@ export interface PlannerOptions {
    * Absent = capture still happens (tail is written to DB), no in-process fan-out.
    */
   onPlanningEvent?: (e: PlanningEvent) => void;
+  /**
+   * Effective routing from the intake classifier. When present the PM agent
+   * appends a sizing constraint block to its task B prompt (story-045-002).
+   * Absent ⇒ PM prompt is byte-identical to the legacy baseline (NFR-1).
+   */
+  routing?: EffectiveRouting;
 }
 
 /**
@@ -155,6 +162,7 @@ export class Planner {
       skills: this.selectSkills(brief),
       sharedContract: this.opts.sharedContract,
       qaPlanning: this.opts.qaPlanning,
+      routing: this.opts.routing,
     };
     const rel = planningRelPaths(runId);
     let usage: LLMUsage = { ...EMPTY_USAGE };

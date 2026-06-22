@@ -8,6 +8,7 @@ import type { PlannerContext } from './context.js';
 import { PersonaLoader } from './PersonaLoader.js';
 import { planningPaths, planningRelPaths, epicId } from './paths.js';
 import { extractJsonBlock, trimToFirstHeading } from './util.js';
+import { buildSizingConstraintBlock } from '../intake/routing.js';
 
 const EpicsEnvelopeSchema = z.object({
   epics: z.array(EpicYamlSchema).min(1),
@@ -91,6 +92,12 @@ export class PMAgent {
     startEpicNumber: number
   ): Promise<{ epics: EpicYaml[]; usage: LLMUsage }> {
     const firstId = epicId(startEpicNumber);
+    // Mirrors the skillsBlock pattern in AnalystAgent: build the optional block
+    // first and append it to the base message. When routing is absent the message
+    // is byte-identical to the legacy baseline (NFR-1).
+    const sizingBlock = this.ctx.routing
+      ? buildSizingConstraintBlock(this.ctx.routing)
+      : '';
     const baseUserMsg =
       'Perform Headless task B: produce the epic/story breakdown JSON.\n\n' +
       `IMPORTANT: number epics sequentially starting at "${firstId}". ` +
@@ -100,7 +107,8 @@ export class PMAgent {
       'PROJECT BRIEF:\n---\n' +
       briefContent +
       '\n\nPRD:\n---\n' +
-      prdContent;
+      prdContent +
+      sizingBlock;
 
     let usage: LLMUsage = { ...EMPTY_USAGE };
     let lastError = '';
