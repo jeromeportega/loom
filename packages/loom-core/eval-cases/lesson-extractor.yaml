@@ -1,0 +1,281 @@
+# eval-cases/lesson-extractor.yaml
+# Fixture cases for the lesson-extractor eval consumer (epic-041).
+#
+# Each case is paired with rubric expectations:
+#   expected_themes — lesson theme CATEGORIES, not exact lesson text
+#   over_extraction_traps — patterns the extractor should NOT turn into lessons
+#
+# All data is hand-authored synthetic; no real-epic content, no anonymized traces.
+# Schema: LessonExtractorCaseSchema (src/eval/lesson-extractor/caseSchema.ts)
+
+cases:
+
+  # ── RICH CASE ──────────────────────────────────────────────────────────────────
+  # A three-story epic: add correlation_id to the audit_log table so the
+  # cross-story aggregator can group events by epic. Story-001 ran the schema
+  # migration; story-002 implemented the aggregator but pivoted mid-execution
+  # when it discovered the column is nullable; story-003 hardened the test suite.
+  # The pivot trace, the blocked destructive command, and the schema-migration
+  # review feedback all provide concrete grounds for real lessons.
+
+  - id: le-rich-multi-story-audit-logging
+    source: rich
+    rationale: >
+      Three-story epic with a mid-execution pivot (story-002 assumed correlation_id
+      would always be a string, but the migration correctly made it nullable).
+      The pivot decision trace and the review feedback about missing idempotency
+      guard together produce obvious lessons about coordinating schema changes with
+      dependent readers and about making migrations re-runnable. The blocked rm -rf
+      provides a clear safety lesson. Rich enough to yield 2-4 distinct lessons
+      while being small enough to evaluate in isolation.
+    telemetry:
+      epic_id: epic-031
+      final_status: done
+      decision_traces:
+        - id: 1
+          agent_id: worker-story-031-001
+          epic_id: epic-031
+          story_id: story-031-001
+          kind: plan_rationale
+          subject: schema-migration
+          rationale: >
+            The audit_log table lacks a correlation_id column required by the
+            cross-story aggregator. I will add it as a nullable TEXT column so
+            existing rows remain valid and the aggregator can filter on it once
+            rows start populating the field. The migration will use a transaction
+            so a failure rolls back cleanly on this SQLite file.
+          metadata: null
+          timestamp: "2026-05-10T09:02:14.000Z"
+
+        - id: 2
+          agent_id: worker-story-031-001
+          epic_id: epic-031
+          story_id: story-031-001
+          kind: tool_intent
+          subject: bash
+          rationale: >
+            Running the migration script inside a transaction. The table has
+            roughly 12k rows; ALTER TABLE on SQLite locks briefly but finishes
+            in under a second. I am not adding an idempotency guard because the
+            script is intended for one-time use — if it needs to be re-run the
+            operator can drop and recreate.
+          metadata: '{"command":"node scripts/migrate-audit-log.mjs"}'
+          timestamp: "2026-05-10T09:03:01.000Z"
+
+        - id: 3
+          agent_id: worker-story-031-002
+          epic_id: epic-031
+          story_id: story-031-002
+          kind: pivot
+          subject: aggregator-reader
+          rationale: >
+            Story-001 deployed the schema migration, but the aggregator I wrote
+            expects correlation_id to always be a non-null string. The actual
+            column is nullable (correct per the migration design), so my grouping
+            logic throws when it encounters a null row. Pivoting: I will coerce
+            null to an empty-string sentinel before grouping rather than filtering
+            null rows out, which would silently drop events from the aggregate.
+          metadata: '{"prior_assumption":"correlation_id is always string","discovery":"column is nullable"}'
+          timestamp: "2026-05-10T11:17:33.000Z"
+
+        - id: 4
+          agent_id: worker-story-031-003
+          epic_id: epic-031
+          story_id: story-031-003
+          kind: thinking
+          subject: test-coverage
+          rationale: >
+            Story-002 discovered and fixed the null-coercion issue, but that
+            fix was only unit-tested inside story-002's diff. I will add an
+            integration test that seeds audit rows with null correlation_id and
+            asserts the aggregated report handles them without throwing, so the
+            behaviour is covered at the system boundary rather than just the
+            unit level.
+          metadata: null
+          timestamp: "2026-05-10T14:44:07.000Z"
+
+      agents:
+        - story_id: story-031-001
+          review_summary: >
+            Migration is correct and atomic. Using a transaction for ALTER TABLE
+            is the right approach on SQLite. One gap: the script has no
+            idempotency guard — running it twice throws "duplicate column". For
+            any migration that touches production data, an IF NOT EXISTS check or
+            an existence guard before ALTER is strongly recommended.
+          log_tail: >
+            [09:02:09] Planning migration for audit_log.correlation_id
+            [09:03:01] Running scripts/migrate-audit-log.mjs
+            [09:03:02] Migration complete: 1 column added, 12847 rows preserved
+            [09:03:03] Build: OK
+            [09:03:05] Tests: 14 passed, 0 failed
+
+        - story_id: story-031-002
+          review_summary: >
+            Pivot from non-null assumption to nullable-with-sentinel was handled
+            correctly. Coercing null to an empty string for grouping is a
+            defensible short-term choice and the PR description explains the
+            tradeoff. Long-term the cleaner fix is to filter null rows before
+            aggregation; recommend a follow-up story to revisit. All tests pass.
+          log_tail: >
+            [11:10:45] Starting AuditAggregator implementation
+            [11:17:33] Pivot: discovered nullable correlation_id, updating grouping logic
+            [11:19:02] Updated to coerce null to empty-string sentinel
+            [11:25:14] Tests: 9 passed, 0 failed
+            [11:25:16] Lint: clean
+
+        - story_id: story-031-003
+          review_summary: >
+            Integration test is well-structured and covers the null-coercion path
+            that story-002's pivot introduced. Full pipeline from audit row write
+            to aggregated report output is exercised. No issues.
+          log_tail: >
+            [14:40:22] Scaffolding integration test fixture
+            [14:44:07] Adding null correlation_id test case per story-002 pivot
+            [14:51:09] All 23 tests passing
+            [14:51:11] Coverage: 87%
+
+      audit_tail:
+        - id: 101
+          agent_id: worker-story-031-001
+          action: bash
+          command: node scripts/migrate-audit-log.mjs
+          allowed: true
+          policy_rule: null
+          detail: exit 0
+          timestamp: "2026-05-10T09:03:01.000Z"
+
+        - id: 102
+          agent_id: worker-story-031-001
+          action: bash
+          command: npm test
+          allowed: true
+          policy_rule: null
+          detail: 14 passing
+          timestamp: "2026-05-10T09:03:03.000Z"
+
+        - id: 103
+          agent_id: worker-story-031-002
+          action: bash
+          command: rm -rf dist/
+          allowed: false
+          policy_rule: destructive-command
+          detail: "blocked: rm -rf matched destructive-command policy rule"
+          timestamp: "2026-05-10T11:22:55.000Z"
+
+        - id: 104
+          agent_id: worker-story-031-002
+          action: bash
+          command: npm run build
+          allowed: true
+          policy_rule: null
+          detail: exit 0
+          timestamp: "2026-05-10T11:24:50.000Z"
+
+        - id: 105
+          agent_id: worker-story-031-003
+          action: bash
+          command: npm test
+          allowed: true
+          policy_rule: null
+          detail: 23 passing
+          timestamp: "2026-05-10T14:51:09.000Z"
+
+    rubric:
+      expected_themes:
+        - schema migrations must be idempotent to survive re-runs in multi-agent pipelines
+        - downstream readers must handle nullable columns added by a sibling story's migration
+        - mid-epic pivots should propagate as explicit test cases in later stories
+        - policy-blocked destructive commands reveal gaps in agent tooling assumptions
+      over_extraction_traps:
+        - >
+          Routine successful bash commands (npm test, npm run build) with exit 0
+          are expected workflow steps — they should not generate process-improvement
+          lessons about "always running tests" or "always building before committing".
+        - >
+          Three stories running sequentially and all passing is the normal epic
+          lifecycle. Do not extract a lesson about "sequencing" or "parallelism"
+          solely from the count of agent entries in the telemetry.
+
+
+  # ── THIN CASE ─────────────────────────────────────────────────────────────────
+  # A single-story epic: fix a typo in the `loom status` CLI help text.
+  #
+  # IMPORTANT: this case is intentionally sparse, NOT all-empty. LessonExtractor
+  # short-circuits to [] when all three sources are empty (FR-5), which would
+  # prevent over-extraction from being exercised. This case carries minimal-but-
+  # nonempty telemetry in all three sources so the extractor must evaluate it.
+  # Expected to yield zero real lessons; any lesson extracted is over-extraction.
+
+  - id: le-thin-single-story-typo-fix
+    source: thin
+    rationale: >
+      One-line typo fix in CLI help text. The agent ran correctly, the change was
+      trivial, and no problems were encountered. Telemetry is minimal (one decision
+      trace, one agent entry, two audit rows) but non-empty in all three sources
+      so LessonExtractor.extract() does not short-circuit. The over-extraction
+      risk is that the model manufactures lessons from the presence of a thinking
+      trace that narrates an obvious decision, or from a green test run with no
+      interesting context. This case should yield zero lessons; extracting even
+      one is a signal of over-extraction.
+    telemetry:
+      epic_id: epic-035
+      final_status: done
+      decision_traces:
+        - id: 201
+          agent_id: worker-story-035-001
+          epic_id: epic-035
+          story_id: story-035-001
+          kind: thinking
+          subject: cli-help-text
+          rationale: >
+            This is a single-character typo fix in the help string for the
+            status command. I will update the string literal in
+            packages/loom-cli/src/commands/status.ts and confirm the test
+            suite still passes. No schema changes, no logic changes, no
+            config changes.
+          metadata: null
+          timestamp: "2026-05-18T10:04:22.000Z"
+
+      agents:
+        - story_id: story-035-001
+          review_summary: >
+            Correct one-line fix. Tests pass. Nothing to flag.
+          log_tail: >
+            [10:04:18] Reading packages/loom-cli/src/commands/status.ts
+            [10:04:25] Applying typo fix: "runnig" -> "running"
+            [10:04:27] npm test: 8 passing, 0 failed
+
+      audit_tail:
+        - id: 201
+          agent_id: worker-story-035-001
+          action: file_write
+          command: null
+          allowed: true
+          policy_rule: null
+          detail: packages/loom-cli/src/commands/status.ts
+          timestamp: "2026-05-18T10:04:25.000Z"
+
+        - id: 202
+          agent_id: worker-story-035-001
+          action: bash
+          command: npm test
+          allowed: true
+          policy_rule: null
+          detail: 8 passing
+          timestamp: "2026-05-18T10:04:27.000Z"
+
+    rubric:
+      expected_themes:
+        - >
+          trivial single-character fixes in non-logic files rarely produce
+          generalizable lessons; a thin result set (zero lessons) is correct here
+      over_extraction_traps:
+        - >
+          A passing test run after a one-liner cosmetic change should not generate
+          a lesson about test discipline — it is the expected, unremarkable outcome
+          of a correctly working development workflow.
+        - >
+          A thinking trace that narrates an obvious, no-branching decision
+          ("this is a typo, I will change the string") contains no surprising
+          insight. Extracting a lesson about planning or communication from it is
+          manufacturing content that the telemetry does not support.
