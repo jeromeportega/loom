@@ -29,6 +29,7 @@ import {
   standaloneBranch,
 } from '../intake/routing.js';
 import { PolicyEngine } from '../guardrails/PolicyEngine.js';
+import type Database from 'better-sqlite3';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -39,7 +40,7 @@ function gitc(args: string[], cwd = repo): string {
 }
 
 /**
- * Seeds a standalone story container.
+ * Seeds a standalone story container and returns the opened DB handle.
  *
  * Mirrors what Planner.runStandalone does for a successfully-planned brief:
  *  1. Writes the epic YAML file (one flat story-NNN entry)
@@ -48,10 +49,13 @@ function gitc(args: string[], cwd = repo): string {
  *  4. Sets status='approved' so selectEpics() picks it up
  *
  * The agent row is intentionally NOT pre-seeded — Supervisor.taskFor() creates
- * it at dispatch, matching the real run-time path (the Planner-created pending
- * agent is not in SUCCESS, so taskFor always creates fresh; see Supervisor:772).
+ * it at dispatch time; any Planner-seeded pending agent row is bypassed because
+ * taskFor only reuses rows already in a SUCCESS state.
+ *
+ * Returns the DB handle so callers share a single connection and avoid a
+ * second openDatabase() call in the same test.
  */
-function seedStandalone(epicId: string, storyId: string): void {
+function seedStandalone(epicId: string, storyId: string): Database.Database {
   const epicYaml = {
     epic_id: epicId,
     title: `Standalone ${storyId}`,
@@ -81,6 +85,8 @@ function seedStandalone(epicId: string, storyId: string): void {
   epicStore.createStandalone(epicId, epicYaml.title);
   epicStore.updatePaths(epicId, { yaml_path: rel });
   epicStore.updateStatus(epicId, 'approved');
+
+  return db;
 }
 
 /** Worker that commits real work into its assigned worktree. */
@@ -106,7 +112,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetDatabaseForTest();
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
@@ -146,8 +151,7 @@ describe('Standalone branch naming (AC2)', () => {
 
 describe('Standalone dispatch through unmodified Supervisor (AC1)', () => {
   it('dispatches a standalone story via the same worker/worktree flow as an epic-parented story', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
+    const db = seedStandalone('epic-001', 'story-001');
 
     const result = await new Supervisor({
       projectRoot: repo,
@@ -161,34 +165,41 @@ describe('Standalone dispatch through unmodified Supervisor (AC1)', () => {
   });
 
   it('dispatches to the correct flat story id (story-NNN, no phantom suffix)', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
-    const worker = new MockWorkerRunner({ status: 'done' });
+    const db = seedStandalone('epic-001', 'story-001');
+
+    // Capture dispatched story ids via the callback form so tracking is explicit.
+    const captured: string[] = [];
+    const worker = new MockWorkerRunner(async (a) => {
+      captured.push(a.storyId);
+      return { status: 'done' as const, commitCount: 0, summary: 'ok', logTail: '' };
+    });
 
     await new Supervisor({ projectRoot: repo, db, worker, maxConcurrent: 1 }).run();
 
-    const assignments = worker.assignments;
-    assert.equal(assignments.length, 1, 'exactly one story dispatched');
-    assert.equal(assignments[0].storyId, 'story-001', 'dispatched story id must be flat');
+    assert.equal(captured.length, 1, 'exactly one story dispatched');
+    assert.equal(captured[0], 'story-001', 'dispatched story id must be flat');
   });
 
   it('creates the worktree at story/story-NNN — flat branch, no phantom epic segment', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
+    const db = seedStandalone('epic-001', 'story-001');
 
-    let capturedBranch = '';
+    let capturedWorktreePath = '';
     const worker = new MockWorkerRunner(async (a) => {
-      capturedBranch = a.worktreePath;
+      capturedWorktreePath = a.worktreePath;
       return { status: 'done' as const, commitCount: 0, summary: 'ok', logTail: '' };
     });
 
     await new Supervisor({ projectRoot: repo, db, worker, maxConcurrent: 1 }).run();
 
     // Worktree directory name is the story id (WorktreeManager.worktreePath)
-    assert.ok(capturedBranch.endsWith(`story-001`), `worktree path must end in story-001, got ${capturedBranch}`);
+    assert.ok(
+      capturedWorktreePath.endsWith('story-001'),
+      `worktree path must end in story-001, got ${capturedWorktreePath}`
+    );
     // Branch recorded on agent after dispatch
     const agent = new AgentStore(db).getByStory('story-001');
-    assert.equal(agent?.branch_name, 'story/story-001', 'agent branch_name must be the flat scheme');
+    assert.ok(agent, 'agent row must exist for story-001');
+    assert.equal(agent.branch_name, 'story/story-001', 'agent branch_name must be the flat scheme');
   });
 
   it('standalone container is selected by Supervisor without any kind-specific code path', async () => {
@@ -217,12 +228,11 @@ describe('Standalone dispatch through unmodified Supervisor (AC1)', () => {
     fs.mkdirSync(path.dirname(absReg), { recursive: true });
     fs.writeFileSync(absReg, yaml.dump(epicYamlReg));
 
-    const db = openDatabase(path.join(repo, '.loom'));
+    // Open DB via seedStandalone so there is a single connection in this test.
+    const db = seedStandalone('epic-002', 'story-002');
     const epicStore = new EpicStore(db);
     epicStore.create('epic-001', epicYamlReg.title, relReg);
     epicStore.updateStatus('epic-001', 'approved');
-
-    seedStandalone('epic-002', 'story-002');
 
     const worker = new MockWorkerRunner({ status: 'done' });
     const result = await new Supervisor({ projectRoot: repo, db, worker, maxConcurrent: 2 }).run();
@@ -240,6 +250,10 @@ describe('Standalone single-PR finalize (AC3)', () => {
    * Sets up a bare git repo as a fake remote so the EpicFinalizer can reach
    * the push + openPr path.  Without a remote `defaultRemote()` returns null
    * and finalize returns early before calling openPr.
+   *
+   * Uses 'file://**' as the allowedRemotes glob — explicitly matching the
+   * file:// scheme so the minimatch call in EpicFinalizer.remoteAllowed()
+   * is unambiguous about which pattern is being exercised.
    */
   function addFakeRemote(): string {
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-bare-'));
@@ -251,15 +265,14 @@ describe('Standalone single-PR finalize (AC3)', () => {
   it('EpicFinalizer opens exactly one pull request for a standalone story container', async () => {
     const bare = addFakeRemote();
     try {
-      seedStandalone('epic-001', 'story-001');
-      const db = openDatabase(path.join(repo, '.loom'));
+      const db = seedStandalone('epic-001', 'story-001');
 
       let prCount = 0;
       const finalizer = new EpicFinalizer({
         projectRoot: repo,
         db,
-        // '**' matches any URL (incl. file:///path patterns) via minimatch
-        allowedRemotes: ['**'],
+        // 'file://**' explicitly matches file:// remote URLs created by addFakeRemote.
+        allowedRemotes: ['file://**'],
         prStrategy: 'per-epic',
         pushBranch: (_remote, _branch) => ({ ok: true, output: '' }),
         openPr: (_input) => {
@@ -283,8 +296,7 @@ describe('Standalone single-PR finalize (AC3)', () => {
   });
 
   it('the epic branch created for a standalone container carries the story work', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
+    const db = seedStandalone('epic-001', 'story-001');
 
     await new Supervisor({
       projectRoot: repo,
@@ -311,8 +323,7 @@ describe('Standalone single-PR finalize (AC3)', () => {
 
 describe('Standalone provenance parity (AC4)', () => {
   it('writes an audit_log dispatch row keyed to the flat story id and the agent_id', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
+    const db = seedStandalone('epic-001', 'story-001');
 
     await new Supervisor({
       projectRoot: repo,
@@ -334,8 +345,7 @@ describe('Standalone provenance parity (AC4)', () => {
   });
 
   it('writes decision_traces with the correct epic_id and story_id for a standalone run', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
+    const db = seedStandalone('epic-001', 'story-001');
 
     const worker = new MockWorkerRunner(async (a) => {
       a.onTrace?.({ kind: 'thinking', rationale: 'Standalone story reasoning.' });
@@ -359,8 +369,7 @@ describe('Standalone provenance parity (AC4)', () => {
   });
 
   it('decision_traces queryable by agent_id as well as story_id', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
+    const db = seedStandalone('epic-001', 'story-001');
 
     const worker = new MockWorkerRunner(async (a) => {
       a.onTrace?.({ kind: 'thinking', rationale: 'Agent-keyed trace.' });
@@ -377,8 +386,7 @@ describe('Standalone provenance parity (AC4)', () => {
   });
 
   it('audit_log rows are queryable by agent_id for a standalone story', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
+    const db = seedStandalone('epic-001', 'story-001');
 
     await new Supervisor({
       projectRoot: repo,
@@ -409,8 +417,7 @@ describe('Guardrail parity for standalone stories (AC5)', () => {
   });
 
   it('allowed_remotes gate blocks push for a standalone container (policy.git.allowed_remotes)', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
+    const db = seedStandalone('epic-001', 'story-001');
 
     // EpicFinalizer with an empty allowedRemotes list — any push attempt is blocked.
     let pushAttempted = false;
@@ -423,7 +430,9 @@ describe('Guardrail parity for standalone stories (AC5)', () => {
         pushAttempted = true;
         return { ok: false, output: 'remote not allowed' };
       },
-      openPr: (_input) => undefined,
+      openPr: (_input) => {
+        throw new Error('openPr must not be called when push is blocked by allowedRemotes');
+      },
     });
 
     await new Supervisor({
@@ -459,8 +468,7 @@ describe('Integration gate parity for standalone stories (AC5)', () => {
   }
 
   it('block-mode gate withholds the PR and records an audit row for a standalone story', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
+    const db = seedStandalone('epic-001', 'story-001');
 
     await new Supervisor({
       projectRoot: repo,
@@ -488,8 +496,7 @@ describe('Integration gate parity for standalone stories (AC5)', () => {
   });
 
   it('warn-mode gate records the failure but does not block finalization', async () => {
-    seedStandalone('epic-001', 'story-001');
-    const db = openDatabase(path.join(repo, '.loom'));
+    const db = seedStandalone('epic-001', 'story-001');
 
     await new Supervisor({
       projectRoot: repo,
