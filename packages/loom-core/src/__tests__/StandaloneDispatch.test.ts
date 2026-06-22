@@ -1,11 +1,4 @@
-/**
- * story-047-003: Standalone dispatch, single-PR finalize, and full provenance.
- *
- * Verifies that a standalone story container (kind='standalone') routes through
- * the UNMODIFIED Supervisor → WorktreeManager → IntegrationGate → EpicFinalizer
- * stack with identical observable behavior to an epic-parented story, using the
- * flat branch scheme (story/story-NNN) with no phantom epic id segment.
- */
+// story-047-003: standalone dispatch, single-PR finalize, and full provenance.
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -39,22 +32,7 @@ function gitc(args: string[], cwd = repo): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 }
 
-/**
- * Seeds a standalone story container and returns the opened DB handle.
- *
- * Mirrors what Planner.runStandalone does for a successfully-planned brief:
- *  1. Writes the epic YAML file (one flat story-NNN entry)
- *  2. Creates epics row with kind='standalone'
- *  3. Sets yaml_path so Supervisor.loadStories() can read it
- *  4. Sets status='approved' so selectEpics() picks it up
- *
- * The agent row is intentionally NOT pre-seeded — Supervisor.taskFor() creates
- * it at dispatch time; any Planner-seeded pending agent row is bypassed because
- * taskFor only reuses rows already in a SUCCESS state.
- *
- * Returns the DB handle so callers share a single connection and avoid a
- * second openDatabase() call in the same test.
- */
+// Seeds an approved standalone container; returns the DB handle for the test to reuse.
 function seedStandalone(epicId: string, storyId: string): Database.Database {
   const epicYaml = {
     epic_id: epicId,
@@ -89,11 +67,11 @@ function seedStandalone(epicId: string, storyId: string): Database.Database {
   return db;
 }
 
-/** Worker that commits real work into its assigned worktree. */
 function committingWorker(): MockWorkerRunner {
   return new MockWorkerRunner(async (a) => {
     execFileSync('git', ['commit', '--allow-empty', '-m', `${a.storyId}: standalone work`], {
       cwd: a.worktreePath,
+      stdio: 'pipe',
     });
     return { status: 'done' as const, commitCount: 1, summary: 'ok', logTail: '' };
   });
@@ -246,25 +224,18 @@ describe('Standalone dispatch through unmodified Supervisor (AC1)', () => {
 // ─── Integration: single PR finalize (AC3) ────────────────────────────────────
 
 describe('Standalone single-PR finalize (AC3)', () => {
-  /**
-   * Sets up a bare git repo as a fake remote so the EpicFinalizer can reach
-   * the push + openPr path.  Without a remote `defaultRemote()` returns null
-   * and finalize returns early before calling openPr.
-   *
-   * Uses 'file://**' as the allowedRemotes glob — explicitly matching the
-   * file:// scheme so the minimatch call in EpicFinalizer.remoteAllowed()
-   * is unambiguous about which pattern is being exercised.
-   */
+  // Adds a bare-init'd temp dir as 'origin'; 'file://**' matches the resulting URL.
   function addFakeRemote(): string {
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-bare-'));
-    execFileSync('git', ['init', '--bare', '-q'], { cwd: bare });
+    execFileSync('git', ['init', '--bare', '-q'], { cwd: bare, stdio: 'pipe' });
     gitc(['remote', 'add', 'origin', `file://${bare}`]);
     return bare;
   }
 
   it('EpicFinalizer opens exactly one pull request for a standalone story container', async () => {
-    const bare = addFakeRemote();
+    let bare: string | undefined;
     try {
+      bare = addFakeRemote();
       const db = seedStandalone('epic-001', 'story-001');
 
       let prCount = 0;
@@ -291,7 +262,7 @@ describe('Standalone single-PR finalize (AC3)', () => {
 
       assert.equal(prCount, 1, 'exactly one PR must be opened for a standalone story container');
     } finally {
-      fs.rmSync(bare, { recursive: true, force: true });
+      if (bare) fs.rmSync(bare, { recursive: true, force: true });
     }
   });
 
@@ -348,8 +319,9 @@ describe('Standalone provenance parity (AC4)', () => {
     const db = seedStandalone('epic-001', 'story-001');
 
     const worker = new MockWorkerRunner(async (a) => {
-      a.onTrace?.({ kind: 'thinking', rationale: 'Standalone story reasoning.' });
-      a.onTrace?.({ kind: 'tool_intent', subject: 'Bash', rationale: 'Running build command.' });
+      assert.equal(typeof a.onTrace, 'function', 'onTrace must be set by the runner');
+      a.onTrace!({ kind: 'thinking', rationale: 'Standalone story reasoning.' });
+      a.onTrace!({ kind: 'tool_intent', subject: 'Bash', rationale: 'Running build command.' });
       return { status: 'done' as const, commitCount: 0, summary: 'ok', logTail: '' };
     });
 
@@ -372,7 +344,8 @@ describe('Standalone provenance parity (AC4)', () => {
     const db = seedStandalone('epic-001', 'story-001');
 
     const worker = new MockWorkerRunner(async (a) => {
-      a.onTrace?.({ kind: 'thinking', rationale: 'Agent-keyed trace.' });
+      assert.equal(typeof a.onTrace, 'function', 'onTrace must be set by the runner');
+      a.onTrace!({ kind: 'thinking', rationale: 'Agent-keyed trace.' });
       return { status: 'done' as const, commitCount: 0, summary: 'ok', logTail: '' };
     });
 
@@ -513,9 +486,10 @@ describe('Integration gate parity for standalone stories (AC5)', () => {
       }),
     }).run();
 
-    // Warn never blocks — finalization proceeds past the gate.
+    // Warn never blocks — EpicFinalizer proceeds past the gate and ends in 'finalizing'
+    // (no remote configured, so it returns before pushing, as expected for this test).
     const epic = new EpicStore(db).get('epic-001');
-    assert.notEqual(epic?.status, 'in_progress', 'warn mode must NOT block the standalone finalize');
+    assert.equal(epic?.status, 'finalizing', 'warn mode must NOT block the standalone finalize');
 
     const row = new AuditLog(db).latestActionByCommand('epic-001', ['epic_integration_gate']);
     assert.ok(row, 'gate audit row must still be written in warn mode');
