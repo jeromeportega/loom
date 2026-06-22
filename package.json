@@ -10,6 +10,7 @@
     "eval": "npm run build -w @loom-ai/core && node scripts/eval.mjs",
     "eval:intake": "npm run build -w @loom-ai/core && node scripts/eval-intake.mjs",
     "eval:brief-quality": "npm run build -w @loom-ai/core && node scripts/eval-brief-quality.mjs",
+    "eval:skill-judge": "npm run build -w @loom-ai/core && node scripts/eval-skill-judge.mjs",
     "lint": "npm run lint --workspaces --if-present",
     "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules"
   },
