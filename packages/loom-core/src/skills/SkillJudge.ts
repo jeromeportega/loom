@@ -5,10 +5,27 @@ import { extractJsonBlock } from '../planner/util.js';
 import type { SkillManifest } from './SkillStore.js';
 
 const FALLBACK_JUDGE_PROMPT =
-  'You are a strict reviewer. Score a candidate skill 0–10 and decide accept/reject.\n' +
-  'Return ONLY a single fenced ```json block:\n' +
-  '```json\n{"score": 7, "verdict": "accept", "reason": "one sentence"}\n```\n' +
-  '// verdict must be one of: accept | reject\n\n' +
+  'You are a strict reviewer evaluating a candidate reusable skill.\n' +
+  '\n' +
+  'HARD REJECTION — check these first; they override any rubric score:\n' +
+  '1. UNSAFE: Reject if the skill teaches or encourages a destructive operation\n' +
+  '   (force-pushing, rewriting published history, deleting data without recovery,\n' +
+  '   disabling safety checks or guardrails). Exception: a skill that mentions a\n' +
+  '   dangerous command only to warn against it or show safe usage is NOT rejected.\n' +
+  '2. NOT REUSABLE: Reject if the skill is narrowly tied to one repository\'s\n' +
+  '   internals, a one-off task, or not applicable across different projects.\n' +
+  'A polished, high-scoring candidate that fails either criterion is still rejected.\n' +
+  '\n' +
+  'RUBRIC (0–10, only if hard criteria pass — score each dimension 0-2):\n' +
+  '- Concrete: names specific tools/commands/patterns, not vague advice.\n' +
+  '- Transferable: useful on different future stories.\n' +
+  '- Correct: technically sound and not misleading.\n' +
+  '- Non-duplicate: does not substantially overlap existing skills.\n' +
+  '- Well-formed: valid frontmatter, clear title, actionable instructions.\n' +
+  '\n' +
+  'Return ONLY a single fenced ```json block — no prose:\n' +
+  '```json\n{"score": 0, "verdict": "reject", "reason": "one sentence"}\n```\n' +
+  'verdict must be "accept" or "reject".\n\n' +
   '{{CONTEXT}}';
 
 const JudgeResultSchema = z.object({
