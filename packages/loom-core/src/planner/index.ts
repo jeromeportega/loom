@@ -9,6 +9,7 @@ export { ArchitectAgent } from './ArchitectAgent.js';
 export type { ArchitectResult } from './ArchitectAgent.js';
 export { QAAgent } from './QAAgent.js';
 export type { QAResult } from './QAAgent.js';
+export { StandaloneStoryAgent } from './StandaloneStoryAgent.js';
 export { Planner } from './Planner.js';
 export type { PlanResult, PlannerOptions } from './Planner.js';
 export {

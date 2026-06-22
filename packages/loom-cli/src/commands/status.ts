@@ -9,7 +9,9 @@ import {
   ProjectRegistry,
   deriveBlocked,
   displayModel,
+  STANDALONE_KIND,
   type IntakeVerdict,
+  type EpicRecord,
 } from '@loom-ai/core';
 
 /** Audit actions that mark a worker as approaching/hitting a deadline. */
@@ -162,6 +164,8 @@ interface JsonEpic {
   id: string;
   title: string;
   status: string;
+  /** 'standalone' when this entry represents a standalone story, not a full epic. */
+  kind?: 'standalone';
   archived?: boolean;
   blocked?: true;
   blocked_reason?: 'integration_gate';
@@ -208,18 +212,67 @@ function collectJsonEpics(
   try {
     const epicStore = new EpicStore(db);
     const agentStore = new AgentStore(db);
-    const epicRows = epicId
+    const allRows = epicId
       ? [epicStore.get(epicId)].filter(Boolean)
-      : epicStore.list({ includeArchived });
+      : epicStore.list({ includeArchived, includeStandalone: true });
 
-    const validEpics = epicRows.filter(Boolean);
-    const verdicts = epicStore.getIntakeVerdicts(validEpics.map((e) => e!.id));
+    const validRows = allRows.filter(Boolean) as EpicRecord[];
+    const verdicts = epicStore.getIntakeVerdicts(validRows.map((e) => e.id));
     const out: JsonEpic[] = [];
-    for (const epic of validEpics) {
-      if (!epic) continue;
-      // One row per story_id — collapse retries to the latest attempt and
-      // surface older ones under `history`, matching `loom_get_status`.
+    for (const epic of validRows) {
       const latest = agentStore.listLatestByEpic(epic.id);
+
+      if (epic.kind === STANDALONE_KIND) {
+        // Standalone story — surface the story id as the top-level id, never
+        // the internal container epic id. If no agent exists yet (pre-dispatch),
+        // emit a minimal entry using the container status.
+        if (latest.length === 0) {
+          const storyId = epic.id.replace(/^epic-/, 'story-');
+          out.push({
+            id: storyId,
+            title: epic.title,
+            status: epic.status,
+            kind: 'standalone',
+            ...(epic.archived_at ? { archived: true } : {}),
+            intake_verdict: verdicts.get(epic.id) ?? null,
+            stories: [],
+          });
+          continue;
+        }
+        const a = latest[0]; // standalone always has exactly one story
+        const history = agentStore
+          .listHistoryByStory(a.story_id)
+          .filter((h) => h.id !== a.id);
+        const story: JsonStory = {
+          id: a.story_id,
+          title: a.story_title ?? a.story_id,
+          status: a.status,
+          ...(a.pr_url ? { pr_url: a.pr_url } : {}),
+          ...(a.started_at ? { started_at: a.started_at } : {}),
+          ...(a.branch_name ? { branch_name: a.branch_name } : {}),
+          ...(history.length > 0
+            ? {
+                history: history.map((h) => ({
+                  id: h.id,
+                  status: h.status,
+                  updated_at: h.updated_at,
+                })),
+              }
+            : {}),
+        };
+        out.push({
+          id: a.story_id,
+          title: a.story_title ?? epic.title,
+          status: a.status,
+          kind: 'standalone',
+          ...(epic.archived_at ? { archived: true } : {}),
+          intake_verdict: verdicts.get(epic.id) ?? null,
+          stories: [story],
+        });
+        continue;
+      }
+
+      // Normal epic — one row per story_id, collapse retries.
       const stories: JsonStory[] = latest.map((a) => {
         const history = agentStore
           .listHistoryByStory(a.story_id)
@@ -270,11 +323,14 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
     const epicStore = new EpicStore(db);
     const agentStore = new AgentStore(db);
     const auditStore = new AuditLog(db);
-    const epics = epicId
+    const allRows = epicId
       ? [epicStore.get(epicId)].filter(Boolean)
-      : epicStore.list({ includeArchived });
+      : epicStore.list({ includeArchived, includeStandalone: true });
 
-    if (epics.length === 0) {
+    const epics = allRows.filter((e) => e && e.kind !== STANDALONE_KIND) as EpicRecord[];
+    const standalones = allRows.filter((e) => e && e.kind === STANDALONE_KIND) as EpicRecord[];
+
+    if (epics.length === 0 && standalones.length === 0) {
       const archivedCount = epicStore.listArchived().length;
       if (!includeArchived && archivedCount > 0) {
         console.log(
@@ -286,9 +342,9 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
       return;
     }
 
-    const verdicts = epicStore.getIntakeVerdicts(
-      epics.filter(Boolean).map((e) => e!.id)
-    );
+    const verdicts = epics.length > 0
+      ? epicStore.getIntakeVerdicts(epics.map((e) => e.id))
+      : new Map<string, IntakeVerdict | null>();
 
     for (const epic of epics) {
       if (!epic) continue;
@@ -366,6 +422,40 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
         }
       }
     }
+
+    // Render standalone stories with story framing (never as "epic-NNN with N stories").
+    for (const container of standalones) {
+      const agents = agentStore.listLatestByEpic(container.id);
+      const archivedTag = container.archived_at ? '  🗄 [archived]' : '';
+      if (agents.length === 0) {
+        // Container exists but no agent dispatched yet (planning phase).
+        const icon = STATUS_ICONS[container.status] ?? '?';
+        const statusLabel =
+          container.status === 'publish_pending' ? PUBLISH_PENDING_LABEL : container.status;
+        console.log(`\n   ${icon} Story ${container.title}  [${statusLabel}]${archivedTag}`);
+        continue;
+      }
+      // Exactly one story for a standalone container.
+      const agent = agents[0];
+      const si = STATUS_ICONS[agent.status] ?? '?';
+      const pr = agent.pr_url ? `  → ${agent.pr_url}` : '';
+      const elapsed = agent.started_at
+        ? ` (${elapsedStr(agent.started_at, agent.status === 'running' ? undefined : agent.updated_at)})`
+        : '';
+      const label = agent.story_title
+        ? `${agent.story_id} — ${agent.story_title}`
+        : agent.story_id;
+      const stall =
+        agent.status === 'running' ? stallReasonFor(auditStore, agent.id) : null;
+      const stallTag = stall ? `  ⚠ ${stall}` : '';
+      const attempts = agentStore.listHistoryByStory(agent.story_id).length;
+      const retryTag = attempts > 1 ? `  (retry ${attempts - 1})` : '';
+      const modelTag = `  [${displayModel(agent.model)}]`;
+      console.log(`\n   ${si} Story ${label}  [${agent.status}]${elapsed}${stallTag}${retryTag}${modelTag}${pr}${archivedTag}`);
+      if (agent.branch_name && agent.status !== 'done') {
+        console.log(`        ${agent.branch_name}`);
+      }
+    }
   } finally {
     db.close();
   }
@@ -394,9 +484,10 @@ function loomDirTerminal(loomDir: string, epicId?: string): boolean {
   try {
     const epicStore = new EpicStore(db);
     const agentStore = new AgentStore(db);
+    // Include standalone containers so the --watch loop also waits for them.
     const epics = epicId
       ? [epicStore.get(epicId)].filter(Boolean)
-      : epicStore.list();
+      : epicStore.list({ includeStandalone: true });
     if (epics.length === 0) return false;
     return epics.every((epic) =>
       epic ? agentStore.allTerminalForEpic(epic.id) : true

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -383,6 +383,11 @@ export function runMigrations(db: Database.Database): void {
   // v23: observe-only intake verdict. Additive; never DROP/TRUNCATE; never read by planning.
   if (!epicCols.some((c) => c.name === 'intake_verdict')) {
     db.exec('ALTER TABLE epics ADD COLUMN intake_verdict TEXT');
+  }
+  // v24: standalone story container kind. NULL/'epic'=legacy epic; 'standalone'=internal
+  // single-story container. Additive; never DROP/TRUNCATE; never backfilled (NFR-1).
+  if (!epicCols.some((c) => c.name === 'kind')) {
+    db.exec('ALTER TABLE epics ADD COLUMN kind TEXT');
   }
 
   const row = db
