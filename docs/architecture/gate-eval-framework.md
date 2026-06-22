@@ -146,6 +146,62 @@ Output is written to `.loom/eval/brief-quality-report.{md,json}` (gitignored).
 For a full operator runbook including what to record and how to interpret the verdict,
 see [`docs/runbooks/brief-quality-eval.md`](../runbooks/brief-quality-eval.md).
 
+## Running the lesson-extractor eval (out-of-band)
+
+The lesson-extractor eval measures how accurately `LessonExtractor` synthesizes
+lessons from epic telemetry against a human-labeled case set. It is **not a `loom`
+subcommand** (ADR-006) — invoke it directly after building `loom-core`:
+
+```bash
+npm run build -w @loom-ai/core
+node scripts/eval-lesson-extractor.mjs
+```
+
+or via the workspace shortcut:
+
+```bash
+npm run eval:lesson-extractor
+```
+
+**Optional env-var overrides (defaults shown):**
+
+```bash
+LOOM_EVAL_GATE_MODEL=claude-haiku-4-5-20251001  # model for LessonExtractor (the gate)
+LOOM_EVAL_JUDGE_MODEL=claude-opus-4-8           # model for the Opus rubric judge
+```
+
+**Expected cost and runtime (2-case default fixture):**
+
+Each of the 2 cases incurs **exactly one gate call** (LessonExtractor) and, when
+the gate returns `ok`, **exactly one Opus judge call**. With `claude-cli` session-
+based backend (no metered tokens), the run has **no metered API cost**. With an
+API key backend, budget for ≤4 calls (≤2 gate + ≤2 judge); wall-clock time is
+typically **1–3 minutes** for 2 cases processed sequentially.
+
+**Pass/fail thresholds:**
+
+The run resolves to `'proceed'` only when all of the following hold:
+
+- ≥ 2 scored cases (both gate ok and judge ok)
+- Gate failure rate ≤ 25%
+- Judge inconclusive rate ≤ 25%
+- Faithfulness ≥ 80%
+- Usefulness ≥ 70%
+- Coverage ≥ 70%
+- Hallucination rate ≤ 10%
+- Over-extraction rate ≤ 20%
+
+Output is written to `.loom/eval/lesson-extractor-report.{md,json}` (gitignored).
+
+The consumer is reached by **deep import only** — `import { main } from
+'./lesson-extractor/run.js'` — not through the top barrel `src/eval/index.ts`.
+This is ADR-001: the lesson-extractor wildcard was intentionally not registered at
+the top barrel to prevent name-collision failures (dogfooding story S41, which
+encountered exactly this failure with another consumer).
+
+For a full operator runbook including what to record and how to interpret the
+verdict, see [`docs/runbooks/lesson-extractor-eval.md`](../runbooks/lesson-extractor-eval.md).
+
 ## Per-consumer sub-barrel topology
 
 Every eval consumer lives in its own directory under `src/eval/`, each
@@ -159,6 +215,7 @@ directories:
 | `brief-quality/` | Brief-quality gate consumer. `index.ts` uses `export *` from safe modules and re-exports `EvalReport` and `MainOptions` from `run.ts` by explicit name to avoid collision with `eval/types.ts`'s `EvalReport`. Not re-exported at the package root — consumer implementation details are not part of the public API surface. |
 | `skill-judge/` | Skill-quality judge consumer. Same pattern as `brief-quality/`. Not re-exported at the package root — consumer implementation details are not part of the public API surface. |
 | `intake/` | Intake classifier consumer. Promoted from the flat `eval/` surface (epic-040). `index.ts` uses explicit named re-exports throughout; `JudgeOutcome` is intentionally omitted to avoid collision with `framework/types.ts`'s generic `JudgeOutcome<T>`. Re-exported at the package root via `export * from './intake/index.js'` (verified: no intake exported name appears in `src/eval/index.ts`'s explicit export list). |
+| `lesson-extractor/` | Lesson-extractor gate consumer (epic-041). `index.ts` uses `export *` from safe modules and re-exports `EvalReport` and `MainOptions` from `run.ts` by explicit name. **Not re-exported at the top barrel** (ADR-001, dogfooding S41) — reached by deep import only (`./lesson-extractor/run.js`) to avoid wildcard-collision failure; `createLessonExtractorConsumer` and scorer symbols never reach `src/eval/index.ts`. |
 
 ### Convention: wire internally, expose one entry
 
