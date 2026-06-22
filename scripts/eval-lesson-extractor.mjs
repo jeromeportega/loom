@@ -9,24 +9,22 @@
  *
  * Output: .loom/eval/lesson-extractor-report.{md,json}
  */
-import fs from 'node:fs';
 import path from 'node:path';
 import { main } from '../packages/loom-core/dist/eval/lesson-extractor/run.js';
 
-const gateModel  = process.env.LOOM_EVAL_GATE_MODEL  ?? 'claude-haiku-4-5-20251001';
-const judgeModel = process.env.LOOM_EVAL_JUDGE_MODEL ?? 'claude-opus-4-8';
+const gateModel   = process.env.LOOM_EVAL_GATE_MODEL  ?? 'claude-haiku-4-5-20251001';
+const judgeModel  = process.env.LOOM_EVAL_JUDGE_MODEL ?? 'claude-opus-4-8';
+// Resolve to workspace root (CWD when run via `npm run eval:lesson-extractor` from repo root).
+const projectRoot = path.resolve('.');
 
 console.log(`\nRunning lesson-extractor eval — 2 cases (default fixture).`);
 console.log(`  Gate model:  ${gateModel}`);
 console.log(`  Judge model: ${judgeModel}\n`);
 
-const report = await main({ gateModel, judgeModel });
+// main() writes both report files to <projectRoot>/.loom/eval/ before returning.
+const report = await main({ gateModel, judgeModel, projectRoot });
 
-const outputDir = path.resolve('.loom/eval');
-fs.mkdirSync(outputDir, { recursive: true });
-fs.writeFileSync(path.join(outputDir, 'lesson-extractor-report.md'),   report.markdown, 'utf8');
-fs.writeFileSync(path.join(outputDir, 'lesson-extractor-report.json'), JSON.stringify(report, null, 2), 'utf8');
-
+const outputDir = path.join(projectRoot, '.loom', 'eval');
 console.log(`Report written to ${outputDir}/lesson-extractor-report.{md,json}`);
 console.log(`\nDecision: ${report.decision.verdict.toUpperCase()}`);
 if (report.decision.reasons.length > 0) {

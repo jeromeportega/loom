@@ -26,15 +26,12 @@ export interface EvalReport {
   markdown: string;
 }
 
-function pct(rate: number): string {
-  return `${(rate * 100).toFixed(1)}%`;
-}
-
 function renderMarkdown(
   metrics: LessonExtractorMetrics,
   decision: Decision,
   perCase: RunRecord<Lesson[], LessonExtractorJudgment>[],
 ): string {
+  const pct = (rate: number) => `${(rate * 100).toFixed(1)}%`;
   const lines: string[] = [
     '# Lesson-Extractor Eval Report',
     '',
@@ -91,7 +88,9 @@ export async function main(opts: MainOptions = {}): Promise<EvalReport> {
     gateModel:  opts.gateModel,
     judgeModel: opts.judgeModel,
   });
-  // Default projectRoot: three levels up from compiled dist/eval/lesson-extractor/ → package root
+  // __dirname available: loom-core is "type":"commonjs" (package.json).
+  // Three levels up from dist/eval/lesson-extractor/ → package root (packages/loom-core).
+  // Callers that want workspace-root reports must pass projectRoot explicitly (the runner script does).
   const projectRoot = opts.projectRoot ?? path.resolve(__dirname, '../../..');
   const llm = opts.llm ?? createLLMClient('claude-cli');
 
