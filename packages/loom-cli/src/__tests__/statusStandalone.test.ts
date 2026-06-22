@@ -178,6 +178,24 @@ describe('loom status --json — standalone story framing', () => {
       `'epic-047' must never appear as a top-level id in standalone JSON output:\n${out}`
     );
   });
+
+  it('[AC2] JSON pre-dispatch (no agent) standalone emits story-NNN id, not container epic id', () => {
+    const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
+    // Container exists but no agent dispatched — exercises the pre-dispatch branch.
+    new EpicStore(db).createStandalone('epic-049', 'Pre-dispatch standalone');
+    db.close();
+
+    const out = captureStatus({ json: true });
+    const payload = JSON.parse(out) as { epics: Array<{ id: string; kind?: string }> };
+    // Must surface as story-049, not epic-049.
+    const entry = payload.epics.find((e) => e.kind === 'standalone');
+    assert.ok(entry, 'Pre-dispatch standalone must appear with kind=standalone');
+    assert.equal(entry.id, 'story-049', 'Pre-dispatch standalone id must be story-049, not epic-049');
+    assert.ok(
+      !payload.epics.some((e) => e.id === 'epic-049'),
+      `Container id epic-049 must not appear as a top-level id:\n${out}`
+    );
+  });
 });
 
 // ─── AC3: normal epic rendering is unchanged ────────────────────────────────
@@ -370,29 +388,31 @@ describe('loom traces/audit — parentless story-NNN id (AC4)', () => {
   });
 
   it('[audit] parentless story-NNN id does not attempt to infer an epic (just does DB lookup)', () => {
+    // openDatabase() is a singleton — verify the no-epic-inference guarantee
+    // directly via AuditLog.getByStory rather than through the CLI wrapper,
+    // which would query the wrong DB (the one the singleton was first opened on).
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
     // No epic created intentionally — verifies no code tries to infer 'epic-047'
     // from 'story-047' and then crashes on a missing epic lookup.
-    new AgentStore(db);
-    new AuditLog(db).record({
+    const auditLog = new AuditLog(db);
+    auditLog.record({
       action: 'test_action',
       command: 'story-047',
     });
-    db.close();
-
+    // getByStory must not throw and must return the row — proves the query uses
+    // a plain DB lookup and never attempts to infer or resolve an epic from the id.
     let threw = false;
-    let out = '';
+    let entries: ReturnType<AuditLog['getByStory']> = [];
     try {
-      out = captureAudit({ story: 'story-047' });
+      entries = auditLog.getByStory('story-047');
     } catch (err) {
       threw = true;
     }
-    assert.equal(threw, false, 'Must not throw even with no epic for the story');
-    // The audit command renders the row (action appears) — proves it didn't try
-    // to do an epic lookup that would have failed.
+    db.close();
+    assert.equal(threw, false, 'AuditLog.getByStory must not throw for a parentless story-NNN id');
     assert.ok(
-      out.includes('test_action') || out.includes('No audit entries'),
-      `Expected audit output without error:\n${out}`
+      entries.some((e) => e.action === 'test_action'),
+      `Expected 'test_action' row from getByStory('story-047') — proves no epic inference:\n${JSON.stringify(entries)}`
     );
   });
 });

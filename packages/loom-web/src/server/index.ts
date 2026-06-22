@@ -608,6 +608,7 @@ function rollupEpics(
         project_root: projectRoot,
         is_current_project: isCurrent,
         archived: epic.archived_at != null,
+        ...(deriveBlocked(epic) ?? {}),
         intake_verdict: verdicts.get(epic.id) ?? null,
       });
       continue;
