@@ -1,0 +1,451 @@
+# eval-cases/skill-generator.yaml
+# Fixture cases for the skill-generator eval consumer (epic-043).
+#
+# Each case pairs a completed-story work context with rubric expectations:
+#   expected_decision — 'generate' | 'none' | 'either' (borderline band)
+#   expected_themes   — qualities a good SKILL.md must have (generate cases only)
+#   spurious_traps    — reasons the model must NOT generate a skill (trivial cases)
+#
+# Three buckets: worthy (→ generate), trivial (→ none), borderline (→ either).
+# The trivial bucket is the primary defence against spurious-generation drift —
+# invest curation effort here.
+#
+# Schema: SkillGeneratorCaseSchema (src/eval/skill-generator/caseSchema.ts)
+
+cases:
+
+  # ── WORTHY CASES ─────────────────────────────────────────────────────────────
+  # Work that reveals a reusable, multi-step procedure operators will repeat.
+  # expected_decision: generate  |  expected_themes: non-empty
+
+  - id: sg-worthy-scaffold-eval-consumer
+    source: worthy
+    rationale: >
+      The agent followed a precise multi-step recipe to scaffold a new gate-eval
+      consumer: create directory structure, author caseSchema.ts, judgeTypes.ts,
+      models.ts, loadCases.ts, judge.ts, runGate.ts, score.ts, consumer.ts,
+      run.ts, and wire the sub-barrel. Each step has a fixed ordering and the
+      whole pattern repeats verbatim for every new eval dimension. Capturing this
+      as a skill prevents future workers from guessing the file order or missing
+      a required export. The stub-then-fill protocol and barrel-wiring step are
+      especially easy to get wrong without an explicit checklist.
+    work:
+      story:
+        id: story-041-001
+        title: "Foundation: consumer skeleton and shared type/schema files"
+        description: >
+          Scaffold the lesson-extractor eval consumer directory with all shared
+          types, schemas, and stub implementations. The package must build
+          type-clean after this story so parallel stories can branch from it.
+        acceptance_criteria:
+          - caseSchema.ts exports LessonExtractorCaseSchema and LessonExtractorCase
+          - judgeTypes.ts exports LessonExtractorJudgment and LessonExtractorDecision
+          - models.ts exports DEFAULT_GATE_MODEL and resolveModels()
+          - loadCases.ts stub exports the correct signature (body filled later)
+          - judge.ts, runGate.ts, score.ts, consumer.ts, run.ts stubs are present
+          - Sub-barrel index.ts re-exports all public symbols
+          - Top-barrel src/eval/index.ts adds exactly one named re-export line
+          - npm run build exits 0 with no type errors
+      summary: >
+        Scaffolded the lesson-extractor eval consumer skeleton following the
+        stub-then-fill protocol from the shared contract. Authored caseSchema.ts
+        (with WorkContextSchema, RubricExpectationSchema, and the two top-level
+        schemas), judgeTypes.ts (LessonExtractorDecision and LessonExtractorJudgment),
+        and models.ts (DEFAULT_GATE_MODEL, DEFAULT_JUDGE_MODEL, resolveModels with
+        env-override precedence). Seeded all five stub files with frozen exported
+        signatures and `throw new Error('not implemented')` bodies. Wired the
+        sub-barrel and added the named re-export line to src/eval/index.ts.
+        Build exits clean; all imports type-check.
+      diff_context: |
+        [08:10:02] Reading src/eval/framework/types.ts to confirm GateEvalConsumer shape
+        [08:10:08] Creating packages/loom-core/src/eval/lesson-extractor/
+        [08:10:09] Writing caseSchema.ts (WorkContextSchema + RubricExpectationSchema)
+        [08:10:12] Writing judgeTypes.ts (LessonExtractorDecision, LessonExtractorJudgment)
+        [08:10:14] Writing models.ts (DEFAULT_GATE_MODEL=claude-haiku-4-5-20251001, env overrides)
+        [08:10:17] Writing loadCases.ts stub — signature only, throws not-implemented
+        [08:10:19] Writing judge.ts stub — signature only, throws not-implemented
+        [08:10:21] Writing runGate.ts stub — signature only, throws not-implemented
+        [08:10:24] Writing score.ts stub — LessonExtractorMetrics type + function signatures
+        [08:10:27] Writing consumer.ts — wires loadCases→runGate→judge→score against frozen sigs
+        [08:10:30] Writing run.ts stub — MainOptions, EvalReport types + main() signature
+        [08:10:32] Writing index.ts sub-barrel — re-exports all public symbols
+        [08:10:35] Patching src/eval/index.ts — adding one named re-export line
+        [08:10:37] npm run build: exit 0
+        [08:10:39] tsc --noEmit: 0 errors
+      existing_skills: []
+    rubric:
+      expected_decision: generate
+      expected_themes:
+        - step-ordered recipe for creating an eval consumer (directory creation through barrel wiring)
+        - stub-then-fill protocol so the package type-checks before bodies are implemented
+        - correct file order — schema before types, types before models, stubs before consumer/run
+        - sub-barrel wiring and the single named re-export rule for the top barrel
+        - how to check type-clean build after scaffolding
+      spurious_traps: []
+
+  - id: sg-worthy-idempotent-migration-guard
+    source: worthy
+    rationale: >
+      The agent discovered that a schema migration lacked an idempotency guard
+      after the migration broke on a second run in CI. The fix involved wrapping
+      the ALTER TABLE in an existence check and writing an integration test that
+      verifies re-running the migration is safe. This pattern — checking column
+      existence before ALTER TABLE, using a transaction, and writing a re-run test
+      — recurs whenever loom adds a new database column. Without a skill, future
+      workers repeat the same mistake of omitting the guard.
+    work:
+      story:
+        id: story-031-004
+        title: "Harden audit_log migration with idempotency guard"
+        description: >
+          The story-031-001 migration script lacks an IF NOT EXISTS check.
+          Running it twice throws "duplicate column: correlation_id". Add an
+          existence guard so the script is safe to re-run, and write a test
+          that exercises the re-run path.
+        acceptance_criteria:
+          - Migration script checks if correlation_id column exists before ALTER TABLE
+          - Script is wrapped in a transaction so failure leaves the table unchanged
+          - Integration test runs the migration twice and asserts no error on the second run
+          - Existing rows are preserved across both runs
+          - npm test passes
+      summary: >
+        Added an idempotency guard to the audit_log migration: wrapped the
+        ALTER TABLE in a PRAGMA table_info check (SELECT count(*) FROM
+        pragma_table_info('audit_log') WHERE name='correlation_id') and skipped
+        the ALTER if the column already exists. Wrapped in BEGIN/COMMIT for
+        atomicity. Added an integration test that runs the migration script twice
+        against an in-memory SQLite database and asserts the second run exits 0
+        and that row count is unchanged. All 17 tests pass.
+      diff_context: |
+        [14:05:11] Reading scripts/migrate-audit-log.mjs to understand current structure
+        [14:05:14] Discovered missing idempotency guard — ALTER TABLE will fail on re-run
+        [14:05:20] Adding PRAGMA table_info existence check before ALTER TABLE
+        [14:05:24] Wrapping migration in BEGIN / COMMIT transaction
+        [14:05:28] Writing integration test: run migrate twice, assert second run exits 0
+        [14:05:33] npm test: 17 passed, 0 failed
+        [14:05:35] Lint: clean
+      existing_skills: []
+    rubric:
+      expected_decision: generate
+      expected_themes:
+        - PRAGMA table_info existence check pattern for SQLite column additions
+        - wrapping ALTER TABLE migrations in a transaction for atomicity
+        - integration test pattern for verifying a migration is safe to re-run
+        - when and why to add idempotency guards (any migration that may run in CI multiple times)
+      spurious_traps: []
+
+
+  # ── TRIVIAL CASES ────────────────────────────────────────────────────────────
+  # One-off fixes with no reusable multi-step recipe specific to loom.
+  # expected_decision: none  |  spurious_traps: non-empty
+
+  - id: sg-trivial-typo-in-persona-prompt
+    source: trivial
+    rationale: >
+      A one-character typo was fixed in the Mary persona prompt file. The change
+      is a single string literal edit in a Markdown file. No logic, no schema,
+      no multi-step process. Any "skill" extracted would be trivially "fix typos"
+      — too generic to add value and already covered by standard engineering
+      practice. Spurious-generation risk: the model may see a decision trace
+      narrating the trivial rationale and manufacture a lesson about "careful
+      prompt authoring" or "reviewing persona files before shipment".
+    work:
+      story:
+        id: story-029-003
+        title: Fix typo in Mary persona prompt
+        description: >
+          The Mary (Business Analyst) persona prompt file contains a typo:
+          "buisness" instead of "business" on line 7. Correct it.
+        acceptance_criteria:
+          - The word "buisness" is replaced with "business" in personas/mary.md
+          - No other files are changed
+          - npm test passes
+      summary: >
+        Fixed the typo "buisness" → "business" on line 7 of personas/mary.md.
+        No logic changes. Build and tests still pass.
+      diff_context: |
+        [10:03:42] Reading personas/mary.md
+        [10:03:44] Applying typo fix: "buisness" → "business" (line 7)
+        [10:03:46] npm test: 31 passed, 0 failed
+    existing_skills: []
+    rubric:
+      expected_decision: none
+      expected_themes: []
+      spurious_traps:
+        - >
+          A one-word typo fix in a Markdown persona file has no reusable procedure
+          specific to loom — it is a standard text edit. Generating a skill about
+          "reviewing persona prompts for typos" or "careful prompt authoring"
+          manufactures a process from a trivial accident.
+        - >
+          A passing npm test run after a cosmetic Markdown change is the expected
+          unremarkable outcome. Extracting a skill about "always running tests after
+          doc changes" is too generic to add value in a loom skills library.
+
+  - id: sg-trivial-dependency-version-bump
+    source: trivial
+    rationale: >
+      A transitive dependency (js-yaml) was bumped from 4.1.3 to 4.1.4 to resolve
+      a Dependabot advisory. The change is a one-line edit in package.json followed
+      by npm install. The procedure is not specific to loom — it is standard
+      dependency management with no loom-specific steps. Spurious-generation risk:
+      the model may see the security advisory context and extract a skill about
+      "responding to Dependabot alerts" or "dependency hygiene", which is either
+      too generic for a loom skills file or already covered by engineering team
+      runbooks outside loom.
+    work:
+      story:
+        id: story-033-001
+        title: Bump js-yaml to 4.1.4 (Dependabot security advisory)
+        description: >
+          Dependabot flagged js-yaml@4.1.3 for a low-severity prototype pollution
+          advisory (GHSA-xxxx-yyyy-zzzz). Bump to 4.1.4 which contains the fix.
+        acceptance_criteria:
+          - package.json specifies js-yaml >= 4.1.4
+          - npm install exits 0
+          - npm test passes
+          - No other dependencies are changed
+      summary: >
+        Updated js-yaml from 4.1.3 to 4.1.4 in packages/loom-core/package.json.
+        Ran npm install and npm test — all 31 tests pass. No API changes required
+        since 4.1.4 is a patch release.
+      diff_context: |
+        [09:14:22] Reading packages/loom-core/package.json
+        [09:14:24] Updating js-yaml: "4.1.3" → "4.1.4"
+        [09:14:26] npm install: updated 1 package
+        [09:14:29] npm test: 31 passed, 0 failed
+    existing_skills: []
+    rubric:
+      expected_decision: none
+      expected_themes: []
+      spurious_traps:
+        - >
+          Bumping a patch version of a transitive dependency is a one-liner with no
+          loom-specific process. A skill about "responding to Dependabot advisories"
+          or "updating npm dependencies" would be too generic for the loom skills
+          library — it adds no loom-specific guidance beyond what npm and Dependabot
+          documentation already provide.
+        - >
+          The presence of a CVE advisory in the story context should not trigger skill
+          generation. Security advisory handling is an ops/team process, not a
+          loom-specific procedure that belongs in a SKILL.md.
+
+  - id: sg-trivial-rename-exported-constant
+    source: trivial
+    rationale: >
+      A single exported constant (DEFAULT_TIMEOUT_MS) was renamed to
+      AGENT_TIMEOUT_MS across three files using a find-and-replace. No logic
+      changed; only the symbol name was updated. The "procedure" is a trivial
+      search-and-replace with no loom-specific steps, decision points, or
+      invariants to document. Spurious-generation risk: the model may see the
+      multi-file change and extract a skill about "renaming exported constants
+      safely" or "updating all import sites", which is standard IDE/refactoring
+      practice rather than a loom skill.
+    work:
+      story:
+        id: story-034-002
+        title: Rename DEFAULT_TIMEOUT_MS to AGENT_TIMEOUT_MS
+        description: >
+          The constant DEFAULT_TIMEOUT_MS in src/agent/config.ts is too generic —
+          rename it to AGENT_TIMEOUT_MS and update the two files that import it.
+        acceptance_criteria:
+          - DEFAULT_TIMEOUT_MS is renamed to AGENT_TIMEOUT_MS in src/agent/config.ts
+          - All import sites are updated (src/agent/runner.ts, src/agent/supervisor.ts)
+          - npm run build exits 0
+          - npm test passes
+      summary: >
+        Renamed DEFAULT_TIMEOUT_MS to AGENT_TIMEOUT_MS in src/agent/config.ts
+        and updated the two import sites (runner.ts and supervisor.ts). No logic
+        changes. Build exits clean; all 31 tests pass.
+      diff_context: |
+        [11:22:05] grep -r DEFAULT_TIMEOUT_MS src/ — found 3 occurrences
+        [11:22:07] Editing src/agent/config.ts: rename export
+        [11:22:09] Editing src/agent/runner.ts: update import reference
+        [11:22:11] Editing src/agent/supervisor.ts: update import reference
+        [11:22:13] npm run build: exit 0
+        [11:22:15] npm test: 31 passed, 0 failed
+    existing_skills: []
+    rubric:
+      expected_decision: none
+      expected_themes: []
+      spurious_traps:
+        - >
+          Renaming an exported constant across three files is a trivial find-and-replace
+          with no loom-specific decision points or invariants. Extracting a skill about
+          "safe symbol renaming" or "updating all import sites" describes generic
+          refactoring tooling, not a loom-specific procedure.
+        - >
+          The multi-file nature of the change (three files touched) should not be
+          mistaken for a complex workflow. A symbol rename that touches N files is
+          still a one-step mechanical operation regardless of N.
+
+  - id: sg-trivial-update-readme-install-instructions
+    source: trivial
+    rationale: >
+      The README.md install instructions referenced Node.js 18 but the project
+      requires Node 20+. A one-sentence documentation update fixed the discrepancy.
+      No code, schema, or logic was changed. Generating a skill about "keeping
+      README install instructions current" would be a generic documentation hygiene
+      reminder, not a loom-specific reusable procedure. The spurious-generation
+      risk is that the model sees a documentation gap and a fix, then manufactures
+      a skill about "validating prerequisites in README files" as if loom has a
+      procedure for this.
+    work:
+      story:
+        id: story-035-002
+        title: Update README.md Node.js prerequisite version
+        description: >
+          README.md says "install Node.js 18 or later" but package.json engines
+          requires ">= 20.0.0". Update the README to say Node.js 20+.
+        acceptance_criteria:
+          - README.md prerequisite mentions Node.js 20 (not 18)
+          - No other files are changed
+          - npm test passes
+      summary: >
+        Updated the Node.js prerequisite in README.md from "Node.js 18 or later"
+        to "Node.js 20 or later". Single sentence change. Tests pass.
+      diff_context: |
+        [13:45:18] Reading README.md
+        [13:45:20] Replacing "Node.js 18 or later" → "Node.js 20 or later" (line 12)
+        [13:45:22] npm test: 31 passed, 0 failed
+    existing_skills: []
+    rubric:
+      expected_decision: none
+      expected_themes: []
+      spurious_traps:
+        - >
+          Updating a version number in a README sentence is a one-line documentation
+          fix with no loom-specific steps. Generating a skill about "keeping README
+          prerequisites current" or "validating Node version in docs" manufactures
+          a process from a routine maintenance task.
+        - >
+          A single-sentence README change that required no decision making or
+          loom-specific knowledge should not produce a SKILL.md. Skills encode
+          non-obvious multi-step procedures; a find-and-replace in a Markdown file
+          does not qualify.
+
+
+  # ── BORDERLINE CASES ─────────────────────────────────────────────────────────
+  # Work where a skill MIGHT add value but reasonable evaluators could disagree.
+  # expected_decision: either  |  expected_themes and spurious_traps both populated
+
+  - id: sg-borderline-add-cli-flag
+    source: borderline
+    rationale: >
+      The agent added an optional --json flag to the `loom status` command that
+      serialises output as JSON for programmatic consumption. The work follows a
+      recognisable pattern (add option to commander definition, branch on the flag
+      in the command body, add tests for both output modes), but every CLI flag
+      has unique semantics — a generic "add a flag to a commander command" skill
+      might be too abstract to add value beyond what the commander documentation
+      already provides. Borderline because: the loom-specific parts (command
+      registration in loom-cli, the test helper for CLI output, the convention of
+      using --json for machine-readable output) could make a skill worthwhile, but
+      the procedure itself is very short and may not justify the maintenance cost.
+    work:
+      story:
+        id: story-027-003
+        title: Add --json flag to loom status command
+        description: >
+          loom status currently outputs human-readable text. Add a --json flag
+          that serialises the agent list as JSON so scripts can consume it. The
+          flag should be optional; default behaviour is unchanged.
+        acceptance_criteria:
+          - loom status --json outputs valid JSON with the agent list
+          - loom status (no flag) output is unchanged
+          - Tests cover both modes
+          - npm test passes
+      summary: >
+        Added --json to the status command using commander's .option(). When
+        the flag is set, the command serialises the agent array via JSON.stringify
+        and writes it to stdout instead of the table renderer. Added two tests:
+        one asserting JSON.parse succeeds on the --json output, one asserting the
+        default table output still renders when --json is absent. All tests pass.
+      diff_context: |
+        [15:10:34] Reading packages/loom-cli/src/commands/status.ts
+        [15:10:38] Adding .option('--json', 'output as JSON') to commander definition
+        [15:10:42] Adding if (options.json) branch to serialize agents as JSON
+        [15:10:45] Writing test: loom status --json produces parseable JSON
+        [15:10:48] Writing test: loom status (no flag) still renders table
+        [15:10:52] npm test: 34 passed, 0 failed
+      existing_skills: []
+    rubric:
+      expected_decision: either
+      expected_themes:
+        - loom-specific pattern for adding a machine-readable output flag to a commander command
+        - convention of --json as the canonical flag name for structured output in loom CLI
+        - test helper pattern for asserting CLI text vs JSON output modes
+      spurious_traps:
+        - >
+          A skill about "adding a commander option" in isolation describes generic
+          commander.js usage that is already documented upstream. The loom-specific
+          value (if any) is the --json convention and the output-mode branching pattern,
+          not the commander API itself.
+        - >
+          This is a short, self-contained change. If the skill would mainly restate
+          "call .option(), branch on the flag, write tests", it adds no value over
+          reading the existing status.ts as a reference implementation.
+
+  - id: sg-borderline-add-database-column-with-migration
+    source: borderline
+    rationale: >
+      The agent added a `paused_at` column to the agents table: wrote a migration
+      script, updated the AgentStore schema, added a setter method, and wrote
+      integration tests. This partially follows the additive-state-machine-expansion
+      pattern (which loom already has as a skill), but this story also includes
+      the migration script step which the existing skill covers only partially.
+      Borderline because: the existing loom-asm-expand skill already documents the
+      core pattern; generating a new skill here risks duplicating it. On the other
+      hand, the migration-script step (with idempotency guard and rollback test)
+      may complement the existing skill with concrete file-level guidance.
+    work:
+      story:
+        id: story-028-002
+        title: Add paused_at column to agents table
+        description: >
+          The supervisor needs to record when an agent was paused. Add a paused_at
+          TEXT column (ISO-8601 timestamp, nullable) to the agents table, update
+          AgentStore to expose a setPausedAt() method, and write a migration script
+          for existing databases.
+        acceptance_criteria:
+          - agents table has a nullable paused_at TEXT column
+          - AgentStore.setPausedAt(agentId, timestamp) writes the value atomically
+          - Migration script adds the column idempotently (safe to re-run)
+          - Integration test covers setPausedAt and verifies existing rows are untouched
+          - npm test passes
+      summary: >
+        Added the paused_at column via scripts/add-paused-at.mjs (with PRAGMA
+        table_info existence check and BEGIN/COMMIT wrapping). Updated AgentStore
+        to include the column in CREATE TABLE and added setPausedAt() as an atomic
+        UPDATE. Wrote an integration test that verifies: (1) migration runs twice
+        without error, (2) setPausedAt writes the correct ISO-8601 string, (3)
+        rows that were never paused keep paused_at as NULL. All 38 tests pass.
+      diff_context: |
+        [16:22:10] Reading src/agent/AgentStore.ts
+        [16:22:14] Reading scripts/ to understand existing migration pattern
+        [16:22:18] Writing scripts/add-paused-at.mjs with PRAGMA existence check
+        [16:22:24] Updating AgentStore CREATE TABLE to include paused_at TEXT
+        [16:22:28] Adding AgentStore.setPausedAt(agentId, ts) atomic UPDATE method
+        [16:22:33] Writing integration test: run migration twice, setPausedAt, check NULLs
+        [16:22:38] npm test: 38 passed, 0 failed
+      existing_skills:
+        - name: loom-asm-expand
+          description: >
+            Additive state machine expansion: add a new non-terminal state to an
+            existing SQLite-backed state machine without breaking in-flight records.
+            Covers migration pattern, guard updates, atomic write methods, and tests.
+    rubric:
+      expected_decision: either
+      expected_themes:
+        - migration script pattern with PRAGMA table_info existence check and transaction wrapping
+        - atomic AgentStore setter method pattern (UPDATE WHERE id=?)
+        - integration test pattern for verifying column addition and NULL preservation
+      spurious_traps:
+        - >
+          The core additive-state-machine pattern is already covered by the existing
+          loom-asm-expand skill listed in existing_skills. Generating a new skill here
+          risks duplicating that coverage rather than complementing it.
+        - >
+          If the new skill would only restate the migration script pattern without
+          adding guidance beyond what loom-asm-expand already provides, it should
+          not be generated — duplication in the skills library degrades discoverability.
