@@ -1,5 +1,6 @@
 import type { AuditLog, IntakeVerdict, EffectiveRouting } from '@loom-ai/core';
 import type { IntakeClassificationResult } from './recordIntakeClassification.js';
+import { confirmRouting } from './confirmRouting.js';
 
 /**
  * Routing brain: given a classification result and the policy level, decides
@@ -14,7 +15,6 @@ import type { IntakeClassificationResult } from './recordIntakeClassification.js
 export async function resolveIntakeRouting(opts: {
   classification: IntakeClassificationResult;
   level: 'off' | 'advisory' | 'confirm';
-  /** Used by the confirm path (story-045-003) for stdin interaction. */
   isTTY: boolean;
   /** TODO(045-004): wire recordIntakeRouted here for confirm-path provenance. */
   audit: AuditLog;
@@ -22,6 +22,8 @@ export async function resolveIntakeRouting(opts: {
   epicId: string;
   /** Injected output stream for testable printing. Defaults to process.stdout. */
   out?: NodeJS.WritableStream;
+  /** Injected input stream for confirm-path interaction. Defaults to process.stdin. */
+  input?: NodeJS.ReadableStream;
 }): Promise<EffectiveRouting | undefined> {
   const { classification, level } = opts;
 
@@ -39,17 +41,16 @@ export async function resolveIntakeRouting(opts: {
       return printAndRoute(verdict, out);
 
     case 'confirm':
-      // 045-003 wires confirmRouting() in the isTTY branch.
-      // 045-004 wires recordIntakeRouted() for audit provenance (audit + epicId seam).
-      // Until those stories land, degrade to advisory so planning is never blocked (ADR-004).
-      if (!opts.isTTY) {
-        out.write('  [warn] intake_routing=confirm: non-interactive terminal — routing as advisory instead\n');
-      } else {
-        out.write('  [warn] intake_routing=confirm not yet active — routing as advisory (interactive confirmation available in a later release)\n');
-      }
       // audit + epicId: seam parameters consumed by story-045-004 (recordIntakeRouted)
       void opts.audit; void opts.epicId;
-      return printAndRoute(verdict, out);
+      if (!opts.isTTY) {
+        // Non-interactive degrade (ADR-004): warn loudly and route as advisory so
+        // headless/CI planning is never stalled (mode:'confirm-degraded-advisory').
+        out.write('  [warn] intake_routing=confirm: non-interactive terminal — routing as advisory instead\n');
+        return printAndRoute(verdict, out);
+      }
+      // Interactive path: prompt operator to accept or override (AC1, AC3).
+      return resolveConfirm(verdict, out, opts.input);
 
     default: {
       const _: never = level;
@@ -57,6 +58,24 @@ export async function resolveIntakeRouting(opts: {
       return undefined;
     }
   }
+}
+
+/**
+ * Interactive confirm path: delegate to confirmRouting, then build EffectiveRouting.
+ * source:'operator-override' when the operator changed type or size; 'classifier' otherwise.
+ */
+async function resolveConfirm(
+  verdict: IntakeVerdict,
+  out: NodeJS.WritableStream,
+  input?: NodeJS.ReadableStream,
+): Promise<EffectiveRouting> {
+  const result = await confirmRouting(verdict, { out, input });
+  return {
+    type:       result.type,
+    size:       result.size,
+    confidence: verdict.confidence,
+    source:     result.decision === 'overridden' ? 'operator-override' : 'classifier',
+  };
 }
 
 /** Print the full classification surface (non-blocking) and return EffectiveRouting. */

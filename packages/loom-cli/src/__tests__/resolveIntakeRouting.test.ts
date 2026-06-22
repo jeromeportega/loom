@@ -9,11 +9,19 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { Writable } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import { resolveIntakeRouting } from '../intake/resolveIntakeRouting.js';
 import type { IntakeClassificationResult } from '../intake/recordIntakeClassification.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Feed fixed lines to readline as a readable stream (for confirm-path tests). */
+function makeInput(...lines: string[]): NodeJS.ReadableStream {
+  const pt = new PassThrough();
+  for (const line of lines) pt.write(line + '\n');
+  pt.end();
+  return pt;
+}
 
 /** Capture writes to a Writable and return the full string. */
 function captureStream(): { stream: Writable; get: () => string } {
@@ -222,24 +230,21 @@ describe('resolveIntakeRouting — advisory is non-blocking (AC4, NFR-2)', () =>
   });
 });
 
-// ── level: confirm (degrades to advisory until 045-003 lands) ─────────────────
+// ── level: confirm + isTTY:false — non-interactive degrade (AC4) ─────────────
 //
-// Until story-045-003 wires confirmRouting(), the confirm path degrades
-// gracefully: it prints the classification surface + a visible warning, then
-// returns an EffectiveRouting just like advisory. This asserts that degradation
-// is correct and non-silent.
+// When no interactive terminal is available, the confirm path warns loudly and
+// degrades to advisory so headless/CI planning is never stalled (ADR-004).
 
-describe('resolveIntakeRouting — level: confirm (graceful degradation)', () => {
-  it('returns EffectiveRouting with source:classifier (same as advisory)', async () => {
+describe('resolveIntakeRouting — level: confirm, isTTY:false (AC4, NFR-2)', () => {
+  it('returns EffectiveRouting with source:classifier (advisory-equivalent)', async () => {
     const result = await resolveIntakeRouting({
       classification: OK_CLASSIFICATION,
-      level: 'confirm',
-      isTTY: false,
-      audit: NOOP_AUDIT,
-      epicId: 'epic-001',
+      level:   'confirm',
+      isTTY:   false,
+      audit:   NOOP_AUDIT,
+      epicId:  'epic-001',
     });
-
-    assert.ok(result !== undefined, 'confirm must return EffectiveRouting for ok:true classification');
+    assert.ok(result !== undefined, 'degrade must return EffectiveRouting for ok:true classification');
     assert.equal(result.type,       'feature');
     assert.equal(result.size,       'story');
     assert.equal(result.confidence, 'high');
@@ -249,10 +254,10 @@ describe('resolveIntakeRouting — level: confirm (graceful degradation)', () =>
   it('returns undefined when classification failed (ok:false) — legacy path', async () => {
     const result = await resolveIntakeRouting({
       classification: FAIL_CLASSIFICATION,
-      level: 'confirm',
-      isTTY: false,
-      audit: NOOP_AUDIT,
-      epicId: 'epic-001',
+      level:   'confirm',
+      isTTY:   false,
+      audit:   NOOP_AUDIT,
+      epicId:  'epic-001',
     });
     assert.equal(result, undefined);
   });
@@ -261,11 +266,11 @@ describe('resolveIntakeRouting — level: confirm (graceful degradation)', () =>
     const { stream, get } = captureStream();
     await resolveIntakeRouting({
       classification: OK_CLASSIFICATION,
-      level: 'confirm',
-      isTTY: false,
-      audit: NOOP_AUDIT,
-      epicId: 'epic-001',
-      out: stream,
+      level:   'confirm',
+      isTTY:   false,
+      audit:   NOOP_AUDIT,
+      epicId:  'epic-001',
+      out:     stream,
     });
     const output = get();
     assert.ok(output.includes('feature'),   'output must contain type');
@@ -274,42 +279,136 @@ describe('resolveIntakeRouting — level: confirm (graceful degradation)', () =>
     assert.ok(output.includes('This is a small, self-contained addition.'), 'output must contain rationale');
   });
 
-  it('prints a visible degradation warning (makes degradation explicit, not silent)', async () => {
+  it('prints a visible loud warning so the degrade is non-silent', async () => {
     const { stream, get } = captureStream();
     await resolveIntakeRouting({
       classification: OK_CLASSIFICATION,
-      level: 'confirm',
-      isTTY: false,
-      audit: NOOP_AUDIT,
-      epicId: 'epic-001',
-      out: stream,
+      level:   'confirm',
+      isTTY:   false,
+      audit:   NOOP_AUDIT,
+      epicId:  'epic-001',
+      out:     stream,
     });
     assert.ok(
       get().includes('[warn]') || get().includes('warn'),
-      'confirm degradation must emit a visible warning so operators know confirm is not yet active'
+      'confirm degrade must emit a visible warning (non-silent degrade, AC4)',
     );
   });
+});
 
-  it('confirm is non-blocking — does not read stdin even when isTTY=true', async () => {
+// ── level: confirm + isTTY:true — interactive path (AC1, AC2, AC3) ────────────
+//
+// The operator is prompted to accept or override. The returned EffectiveRouting
+// reflects the decision; confidence is always the classifier's.
+
+describe('resolveIntakeRouting — level: confirm, isTTY:true (AC1, AC2, AC3)', () => {
+  it('accepted verdict routes with source:classifier', async () => {
+    const { stream: out } = captureStream();
+    const result = await resolveIntakeRouting({
+      classification: OK_CLASSIFICATION,
+      level:   'confirm',
+      isTTY:   true,
+      audit:   NOOP_AUDIT,
+      epicId:  'epic-001',
+      input:   makeInput('a'),
+      out,
+    });
+    assert.ok(result !== undefined);
+    assert.equal(result.source,     'classifier');
+    assert.equal(result.type,       'feature');
+    assert.equal(result.size,       'story');
+    assert.equal(result.confidence, 'high');
+  });
+
+  it('overridden type reaches EffectiveRouting with source:operator-override (AC2, AC3)', async () => {
+    const { stream: out } = captureStream();
+    const result = await resolveIntakeRouting({
+      classification: OK_CLASSIFICATION,
+      level:   'confirm',
+      isTTY:   true,
+      audit:   NOOP_AUDIT,
+      epicId:  'epic-001',
+      // 'o' = override; 'bug' = new type; '' = keep size
+      input:   makeInput('o', 'bug', ''),
+      out,
+    });
+    assert.ok(result !== undefined);
+    assert.equal(result.source,     'operator-override');
+    assert.equal(result.type,       'bug');
+    assert.equal(result.size,       'story');
+  });
+
+  it('overridden size reaches EffectiveRouting with source:operator-override (AC2, AC3)', async () => {
+    const { stream: out } = captureStream();
+    const result = await resolveIntakeRouting({
+      classification: OK_CLASSIFICATION,
+      level:   'confirm',
+      isTTY:   true,
+      audit:   NOOP_AUDIT,
+      epicId:  'epic-001',
+      // 'o' = override; '' = keep type; 'epic' = new size
+      input:   makeInput('o', '', 'epic'),
+      out,
+    });
+    assert.ok(result !== undefined);
+    assert.equal(result.source,     'operator-override');
+    assert.equal(result.type,       'feature');
+    assert.equal(result.size,       'epic');
+  });
+
+  it('confidence is the classifier verdict — not operator-editable (AC2)', async () => {
+    const { stream: out } = captureStream();
+    const result = await resolveIntakeRouting({
+      classification: OK_CLASSIFICATION,
+      level:   'confirm',
+      isTTY:   true,
+      audit:   NOOP_AUDIT,
+      epicId:  'epic-001',
+      input:   makeInput('o', 'bug', 'epic'),
+      out,
+    });
+    assert.ok(result !== undefined);
+    // Even though type+size were overridden, confidence is the classifier's
+    assert.equal(result.confidence, 'high', 'confidence must reflect the classifier, not operator input');
+  });
+});
+
+// ── NFR-2: only confirm blocks — off and advisory never invoke readline ────────
+
+describe('resolveIntakeRouting — off and advisory never read stdin (NFR-2, AC5)', () => {
+  it('off returns without reading stdin (isTTY:true)', async () => {
     const originalRead = process.stdin.read.bind(process.stdin);
     let stdinRead = false;
-    process.stdin.read = (): null => {
-      stdinRead = true;
-      throw new Error('resolveIntakeRouting confirm must not read from stdin until 045-003');
-    };
-
+    process.stdin.read = (): null => { stdinRead = true; return null; };
     try {
       await resolveIntakeRouting({
         classification: OK_CLASSIFICATION,
-        level: 'confirm',
-        isTTY: true,
-        audit: NOOP_AUDIT,
-        epicId: 'epic-001',
+        level:   'off',
+        isTTY:   true,
+        audit:   NOOP_AUDIT,
+        epicId:  'epic-001',
       });
     } finally {
       process.stdin.read = originalRead;
     }
+    assert.ok(!stdinRead, 'off path must not read stdin');
+  });
 
-    assert.ok(!stdinRead, 'confirm must not read stdin until story-045-003 lands (NFR-2)');
+  it('advisory returns without reading stdin (isTTY:true)', async () => {
+    const originalRead = process.stdin.read.bind(process.stdin);
+    let stdinRead = false;
+    process.stdin.read = (): null => { stdinRead = true; return null; };
+    try {
+      await resolveIntakeRouting({
+        classification: OK_CLASSIFICATION,
+        level:   'advisory',
+        isTTY:   true,
+        audit:   NOOP_AUDIT,
+        epicId:  'epic-001',
+      });
+    } finally {
+      process.stdin.read = originalRead;
+    }
+    assert.ok(!stdinRead, 'advisory path must not read stdin (non-blocking, NFR-2)');
   });
 });
