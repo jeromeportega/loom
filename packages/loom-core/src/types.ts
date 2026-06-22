@@ -501,6 +501,16 @@ export const PolicySchema = z.object({
       // backend's real ~100s latency. The call is best-effort and off the
       // critical path — a hung call burns up to this budget before failing.
       intake_timeout_ms: z.number().int().min(1000).default(120_000),
+      // Intake-routing mode. Controls whether the classifier verdict influences
+      // how the PM agent sizes the work:
+      //   'off'     — classifier runs observe-only; verdict recorded but never
+      //               reaches PlannerOptions. Planning path byte-identical to
+      //               today. (default)
+      //   'advisory' — verdict surfaced and injected as a sizing constraint
+      //               into the PM prompt; operator not asked to confirm.
+      //   'confirm'  — operator prompted to accept/override the verdict before
+      //               the PM prompt is built; degrades to advisory on non-TTY.
+      intake_routing: z.enum(['off', 'advisory', 'confirm']).default('off'),
       // Brief-quality gate. Every `loom epic` and `loom_start_epic` runs
       // the BriefRefiner before the planner and refuses briefs whose
       // quality_score is below this threshold, returning the critique so

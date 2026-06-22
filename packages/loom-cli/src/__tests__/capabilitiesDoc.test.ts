@@ -194,3 +194,55 @@ describe('capabilities.md — epic-029-005: epic build-up knob', () => {
     );
   });
 });
+
+describe('capabilities.md — epic-045-005: intake_routing knob', () => {
+  const doc = fs.readFileSync(CAPABILITIES, 'utf8');
+
+  it('documents the intake_routing knob with all three levels and default', () => {
+    const r = row(doc, 'Intake routing mode');
+    assert.match(r, /intake_routing/, 'row should reference the policy knob name');
+    assert.match(r, /`off`/, 'row should document the off level');
+    assert.match(r, /`advisory`/, 'row should document the advisory level');
+    assert.match(r, /`confirm`/, 'row should document the confirm level');
+    assert.match(r, /default `off`|default off/i, 'row should state the default is off');
+  });
+
+  it('documents the routing-as-sizing-constraint behavior for advisory', () => {
+    const r = row(doc, 'Intake routing mode');
+    assert.match(
+      r,
+      /sizing\s+constraint|constraint\s+injected/i,
+      'row should describe the sizing constraint injection for advisory'
+    );
+    assert.match(r, /PM\s+prompt/i, 'row should mention the PM prompt injection');
+  });
+
+  it('documents the non-interactive confirm→advisory degrade with ADR-004 reference', () => {
+    const r = row(doc, 'Intake routing mode');
+    assert.match(
+      r,
+      /degrade|degrades/i,
+      'row should describe the degrade behavior'
+    );
+    assert.match(
+      r,
+      /non[-_]TTY/i,
+      'row should mention non-TTY stdin as the degrade trigger'
+    );
+    assert.match(r, /ADR-004/, 'row should reference ADR-004');
+    assert.match(r, /FR-7/, 'row should reference FR-7');
+  });
+
+  it('does not contain stale "not yet active" language', () => {
+    const r = row(doc, 'Intake routing mode');
+    assert.doesNotMatch(r, /not yet active/, 'row must not contain stale "not yet active" language');
+  });
+
+  it('intake_routing is listed in the coverage:knob fence', () => {
+    assert.match(
+      doc,
+      /<!-- coverage:knob:start -->[\s\S]*`policy\.agents\.intake_routing`[\s\S]*<!-- coverage:knob:end -->/,
+      'coverage:knob fence should include policy.agents.intake_routing'
+    );
+  });
+});

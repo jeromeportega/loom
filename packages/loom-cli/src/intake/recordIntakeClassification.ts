@@ -1,13 +1,27 @@
 import type Database from 'better-sqlite3';
-import type { LLMClient, ClassifyResult } from '@loom-ai/core';
+import type { LLMClient, IntakeVerdict, ClassifyResult } from '@loom-ai/core';
 import { classifyIntake, INTAKE_AUDIT_ACTION, EpicStore, AuditLog } from '@loom-ai/core';
 
+// Compile-time assertion: ClassifyResult must be structurally assignable to
+// IntakeClassificationResult so the assignment below is type-safe even if the
+// two types are defined independently. The const forces a type error if _AssertCompat
+// resolves to never (i.e. the types diverged).
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type _AssertCompat = ClassifyResult extends IntakeClassificationResult ? true : never;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _assertCompat: true = true as _AssertCompat;
+
+export type IntakeClassificationResult =
+  | { ok: true;  verdict: IntakeVerdict }
+  | { ok: false; reason: 'llm_error' | 'timeout' | 'invalid_output'; detail?: string };
+
 /**
- * Leaf side-effect: classify the intake brief and persist the verdict best-effort
- * to two sinks: EpicStore (the database, which is also the status surface read by
- * `loom status` via `getIntakeVerdicts`) and AuditLog. Never throws — every failure
- * is swallowed so the caller's planning path is unaffected (ADR-001).
- * Returns void; the verdict is never read downstream.
+ * Classify the intake brief and persist the verdict best-effort to two sinks:
+ * EpicStore (for `loom status` / `getIntakeVerdicts`) and AuditLog.
+ *
+ * Never throws — every failure is swallowed so the caller's planning path is
+ * unaffected. Returns the classification result so the caller can route on the
+ * verdict without a second LLM call (ADR-001).
  */
 export async function recordIntakeClassification(deps: {
   db: Database.Database;
@@ -24,11 +38,11 @@ export async function recordIntakeClassification(deps: {
   llm: LLMClient;
   model: string;
   timeoutMs: number;
-}): Promise<void> {
+}): Promise<IntakeClassificationResult> {
   const { db, epicId, brief, classifyBrief, llm, model, timeoutMs } = deps;
   const briefToClassify = classifyBrief ?? brief;
 
-  let result: ClassifyResult | undefined;
+  let result: IntakeClassificationResult | undefined;
   // classifyIntake catches LLM errors and returns {ok:false}; this outer catch
   // is for unexpected internal errors only (e.g. a bug inside classifyIntake).
   try {
@@ -44,9 +58,11 @@ export async function recordIntakeClassification(deps: {
         detail: { reason: 'unexpected_error' },
       });
     } catch { /* best-effort */ }
-    return;
+    return { ok: false, reason: 'llm_error', detail: 'unexpected_error' };
   }
-  if (!result) return;
+  if (!result) {
+    return { ok: false, reason: 'llm_error', detail: 'no_result' };
+  }
 
   // Persist to each sink independently so one failure doesn't prevent the others.
 
@@ -66,4 +82,6 @@ export async function recordIntakeClassification(deps: {
         : { reason: result.reason, detail: result.detail },
     });
   } catch { /* best-effort */ }
+
+  return result;
 }
