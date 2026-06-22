@@ -48,6 +48,14 @@ function clamp01(v: number): number {
 
 const CLUSTER_SYSTEM_PROMPT = `You are a software engineering opportunity analyst. Cluster the given signals into opportunities for improvement.
 
+ABSTENTION IS VALID: returning [] is the correct response when no genuine relationship exists between signals. Never force signals into a cluster merely to avoid an empty result.
+
+Before grouping, apply a real coherence bar: signals belong together only when they share a meaningful common root cause, owner, or remediation path. Superficial co-occurrence (same file type, same tool, nearby line numbers, or vague thematic similarity) does not meet this bar.
+
+When assessing signals that form a weak connection, distinguish:
+- "Weak because noise": signals that superficially resemble each other but have no genuine shared root cause or fix — do not cluster these; omit them or return [].
+- "Weak because subtle-but-real": signals that appear dissimilar on the surface but genuinely share a root cause, owner, or remediation path — cluster these even if the connection is not immediately obvious.
+
 Return ONLY a JSON array. Each element must have:
 - title: string
 - signal_ids: number[] (ids from the input list, must be non-empty)

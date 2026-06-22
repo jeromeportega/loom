@@ -393,6 +393,99 @@ describe('OpportunityEngine — non-agentic mode request shape', () => {
   });
 });
 
+// ─── Abstention regression — epic-046 ────────────────────────────────────────
+
+describe('OpportunityEngine — abstention regression (epic-046)', () => {
+  it('[noise fixture] pure-noise signals → mock returns [] → result.length <= 1', async () => {
+    const db = createDatabase(':memory:');
+    const auditLog = new AuditLog(db);
+    const mockLLM = new MockLLMClient(['[]']);
+    const engine = new OpportunityEngine({ db, llm: mockLLM, model: 'm', auditLog });
+
+    const signals = [
+      makeSignal({ id: 1, key: 'noise-lint-a', title: 'Unused import in component A', kind: 'lint-warning' }),
+      makeSignal({ id: 2, key: 'noise-coverage-b', title: 'Missing test coverage in module B', source: 'audit-introspection', kind: 'coverage-gap' }),
+      makeSignal({ id: 3, key: 'noise-docs-c', title: 'Undocumented function in API C', source: 'github-issues', kind: 'missing-doc' }),
+    ];
+
+    const result = await engine.generate(signals);
+
+    assert.ok(result.length <= 1, `pure-noise signals must yield 0 or 1 cluster, got ${result.length}`);
+  });
+
+  it('[related fixture] coherent signals → mock returns valid proposals → correct member_keys (FR-4)', async () => {
+    const db = createDatabase(':memory:');
+    const auditLog = new AuditLog(db);
+    const proposals = JSON.stringify([
+      {
+        title: 'Auth hardening opportunities',
+        signal_ids: [10, 11],
+        impact: 0.8,
+        effort: 0.5,
+        confidence: 0.9,
+        rationale: 'Both signals relate to authentication security gaps sharing the same code path',
+      },
+    ]);
+    const mockLLM = new MockLLMClient([proposals]);
+    const engine = new OpportunityEngine({ db, llm: mockLLM, model: 'm', auditLog });
+
+    const signals = [
+      makeSignal({ id: 10, key: 'auth-session-exp', title: 'Session token expiry not enforced', source: 'github-issues', kind: 'security-finding' }),
+      makeSignal({ id: 11, key: 'auth-jwt-alg', title: 'JWT algorithm not validated on decode', source: 'github-issues', kind: 'security-finding' }),
+    ];
+
+    const result = await engine.generate(signals);
+
+    assert.equal(result.length, 1, 'coherent signals must produce exactly one cluster');
+    assert.deepEqual(
+      result[0].member_keys.sort(),
+      ['auth-jwt-alg', 'auth-session-exp'].sort(),
+      'member_keys must be durable signal.key values for both auth signals'
+    );
+    assert.ok(result[0].score > 0, 'cluster must have a positive score');
+    assert.ok(result[0].rank >= 1, 'cluster must have a rank of at least 1');
+    assert.equal(result[0].signal_count, 2, 'signal_count must reflect both members');
+  });
+
+  it('[boundary — tolerance ceiling] mock returns exactly ONE low-coherence cluster → result.length <= 1', async () => {
+    const db = createDatabase(':memory:');
+    const auditLog = new AuditLog(db);
+    const proposals = JSON.stringify([
+      {
+        title: 'Possibly related noise',
+        signal_ids: [1],
+        impact: 0.2,
+        effort: 0.5,
+        confidence: 0.15,
+        rationale: 'Weak signal, possibly coincidental co-occurrence',
+      },
+    ]);
+    const mockLLM = new MockLLMClient([proposals]);
+    const engine = new OpportunityEngine({ db, llm: mockLLM, model: 'm', auditLog });
+
+    const result = await engine.generate([
+      makeSignal({ id: 1, key: 'noise-a', title: 'Lint warning in component A', kind: 'lint-warning' }),
+    ]);
+
+    assert.ok(result.length <= 1, `one low-coherence cluster is within the tolerance band, got ${result.length}`);
+  });
+
+  it('[topology guard] noise fixture call carries system[0].cache=true and nonAgentic flags unchanged', async () => {
+    const db = createDatabase(':memory:');
+    const auditLog = new AuditLog(db);
+    const mockLLM = new MockLLMClient(['[]']);
+    const engine = new OpportunityEngine({ db, llm: mockLLM, model: 'm', auditLog });
+
+    await engine.generate([makeSignal({ id: 1, key: 'k1', title: 'T1' })]);
+
+    assert.equal(mockLLM.calls.length, 1, 'must make exactly one call');
+    const call = mockLLM.calls[0];
+    assert.ok(Array.isArray(call.system) && call.system.length === 1, 'system must be a 1-element array');
+    assert.equal(call.system[0].cache, true, 'system[0].cache must be true (prompt caching)');
+    assert.deepEqual(call.nonAgentic, { excludeDynamicSections: true }, 'nonAgentic must be set');
+  });
+});
+
 // ─── Malformed JSON — repair re-prompt (FR-10) ───────────────────────────────
 
 describe('OpportunityEngine — malformed JSON repair (FR-10)', () => {
