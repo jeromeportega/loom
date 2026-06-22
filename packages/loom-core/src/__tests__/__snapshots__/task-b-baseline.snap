@@ -1,0 +1,14 @@
+Perform Headless task B: produce the epic/story breakdown JSON.
+
+IMPORTANT: number epics sequentially starting at "epic-001". The first epic is "epic-001", the next "epic-002", and so on. Each story id uses its epic's number — e.g. the stories of "epic-001" are "story-001-001", "story-001-002", etc.
+
+PROJECT BRIEF:
+---
+Add a user login form with email and password fields.
+
+PRD:
+---
+# Login Form PRD
+
+## Goals
+Ship a minimal login form.
