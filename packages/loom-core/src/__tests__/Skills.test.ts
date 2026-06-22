@@ -488,6 +488,60 @@ describe('SkillJudge', () => {
   });
 });
 
+// ─── SkillJudge — sharpened admission criteria ──────────────────────────────
+//
+// These tests verify the criteria-intent introduced in story-039-001 using
+// fully mocked judge outputs — no real model calls.
+
+describe('SkillJudge — sharpened admission criteria', () => {
+  it('rejects a skill that teaches a destructive operation (unsafe)', async () => {
+    const unsafeReject =
+      '```json\n{"score":3,"verdict":"reject","reason":"teaches force-push to protected branch"}\n```';
+    const judge = new SkillJudge({ llm: new MockLLMClient([unsafeReject]), model: 'mock' });
+    const result = await judge.judge('## Force-push skill\nAlways use git push --force.', []);
+    assert.equal(result.verdict, 'reject');
+    assert.equal(result.score, 3);
+  });
+
+  it('rejects a skill narrowly scoped to one repository (non-reusable)', async () => {
+    const nonReusableReject =
+      '```json\n{"score":4,"verdict":"reject","reason":"encodes org-specific tooling, not transferable"}\n```';
+    const judge = new SkillJudge({ llm: new MockLLMClient([nonReusableReject]), model: 'mock' });
+    const result = await judge.judge('## Acme deploy script\nRun /opt/acme/deploy.sh.', []);
+    assert.equal(result.verdict, 'reject');
+    assert.equal(result.score, 4);
+  });
+
+  it('rejects a polished, high-scoring skill that is unsafe — safety overrides surface quality', async () => {
+    // score=8 is above any default judgeMinScore threshold, but verdict=reject still wins.
+    const qualityOverrideReject =
+      '```json\n{"score":8,"verdict":"reject","reason":"well-formed but core advice disables guardrails"}\n```';
+    const judge = new SkillJudge({ llm: new MockLLMClient([qualityOverrideReject]), model: 'mock' });
+    const result = await judge.judge('## Bypass checks\nDisable pre-commit hooks for speed.', []);
+    assert.equal(result.verdict, 'reject');
+    assert.equal(result.score, 8);
+  });
+
+  it('accepts a skill that mentions a destructive command only to warn against it (guarded mention)', async () => {
+    const guardedAccept =
+      '```json\n{"score":8,"verdict":"accept","reason":"mentions force-push only to warn — core advice is safe"}\n```';
+    const judge = new SkillJudge({ llm: new MockLLMClient([guardedAccept]), model: 'mock' });
+    const result = await judge.judge(
+      '## Safe git push\nNever force-push to a protected branch. Use --force-with-lease instead.',
+      [],
+    );
+    assert.equal(result.verdict, 'accept');
+    assert.equal(result.score, 8);
+  });
+
+  it('accepts a safe, reusable, well-formed skill', async () => {
+    const judge = new SkillJudge({ llm: new MockLLMClient([JUDGE_ACCEPT]), model: 'mock' });
+    const result = await judge.judge('## Testing async code\nWrap assertions in a retry helper.', []);
+    assert.equal(result.verdict, 'accept');
+    assert.equal(result.score, 9);
+  });
+});
+
 // ─── SkillGenerator ─────────────────────────────────────────────────────────
 
 describe('SkillGenerator — auto-propose decisions (#18 story-cloud-004)', () => {
@@ -733,6 +787,22 @@ describe('SkillGenerator', () => {
       llm: new MockLLMClient(genResponder('not a skill, no frontmatter')),
       model: 'mock',
       skillStore: store(),
+    });
+    assert.equal(await gen.afterStory(agentId, story()), null);
+  });
+
+  it('discards a polished skill whose judge verdict is reject despite a high score', async () => {
+    // The gate at SkillGenerator.ts:122 checks verdict first: a reject with
+    // score=8 (above the default minScore=6) must still yield null.
+    const { db, agentId } = setupAgent();
+    const qualityOverrideReject =
+      '```json\n{"score":8,"verdict":"reject","reason":"well-formed but unsafe"}\n```';
+    const gen = new SkillGenerator({
+      db,
+      llm: new MockLLMClient(genResponder(SKILL_MD, qualityOverrideReject)),
+      model: 'mock',
+      skillStore: store(),
+      judgeMinScore: 6,
     });
     assert.equal(await gen.afterStory(agentId, story()), null);
   });
