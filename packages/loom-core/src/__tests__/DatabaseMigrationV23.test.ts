@@ -100,8 +100,8 @@ describe('DatabaseMigrationV23 — epics.intake_verdict (story-020-003)', () => 
     const ver = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(ver.version, 23, 'schema_version must be 23');
     assert.equal(ver.version, SCHEMA_VERSION, 'matches exported SCHEMA_VERSION constant');
+    assert.equal(ver.version, 24, 'schema_version must be 24');
 
     const cols = db.prepare('PRAGMA table_info(epics)').all() as {
       name: string;
@@ -129,7 +129,7 @@ describe('DatabaseMigrationV23 — epics.intake_verdict (story-020-003)', () => 
     const ver = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as {
       version: number;
     };
-    assert.equal(ver.version, 23, 'schema_version must be bumped to 23');
+    assert.equal(ver.version, 24, 'schema_version must be bumped to 24');
   });
 
   it('[AC3] pre-existing epic rows survive migration with intake_verdict = NULL — never fabricated', () => {
