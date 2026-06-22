@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 
 import { refineEvalCases } from '../refineEvalCases.js';
 import type { IntakeEvalCase, RefinedCaseResult } from '../intakeEvalTypes.js';
-import type { BriefRefiner } from '../../brief/BriefRefiner.js';
-import type { BriefRefinement } from '../../brief/types.js';
+import type { BriefRefiner } from '../../../brief/BriefRefiner.js';
+import type { BriefRefinement } from '../../../brief/types.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

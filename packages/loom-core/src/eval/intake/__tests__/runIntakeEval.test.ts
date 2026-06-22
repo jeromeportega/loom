@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MockLLMClient } from '../../llm/MockLLMClient.js';
-import type { LLMClient, LLMRequest, LLMResponse } from '../../llm/LLMClient.js';
+import { MockLLMClient } from '../../../llm/MockLLMClient.js';
+import type { LLMClient, LLMRequest, LLMResponse } from '../../../llm/LLMClient.js';
 import { runIntakeEval, computeAxisAccuracy } from '../runIntakeEval.js';
 import type {
   IntakeEvalCase,

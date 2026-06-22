@@ -1,5 +1,5 @@
-import { classifyIntake } from '../intake/IntakeClassifier.js';
-import { coreMetrics } from './framework/coreMetrics.js';
+import { classifyIntake } from '../../intake/IntakeClassifier.js';
+import { coreMetrics } from '../framework/coreMetrics.js';
 import type {
   GateEvalConsumer,
   GateDeps,
@@ -8,11 +8,11 @@ import type {
   JudgeOutcome,
   RunRecord,
   CoreMetrics,
-} from './framework/types.js';
+} from '../framework/types.js';
 import { IntakeJudge } from './IntakeJudge.js';
 import { loadIntakeEvalSet } from './loadIntakeEvalSet.js';
 import type { IntakeEvalCase, IntakeJudgeResult } from './intakeEvalTypes.js';
-import type { IntakeVerdict } from '../intake/IntakeClassifier.js';
+import type { IntakeVerdict } from '../../intake/IntakeClassifier.js';
 
 // Behavior-preservation constants (FR-5): these numbers must never move into core decide().
 // ADR-002: each of gate-failure-rate and judge-inconclusive-rate is independently capped

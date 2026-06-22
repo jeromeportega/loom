@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MockLLMClient } from '../../llm/MockLLMClient.js';
+import { MockLLMClient } from '../../../llm/MockLLMClient.js';
 import { runRefinedIntakeEval } from '../runRefinedIntakeEval.js';
 import { scoreIntakeEval } from '../scoreIntakeEval.js';
 import type {
