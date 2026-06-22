@@ -214,7 +214,7 @@ describe('capabilities.md — epic-045-005: intake_routing knob', () => {
       /sizing\s+constraint|constraint\s+injected/i,
       'row should describe the sizing constraint injection for advisory'
     );
-    assert.match(r, /PM\s+prompt|pm\s+prompt/i, 'row should mention the PM prompt injection');
+    assert.match(r, /PM\s+prompt/i, 'row should mention the PM prompt injection');
   });
 
   it('documents the non-interactive confirm→advisory degrade with ADR-004 reference', () => {
@@ -226,7 +226,7 @@ describe('capabilities.md — epic-045-005: intake_routing knob', () => {
     );
     assert.match(
       r,
-      /non-TTY|non.TTY|non_TTY/i,
+      /non[-_]TTY/i,
       'row should mention non-TTY stdin as the degrade trigger'
     );
     assert.match(r, /ADR-004/, 'row should reference ADR-004');
