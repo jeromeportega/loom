@@ -99,17 +99,22 @@ function hasMsg(req: LLMRequest, ...keywords: string[]): boolean {
   );
 }
 
-/** Identifies which agent sent this LLM request by its trigger text. */
+/**
+ * Identifies which agent sent this LLM request by its trigger text.
+ * Checks ALL messages (not just the last) so retry attempts are correctly
+ * classified — on retry, the last message is the correction prompt, not the
+ * identifying task text.
+ */
 function whichAgent(req: LLMRequest): string {
-  const last = req.messages[req.messages.length - 1].content;
-  if (last.includes('Produce a single story definition in JSON')) return 'standalone';
-  if (last.includes('Headless task A: produce the PRD')) return 'pm-task-a';
-  if (last.includes('Headless task B: produce the epic')) return 'pm-task-b';
-  if (last.includes('Headless task A: produce the architecture')) return 'arch-task-a';
-  if (last.includes('Headless task B: produce per-story')) return 'arch-task-b';
+  const allContent = req.messages.map((m) => m.content).join('\n');
+  if (allContent.includes('Produce a single story definition in JSON')) return 'standalone';
+  if (allContent.includes('Headless task A: produce the PRD')) return 'pm-task-a';
+  if (allContent.includes('Headless task B: produce the epic')) return 'pm-task-b';
+  if (allContent.includes('Headless task A: produce the architecture')) return 'arch-task-a';
+  if (allContent.includes('Headless task B: produce per-story')) return 'arch-task-b';
   if (
-    last.includes('Produce the project brief document') ||
-    last.includes('brief to analyze')
+    allContent.includes('Produce the project brief document') ||
+    allContent.includes('brief to analyze')
   )
     return 'analyst';
   return 'unknown';
@@ -227,6 +232,11 @@ describe('Planner.run — standalone path (advisory, size=story)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it('all LLM requests are from a recognised agent (no unknown classifications)', () => {
+    const unknowns = agentNames.filter((n) => n === 'unknown');
+    assert.equal(unknowns.length, 0, `Unclassified LLM requests detected — whichAgent() missed ${unknowns.length} call(s)`);
+  });
+
   it('StandaloneStoryAgent is called exactly once (AC3)', () => {
     const standaloneCount = agentNames.filter((n) => n === 'standalone').length;
     assert.equal(standaloneCount, 1, 'StandaloneStoryAgent must be called exactly once');
@@ -327,6 +337,11 @@ describe('Planner.run — confirm-mode story→epic override routes to epic pipe
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it('all LLM requests are from a recognised agent (no unknown classifications)', () => {
+    const unknowns = agentNames.filter((n) => n === 'unknown');
+    assert.equal(unknowns.length, 0, `Unclassified LLM requests detected — whichAgent() missed ${unknowns.length} call(s)`);
+  });
+
   it('PM is called (epic pipeline, not standalone)', () => {
     const pmCalls = agentNames.filter((n) => n.startsWith('pm-'));
     assert.ok(pmCalls.length > 0, 'PMAgent must be called when story→epic override lands as size=epic');
@@ -362,6 +377,11 @@ describe('Planner.run — epic→story override routes to standalone path (AC2)'
   after(() => {
     resetDatabaseForTest();
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('all LLM requests are from a recognised agent (no unknown classifications)', () => {
+    const unknowns = agentNames.filter((n) => n === 'unknown');
+    assert.equal(unknowns.length, 0, `Unclassified LLM requests detected — whichAgent() missed ${unknowns.length} call(s)`);
   });
 
   it('standalone path is taken (AC2)', () => {
@@ -400,6 +420,11 @@ describe('Planner.run — routing=undefined routes to epic pipeline (AC1, NFR-1)
   after(() => {
     resetDatabaseForTest();
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('all LLM requests are from a recognised agent (no unknown classifications)', () => {
+    const unknowns = agentNames.filter((n) => n === 'unknown');
+    assert.equal(unknowns.length, 0, `Unclassified LLM requests detected — whichAgent() missed ${unknowns.length} call(s)`);
   });
 
   it('epic pipeline runs (PM called)', () => {

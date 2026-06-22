@@ -25,17 +25,21 @@ import type { EffectiveRouting } from '../intake/routing.js';
 // the classifier module or the broader intake module tree (enforced at test time).
 // These three helpers mirror the canonical definitions in routing.ts and are inlined
 // here so the compiled JS carries no such references. A sync-check test in
-// planner/__tests__/physicalSeparation.test.ts asserts equal outputs so any
-// drift between the two copies is caught automatically.
-function isStandalone(routing?: EffectiveRouting): boolean {
+// planner/__tests__/physicalSeparation.test.ts imports these exported copies and
+// compares them against the routing.ts originals so any drift is caught at CI time.
+export function _plannerIsStandalone(routing?: EffectiveRouting): boolean {
   return routing !== undefined && routing.size === 'story';
 }
-function standaloneStoryId(containerEpicId: string): string {
+export function _plannerStandaloneStoryId(containerEpicId: string): string {
   return containerEpicId.replace(/^epic-/, 'story-');
 }
-function standaloneBranch(storyId: string): string {
+export function _plannerStandaloneBranch(storyId: string): string {
   return `story/${storyId}`;
 }
+// Private aliases used within this module (avoid prefixed names in internal call sites).
+const isStandalone = _plannerIsStandalone;
+const standaloneStoryId = _plannerStandaloneStoryId;
+const standaloneBranch = _plannerStandaloneBranch;
 
 export interface PlanResult {
   runId: string;
@@ -265,8 +269,12 @@ export class Planner {
     analyst: Awaited<ReturnType<AnalystAgent['run']>>,
     usageSoFar: LLMUsage
   ): Promise<PlanResult> {
+    // Derive storyId here (not inside StandaloneStoryAgent) to avoid a transitive
+    // intake/ import in StandaloneStoryAgent's module — physical-separation invariant.
+    const storyId = standaloneStoryId(runId);
     const { story, usage: storyUsage } = await new StandaloneStoryAgent(ctx).run(
-      analyst.briefContent
+      analyst.briefContent,
+      storyId
     );
     const usage = addUsage(usageSoFar, storyUsage);
     const durationMs = Date.now() - startedAt;
@@ -274,28 +282,8 @@ export class Planner {
     const rel = planningRelPaths(runId);
     const paths = planningPaths(this.opts.projectRoot, runId);
 
-    // Atomically flip the reserved row to 'planned' + kind='standalone'.
-    // Wrapping both statements in a transaction prevents a crash between them
-    // from leaving the row with status='planned' but kind=NULL, which would
-    // cause EpicStore.isStandalone() to return false for the container (ADR-001 §5).
-    this.opts.db.transaction(() => {
-      epicStore.completePlanning(runId, story.title);
-      this.opts.db
-        .prepare(`UPDATE epics SET kind = 'standalone', updated_at = ? WHERE id = ?`)
-        .run(now, runId);
-    })();
-    epicStore.updatePaths(runId, { brief_path: rel.brief });
-    epicStore.updateTokens(runId, usage, durationMs);
-
-    // Persist the one agents row: story_id=storyId, branch=story/storyId.
-    // The Supervisor reads these at dispatch time — it must NOT re-derive them.
-    const storyId = standaloneStoryId(runId);
-    const agentStore = new AgentStore(this.opts.db);
-    const agent = agentStore.create(runId, storyId, story.title);
-    agentStore.updateStatus(agent.id, 'pending', { branch_name: standaloneBranch(storyId) });
-
-    // Write a minimal EpicYaml wrapping the single story so the Supervisor can
-    // read the plan on disk (same path convention as the full epic pipeline).
+    // Write the YAML file before the transaction so a disk-full error doesn't
+    // leave the DB row committed but the plan file missing.
     const epicYaml: EpicYaml = {
       epic_id: runId,
       title: story.title,
@@ -308,7 +296,24 @@ export class Planner {
     fs.mkdirSync(paths.epicsDir, { recursive: true });
     const yamlPath = paths.epicFile(runId);
     fs.writeFileSync(yamlPath, serializeEpic(epicYaml));
-    epicStore.updatePaths(runId, { yaml_path: rel.epicFile(runId) });
+
+    // Atomically commit epics + agents in one transaction. Covering all four
+    // writes prevents a crash between them from leaving either:
+    //  - an epics row with status='planned' but kind=NULL → EpicStore.isStandalone() returns false
+    //  - an epics row with kind='standalone' but no agents row → Supervisor finds a stuck epic
+    const agentStore = new AgentStore(this.opts.db);
+    this.opts.db.transaction(() => {
+      epicStore.completePlanning(runId, story.title);
+      this.opts.db
+        .prepare(`UPDATE epics SET kind = 'standalone', updated_at = ? WHERE id = ?`)
+        .run(now, runId);
+      const agent = agentStore.create(runId, storyId, story.title);
+      agentStore.updateStatus(agent.id, 'pending', { branch_name: standaloneBranch(storyId) });
+    })();
+
+    // Both paths (brief and yaml) are known at this point — write in one call.
+    epicStore.updatePaths(runId, { brief_path: rel.brief, yaml_path: rel.epicFile(runId) });
+    epicStore.updateTokens(runId, usage, durationMs);
 
     return {
       runId,
@@ -318,7 +323,10 @@ export class Planner {
       epicIds: [runId],
       epicPaths: [yamlPath],
       storyCount: 1,
-      storiesEnriched: 0,
+      // StandaloneStoryAgent produces a fully specified story (including tech_notes)
+      // in a single pass — equivalent to what the Architect's enrichment pass does
+      // for the epic pipeline. Report 1 so CLI output is accurate.
+      storiesEnriched: 1,
       usage,
     };
   }

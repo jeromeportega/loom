@@ -6,7 +6,6 @@ import type { PlannerContext } from './context.js';
 import { StorySchema } from '../types.js';
 import type { Story } from '../types.js';
 import { extractJsonBlock } from './util.js';
-import { standaloneStoryId } from '../intake/routing.js';
 
 /**
  * System prompt for the standalone story agent. Cached on first use (Invariant 3).
@@ -47,8 +46,12 @@ const SYSTEM_PROMPT = [
 export class StandaloneStoryAgent {
   constructor(private ctx: PlannerContext) {}
 
-  async run(refinedBrief: string): Promise<{ story: Story; usage: LLMUsage }> {
-    const storyId = standaloneStoryId(this.ctx.runId);
+  /**
+   * @param refinedBrief - the Analyst's refined brief
+   * @param storyId - derived by the caller (Planner.runStandalone) to avoid a
+   *   transitive intake/ import from this module (physical-separation invariant)
+   */
+  async run(refinedBrief: string, storyId: string): Promise<{ story: Story; usage: LLMUsage }> {
     let usage: LLMUsage = { ...EMPTY_USAGE };
     let lastError = '';
     let lastResponse = '';
