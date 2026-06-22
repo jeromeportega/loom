@@ -149,7 +149,8 @@ describe('scoreInBand — band boundary math (τ=1)', () => {
   it('good [7,10]: s=6 in band (lo-τ)', () => { assert.equal(scoreInBand(6, 'good'), true); });
   it('good [7,10]: s=5 out of band', () => { assert.equal(scoreInBand(5, 'good'), false); });
   it('good [7,10]: s=10 in band', () => { assert.equal(scoreInBand(10, 'good'), true); });
-  it('good [7,10]: s=11 in band (hi+τ)', () => { assert.equal(scoreInBand(11, 'good'), true); });
+  // Upper bound is capped at 10 — s=11 is above the cap and therefore out of band
+  it('good [7,10]: s=11 out of band (above cap)', () => { assert.equal(scoreInBand(11, 'good'), false); });
   it('good [7,10]: s=12 out of band', () => { assert.equal(scoreInBand(12, 'good'), false); });
 
   it('bad [0,4]: s=0 in band', () => { assert.equal(scoreInBand(0, 'bad'), true); });
