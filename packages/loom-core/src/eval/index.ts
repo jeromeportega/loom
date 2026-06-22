@@ -41,3 +41,4 @@ export { runGateEval } from './framework/runGateEval.js';
 export { coreMetrics } from './framework/coreMetrics.js';
 export { decide } from './framework/decide.js';
 export { DEFAULT_JUDGE_MODEL, resolveEvalModels } from './framework/models.js';
+export { main as runSkillGeneratorEval } from './skill-generator/run.js';
