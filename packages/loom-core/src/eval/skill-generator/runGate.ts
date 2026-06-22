@@ -12,7 +12,7 @@ import type { LLMClient, LLMRequest, LLMResponse } from '../../llm/LLMClient.js'
 import type { GateOutcome, GateDeps } from '../framework/types.js';
 import type { Story } from '../../types.js';
 import type { SkillGeneratorCase } from './caseSchema.js';
-import type { SkillGeneratorDecision } from './judgeTypes.js';
+import type { SkillGeneratorGateOutput } from './score.js';
 
 /**
  * Drives the production SkillGenerator over one eval case, observe-only (ADR-002).
@@ -29,7 +29,7 @@ import type { SkillGeneratorDecision } from './judgeTypes.js';
 export async function runSkillGeneratorGate(
   c: SkillGeneratorCase,
   deps: GateDeps,
-): Promise<GateOutcome<SkillGeneratorDecision>> {
+): Promise<GateOutcome<SkillGeneratorGateOutput>> {
   // Declare outside try so the finally block can clean up even if mkdtemp fails.
   let tmpDir = '';
   try {
@@ -138,10 +138,10 @@ export async function runSkillGeneratorGate(
     // trailing explanation). Exact-match would miss legitimate "NONE — reason"
     // outputs. Risk of false-positive for skill bodies that open with the word
     // "none" is accepted as a spec-documented trade-off.
-    const decision: SkillGeneratorDecision =
+    const decision: SkillGeneratorGateOutput =
       raw.length === 0 || raw.toUpperCase().startsWith('NONE')
-        ? { decision: 'none', skillMd: null }
-        : { decision: 'generate', skillMd: raw };
+        ? { decision: 'none', skillMd: null, _eval: { expectedDecision: c.rubric.expected_decision, source: c.source } }
+        : { decision: 'generate', skillMd: raw, _eval: { expectedDecision: c.rubric.expected_decision, source: c.source } };
 
     return { status: 'ok', output: decision };
   } catch (e) {

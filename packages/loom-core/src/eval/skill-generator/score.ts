@@ -32,6 +32,12 @@ export interface SkillGeneratorDecisionMeta {
   source: 'worthy' | 'trivial' | 'borderline';
 }
 
+// Promotes _eval from an optional runtime cast to a required, compiler-checked field.
+// Every gate-ok output must carry _eval; the compiler rejects any status:'ok' path
+// that omits it (ADR-002).
+export type SkillGeneratorGateOutput =
+  SkillGeneratorDecision & { _eval: SkillGeneratorDecisionMeta };
+
 const DEFAULT_SKILL_GENERATOR_BAR: SkillGeneratorBar = {
   minDecisionCorrectness: 0.80,  // [ASSUMPTION] — tune after first real runs
   minSkillQuality:        0.70,  // [ASSUMPTION]
@@ -40,20 +46,20 @@ const DEFAULT_SKILL_GENERATOR_BAR: SkillGeneratorBar = {
   maxLowQualityRate:      0.20,  // [ASSUMPTION]
 };
 
-type OkGateRecord = RunRecord<SkillGeneratorDecision, SkillGeneratorJudgment> & {
-  gate: { status: 'ok'; output: SkillGeneratorDecision };
+type OkGateRecord = RunRecord<SkillGeneratorGateOutput, SkillGeneratorJudgment> & {
+  gate: { status: 'ok'; output: SkillGeneratorGateOutput };
 };
 
 type ScoredRecord = OkGateRecord & {
   judge: { status: 'ok'; judgment: SkillGeneratorJudgment };
 };
 
-function getMeta(output: SkillGeneratorDecision): SkillGeneratorDecisionMeta | undefined {
-  return (output as SkillGeneratorDecision & { _eval?: SkillGeneratorDecisionMeta })._eval;
+function getMeta(output: SkillGeneratorGateOutput): SkillGeneratorDecisionMeta {
+  return output._eval;
 }
 
 export function scoreSkillGenerator(
-  records: RunRecord<SkillGeneratorDecision, SkillGeneratorJudgment>[],
+  records: RunRecord<SkillGeneratorGateOutput, SkillGeneratorJudgment>[],
 ): SkillGeneratorMetrics {
   const base = coreMetrics(records);
 
@@ -70,7 +76,6 @@ export function scoreSkillGenerator(
 
   for (const r of okGate) {
     const meta = getMeta(r.gate.output);
-    if (!meta) continue;
 
     const expected = meta.expectedDecision;
     const actual = r.gate.output.decision;
@@ -99,6 +104,10 @@ export function scoreSkillGenerator(
   if (judgedGenerate.length === 0) {
     return {
       ...base,
+      // scoredCases here means 'decision-scored cases' (every gate-ok case, NONE included),
+      // not the judge-coupled default from coreMetrics. Other framework consumers leave
+      // scoredCases judge-coupled; this override is intentional and local (ADR-003).
+      scoredCases: okGate.length,
       decisionCorrectness,
       spuriousGenerationRate,
       skillQuality:  0,  // fail-closed: no quality data → 0, below every min bar
@@ -122,6 +131,10 @@ export function scoreSkillGenerator(
 
   return {
     ...base,
+    // scoredCases here means 'decision-scored cases' (every gate-ok case, NONE included),
+    // not the judge-coupled default from coreMetrics. Other framework consumers leave
+    // scoredCases judge-coupled; this override is intentional and local (ADR-003).
+    scoredCases: okGate.length,
     decisionCorrectness,
     spuriousGenerationRate,
     skillQuality:  sumSkillQuality / n,
