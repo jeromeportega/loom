@@ -7,34 +7,34 @@ import type {
   RunRecord,
 } from '../framework/types.js';
 import type { SkillGeneratorCase } from './caseSchema.js';
-import type { SkillGeneratorDecision, SkillGeneratorJudgment } from './judgeTypes.js';
-import type { SkillGeneratorMetrics } from './score.js';
+import type { SkillGeneratorJudgment } from './judgeTypes.js';
+import type { SkillGeneratorMetrics, SkillGeneratorGateOutput } from './score.js';
 import { loadSkillGeneratorCases } from './loadCases.js';
 import { runSkillGeneratorGate } from './runGate.js';
 import { judgeSkillGeneration } from './judge.js';
 import { scoreSkillGenerator, skillGeneratorVerdict, SKILL_GENERATOR_THRESHOLDS } from './score.js';
 
 export function createSkillGeneratorConsumer(opts: { projectRoot: string }):
-  GateEvalConsumer<SkillGeneratorCase, SkillGeneratorDecision, SkillGeneratorJudgment, SkillGeneratorMetrics> {
+  GateEvalConsumer<SkillGeneratorCase, SkillGeneratorGateOutput, SkillGeneratorJudgment, SkillGeneratorMetrics> {
   void opts;
   return {
     loadCases(fixturePath?: string): SkillGeneratorCase[] {
       return loadSkillGeneratorCases(fixturePath);
     },
 
-    async runGate(c: SkillGeneratorCase, deps: GateDeps): Promise<GateOutcome<SkillGeneratorDecision>> {
+    async runGate(c: SkillGeneratorCase, deps: GateDeps): Promise<GateOutcome<SkillGeneratorGateOutput>> {
       return runSkillGeneratorGate(c, deps);
     },
 
     async judge(
       c: SkillGeneratorCase,
-      output: SkillGeneratorDecision,
+      output: SkillGeneratorGateOutput,
       deps: JudgeDeps,
     ): Promise<JudgeOutcome<SkillGeneratorJudgment>> {
       return judgeSkillGeneration(c, output, deps);
     },
 
-    score(records: RunRecord<SkillGeneratorDecision, SkillGeneratorJudgment>[]): SkillGeneratorMetrics {
+    score(records: RunRecord<SkillGeneratorGateOutput, SkillGeneratorJudgment>[]): SkillGeneratorMetrics {
       return scoreSkillGenerator(records);
     },
 
