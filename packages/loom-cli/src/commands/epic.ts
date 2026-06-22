@@ -16,6 +16,7 @@ import {
 } from '@loom-ai/core';
 import type { LLMClient } from '@loom-ai/core';
 import { recordIntakeClassification } from '../intake/recordIntakeClassification.js';
+import { resolveIntakeRouting } from '../intake/resolveIntakeRouting.js';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
 import { formatClarificationsNotice } from './briefGateMessage.js';
 import { makePlanningPrinter } from './planningPrinter.js';
@@ -192,7 +193,7 @@ export async function runEpic(
     }
   }
 
-  // Classify the intake brief best-effort before planning (observe-only, ADR-001).
+  // Classify the intake brief best-effort before planning (ADR-001).
   // Blocks planning start until classification resolves or times out; never throws.
   //
   // Classify the REFINED brief when available (falling back to the raw brief). The
@@ -201,9 +202,8 @@ export async function runEpic(
   // lacks. The intake eval's refined-brief variant showed this eliminates
   // epic→story under-sizing (raw: 2 confusions → refined: 0, clearing the Phase 1
   // bar) and cuts classifier invalid_output failures (7 → 1). The audit still
-  // records the raw `brief` for intake traceability. Still observe-only: this only
-  // improves the recorded verdict's accuracy; it never gates planning.
-  await recordIntakeClassification({
+  // records the raw `brief` for intake traceability.
+  const classification = await recordIntakeClassification({
     db,
     epicId: reservedId,
     brief,
@@ -211,6 +211,18 @@ export async function runEpic(
     llm,
     model: modelFor(policy, 'planning'),
     timeoutMs: policy.agents.intake_timeout_ms,
+  });
+
+  // Resolve routing: translate the classification + policy level into an
+  // EffectiveRouting that the planner injects as a sizing constraint.
+  // Returns undefined when intake_routing='off' OR classification failed →
+  // planner runs byte-identically to the legacy baseline (NFR-1).
+  const routing = await resolveIntakeRouting({
+    classification,
+    level: policy.agents.intake_routing,
+    isTTY: process.stdin.isTTY,
+    audit: new AuditLog(db),
+    epicId: reservedId,
   });
 
   console.log('\n  Planning your epic — Analyst → PM → Architect.');
@@ -234,6 +246,7 @@ export async function runEpic(
     sharedContract: policy.agents.shared_contract === 'on',
     qaPlanning: policy.agents.qa_planning === 'advisory',
     onPlanningEvent: printer.handle,
+    routing,
   });
 
   let result;

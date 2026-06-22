@@ -1,4 +1,5 @@
 import type { LLMClient } from '../llm/index.js';
+import type { EffectiveRouting } from '../intake/routing.js';
 
 /**
  * Shared context for a single planning run. `runId` scopes all artifacts to
@@ -30,4 +31,10 @@ export interface PlannerContext {
    * to the bench baseline.
    */
   qaPlanning?: boolean;
+  /**
+   * Effective routing from the intake classifier. When present the PM agent
+   * appends a sizing constraint block to its task B prompt (story-045-002).
+   * Absent ⇒ PM prompt is byte-identical to the legacy baseline (NFR-1).
+   */
+  routing?: EffectiveRouting;
 }

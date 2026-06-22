@@ -230,13 +230,16 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
   });
 
   it('no planning-side file imports verdict-producing or verdict-reading symbols from the intake module', () => {
-    // The one allowed intake import in epic.ts is the designated side-effect seam
-    // (recordIntakeClassification), which returns void and never feeds the verdict
-    // back into planning. All other intake imports — classifyIntake, IntakeVerdict,
-    // getIntakeVerdict* — are prohibited because they would allow the verdict to
-    // influence planning decisions.
+    // Allowed intake seams (story-045-002 extends the list):
+    //  - recordIntakeClassification: the original side-effect seam (observe-only).
+    //  - routing: the EffectiveRouting type + buildSizingConstraintBlock builder;
+    //    these are NOT verdict-readers — they are the routing OUTPUT consumed by
+    //    the planner as a sizing constraint (story-045-002, FR-5, ADR-001).
+    //  - resolveIntakeRouting: the routing brain called from epic.ts.
+    // All other intake imports — classifyIntake, IntakeVerdict, getIntakeVerdict* —
+    // are still prohibited because they would expose raw verdict state to planning.
     const intakeImportRe = /(?:from|import|require)\s*[\(]?\s*['"].*intake/;
-    const allowedSeamRe = /['"](?:\.\.\/)*intake\/recordIntakeClassification(?:\.js)?['"]/;
+    const allowedSeamRe = /['"](?:\.\.\/)*intake\/(?:recordIntakeClassification|routing|resolveIntakeRouting)(?:\.js)?['"]/;
     const violations: string[] = [];
     for (const file of allPlanningFiles) {
       if (!fs.existsSync(file)) continue;

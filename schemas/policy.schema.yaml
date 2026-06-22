@@ -365,6 +365,13 @@ properties:
           v0.4 (engine-tuning knob, no operator calibration data); hardcoded
           internally at 2. Declared here with x-internal: true so the schema
           documents the field exists without advertising it as a policy knob.
+      intake_timeout_ms:
+        type: integer
+        default: 120000
+        description: |
+          Wall-clock budget in milliseconds for the intake classifier call.
+          The call is best-effort and off the critical path — a hung call burns
+          up to this budget before failing. Default 120 000 ms (2 min).
       intake_routing:
         type: string
         enum: ['off', 'advisory', 'confirm']
