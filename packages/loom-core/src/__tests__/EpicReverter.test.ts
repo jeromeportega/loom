@@ -94,6 +94,42 @@ describe('EpicReverter', () => {
     assert.equal(r.deleted_refs.length, 0);
   });
 
+  it('removes lingering integration worktree before deleting epic branch (regression)', () => {
+    const db = openDatabase(path.join(repo, '.loom'));
+    new EpicStore(db).create('epic-wt', 'Worktree test');
+    // No agents — just the epic branch + integration worktree.
+
+    // Create the epic branch.
+    gitc(['branch', 'epic/epic-wt']);
+
+    // Simulate a lingering integration worktree left behind by a stopped epic run.
+    const integrationParent = path.join(repo, '.loom', 'integration');
+    fs.mkdirSync(integrationParent, { recursive: true });
+    const integrationWorktree = path.join(integrationParent, 'epic-wt');
+    gitc(['worktree', 'add', integrationWorktree, 'epic/epic-wt']);
+
+    const reverter = new EpicReverter({ projectRoot: repo, db, allowedRemotes: [] });
+    // Before the fix this threw "cannot delete branch 'epic/epic-wt' used by worktree".
+    const r = reverter.revert('epic-wt');
+
+    assert.equal(r.status, 'reverted');
+    assert.deepEqual(r.deleted_refs, ['epic/epic-wt']);
+
+    // Integration worktree directory must be gone.
+    assert.equal(
+      fs.existsSync(integrationWorktree),
+      false,
+      'integration worktree dir should be removed',
+    );
+
+    // Epic branch must be gone.
+    const out = execFileSync('git', ['branch', '-l', 'epic/epic-wt'], {
+      cwd: repo,
+      encoding: 'utf8',
+    }).trim();
+    assert.equal(out, '', 'epic/epic-wt branch should be deleted');
+  });
+
   it('--remote without an allowed remote becomes a partial revert', () => {
     const db = openDatabase(path.join(repo, '.loom'));
     new EpicStore(db).create('epic-001', 'Seeded');

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { EpicStore, AgentStore, AuditLog } from '../state/index.js';
 import { gitSafe, defaultRemote, remoteUrl } from './git.js';
@@ -81,11 +82,38 @@ export class EpicReverter {
     // branch tied to one of this epic's agents. The cleanup at finalize
     // time normally removes the story branches, but we re-target them
     // here in case finalize didn't run or some weren't merged.
+    const agents = agentStore.listByEpic(epicId);
     const epicBranch = `epic/${epicId}`;
-    const storyBranches = agentStore
-      .listByEpic(epicId)
-      .map((a) => `story/${a.story_id}`);
+    const storyBranches = agents.map((a) => `story/${a.story_id}`);
     const targetBranches = [epicBranch, ...storyBranches];
+
+    // Remove lingering worktrees before deleting branches.
+    // Order is load-bearing: worktree removal → prune → branch delete.
+    // Reversing this order reproduces the original crash.
+    const worktreePaths = [
+      path.join(this.opts.projectRoot, '.loom', 'integration', epicId),
+      ...agents.map((a) =>
+        path.join(this.opts.projectRoot, '.loom', 'worktrees', a.story_id),
+      ),
+    ];
+    for (const wt of worktreePaths) {
+      const result = gitSafe(this.opts.projectRoot, ['worktree', 'remove', wt]);
+      if (!result.ok) {
+        // Worktree already gone — treat as success for idempotency.
+        const msg = result.output.toLowerCase();
+        const alreadyGone =
+          msg.includes('is not a working tree') ||
+          msg.includes('does not exist') ||
+          msg.includes('no such file');
+        if (!alreadyGone) {
+          // Dirty worktree or unexpected failure — surface it so uncommitted
+          // work is not silently discarded.
+          throw new Error(`Failed to remove worktree at ${wt}: ${result.output}`);
+        }
+      }
+    }
+    // Prune stale worktree metadata after removals, before branch deletes.
+    gitSafe(this.opts.projectRoot, ['worktree', 'prune']);
 
     const deletedRefs: string[] = [];
     for (const branch of targetBranches) {
