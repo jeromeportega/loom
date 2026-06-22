@@ -10,6 +10,7 @@ import { SkillStore } from '../../skills/SkillStore.js';
 import { EMPTY_USAGE } from '../../llm/LLMClient.js';
 import type { LLMClient, LLMRequest, LLMResponse } from '../../llm/LLMClient.js';
 import type { GateOutcome, GateDeps } from '../framework/types.js';
+import type { Story } from '../../types.js';
 import type { SkillGeneratorCase } from './caseSchema.js';
 import type { SkillGeneratorDecision } from './judgeTypes.js';
 
@@ -42,7 +43,8 @@ export async function runSkillGeneratorGate(
     // automatically (raw INSERT would silently fail if a future migration adds a
     // NOT NULL column without a default).
     const epicId = `eval-epic-${c.id}`;
-    new EpicStore(db).create(epicId, `eval-${c.id}`);
+    const epicStore = new EpicStore(db);
+    epicStore.create(epicId, `eval-${c.id}`);
 
     // Seed the agent row: log_tail = diff_context is what SkillGenerator reads as
     // "Output tail" when building the extraction context prompt.
@@ -80,7 +82,9 @@ export async function runSkillGeneratorGate(
         // If that happens, check SkillGenerator's internal JudgeResultSchema first.
         return {
           text: '```json\n{"score": 10, "verdict": "accept", "reason": "eval harness canned accept"}\n```',
-          model: deps.gateModel,
+          // Use req.model so the field accurately reflects what SkillGenerator requested,
+          // not the gate model — SkillJudge may request a different model in future.
+          model: req.model,
           stopReason: 'end_turn',
           usage: { ...EMPTY_USAGE },
         };
@@ -96,18 +100,27 @@ export async function runSkillGeneratorGate(
 
     // Construct a Story-compatible object from the case's work context.
     // SkillGenerator only uses id, title, description, and acceptance_criteria.
-    const story = {
+    const story: Story = {
       ...c.work.story,
-      estimated_complexity: 'small' as const,
-      dependencies: [] as string[],
+      estimated_complexity: 'small',
+      dependencies: [],
     };
 
-    await new SkillGenerator({
-      db,
-      llm: recordingClient,
-      model: deps.gateModel,
-      skillStore: store,
-    }).afterStory(agent.id, story);
+    // Defensive: afterStory() is best-effort and currently never throws (it wraps
+    // extract() in try/catch). The inner try/catch here ensures that even if a future
+    // generator refactor propagates an error after call #1 has already recorded,
+    // recordedRaw is still usable for deriving the gate decision.
+    try {
+      await new SkillGenerator({
+        db,
+        llm: recordingClient,
+        model: deps.gateModel,
+        skillStore: store,
+      }).afterStory(agent.id, story);
+    } catch (afterStoryErr) {
+      if (recordedRaw === null) throw afterStoryErr;
+      // extractor succeeded; only post-extraction logic threw — fall through to derive decision
+    }
 
     // Derive the gate decision from the captured extractor response (ADR-002).
     if (recordedRaw === null) {
@@ -132,10 +145,10 @@ export async function runSkillGeneratorGate(
 
     return { status: 'ok', output: decision };
   } catch (e) {
-    return { status: 'failed', detail: String(e) };
+    return { status: 'failed', detail: e instanceof Error ? (e.stack ?? e.message) : String(e) };
   } finally {
     if (tmpDir) {
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
   }
 }

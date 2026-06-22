@@ -227,10 +227,9 @@ describe('runSkillGeneratorGate — isolation (T2, NFR-1/4)', () => {
 
     await runSkillGeneratorGate(c, { llm, gateModel: 'haiku-test' });
 
-    // Anchor to the monorepo root via __dirname (CJS) so this resolves correctly
-    // regardless of which directory the test runner is invoked from.
-    // Compiled path: dist/eval/skill-generator/__tests__/ → 6 levels up = repo root
-    const repoRoot = path.resolve(__dirname, '../../../../../../');
+    // Anchor to the monorepo root. LOOM_REPO_ROOT env var wins when set (e.g. CI);
+    // otherwise walk up from __dirname (CJS, compiled to dist/eval/skill-generator/__tests__/).
+    const repoRoot = process.env['LOOM_REPO_ROOT'] ?? path.resolve(__dirname, '../../../../../../');
     const repoSkillsDir = path.join(repoRoot, '.loom', 'skills');
     if (fs.existsSync(repoSkillsDir)) {
       const files = fs.readdirSync(repoSkillsDir);
@@ -388,10 +387,11 @@ describe('runSkillGeneratorGate — production SkillGenerator is byte-unchanged'
 
     assert.ok(result.status === 'ok' || result.status === 'failed',
       'gate must return a GateOutcome');
-    // The production extractor prompt always includes "SKILL.md" guidance
+    // "agentskills.io-format" is a phrase unique to the bundled skill-extractor prompt —
+    // if the runner swapped in a hand-rolled prompt, this assertion fails.
     assert.ok(
-      capturedSystem.includes('SKILL.md') || capturedSystem.includes('skill'),
-      'system prompt should contain skill-extractor guidance from the production SkillGenerator',
+      capturedSystem.includes('agentskills.io-format'),
+      `system prompt must contain the skill-extractor bundled template phrase; got: ${capturedSystem.slice(0, 400)}`,
     );
   });
 });
