@@ -349,7 +349,7 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
         const si = STATUS_ICONS[agent.status] ?? '?';
         const pr = agent.pr_url ? `  → ${agent.pr_url}` : '';
         const elapsed = agent.started_at
-          ? ` (${elapsedStr(agent.started_at)})`
+          ? ` (${elapsedStr(agent.started_at, agent.status === 'running' ? undefined : agent.updated_at)})`
           : '';
         const label = agent.story_title
           ? `${agent.story_id} — ${agent.story_title}`
@@ -432,8 +432,13 @@ function stallReasonFor(audit: AuditLog, agentId: string): string | null {
   }
 }
 
-function elapsedStr(startedAt: string): string {
-  const ms = Date.now() - new Date(startedAt).getTime();
+// For a terminal agent, pass its finish time (updated_at) so the displayed
+// duration is the real processing time (start→finish), not now−start — which
+// otherwise keeps growing forever and makes long-finished epics look like they
+// ran for hours (S25). Running agents pass no end and get live elapsed.
+function elapsedStr(startedAt: string, endedAt?: string): string {
+  const end = endedAt ? new Date(endedAt).getTime() : Date.now();
+  const ms = end - new Date(startedAt).getTime();
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);

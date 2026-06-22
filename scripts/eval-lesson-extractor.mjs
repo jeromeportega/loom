@@ -17,7 +17,7 @@ const judgeModel  = process.env.LOOM_EVAL_JUDGE_MODEL ?? 'claude-opus-4-8';
 // Resolve to workspace root (CWD when run via `npm run eval:lesson-extractor` from repo root).
 const projectRoot = path.resolve('.');
 
-console.log(`\nRunning lesson-extractor eval — 2 cases (default fixture).`);
+console.log(`\nRunning lesson-extractor eval (default fixture).`);
 console.log(`  Gate model:  ${gateModel}`);
 console.log(`  Judge model: ${judgeModel}\n`);
 
