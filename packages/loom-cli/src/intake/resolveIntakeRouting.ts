@@ -1,4 +1,4 @@
-import type { AuditLog, EffectiveRouting } from '@loom-ai/core';
+import type { AuditLog, IntakeVerdict, EffectiveRouting } from '@loom-ai/core';
 import type { IntakeClassificationResult } from './recordIntakeClassification.js';
 
 /**
@@ -14,8 +14,11 @@ import type { IntakeClassificationResult } from './recordIntakeClassification.js
 export async function resolveIntakeRouting(opts: {
   classification: IntakeClassificationResult;
   level: 'off' | 'advisory' | 'confirm';
+  /** Used by the confirm path (story-045-003) for stdin interaction. */
   isTTY: boolean;
+  /** TODO(045-004): wire recordIntakeRouted here for confirm-path provenance. */
   audit: AuditLog;
+  /** TODO(045-004): wire recordIntakeRouted here for confirm-path provenance. */
   epicId: string;
   /** Injected output stream for testable printing. Defaults to process.stdout. */
   out?: NodeJS.WritableStream;
@@ -32,32 +35,28 @@ export async function resolveIntakeRouting(opts: {
   const out = opts.out ?? process.stdout;
 
   if (level === 'advisory') {
-    // Print the full classification surface (non-blocking — no stdin read)
-    out.write(`\n  Intake classification: ${verdict.type} / ${verdict.size} (confidence: ${verdict.confidence})\n`);
-    out.write(`  Rationale: ${verdict.rationale}\n\n`);
-
-    return {
-      type:       verdict.type,
-      size:       verdict.size,
-      confidence: verdict.confidence,
-      source:     'classifier',
-    };
+    return printAndRoute(verdict, out);
   }
 
   // confirm path: 045-003 wires confirmRouting() here (isTTY branch) and
   // 045-004 wires recordIntakeRouted() for provenance. Until then, degrade
   // to advisory so planning proceeds without blocking (ADR-004).
   if (level === 'confirm') {
-    out.write(`\n  Intake classification: ${verdict.type} / ${verdict.size} (confidence: ${verdict.confidence})\n`);
-    out.write(`  Rationale: ${verdict.rationale}\n\n`);
-
-    return {
-      type:       verdict.type,
-      size:       verdict.size,
-      confidence: verdict.confidence,
-      source:     'classifier',
-    };
+    out.write('  [warn] intake_routing=confirm not yet active — running as advisory (story-045-003)\n');
+    return printAndRoute(verdict, out);
   }
 
   return undefined;
+}
+
+/** Print the full classification surface (non-blocking) and return EffectiveRouting. */
+function printAndRoute(verdict: IntakeVerdict, out: NodeJS.WritableStream): EffectiveRouting {
+  out.write(`\n  Intake classification: ${verdict.type} / ${verdict.size} (confidence: ${verdict.confidence})\n`);
+  out.write(`  Rationale: ${verdict.rationale}\n\n`);
+  return {
+    type:       verdict.type,
+    size:       verdict.size,
+    confidence: verdict.confidence,
+    source:     'classifier',
+  };
 }

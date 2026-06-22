@@ -221,3 +221,95 @@ describe('resolveIntakeRouting — advisory is non-blocking (AC4, NFR-2)', () =>
     assert.ok(!stdinRead, 'advisory must not read from stdin (non-blocking, NFR-2)');
   });
 });
+
+// ── level: confirm (degrades to advisory until 045-003 lands) ─────────────────
+//
+// Until story-045-003 wires confirmRouting(), the confirm path degrades
+// gracefully: it prints the classification surface + a visible warning, then
+// returns an EffectiveRouting just like advisory. This asserts that degradation
+// is correct and non-silent.
+
+describe('resolveIntakeRouting — level: confirm (graceful degradation)', () => {
+  it('returns EffectiveRouting with source:classifier (same as advisory)', async () => {
+    const result = await resolveIntakeRouting({
+      classification: OK_CLASSIFICATION,
+      level: 'confirm',
+      isTTY: false,
+      audit: NOOP_AUDIT,
+      epicId: 'epic-001',
+    });
+
+    assert.ok(result !== undefined, 'confirm must return EffectiveRouting for ok:true classification');
+    assert.equal(result.type,       'feature');
+    assert.equal(result.size,       'story');
+    assert.equal(result.confidence, 'high');
+    assert.equal(result.source,     'classifier');
+  });
+
+  it('returns undefined when classification failed (ok:false) — legacy path', async () => {
+    const result = await resolveIntakeRouting({
+      classification: FAIL_CLASSIFICATION,
+      level: 'confirm',
+      isTTY: false,
+      audit: NOOP_AUDIT,
+      epicId: 'epic-001',
+    });
+    assert.equal(result, undefined);
+  });
+
+  it('prints the full classification surface (type, size, confidence, rationale)', async () => {
+    const { stream, get } = captureStream();
+    await resolveIntakeRouting({
+      classification: OK_CLASSIFICATION,
+      level: 'confirm',
+      isTTY: false,
+      audit: NOOP_AUDIT,
+      epicId: 'epic-001',
+      out: stream,
+    });
+    const output = get();
+    assert.ok(output.includes('feature'),   'output must contain type');
+    assert.ok(output.includes('story'),     'output must contain size');
+    assert.ok(output.includes('high'),      'output must contain confidence');
+    assert.ok(output.includes('This is a small, self-contained addition.'), 'output must contain rationale');
+  });
+
+  it('prints a visible degradation warning (makes degradation explicit, not silent)', async () => {
+    const { stream, get } = captureStream();
+    await resolveIntakeRouting({
+      classification: OK_CLASSIFICATION,
+      level: 'confirm',
+      isTTY: false,
+      audit: NOOP_AUDIT,
+      epicId: 'epic-001',
+      out: stream,
+    });
+    assert.ok(
+      get().includes('[warn]') || get().includes('warn'),
+      'confirm degradation must emit a visible warning so operators know confirm is not yet active'
+    );
+  });
+
+  it('confirm is non-blocking — does not read stdin even when isTTY=true', async () => {
+    const originalRead = process.stdin.read.bind(process.stdin);
+    let stdinRead = false;
+    process.stdin.read = (): null => {
+      stdinRead = true;
+      throw new Error('resolveIntakeRouting confirm must not read from stdin until 045-003');
+    };
+
+    try {
+      await resolveIntakeRouting({
+        classification: OK_CLASSIFICATION,
+        level: 'confirm',
+        isTTY: true,
+        audit: NOOP_AUDIT,
+        epicId: 'epic-001',
+      });
+    } finally {
+      process.stdin.read = originalRead;
+    }
+
+    assert.ok(!stdinRead, 'confirm must not read stdin until story-045-003 lands (NFR-2)');
+  });
+});

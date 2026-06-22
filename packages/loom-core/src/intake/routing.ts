@@ -7,7 +7,11 @@ export interface EffectiveRouting {
   type:       'feature' | 'bug' | 'chore';
   size:       'story' | 'epic';
   confidence: 'low' | 'medium' | 'high';
-  /** 'classifier' = the intake classifier produced the verdict; 'operator-override' = the operator changed it at the confirm prompt. */
+  /**
+   * 'classifier' = intake classifier produced the verdict.
+   * 'operator-override' = operator changed it at the confirm prompt (story-045-003).
+   * Only 'classifier' is produced until story-045-003 lands.
+   */
   source:     'classifier' | 'operator-override';
 }
 
@@ -18,20 +22,25 @@ export interface EffectiveRouting {
  * When routing is absent the PM message is unchanged (NFR-1: byte-identical off-path).
  */
 export function buildSizingConstraintBlock(routing: EffectiveRouting): string {
-  if (routing.size === 'story') {
-    return (
-      '\n\n## Sizing constraint (intake classifier)\n\n' +
-      'The intake classifier scored this request as story-sized. ' +
-      'Produce a single cohesive story or the minimum necessary decomposition — ' +
-      'do NOT expand this into a multi-story epic unless the work genuinely ' +
-      'requires parallel, independently deliverable tracks.'
-    );
+  switch (routing.size) {
+    case 'story':
+      return (
+        '\n\n## Sizing constraint (intake classifier)\n\n' +
+        'The intake classifier scored this request as story-sized. ' +
+        'Produce a single cohesive story or the minimum necessary decomposition — ' +
+        'do NOT expand this into a multi-story epic unless the work genuinely ' +
+        'requires parallel, independently deliverable tracks.'
+      );
+    case 'epic':
+      return (
+        '\n\n## Sizing constraint (intake classifier)\n\n' +
+        'The intake classifier scored this request as epic-sized. ' +
+        'Perform a full decomposition: break this into the smallest independently ' +
+        'deliverable stories, as you would for any standard epic.'
+      );
+    default: {
+      const _: never = routing.size;
+      return '';
+    }
   }
-  // size === 'epic'
-  return (
-    '\n\n## Sizing constraint (intake classifier)\n\n' +
-    'The intake classifier scored this request as epic-sized. ' +
-    'Perform a full decomposition: break this into the smallest independently ' +
-    'deliverable stories, as you would for any standard epic.'
-  );
 }

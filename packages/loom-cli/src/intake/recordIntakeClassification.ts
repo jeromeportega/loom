@@ -1,6 +1,11 @@
 import type Database from 'better-sqlite3';
-import type { LLMClient, IntakeVerdict } from '@loom-ai/core';
+import type { LLMClient, IntakeVerdict, ClassifyResult } from '@loom-ai/core';
 import { classifyIntake, INTAKE_AUDIT_ACTION, EpicStore, AuditLog } from '@loom-ai/core';
+
+// Compile-time assertion: ClassifyResult must be structurally assignable to
+// IntakeClassificationResult so the assignment below is type-safe even if the
+// two types are defined independently.
+type _AssertCompat = ClassifyResult extends IntakeClassificationResult ? true : never;
 
 export type IntakeClassificationResult =
   | { ok: true;  verdict: IntakeVerdict }

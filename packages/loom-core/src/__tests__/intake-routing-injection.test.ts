@@ -67,6 +67,9 @@ const EPIC_ROUTING: EffectiveRouting = {
 
 // ── Suite 1: routing absent → no block (re-asserts NFR-1 seam) ───────────────
 
+// Shared across suites so Suite 2 can compare relative to this baseline.
+let noRoutingRequestCount: number;
+
 describe('PMAgent routing injection — routing absent (NFR-1 seam)', () => {
   let tmpDir: string;
   let taskBContent: string;
@@ -82,6 +85,7 @@ describe('PMAgent routing injection — routing absent (NFR-1 seam)', () => {
 
     const ctx = { projectRoot: tmpDir, llm, model: 'test-model', runId: 'epic-001' };
     await new PMAgent(ctx).run(BRIEF, 1);
+    noRoutingRequestCount = llm.requests.length;
 
     const taskBReq = llm.requests.find((r) =>
       r.messages.some((m) => m.role === 'user' && m.content.includes(TASK_B_TRIGGER))
@@ -139,8 +143,12 @@ describe('PMAgent routing injection — story-sized routing present (AC1, AC2)',
 
   after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
-  it('still makes exactly two LLM calls (no extra routing call — not a parallel pipeline)', () => {
-    assert.equal(requestCount, 2, 'routing must not spawn a separate pipeline call');
+  it('routing does not add LLM calls vs the no-routing baseline (not a parallel pipeline)', () => {
+    assert.equal(
+      requestCount,
+      noRoutingRequestCount,
+      'routing must not spawn extra LLM calls compared to the no-routing baseline'
+    );
   });
 
   it('task B message contains the single-cohesive-story instruction', () => {

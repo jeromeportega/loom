@@ -230,30 +230,51 @@ describe('NFR-1 topology guard — planning-side source must not import or refer
   });
 
   it('no planning-side file imports verdict-producing or verdict-reading symbols from the intake module', () => {
-    // Allowed intake seams (story-045-002 extends the list):
-    //  - recordIntakeClassification: the original side-effect seam (observe-only).
-    //  - routing: the EffectiveRouting type + buildSizingConstraintBlock builder;
-    //    these are NOT verdict-readers — they are the routing OUTPUT consumed by
+    // Two allow tiers — resolveIntakeRouting lives in loom-cli, so allowing it
+    // for loom-core planner files would green-light a circular dep (loom-core →
+    // loom-cli → loom-core). Keep the core allow list strict; only epic.ts (CLI)
+    // may import the routing brain.
+    //
+    // Allowed for loom-core planner dirs:
+    //  - recordIntakeClassification: the original observe-only side-effect seam.
+    //  - routing: EffectiveRouting type + buildSizingConstraintBlock; consumed by
     //    the planner as a sizing constraint (story-045-002, FR-5, ADR-001).
-    //  - resolveIntakeRouting: the routing brain called from epic.ts.
+    // Allowed additionally for epic.ts (CLI layer):
+    //  - resolveIntakeRouting: the routing brain invoked by the CLI, NOT by core.
     // All other intake imports — classifyIntake, IntakeVerdict, getIntakeVerdict* —
-    // are still prohibited because they would expose raw verdict state to planning.
+    // are prohibited because they expose raw verdict state to planning.
     const intakeImportRe = /(?:from|import|require)\s*[\(]?\s*['"].*intake/;
-    const allowedSeamRe = /['"](?:\.\.\/)*intake\/(?:recordIntakeClassification|routing|resolveIntakeRouting)(?:\.js)?['"]/;
+    const coreAllowedSeamRe = /['"](?:\.\.\/)*intake\/(?:recordIntakeClassification|routing)(?:\.js)?['"]/;
+    const cliAllowedSeamRe  = /['"](?:\.\.\/)*intake\/(?:recordIntakeClassification|routing|resolveIntakeRouting)(?:\.js)?['"]/;
+
     const violations: string[] = [];
-    for (const file of allPlanningFiles) {
+
+    // Check loom-core planner/brief/guardrails dirs with the strict core allow list.
+    for (const file of collectSrcFiles(planningDirs)) {
       if (!fs.existsSync(file)) continue;
       const src = fs.readFileSync(file, 'utf8');
       if (!intakeImportRe.test(src)) continue;
-      // Each line: if it matches the intake import pattern but is NOT the
-      // allowed side-effect seam, it is a violation.
       for (const line of src.split('\n')) {
-        if (intakeImportRe.test(line) && !allowedSeamRe.test(line)) {
+        if (intakeImportRe.test(line) && !coreAllowedSeamRe.test(line)) {
           violations.push(path.relative(REPO_ROOT, file));
           break;
         }
       }
     }
+
+    // Check the CLI planning files (epic.ts) with the broader CLI allow list.
+    for (const file of planningFiles) {
+      if (!fs.existsSync(file)) continue;
+      const src = fs.readFileSync(file, 'utf8');
+      if (!intakeImportRe.test(src)) continue;
+      for (const line of src.split('\n')) {
+        if (intakeImportRe.test(line) && !cliAllowedSeamRe.test(line)) {
+          violations.push(path.relative(REPO_ROOT, file));
+          break;
+        }
+      }
+    }
+
     assert.deepEqual(
       violations,
       [],
