@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -90,6 +90,14 @@ function loadFixture(): RawFixture {
   return raw as RawFixture;
 }
 
+// ── Module-level fixture — populated once in before() to avoid repeated disk I/O ─
+
+let fixture!: RawFixture;
+
+before(() => {
+  fixture = loadFixture();
+});
+
 // ── Top-level structure ────────────────────────────────────────────────────────
 
 describe('lesson-extractor fixture — top-level structure', () => {
@@ -98,20 +106,31 @@ describe('lesson-extractor fixture — top-level structure', () => {
   });
 
   it('contains at least 2 cases', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     assert.ok(cases.length >= 2, `expected ≥2 cases, got ${cases.length}`);
   });
 
   it('every case has a non-empty string id', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     for (const c of cases) {
       assert.equal(typeof c.id, 'string', `id must be a string in case ${JSON.stringify(c.id)}`);
       assert.ok((c.id as string).length > 0, 'id must be non-empty');
     }
   });
 
+  it('all case ids are unique', () => {
+    const cases = fixture.cases;
+    const ids = cases.map((c) => c.id);
+    const unique = new Set(ids);
+    assert.equal(
+      unique.size,
+      ids.length,
+      `case ids must be unique; found duplicates among: ${JSON.stringify(ids)}`,
+    );
+  });
+
   it('every case has a non-empty string rationale', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     for (const c of cases) {
       assert.equal(typeof c.rationale, 'string', `rationale must be a string in case ${c.id}`);
       assert.ok((c.rationale as string).trim().length > 0, `rationale must be non-empty in case ${c.id}`);
@@ -123,14 +142,14 @@ describe('lesson-extractor fixture — top-level structure', () => {
 
 describe('lesson-extractor fixture — required source profiles', () => {
   it('contains exactly the source values "rich" and "thin"', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     const sources = new Set(cases.map((c) => c.source));
     assert.ok(sources.has('rich'), 'fixture must contain at least one "rich" case');
     assert.ok(sources.has('thin'), 'fixture must contain at least one "thin" case');
   });
 
   it('source is one of "rich" | "thin" for every case', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     const valid = new Set(['rich', 'thin']);
     for (const c of cases) {
       assert.ok(
@@ -145,7 +164,7 @@ describe('lesson-extractor fixture — required source profiles', () => {
 
 describe('lesson-extractor fixture — telemetry.decision_traces', () => {
   it('every case has at least 1 decision trace', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     for (const c of cases) {
       const traces = c.telemetry.decision_traces;
       assert.ok(Array.isArray(traces), `decision_traces must be an array in case ${c.id}`);
@@ -157,23 +176,78 @@ describe('lesson-extractor fixture — telemetry.decision_traces', () => {
   });
 
   it('every decision trace has required fields populated', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     for (const c of cases) {
       const traces = c.telemetry.decision_traces as RawDecisionTrace[];
       for (const [i, tr] of traces.entries()) {
         assert.equal(typeof tr.id, 'number', `trace[${i}] in case ${c.id}: id must be a number`);
+        assert.equal(
+          typeof tr.agent_id,
+          'string',
+          `trace[${i}] in case ${c.id}: agent_id must be a string`,
+        );
+        assert.ok(
+          (tr.agent_id as string).length > 0,
+          `trace[${i}] in case ${c.id}: agent_id must be non-empty`,
+        );
+        assert.equal(
+          typeof tr.story_id,
+          'string',
+          `trace[${i}] in case ${c.id}: story_id must be a string`,
+        );
+        assert.ok(
+          (tr.story_id as string).length > 0,
+          `trace[${i}] in case ${c.id}: story_id must be non-empty`,
+        );
+        assert.equal(
+          typeof tr.epic_id,
+          'string',
+          `trace[${i}] in case ${c.id}: epic_id must be a string`,
+        );
+        assert.ok(
+          (tr.epic_id as string).length > 0,
+          `trace[${i}] in case ${c.id}: epic_id must be non-empty`,
+        );
         assert.equal(typeof tr.kind, 'string', `trace[${i}] in case ${c.id}: kind must be a string`);
         assert.ok((tr.kind as string).length > 0, `trace[${i}] in case ${c.id}: kind must be non-empty`);
-        assert.equal(typeof tr.rationale, 'string', `trace[${i}] in case ${c.id}: rationale must be a string`);
+        assert.equal(
+          typeof tr.rationale,
+          'string',
+          `trace[${i}] in case ${c.id}: rationale must be a string`,
+        );
         assert.ok(
           (tr.rationale as string).trim().length > 0,
           `trace[${i}] in case ${c.id}: rationale must be non-empty`,
         );
-        assert.equal(typeof tr.timestamp, 'string', `trace[${i}] in case ${c.id}: timestamp must be a string`);
+        assert.equal(
+          typeof tr.timestamp,
+          'string',
+          `trace[${i}] in case ${c.id}: timestamp must be a string`,
+        );
         assert.ok(
           (tr.timestamp as string).length > 0,
           `trace[${i}] in case ${c.id}: timestamp must be non-empty`,
         );
+      }
+    }
+  });
+
+  it('every decision trace with non-null metadata contains parseable JSON', () => {
+    const cases = fixture.cases;
+    for (const c of cases) {
+      const traces = c.telemetry.decision_traces as RawDecisionTrace[];
+      for (const [i, tr] of traces.entries()) {
+        if (tr.metadata !== null && tr.metadata !== undefined) {
+          assert.equal(
+            typeof tr.metadata,
+            'string',
+            `trace[${i}] in case ${c.id}: non-null metadata must be a string`,
+          );
+          assert.doesNotThrow(
+            () => JSON.parse(tr.metadata as string),
+            `trace[${i}] in case ${c.id}: metadata must be valid JSON; got ${JSON.stringify(tr.metadata)}`,
+          );
+        }
       }
     }
   });
@@ -183,7 +257,7 @@ describe('lesson-extractor fixture — telemetry.decision_traces', () => {
 
 describe('lesson-extractor fixture — telemetry.agents', () => {
   it('every case has at least 1 agent entry', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     for (const c of cases) {
       const agents = c.telemetry.agents;
       assert.ok(Array.isArray(agents), `agents must be an array in case ${c.id}`);
@@ -195,7 +269,7 @@ describe('lesson-extractor fixture — telemetry.agents', () => {
   });
 
   it('every agent has a non-empty story_id', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     for (const c of cases) {
       const agents = c.telemetry.agents as RawAgent[];
       for (const [i, ag] of agents.entries()) {
@@ -213,7 +287,7 @@ describe('lesson-extractor fixture — telemetry.agents', () => {
   });
 
   it('every agent has non-null review_summary and log_tail', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     for (const c of cases) {
       const agents = c.telemetry.agents as RawAgent[];
       for (const [i, ag] of agents.entries()) {
@@ -244,7 +318,7 @@ describe('lesson-extractor fixture — telemetry.agents', () => {
 
 describe('lesson-extractor fixture — telemetry.audit_tail', () => {
   it('every case has at least 1 audit row', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     for (const c of cases) {
       const tail = c.telemetry.audit_tail;
       assert.ok(Array.isArray(tail), `audit_tail must be an array in case ${c.id}`);
@@ -256,7 +330,7 @@ describe('lesson-extractor fixture — telemetry.audit_tail', () => {
   });
 
   it('every audit row has required fields populated', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     for (const c of cases) {
       const tail = c.telemetry.audit_tail as RawAuditRow[];
       for (const [i, row] of tail.entries()) {
@@ -281,17 +355,22 @@ describe('lesson-extractor fixture — telemetry.audit_tail', () => {
 });
 
 // ── Rubric expectations ────────────────────────────────────────────────────────
+// expected_themes holds theme CATEGORIES (not exact lessons). Rich cases must
+// have ≥1 theme. Thin cases may have an empty array — the correct outcome for a
+// thin epic is zero extracted lessons, so no themes are expected to appear.
 
 describe('lesson-extractor fixture — rubric', () => {
-  it('every case has non-empty expected_themes array', () => {
-    const { cases } = loadFixture();
+  it('every case has expected_themes as an array; rich cases must have ≥1 theme', () => {
+    const cases = fixture.cases;
     for (const c of cases) {
       const themes = c.rubric.expected_themes;
       assert.ok(Array.isArray(themes), `expected_themes must be an array in case ${c.id}`);
-      assert.ok(
-        (themes as unknown[]).length >= 1,
-        `case ${c.id} expected_themes must be non-empty`,
-      );
+      if (c.source === 'rich') {
+        assert.ok(
+          (themes as unknown[]).length >= 1,
+          `rich case ${c.id} must have ≥1 expected_theme`,
+        );
+      }
       for (const [i, t] of (themes as unknown[]).entries()) {
         assert.equal(typeof t, 'string', `expected_themes[${i}] in case ${c.id} must be a string`);
         assert.ok(
@@ -303,7 +382,7 @@ describe('lesson-extractor fixture — rubric', () => {
   });
 
   it('every case has at least 1 over_extraction_trap', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     for (const c of cases) {
       const traps = c.rubric.over_extraction_traps;
       assert.ok(Array.isArray(traps), `over_extraction_traps must be an array in case ${c.id}`);
@@ -328,12 +407,13 @@ describe('lesson-extractor fixture — rubric', () => {
 
 // ── CRITICAL: thin case non-emptiness ─────────────────────────────────────────
 // LessonExtractor.extract() short-circuits to [] when decision_traces, agents,
-// AND audit_tail are all empty (FR-5). A thin case with all-empty sources would
-// never exercise over-extraction. This test asserts the thin case is nonempty.
+// AND audit_tail are all empty (FR-5). The thin case must carry at least one
+// entry in EACH source so the extractor evaluates it and over-extraction is
+// exercisable. Checking any-nonempty is insufficient — each source must be ≥1.
 
 describe('lesson-extractor fixture — thin case non-emptiness (CRITICAL)', () => {
-  it('thin case has at least some telemetry across all three sources', () => {
-    const { cases } = loadFixture();
+  it('thin case has ≥1 entry in each of decision_traces, agents, and audit_tail', () => {
+    const cases = fixture.cases;
     const thin = cases.find((c) => c.source === 'thin');
     assert.ok(thin !== undefined, 'must have a thin case');
 
@@ -341,16 +421,16 @@ describe('lesson-extractor fixture — thin case non-emptiness (CRITICAL)', () =
     const agents = thin.telemetry.agents as unknown[];
     const tail = thin.telemetry.audit_tail as unknown[];
 
-    const allEmpty = traces.length === 0 && agents.length === 0 && tail.length === 0;
     assert.ok(
-      !allEmpty,
-      'thin case telemetry must NOT be all-empty — LessonExtractor.extract() ' +
-        'short-circuits on fully empty input, so over-extraction would never be exercised',
+      traces.length >= 1 && agents.length >= 1 && tail.length >= 1,
+      'thin case must have ≥1 entry in EACH of decision_traces, agents, and audit_tail ' +
+        '— LessonExtractor.extract() short-circuits on fully empty input, so over-extraction ' +
+        `would never be exercised. Got: decision_traces=${traces.length}, agents=${agents.length}, audit_tail=${tail.length}`,
     );
   });
 
   it('thin case is meaningfully sparse: combined source entries ≤ 10', () => {
-    const { cases } = loadFixture();
+    const cases = fixture.cases;
     const thin = cases.find((c) => c.source === 'thin');
     assert.ok(thin !== undefined, 'must have a thin case');
 
@@ -384,7 +464,6 @@ describe('lesson-extractor fixture — synthetic data only', () => {
   }
 
   it('no field contains anonymization markers (REDACTED, ANON, PII)', () => {
-    const fixture = loadFixture();
     const allText = textFields(fixture).join(' ');
     for (const pat of FORBIDDEN_PATTERNS) {
       assert.ok(
@@ -394,8 +473,8 @@ describe('lesson-extractor fixture — synthetic data only', () => {
     }
   });
 
-  it('epic_id values follow the synthetic "epic-NNN" pattern', () => {
-    const { cases } = loadFixture();
+  it('telemetry.epic_id values follow the synthetic "epic-NNN" pattern', () => {
+    const cases = fixture.cases;
     const syntheticEpicId = /^epic-\d+$/;
     for (const c of cases) {
       const epicId = c.telemetry.epic_id;
@@ -405,6 +484,26 @@ describe('lesson-extractor fixture — synthetic data only', () => {
         syntheticEpicId,
         `case ${c.id}: epic_id "${epicId}" must match synthetic pattern "epic-NNN"`,
       );
+    }
+  });
+
+  it('decision trace epic_id values follow the synthetic "epic-NNN" pattern', () => {
+    const cases = fixture.cases;
+    const syntheticEpicId = /^epic-\d+$/;
+    for (const c of cases) {
+      const traces = c.telemetry.decision_traces as RawDecisionTrace[];
+      for (const [i, tr] of traces.entries()) {
+        assert.equal(
+          typeof tr.epic_id,
+          'string',
+          `trace[${i}] in case ${c.id}: epic_id must be a string`,
+        );
+        assert.match(
+          tr.epic_id as string,
+          syntheticEpicId,
+          `trace[${i}] in case ${c.id}: epic_id "${tr.epic_id}" must match synthetic pattern "epic-NNN"`,
+        );
+      }
     }
   });
 });

@@ -246,7 +246,7 @@ cases:
             [10:04:27] npm test: 8 passing, 0 failed
 
       audit_tail:
-        - id: 201
+        - id: 211
           agent_id: worker-story-035-001
           action: file_write
           command: null
@@ -255,7 +255,7 @@ cases:
           detail: packages/loom-cli/src/commands/status.ts
           timestamp: "2026-05-18T10:04:25.000Z"
 
-        - id: 202
+        - id: 212
           agent_id: worker-story-035-001
           action: bash
           command: npm test
@@ -265,10 +265,7 @@ cases:
           timestamp: "2026-05-18T10:04:27.000Z"
 
     rubric:
-      expected_themes:
-        - >
-          trivial single-character fixes in non-logic files rarely produce
-          generalizable lessons; a thin result set (zero lessons) is correct here
+      expected_themes: []
       over_extraction_traps:
         - >
           A passing test run after a one-liner cosmetic change should not generate
