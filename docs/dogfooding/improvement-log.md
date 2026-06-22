@@ -715,6 +715,45 @@ the epic branch, mirroring how it already cleans story worktrees.
 --hard` but over-broadly catches benign `worktree remove --force` too; the
 forbidden-flag check could be scoped to the subcommands where force is dangerous.
 
+### S40 — cross-package contract change blindness (worker can't see consumers in other packages)
+epic-036 made `blocking_gaps` a REQUIRED field on the `BriefRefinement` type in
+loom-core; the worker dutifully updated loom-core's constructors, but the
+`propose.test.ts` stubs in loom-cli AND loom-web (other packages) broke the
+build — the worker is scoped to one package and structurally cannot see
+downstream consumers of a core type/contract. The per-epic integration gate
+caught it (good), but recovery needed cross-package + semantic reasoning the
+worker can't do. **Pattern:** any loom-core contract change (type field, enum,
+signature) risks breaking loom-cli/loom-web, invisibly to the worker. **Fixes:**
+prefer additive/optional fields for back-compat; give the worker (or a
+pre-integration check) cross-package type-awareness; or treat core-type changes
+as a flagged class needing a consumer sweep. Related: epic-036 also coupled a
+readiness floor to the eval band, silently changing gate boundary semantics —
+another effect a single-package worker couldn't foresee.
+
+### S41 — central-registry (barrel) files are a parallel-merge conflict magnet
+Three gate-eval epics (brief-quality, classifier-experiment, skill-judge) hit
+the same integration merge conflict: two stories each add a new eval module and
+each appends its export to the shared `packages/loom-core/src/eval/index.ts`
+**barrel**, colliding on that one file. epic-028's conflict-aware serialization
+misses it because the barrel edit is INCIDENTAL (not a declared owned path) —
+declared-paths-only detection can't see it. **Root cause is architectural, not
+an agent error:** the worker correctly follows the codebase's barrel convention
+(new module → export from index.ts); a barrel is a central registry every new
+module must touch, so parallel isolated workers collide on it by construction.
+Generalizes to any central registry (route table, DI registration, big enum,
+`mod.rs`/`__init__.py`). **Insight for loom's mission:** codebases are
+"parallel-agent-friendly" to the degree they avoid central chokepoints
+(per-module sub-barrels, auto-discovery, convention-over-registration); loom
+could DETECT central-registry files and warn or auto-serialize stories that
+touch one. **Fix for our repo:** give each eval consumer its own sub-barrel so
+two consumers never edit the same index.ts (ends this recurring tax). Do the
+sub-barrel refactor BEFORE the remaining gate evals (4-6) to avoid 3 more
+collisions. **RESOLVED (epic-040, v5.29.0):** intake eval modules moved to
+`eval/intake/` with their own sub-barrel, skill-judge got its own `index.ts`,
+the top barrel thinned to re-export only per-consumer public surfaces, and a new
+`evalSurface.test.ts` pins the public export set so a future refactor can't
+silently drop a symbol. Consumers now wire internally via direct imports.
+
 ## Run log
 
 - 2026-06-17 — scoped the removal (narrow: server surface only), created this
