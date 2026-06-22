@@ -65,3 +65,8 @@ site/
 .cursor/mcp.json
 .cursor/rules/loom.mdc
 # <<< loom-managed <<<
+
+# Track epic-040 planning artifacts (surface baseline + deep-importer inventory).
+!.loom/planning/
+!.loom/planning/epic-040/
+!.loom/planning/epic-040/surface-baseline.md
