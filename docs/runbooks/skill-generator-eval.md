@@ -105,7 +105,7 @@ the independent judge returned `ok`. Gate-failed, judge-inconclusive, and
 | Metric | Description |
 |---|---|
 | `totalCases` | Total cases in the fixture. |
-| `scoredCases` | Cases where both the gate returned `ok` AND the judge returned `ok`. |
+| `scoredCases` | Cases where the gate returned `ok` — regardless of judge status. Decision correctness (`decisionCorrectness`, `spuriousGenerationRate`) is scored over every gate-ok case, including `decision='none'` cases, independent of skill-quality judging. Judge status affects the quality metrics (`skillQuality`, `faithfulness`, `lowQualityRate`) but not `scoredCases`. |
 | `gateFailures` / `gateFailureRate` | Cases where the gate threw an error. |
 | `judgeInconclusive` / `judgeInconclusiveRate` | Cases where the independent judge could not produce a valid score. |
 
