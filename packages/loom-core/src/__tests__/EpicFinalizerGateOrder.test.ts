@@ -15,14 +15,19 @@ import {
 import { IntegrationGate, type GateOutcome } from '../orchestrator/IntegrationGate.js';
 
 /**
- * story-006-008 — EpicFinalizer.finalize() must promote the planning artifacts
- * BEFORE the integration gate runs, so the gate validates the exact tree the PR
- * will carry (ADR-6), and must promote at exactly one site (no double commit on
- * the block-mode path). These tests drive a real `finalize()` against a real git
- * repo and inspect the committed tree.
+ * story-006-008 (updated for story-050-004):
+ * EpicFinalizer.finalize() must route planning artifacts to loom-home (NOT to
+ * the target epic branch's .loom_outputs/). These tests drive a real finalize()
+ * against a real git repo and verify the new artifact isolation semantics.
+ *
+ * Key changes from the original story-006-008 tests:
+ * - Artifacts now go to loom-home, never to target epic branch
+ * - Gate runs BEFORE promoteArtifacts (gate-then-home, ADR-5)
+ * - Block-mode gate → promoteArtifacts is NOT called (returns early before review)
  */
 
 let repo: string;
+let loomHomeDir: string;
 let base: string;
 let loomDir: string;
 
@@ -39,19 +44,6 @@ function storyBranch(id: string, file: string, content: string): void {
   gitc(['checkout', '-q', base]);
 }
 
-/** Counts the artifact-promotion commits reachable from epic/<id>. */
-function promotionCommitCount(epicId: string): number {
-  const out = gitc([
-    '--no-pager',
-    'log',
-    '--oneline',
-    '--grep',
-    `loom: planning artifacts for ${epicId}`,
-    `epic/${epicId}`,
-  ]);
-  return out.length === 0 ? 0 : out.split('\n').length;
-}
-
 /**
  * Seeds the epic row + a single succeeded story + the planning artifacts the
  * finalizer promotes, and returns the on-disk YAML path. The brief/PRD/arch all
@@ -59,19 +51,22 @@ function promotionCommitCount(epicId: string): number {
  * them out, so promoteArtifacts has something to copy.
  */
 function seedEpic(epicId: string, storyId: string): string {
-  const planningDir = path.join(loomDir, 'planning', 'run-1');
+  // Use epicId as runId (matches default heuristic: runId == epicId).
+  const planningDir = path.join(loomDir, 'planning', epicId);
   fs.mkdirSync(planningDir, { recursive: true });
   fs.writeFileSync(path.join(planningDir, 'project-brief.md'), '# brief\n');
   fs.writeFileSync(path.join(planningDir, 'prd.md'), '# prd\n');
   fs.writeFileSync(path.join(planningDir, 'architecture.md'), '# arch\n');
 
-  const yamlAbs = path.join(planningDir, 'epic.yaml');
+  const epicsSubdir = path.join(planningDir, 'epics');
+  fs.mkdirSync(epicsSubdir, { recursive: true });
+  const yamlAbs = path.join(epicsSubdir, `${epicId}.yaml`);
   const doc = {
     epic_id: epicId,
     title: 'Gate order epic for tests',
     priority: 'must-have',
     prd_ref: 'prd.md',
-    requirements: ['gate runs on promoted tree'],
+    requirements: ['gate runs on merged tree'],
     stories: [
       {
         id: storyId,
@@ -105,6 +100,7 @@ function seedEpic(epicId: string, storyId: string): string {
 beforeEach(() => {
   resetDatabaseForTest();
   repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'loom-efgo-')));
+  loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-efgo-home-'));
   gitc(['init', '-q']);
   gitc(['config', 'user.email', 'test@loom.dev']);
   gitc(['config', 'user.name', 'Loom Test']);
@@ -123,35 +119,24 @@ beforeEach(() => {
 afterEach(() => {
   resetDatabaseForTest();
   fs.rmSync(repo, { recursive: true, force: true });
+  fs.rmSync(loomHomeDir, { recursive: true, force: true });
 });
 
-describe('EpicFinalizer — promote-before-gate ordering (story-006-008)', () => {
-  it('runs the integration gate on a tree that already contains the promoted artifacts', async () => {
+describe('EpicFinalizer — artifact routing to loom-home (story-050-004)', () => {
+  it('gate runs on the merged epic tree with NO .loom_outputs artifacts (artifacts go to loom-home)', async () => {
     const epicId = 'epic-006';
     const storyId = 'story-006-001';
     seedEpic(epicId, storyId);
     storyBranch(storyId, 'feature.txt', 'feature\n');
 
-    // A capturing gate: at run() time, snapshot whether the promoted artifact
-    // directory is present in the gate's working tree.
-    let artifactsVisibleToGate: boolean | undefined;
-    let artifactCommittedAtGateTime: boolean | undefined;
+    // A capturing gate: record what is (and isn't) visible in the working tree
+    // when the gate runs. With the new routing, no .loom_outputs should be visible.
+    let loomOutputsVisibleToGate: boolean | undefined;
     const capturingGate = {
       async run(input: { projectRoot: string; conflicted?: string[] }): Promise<GateOutcome> {
-        const artifactDir = path.join(input.projectRoot, '.loom_outputs', epicId);
-        artifactsVisibleToGate = fs.existsSync(path.join(artifactDir, 'epic.yaml'));
-        // The promotion is a real commit on the gated branch, not just a dirty
-        // working tree: confirm the artifact is tracked at HEAD (cat-file -e
-        // exits 0 only when the object exists; it throws otherwise).
-        try {
-          execFileSync('git', ['cat-file', '-e', `HEAD:.loom_outputs/${epicId}/epic.yaml`], {
-            cwd: input.projectRoot,
-            stdio: 'ignore',
-          });
-          artifactCommittedAtGateTime = true;
-        } catch {
-          artifactCommittedAtGateTime = false;
-        }
+        loomOutputsVisibleToGate = fs.existsSync(
+          path.join(input.projectRoot, '.loom_outputs', epicId),
+        );
         return {
           ok: true,
           ran: true,
@@ -173,40 +158,32 @@ describe('EpicFinalizer — promote-before-gate ordering (story-006-008)', () =>
       prStrategy: 'per-epic',
       integrationGate: 'block',
       gate: capturingGate,
+      loomHome: loomHomeDir,
     });
 
     const result = await finalizer.finalize(epicId);
 
     assert.equal(
-      artifactsVisibleToGate,
-      true,
-      'gate must see the promoted .loom_outputs/<epic>/ artifacts in its working tree'
+      loomOutputsVisibleToGate,
+      false,
+      'gate must NOT see .loom_outputs on the target branch — artifacts go to loom-home',
     );
-    assert.equal(
-      artifactCommittedAtGateTime,
-      true,
-      'the promoted artifacts must be committed on the gated branch before the gate runs'
-    );
-    // The gate passed and there is no remote, so finalize stops cleanly at the
-    // local-merge state (not gated, not failed).
+    // The gate passed and there is no remote, so finalize stops cleanly at merged.
     assert.equal(result.status, 'merged');
     assert.deepEqual(result.merged, [storyId]);
+    // No .loom_outputs anywhere on the target branch after finalize.
+    assert.ok(!fs.existsSync(path.join(repo, '.loom_outputs')));
   });
 
-  it('promotes exactly once in block-mode when the gate fails (no double commit)', async () => {
+  it('block-mode gate failure: returns gated, NO .loom_outputs commit on target branch', async () => {
     const epicId = 'epic-006';
     const storyId = 'story-006-001';
     seedEpic(epicId, storyId);
     storyBranch(storyId, 'feature.txt', 'feature\n');
 
-    // A failing gate triggers the block-mode early-return path — the one that
-    // previously promoted a SECOND time.
-    let gateSawArtifacts: boolean | undefined;
+    // Gate fails → block-mode early return.
     const failingGate = {
       async run(input: { projectRoot: string; conflicted?: string[] }): Promise<GateOutcome> {
-        gateSawArtifacts = fs.existsSync(
-          path.join(input.projectRoot, '.loom_outputs', epicId, 'epic.yaml')
-        );
         return {
           ok: false,
           ran: true,
@@ -228,24 +205,22 @@ describe('EpicFinalizer — promote-before-gate ordering (story-006-008)', () =>
       prStrategy: 'per-epic',
       integrationGate: 'block',
       gate: failingGate,
+      loomHome: loomHomeDir,
     });
 
     const result = await finalizer.finalize(epicId);
 
     assert.equal(result.status, 'gated', 'block-mode withholds the PR on a red gate');
-    assert.equal(
-      gateSawArtifacts,
-      true,
-      'even on the block path, the gate ran on the already-promoted tree'
-    );
-    assert.equal(
-      promotionCommitCount(epicId),
-      1,
-      'block-mode must promote at exactly one site — no double commit'
-    );
+    // No .loom_outputs directory on target branch (no artifact write at all).
+    assert.ok(!fs.existsSync(path.join(repo, '.loom_outputs')));
+    // Block-mode returns before the review phase, so promoteArtifacts is NOT called.
+    // loom_home_status remains null (no commit was attempted).
+    const store = new EpicStore(openDatabase(loomDir));
+    const { status: lhStatus } = store.getLoomHomeStatus(epicId);
+    assert.equal(lhStatus, null, 'gate-blocked epic should not have a loom-home commit attempt');
   });
 
-  it('promotes exactly once on the success path too', async () => {
+  it('success path: artifacts committed to loom-home, target epic branch has NO .loom_outputs', async () => {
     const epicId = 'epic-006';
     const storyId = 'story-006-001';
     seedEpic(epicId, storyId);
@@ -256,21 +231,23 @@ describe('EpicFinalizer — promote-before-gate ordering (story-006-008)', () =>
       db: openDatabase(loomDir),
       allowedRemotes: [],
       prStrategy: 'per-epic',
-      // Gate off — exercise the plain success path's single promotion.
       integrationGate: 'off',
+      loomHome: loomHomeDir,
     });
 
     const result = await finalizer.finalize(epicId);
 
     assert.equal(result.status, 'merged');
-    assert.equal(
-      promotionCommitCount(epicId),
-      1,
-      'success path must also promote exactly once'
-    );
-    // The artifacts are committed on the epic branch.
-    assert.ok(
-      gitc(['cat-file', '-t', `epic/${epicId}:.loom_outputs/${epicId}/epic.yaml`]) === 'blob'
-    );
+    // Target branch: NO .loom_outputs directory (AC2).
+    assert.ok(!fs.existsSync(path.join(repo, '.loom_outputs')));
+    // Target branch: no artifact-promotion commit (grep returns nothing).
+    const logOut = gitc([
+      '--no-pager', 'log', '--oneline', '--grep', `loom: artifacts for`, `epic/${epicId}`,
+    ]);
+    assert.equal(logOut, '', `no loom artifact commit should appear on target epic branch: ${logOut}`);
+    // loom-home: got the commit (AC1).
+    const store = new EpicStore(openDatabase(loomDir));
+    const { status: lhStatus } = store.getLoomHomeStatus(epicId);
+    assert.equal(lhStatus, 'committed', 'artifacts must be committed to loom-home on success');
   });
 });

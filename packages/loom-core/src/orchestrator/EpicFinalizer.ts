@@ -18,6 +18,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SignalLedger } from './signalStore.js';
 import { renderBuildSignalAnalysis } from './signalRender.js';
+import { resolveLoomHomePath } from '../home/resolveLoomHomePath.js';
+import { ensureLoomHome } from '../home/ensureLoomHome.js';
+import { routeArtifacts } from '../home/artifactRouter.js';
+import { commitArtifacts } from '../home/commitArtifacts.js';
 
 export interface EpicFinalizerOptions {
   projectRoot: string;
@@ -116,6 +120,11 @@ export interface EpicFinalizerOptions {
    * `auto_retro_skipped` so the finalize result is never affected (ADR-001).
    */
   autoRetro?: AutoRetrospective;
+  /**
+   * policy.loom_home — path to the loom-home repository. Falls back to the
+   * sibling-of-projectRoot heuristic in resolveLoomHomePath when omitted.
+   */
+  loomHome?: string;
 }
 
 /** Subset of policy fields the finalizer re-reads at finalize entry. */
@@ -468,22 +477,10 @@ export class EpicFinalizer {
       };
     }
 
-    // Promote the planning artifacts (brief / PRD / architecture / epic YAML)
-    // into a namespaced .loom_outputs/<epic-id>/ directory and commit them on
-    // the epic branch BEFORE the integration gate runs. The namespacing keeps
-    // loom artifacts out of the team's docs tree; the commit makes them part of
-    // the epic PR. Promoting first means the gate validates the exact tree the
-    // PR will carry — the gated tree is byte-identical to the PR tree (ADR-6) —
-    // and promotion happens at exactly one site (no double commit on the
-    // block-mode path).
-    this.promoteArtifacts(epicId, epic, gitRoot);
-
     // ── Integration gate ──────────────────────────────────────────────────
-    // The main working tree is now checked out to the integrated epic/<id> with
-    // the promoted artifacts already committed. Run the build/test suite on the
-    // WHOLE epic (cross-story regressions only surface here) and treat any
-    // dropped/conflicted story as a failure. In 'block' mode a red gate
-    // withholds the PR; in 'warn' it only annotates.
+    // Run the build/test suite on the WHOLE epic (cross-story regressions only
+    // surface here) and treat any dropped/conflicted story as a failure. In
+    // 'block' mode a red gate withholds the PR; in 'warn' it only annotates.
     epicStore.updateFinalizePhase(epicId, 'gate');
     let gateOutcome: GateOutcome | undefined;
     if (this.gateMode !== 'off') {
@@ -529,13 +526,17 @@ export class EpicFinalizer {
       }
     }
 
-    // Gate passed (or wasn't blocking). The epic is now review-ready: prune
-    // story worktrees, and — unless push-gated — push + open the PR (artifacts
-    // were already promoted before the gate, ADR-6). push-gate=confirm
-    // intentionally stops here, so 'review' is the terminal phase for that
-    // PR-less success.
+    // Gate passed (or wasn't blocking). The epic is now review-ready: commit
+    // planning artifacts to loom-home (ADR-5: merge + gate complete, target work
+    // is durable), then prune story worktrees and — unless push-gated — push +
+    // open the PR. push-gate=confirm intentionally stops here, so 'review' is
+    // the terminal phase for that PR-less success.
     epicStore.updateFinalizePhase(epicId, 'review');
 
+    // ADR-5: target merge/gate complete; commit artifacts to loom-home now.
+    // A loom-home failure sets loom_home_status='pending' but never blocks the
+    // push or PR — the finalize critical path is unaffected.
+    this.promoteArtifacts(epicId, epic, epicStore);
 
     // After successful merges, the per-story worktrees + branches are dead
     // weight — every commit is preserved on the epic branch via the --no-ff
@@ -798,61 +799,63 @@ export class EpicFinalizer {
   }
 
   /**
-   * Copies the epic's planning artifacts (project-brief.md, prd.md,
-   * architecture.md, the epic's own YAML) from the working directory
-   * (.loom/planning/<run-id>/) into the tracked namespace
-   * (.loom_outputs/<epic-id>/), then stages and commits them on the epic
-   * branch. The namespacing keeps loom artifacts out of the team's docs
-   * tree; the commit lands them in the epic PR. Failures are best-effort —
-   * the finalize result is unaffected if the promotion can't run.
+   * Commits the epic's planning artifacts to loom-home (ADR-5). Composes the
+   * home/ chain: resolveLoomHomePath → ensureLoomHome → routeArtifacts →
+   * commitArtifacts. A failure marks loom_home_status='pending' but never
+   * throws into the finalize critical path — the merge + PR are unaffected.
+   *
+   * The old .loom_outputs/<epic-id> write and target-branch git add/commit are
+   * intentionally absent: no loom operational artifacts land on the epic branch.
    */
   private promoteArtifacts(
     epicId: string,
     epic: { brief_path: string | null; prd_path: string | null; yaml_path: string | null },
-    gitRoot: string = this.opts.projectRoot
+    epicStore: EpicStore
   ): void {
-    // Sources are read from the main checkout (.loom/planning lives there, and
-    // it is gitignored so it never appears in the integration worktree). The
-    // destination + git add/commit run in `gitRoot`, whose checkout is on
-    // epic/<id> — so the artifacts land on the epic branch in both topologies.
-    const destDir = path.join(gitRoot, '.loom_outputs', epicId);
-    let copied = 0;
     try {
-      fs.mkdirSync(destDir, { recursive: true });
+      const projectRoot = this.opts.projectRoot;
+      const home = resolveLoomHomePath(projectRoot, { loom_home: this.opts.loomHome });
+      ensureLoomHome(home);
 
-      const planningDir = epic.brief_path
-        ? path.dirname(path.join(this.opts.projectRoot, epic.brief_path))
-        : null;
+      // runId == the planning-directory name embedded in brief_path, which
+      // equals the first epicId the planner produced for this run.
+      const runId = epic.brief_path
+        ? path.basename(path.dirname(epic.brief_path))
+        : epicId;
 
-      const candidates: Array<[string | null, string]> = [
-        [epic.brief_path, 'project-brief.md'],
-        [epic.prd_path, 'prd.md'],
-        // Architecture isn't tracked on the epic row but always lives next
-        // to the brief in the planning run directory.
-        [
-          planningDir ? path.relative(this.opts.projectRoot, path.join(planningDir, 'architecture.md')) : null,
-          'architecture.md',
-        ],
-        [epic.yaml_path, 'epic.yaml'],
-      ];
+      const planningBase = path.join(projectRoot, '.loom', 'planning', runId);
+      const artifactSources = {
+        brief: epic.brief_path ? path.join(projectRoot, epic.brief_path) : undefined,
+        prd: epic.prd_path ? path.join(projectRoot, epic.prd_path) : undefined,
+        architecture: path.join(planningBase, 'architecture.md'),
+        epicYaml: epic.yaml_path ? path.join(projectRoot, epic.yaml_path) : undefined,
+      };
 
-      for (const [relPath, destName] of candidates) {
-        if (!relPath) continue;
-        const abs = path.join(this.opts.projectRoot, relPath);
-        if (!fs.existsSync(abs)) continue;
-        fs.copyFileSync(abs, path.join(destDir, destName));
-        copied++;
+      const { relDir, provenance } = routeArtifacts({
+        loomHomePath: home,
+        projectRoot,
+        epicId,
+        runId,
+        artifactSources,
+      });
+
+      const result = commitArtifacts({
+        loomHomePath: home,
+        relDir,
+        epicId,
+        provenance,
+        store: epicStore,
+      });
+
+      if (result.status === 'pending') {
+        console.warn(
+          `loom-home artifact commit deferred for ${epicId} ` +
+            `(loom_home_status=pending): ${result.reason}`
+        );
       }
-
-      if (copied === 0) return;
-
-      const stage = gitSafe(gitRoot, ['add', path.join('.loom_outputs', epicId)]);
-      if (!stage.ok) return;
-
-      gitSafe(gitRoot, ['commit', '-m', `loom: planning artifacts for ${epicId}`]);
     } catch {
-      // Best-effort — the artifacts are nice-to-have; the merge + PR are the
-      // critical path and they already completed.
+      // Best-effort — the merge + PR are the critical path and they already
+      // completed (or will complete). A failure here only affects loom-home.
     }
   }
 
@@ -1030,41 +1033,29 @@ function topoSort(stories: Story[]): Story[] {
 
 /**
  * Provenance header for an epic PR — prepended when policy.agents.pr_attribution
- * is 'on'. Tells the reviewer loom generated the PR and points at the
- * committed planning artifacts so the brief + PRD + architecture are
- * inspectable from the PR itself. The artifacts already land on the epic
- * branch via promoteArtifacts(), so the links resolve once the PR is open.
+ * is 'on'. Tells the reviewer loom generated the PR.
+ * Planning artifacts (brief, PRD, architecture, epic YAML) are committed to the
+ * loom-home repository, not to this branch.
  */
 function loomAttributionBlock(
   epicId: string,
-  epic: { brief_path: string | null; prd_path: string | null; yaml_path: string | null },
+  _epic: { brief_path: string | null; prd_path: string | null; yaml_path: string | null },
 ): string {
   const lines: string[] = [];
   lines.push(`## :robot: Built by [loom](https://github.com/jeromeportega/loom)`);
   lines.push('');
   lines.push(
     `This PR was generated end-to-end by loom (epic \`${epicId}\`). ` +
-      'The brief, PRD, architecture, and epic YAML are committed on this ' +
-      'branch and resolve to the following paths in the diff:',
+      'The brief, PRD, architecture, and epic YAML are stored in the ' +
+      'loom-home repository for this project.',
   );
   lines.push('');
-  const refs: string[] = [];
-  refs.push(`- Brief: \`.loom_outputs/${epicId}/project-brief.md\``);
-  refs.push(`- PRD: \`.loom_outputs/${epicId}/prd.md\``);
-  refs.push(`- Architecture: \`.loom_outputs/${epicId}/architecture.md\``);
-  refs.push(`- Epic YAML: \`.loom_outputs/${epicId}/epic.yaml\``);
-  lines.push(refs.join('\n'));
-  lines.push('');
   lines.push(
-    'Review the planning artifacts above for the *intent*, then review the ' +
+    'Review the story descriptions in the epic YAML for the *intent*, then review the ' +
       'code below for the *implementation*. Things to look for: scope ' +
       'creep beyond the brief, missing test coverage on the acceptance ' +
       'criteria, deviations from the architecture.',
   );
-  // Suppress the unused-param TS error in the fallback path when epic
-  // doesn't carry any of the paths (the artifact promotion is best-effort
-  // so we don't depend on the record being populated).
-  void epic;
   return lines.join('\n');
 }
 

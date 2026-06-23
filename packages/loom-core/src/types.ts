@@ -238,6 +238,15 @@ export interface EpicRecord {
    * literals — import STANDALONE_KIND from types.ts instead.
    */
   kind?: EpicKind | null;
+  /**
+   * Loom-home artifact commit status (v25, epic-050). 'committed' means the
+   * artifacts for this epic are committed to loom-home; 'pending' means the
+   * commit failed and will be retried. NULL for pre-migration rows and epics
+   * that have not yet been finalized.
+   */
+  loom_home_status: 'committed' | 'pending' | null;
+  /** The commit SHA in loom-home where this epic's artifacts are stored. NULL until committed. */
+  loom_home_sha: string | null;
 }
 
 export interface AuditLogEntry {
@@ -605,6 +614,9 @@ export const PolicySchema = z.object({
       registry: z.string().optional(),
     })
     .default({}),
+  // Absolute or ~-expandable path to the loom-home repository. Omit to use
+  // the default sibling directory (parent of projectRoot + '/loom-home').
+  loom_home: z.string().optional(),
 });
 export type Policy = z.infer<typeof PolicySchema>;
 
