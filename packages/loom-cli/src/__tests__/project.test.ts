@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createDatabase, EpicStore, ProjectRegistry } from '@loom-ai/core';
+import { createDatabase, EpicStore, ProjectRegistry, resolveRepoStatePaths } from '@loom-ai/core';
 import { runProject } from '../commands/project.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -53,35 +53,60 @@ function capture(fn: () => void): Captured {
 
 let registryDir: string;
 let projectDir: string;
+let loomHomeDir: string;
+
+/**
+ * Creates the DB at the loom-home location that project.ts resolves to.
+ * project.ts loads policy.yaml to find loom_home — we write a minimal policy
+ * so it points to the test-controlled loomHomeDir.
+ */
+function seedProjectDb(
+  projectDirPath: string,
+  loomHomeDirPath: string,
+  seedFn: (store: EpicStore) => void
+): void {
+  fs.writeFileSync(
+    path.join(projectDirPath, '.loom', 'policy.yaml'),
+    `loom_home: ${loomHomeDirPath}\n`,
+    'utf8'
+  );
+  const { namespaceDir } = resolveRepoStatePaths(projectDirPath, { loom_home: loomHomeDirPath });
+  fs.mkdirSync(namespaceDir, { recursive: true });
+  const db = createDatabase(path.join(namespaceDir, 'loom.db'));
+  try {
+    seedFn(new EpicStore(db));
+  } finally {
+    db.close();
+  }
+}
 
 beforeEach(() => {
   registryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-registry-'));
   projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-project-'));
+  loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-project-home-'));
   fs.mkdirSync(path.join(projectDir, '.loom'), { recursive: true });
 });
 
 afterEach(() => {
   fs.rmSync(registryDir, { recursive: true, force: true });
   fs.rmSync(projectDir, { recursive: true, force: true });
+  fs.rmSync(loomHomeDir, { recursive: true, force: true });
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('loom project — happy path with epics', () => {
   it('default output contains root, name, and LATEST epic id/status/title', () => {
-    // Set LOOM_HOME first so all registry writes go to the same tmp location
-    // that runProject will read.
     const origHome = process.env['LOOM_HOME'];
     process.env['LOOM_HOME'] = registryDir;
     try {
       new ProjectRegistry().register(projectDir);
 
-      // Seed ≥2 epics to prove ordering: we want the latest one to appear.
-      const db = createDatabase(path.join(projectDir, '.loom', 'loom.db'));
-      const epicStore = new EpicStore(db);
-      epicStore.create('epic-001', 'First Epic');
-      epicStore.create('epic-002', 'Second Epic');
-      db.close();
+      // Seed ≥2 epics at the loom-home path that project.ts will resolve to.
+      seedProjectDb(projectDir, loomHomeDir, (store) => {
+        store.create('epic-001', 'First Epic');
+        store.create('epic-002', 'Second Epic');
+      });
 
       const result = capture(() => runProject(projectDir));
 
@@ -104,14 +129,12 @@ describe('loom project — happy path with epics', () => {
     const origHome = process.env['LOOM_HOME'];
     process.env['LOOM_HOME'] = registryDir;
     try {
-      const reg = new ProjectRegistry();
-      reg.register(projectDir);
+      new ProjectRegistry().register(projectDir);
 
-      const db = createDatabase(path.join(projectDir, '.loom', 'loom.db'));
-      const epicStore = new EpicStore(db);
-      epicStore.create('epic-001', 'First Epic');
-      epicStore.create('epic-002', 'Second Epic');
-      db.close();
+      seedProjectDb(projectDir, loomHomeDir, (store) => {
+        store.create('epic-001', 'First Epic');
+        store.create('epic-002', 'Second Epic');
+      });
 
       const result = capture(() => runProject(projectDir, { json: true }));
       assert.equal(result.exitCode, null, 'exits cleanly');

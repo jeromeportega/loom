@@ -45,7 +45,6 @@ function removeSidecars(dbPath: string): void {
 /**
  * Verifies the copy at tmpPath against the original at srcPath.
  * Returns true only when integrity_check passes AND key-table row counts match.
- * structurally unreachable on any failure (see ADR-004).
  */
 function verifyMigration(srcPath: string, tmpPath: string): boolean {
   let dstDb: Database.Database;
@@ -126,10 +125,14 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
   try {
     fs.renameSync(srcPath, dstPath);
     if (walHasResidual && fs.existsSync(srcWalPath)) {
-      // Move residual WAL alongside the main file, then consolidate at dst.
-      // Non-best-effort: if WAL rename fails, throw to prevent removeSidecars
-      // from silently discarding committed WAL frames.
-      fs.renameSync(srcWalPath, dstPath + '-wal');
+      // Main DB is now at dstPath. Keep WAL co-located with it.
+      // If rename fails (e.g. EPERM), fall back to a best-effort copy so the
+      // committed WAL frames travel with the DB rather than being orphaned at src.
+      try {
+        fs.renameSync(srcWalPath, dstPath + '-wal');
+      } catch {
+        try { fs.copyFileSync(srcWalPath, dstPath + '-wal'); } catch { /* best-effort */ }
+      }
       reCheckpointAtDst(dstPath);
     }
     removeSidecars(srcPath);
@@ -144,10 +147,11 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
   const tmpPath = `${dstPath}.tmp-${process.pid}`;
   const tmpWalPath = `${tmpPath}-wal`;
   let tmpCreated = false;
+  let walTmpCreated = false;
   try {
     fs.copyFileSync(srcPath, tmpPath);
     if (walHasResidual && fs.existsSync(srcWalPath)) {
-      try { fs.copyFileSync(srcWalPath, tmpWalPath); } catch { /* best-effort */ }
+      try { fs.copyFileSync(srcWalPath, tmpWalPath); walTmpCreated = true; } catch { /* best-effort */ }
     }
     tmpCreated = true;
 
@@ -170,6 +174,7 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
       // Source is still intact at this point and can be retried.
       if (!fs.existsSync(dstPath + '-wal')) {
         fs.renameSync(tmpWalPath, dstPath + '-wal');
+        walTmpCreated = false; // WAL temp file is now at dstPath+'-wal'
       }
       reCheckpointAtDst(dstPath);
     }
@@ -182,7 +187,19 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
   } catch (err) {
     if (tmpCreated) {
       try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
-      try { if (fs.existsSync(tmpWalPath)) fs.unlinkSync(tmpWalPath); } catch { /* best-effort */ }
+    }
+    if (walTmpCreated) {
+      if (!tmpCreated) {
+        // Main DB is already at dstPath. Try to co-locate the WAL with it so
+        // committed WAL frames are not orphaned at tmpWalPath.
+        try {
+          fs.renameSync(tmpWalPath, dstPath + '-wal');
+        } catch {
+          try { fs.unlinkSync(tmpWalPath); } catch { /* best-effort */ }
+        }
+      } else {
+        try { fs.unlinkSync(tmpWalPath); } catch { /* best-effort */ }
+      }
     }
     throw err;
   }

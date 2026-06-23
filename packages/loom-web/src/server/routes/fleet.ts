@@ -16,7 +16,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { Express } from 'express';
 import type Database from 'better-sqlite3';
-import { EpicStore, AgentStore, ProjectRegistry, createDatabase, deriveBlocked } from '@loom-ai/core';
+import { EpicStore, AgentStore, ProjectRegistry, createDatabase, deriveBlocked, PolicyEngine, resolveRepoStatePaths } from '@loom-ai/core';
 import type { EpicCost } from '../../shared/types.js';
 import type { FleetCard, FleetStory, AutonomyLevel } from '../../shared/fleet.js';
 
@@ -49,7 +49,12 @@ export function registerFleetRoutes(app: Express, deps: FleetDeps): void {
     const registryEntries = new ProjectRegistry().list();
     for (const entry of registryEntries) {
       if (entry.root === currentProjectRoot) continue;
-      const dbPath = path.join(entry.root, '.loom', 'loom.db');
+      let peerLoomHome: string | undefined;
+      try {
+        peerLoomHome = PolicyEngine.load(path.join(entry.root, '.loom')).policyData.loom_home;
+      } catch { /* use default */ }
+      const { namespaceDir } = resolveRepoStatePaths(entry.root, { loom_home: peerLoomHome ?? '' });
+      const dbPath = path.join(namespaceDir, 'loom.db');
       if (!fs.existsSync(dbPath)) continue;
       try {
         const peerDb = createDatabase(dbPath);
