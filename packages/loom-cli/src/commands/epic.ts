@@ -13,6 +13,8 @@ import {
   derivePlaceholderTitle,
   evaluateBriefGate,
   validateCursorModels,
+  resolveRepoStatePaths,
+  migratePlanningScratch,
 } from '@loom-ai/core';
 import type { LLMClient } from '@loom-ai/core';
 import { recordIntakeClassification } from '../intake/recordIntakeClassification.js';
@@ -48,6 +50,29 @@ export async function runEpic(
   }
 
   const policy = PolicyEngine.load(loomDir).policyData;
+
+  // Resolve loom-home namespace for this repo: planning scratch lives here
+  // instead of under projectRoot/.loom/planning/ (AC1, AC4).
+  const repoStatePaths = resolveRepoStatePaths(projectRoot, policy);
+  const planningRoot = repoStatePaths.planningRoot;
+
+  // Relocate any existing in-repo scratch before the planner starts (AC2, AC3).
+  // Non-critical: a migration failure must not abort the planning run — the
+  // planner writes directly to planningRoot on this invocation regardless.
+  try {
+    const migrationResult = migratePlanningScratch({
+      srcRoot: path.join(projectRoot, '.loom', 'planning'),
+      dstRoot: planningRoot,
+    });
+    if (migrationResult.migrated) {
+      console.log(
+        `  Planning scratch relocated: ${migrationResult.from} → ${migrationResult.to}` +
+          ` (${migrationResult.method})`,
+      );
+    }
+  } catch (err) {
+    console.warn(`  Warning: could not relocate planning scratch — ${(err as Error).message}`);
+  }
 
   // Fail fast on a bad cursor_model before spending any LLM tokens. Exit only
   // on a confirmed-invalid id; an 'unavailable' probe (FR-8) or a boundary-
@@ -240,6 +265,7 @@ export async function runEpic(
   const printer = makePlanningPrinter({ verbose: opts.verbose === true });
   const planner = new Planner({
     projectRoot,
+    planningRoot,
     llm,
     model: modelFor(policy, 'planning'),
     db,
