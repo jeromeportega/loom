@@ -14,6 +14,7 @@ import { openDatabase, resetDatabaseForTest } from '../../state/Database.js';
 import { MockLLMClient } from '../../llm/MockLLMClient.js';
 import type { LLMRequest } from '../../llm/LLMClient.js';
 import { Planner } from '../Planner.js';
+import { EpicStore } from '../../state/index.js';
 
 function makeResponder(req: LLMRequest): string {
   const last = req.messages[req.messages.length - 1].content;
@@ -62,6 +63,7 @@ function makeResponder(req: LLMRequest): string {
 describe('Planner — writes scratch under planningRoot, not under projectRoot/.loom (AC1/AC4)', () => {
   let projectRoot: string;
   let planningRoot: string;
+  let savedBriefPath: string | null = null;
 
   before(async () => {
     resetDatabaseForTest();
@@ -76,6 +78,10 @@ describe('Planner — writes scratch under planningRoot, not under projectRoot/.
       model: 'mock-model',
       db,
     }).run('Test path re-rooting for planning scratch.');
+
+    // Capture brief_path from DB before resetDatabaseForTest() closes it.
+    const row = new EpicStore(db).list()[0] as unknown as { brief_path: string | null } | undefined;
+    savedBriefPath = row?.brief_path ?? null;
   });
 
   after(() => {
@@ -116,6 +122,17 @@ describe('Planner — writes scratch under planningRoot, not under projectRoot/.
     assert.ok(
       !fs.existsSync(inRepoPlanning),
       `.loom/planning must not exist when planningRoot is elsewhere: ${inRepoPlanning}`,
+    );
+  });
+
+  it('stores brief_path in DB that resolves to the actual file via path.join(projectRoot, brief_path)', () => {
+    assert.ok(savedBriefPath !== null, 'DB brief_path must not be null after planning');
+    const resolved = path.join(projectRoot, savedBriefPath);
+    assert.ok(
+      fs.existsSync(resolved),
+      `path.join(projectRoot, brief_path) must resolve to an existing file.\n` +
+      `  brief_path: ${savedBriefPath}\n` +
+      `  resolved:   ${resolved}`,
     );
   });
 });

@@ -13,8 +13,27 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// From dist-test/test/home/ go up 5 levels to the worktree root.
-const WORKTREE_ROOT = path.resolve(__dirname, '..', '..', '..', '..', '..');
+/**
+ * Walk upward from startDir until we find a package.json with
+ * `name === 'loom-ai-monorepo'` (the monorepo root). This is robust to
+ * outDir changes: we anchor on a content marker, not a fixed `..` depth.
+ */
+function findMonorepoRoot(startDir: string): string {
+  let dir = startDir;
+  while (true) {
+    const pkgPath = path.join(dir, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string };
+        if (pkg.name === 'loom-ai-monorepo') return dir;
+      } catch { /* skip unparseable package.json */ }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) throw new Error(`[callSiteGuard] Cannot locate loom-ai-monorepo root from ${startDir}`);
+    dir = parent;
+  }
+}
+const WORKTREE_ROOT = findMonorepoRoot(__dirname);
 
 function readSrc(relPath: string): string {
   const absPath = path.join(WORKTREE_ROOT, relPath);

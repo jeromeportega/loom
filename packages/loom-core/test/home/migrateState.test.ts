@@ -763,6 +763,51 @@ describe('migrateStateDatabase — WAL temp cleanup (walTmpCreated independent t
   });
 });
 
+// ── Fresh-install loser path: no poll when source DB is absent ───────────────
+
+describe('prepareRepoState — fresh install loser does not time out (blocker fix)', () => {
+  let tmp: string;
+  let loomHome: string;
+  let projectRoot: string;
+
+  before(() => {
+    tmp = makeTmp();
+    loomHome = path.join(tmp, 'loom-home');
+    projectRoot = path.join(tmp, 'project');
+    const loomDir = path.join(projectRoot, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    fs.writeFileSync(path.join(loomDir, 'policy.yaml'), '', 'utf8');
+    // Deliberately: NO loom.db in .loom (simulates a fresh install).
+  });
+  after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  it('loser skips poll when no source DB exists and lock is held', () => {
+    const policy = { loom_home: loomHome };
+    const paths = resolveRepoStatePaths(projectRoot, policy);
+    fs.mkdirSync(paths.namespaceDir, { recursive: true });
+
+    // Simulate a concurrent winner holding the lock (our own live PID).
+    const lockDir = path.join(paths.namespaceDir, '.migrate.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+    const ownerJson = { pid: process.pid, hostname: os.hostname(), started_at: new Date().toISOString() };
+    fs.writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify(ownerJson));
+
+    // On a fresh install with no source DB, the loser must return paths immediately
+    // without throwing a timeout error. The absence of a source DB means migration
+    // is a no-op and paths.dbPath will never appear — the loser should skip polling.
+    const start = Date.now();
+    const loserPaths = prepareRepoState(projectRoot, policy);
+    const elapsed = Date.now() - start;
+
+    // Must return within a short time (well under the 5 s poll window).
+    assert.ok(elapsed < 1000, `loser must return quickly on fresh install, took ${elapsed} ms`);
+    assert.equal(loserPaths.namespaceDir, paths.namespaceDir);
+
+    // Cleanup.
+    fs.rmSync(lockDir, { recursive: true, force: true });
+  });
+});
+
 // ── Stale-source removal (AC6, FR-8) ─────────────────────────────────────────
 
 describe('migrateStateDatabase — stale source removal (AC6, FR-8)', () => {

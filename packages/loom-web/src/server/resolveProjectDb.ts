@@ -86,7 +86,7 @@ export function makeResolveProjectDb(
       console.error(`[resolveProjectDb] cannot load policy for project ${raw}:`, loadErr);
       throw Object.assign(
         new Error('cannot load policy for project — check server logs for details'),
-        { statusCode: 400 },
+        { statusCode: 500 },
       );
     }
     const { namespaceDir: peerNsDir } = resolveRepoStatePaths(raw, { loom_home: peerPolicy.loom_home ?? '' });

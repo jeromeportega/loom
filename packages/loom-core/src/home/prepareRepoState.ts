@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import type { Policy } from '../types.js';
 import { resolveLoomHomePath } from './resolveLoomHomePath.js';
 import { ensureLoomHome } from './ensureLoomHome.js';
@@ -92,7 +91,14 @@ function acquireMigrateLock(namespaceDir: string): boolean {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       fs.mkdirSync(lockDir);
-      writeLock(lockDir);
+      // If writeLock throws (e.g. rename of temp owner file fails), clean up
+      // the ownerless lock directory so it is not treated as a live lock.
+      try {
+        writeLock(lockDir);
+      } catch (writeErr) {
+        try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        throw writeErr;
+      }
       return true;
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
@@ -142,23 +148,27 @@ export function prepareRepoState(
   const acquired = acquireMigrateLock(paths.namespaceDir);
 
   if (!acquired) {
-    // Another process holds the lock and is migrating the DB. Spin-wait until
-    // it places the DB at paths.dbPath. Without this guard, the caller's
-    // openDatabase() would create an empty file at paths.dbPath before the
-    // winner's renameSync runs, triggering the winner's fs.existsSync guard and
-    // permanently orphaning all historical state.
+    // Another process holds the lock and is migrating the DB. If the source DB
+    // exists, spin-wait until the winner places the migrated DB at paths.dbPath.
+    // Without this guard, the caller's openDatabase() would create an empty file
+    // at paths.dbPath before the winner's renameSync runs, permanently orphaning
+    // all historical state.
     //
-    // Uses a Date.now() busy-poll instead of Atomics.wait: Node.js forbids
-    // Atomics.wait on the main thread (throws TypeError on Node ≥ 9.4).
-    if (!fs.existsSync(paths.dbPath)) {
-      // Poll until the winning process places the DB at dbPath.
-      // Uses execFileSync('sleep') for an OS-level block that yields the event loop,
-      // avoiding the CPU-burning busy-wait that would freeze Node's main thread.
+    // Skip the poll entirely when no source DB exists: the winner's migration is a
+    // no-op and paths.dbPath will never appear (openDatabase creates it on first
+    // open). Without this check, concurrent fresh-install invocations would exhaust
+    // all 250 polls and throw a spurious timeout.
+    const srcDbPath = path.join(projectRoot, '.loom', 'loom.db');
+    if (!fs.existsSync(paths.dbPath) && fs.existsSync(srcDbPath)) {
+      // Source DB exists → winner is actively migrating → wait up to 5 s.
+      // Uses a Date.now() busy-poll: cross-platform, no child-process overhead,
+      // and honest about blocking the current thread (~20 ms per iteration).
       // 250 × 20 ms = 5 s maximum wait.
       const MAX_POLLS = 250;
       let polls = 0;
       while (!fs.existsSync(paths.dbPath) && polls < MAX_POLLS) {
-        execFileSync('sleep', ['0.02']);
+        const spinUntil = Date.now() + 20;
+        while (Date.now() < spinUntil) { /* busy-wait ~20 ms */ }
         polls++;
       }
       if (!fs.existsSync(paths.dbPath)) {

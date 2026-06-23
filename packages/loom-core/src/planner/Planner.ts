@@ -202,7 +202,7 @@ export class Planner {
       qaPlanning: this.opts.qaPlanning,
       routing: this.opts.routing,
     };
-    const rel = planningRelPaths(runId);
+    const rel = planningRelPaths(runId, this.planningRoot, this.opts.projectRoot);
     let usage: LLMUsage = { ...EMPTY_USAGE };
 
     sink.start();
@@ -301,7 +301,7 @@ export class Planner {
     const usage = addUsage(usageSoFar, storyUsage);
     const durationMs = Date.now() - startedAt;
     const now = new Date().toISOString();
-    const rel = planningRelPaths(runId);
+    const rel = planningRelPaths(runId, this.planningRoot, this.opts.projectRoot);
     const paths = planningPaths(this.planningRoot, runId);
 
     // Write the YAML file before the transaction so a disk-full error doesn't

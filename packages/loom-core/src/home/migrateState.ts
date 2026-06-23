@@ -125,10 +125,14 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
   try {
     fs.renameSync(srcPath, dstPath);
     if (walHasResidual && fs.existsSync(srcWalPath)) {
-      // Move residual WAL alongside the main file, then consolidate at dst.
-      // Non-best-effort: if WAL rename fails, throw to prevent removeSidecars
-      // from silently discarding committed WAL frames.
-      fs.renameSync(srcWalPath, dstPath + '-wal');
+      // Main DB is now at dstPath. Keep WAL co-located with it.
+      // If rename fails (e.g. EPERM), fall back to a best-effort copy so the
+      // committed WAL frames travel with the DB rather than being orphaned at src.
+      try {
+        fs.renameSync(srcWalPath, dstPath + '-wal');
+      } catch {
+        try { fs.copyFileSync(srcWalPath, dstPath + '-wal'); } catch { /* best-effort */ }
+      }
       reCheckpointAtDst(dstPath);
     }
     removeSidecars(srcPath);
@@ -185,7 +189,17 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
       try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
     }
     if (walTmpCreated) {
-      try { fs.unlinkSync(tmpWalPath); } catch { /* best-effort */ }
+      if (!tmpCreated) {
+        // Main DB is already at dstPath. Try to co-locate the WAL with it so
+        // committed WAL frames are not orphaned at tmpWalPath.
+        try {
+          fs.renameSync(tmpWalPath, dstPath + '-wal');
+        } catch {
+          try { fs.unlinkSync(tmpWalPath); } catch { /* best-effort */ }
+        }
+      } else {
+        try { fs.unlinkSync(tmpWalPath); } catch { /* best-effort */ }
+      }
     }
     throw err;
   }
