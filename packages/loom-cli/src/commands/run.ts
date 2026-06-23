@@ -501,8 +501,23 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   // epic-NNN (kind='standalone'); the user-facing id is story-NNN. Plain
   // epic-NNN ids pass through unchanged, so full-epic and non-routed paths
   // are byte-identical to today.
+  //
+  // EpicStore is not a snapshot — every .get()/.isStandalone() hits the live DB,
+  // so post-supervisor.run() reads (processedEpics, toDisplayId) reflect finalized
+  // state written by the EpicFinalizer.
   const epicStore = new EpicStore(db);
   const resolvedEpicIds = epicIds.map(resolveRunInputId);
+
+  // Validate that any story-NNN input actually maps to a standalone container.
+  // Without this check `story-003` would silently dispatch the full multi-story
+  // epic-003 when the user had an unrelated epic with that number.
+  for (let i = 0; i < epicIds.length; i++) {
+    const original = epicIds[i];
+    if (/^story-\d+$/.test(original) && !epicStore.isStandalone(resolvedEpicIds[i])) {
+      console.error(`Story "${original}" not found (no standalone story with that number exists).`);
+      process.exit(1);
+    }
+  }
 
   // Compute the user-facing target string from the ORIGINAL (unresolved) ids
   // so the dispatch banner shows story-NNN when that is what the operator typed.

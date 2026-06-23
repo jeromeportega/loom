@@ -109,7 +109,8 @@ export async function runApprove(
 
     const epic = store.get(internalId);
     if (!epic) {
-      console.error(`Epic "${epicId}" not found.`);
+      const label = epicId.startsWith('story-') ? 'Story' : 'Epic';
+      console.error(`${label} "${epicId}" not found.`);
       process.exit(1);
     }
     if (epic.status !== 'planned') {
@@ -170,7 +171,8 @@ export function runReject(epicId: string, reason: string | undefined): void {
 
   const epic = store.get(internalId);
   if (!epic) {
-    console.error(`Epic "${epicId}" not found.`);
+    const label = epicId.startsWith('story-') ? 'Story' : 'Epic';
+    console.error(`${label} "${epicId}" not found.`);
     process.exit(1);
   }
   if (epic.status !== 'planned') {

@@ -23,18 +23,29 @@ import {
   MockLLMClient,
   resetDatabaseForTest,
   EpicStore,
+  AgentStore,
   openDatabase,
 } from '@loom-ai/core';
 import type { LLMRequest } from '@loom-ai/core';
 import { runEpic } from '../commands/epic.js';
 import { runApprove, runReject } from '../commands/gate.js';
 import { renderPrTail, type RunOptions } from '../commands/run.js';
-import { runInProcess, jsonBlock } from './testUtils.js';
+import { runInProcess, jsonBlock, capture } from './testUtils.js';
 
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
 
 // ── LLM mock helpers ─────────────────────────────────────────────────────────
 
+/**
+ * Returns the fragment the mock returns for the classifier turn.
+ * The fragment omits the opening `{` because the Planner uses an assistant
+ * prefill of `{` for the classifier turn — the mock checks for
+ * `last.role === 'assistant' && last.content.startsWith('{')` to detect this
+ * turn. The two halves concatenate to valid JSON. If the planner ever removes
+ * the prefill, this mock will produce malformed JSON and tests will fail with
+ * opaque JSON-parse errors rather than a clear signal — update the fragment
+ * to include the opening `{` and adjust the detection heuristic in tandem.
+ */
 function classifierResponse(size: 'story' | 'epic'): string {
   return `"type":"feature","size":"${size}","confidence":"high","rationale":"test"}`;
 }
@@ -142,45 +153,6 @@ function makeEpicLLM(): MockLLMClient {
     if (content.includes('Headless task B: produce per-story')) return '```json\n{"tech_notes":{}}\n```';
     throw new Error(`Unexpected epic planning message: ${content.slice(0, 80)}`);
   });
-}
-
-// ── Capture helpers ───────────────────────────────────────────────────────────
-
-interface Captured {
-  exitCode: number | null;
-  logs: string[];
-  errors: string[];
-}
-
-async function capture(fn: () => Promise<void> | void): Promise<Captured> {
-  const origExit = process.exit;
-  const origLog = console.log;
-  const origErr = console.error;
-  const logs: string[] = [];
-  const errors: string[] = [];
-  let exitCode: number | null = null;
-  class ExitSignal extends Error {}
-  (process as unknown as { exit: (c?: number) => never }).exit = (c?: number) => {
-    exitCode = c ?? 0;
-    throw new ExitSignal();
-  };
-  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(' ')); };
-  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
-  try {
-    await fn();
-  } catch (err) {
-    if (!(err instanceof ExitSignal)) {
-      console.log = origLog;
-      console.error = origErr;
-      process.exit = origExit;
-      throw err;
-    }
-  } finally {
-    process.exit = origExit;
-    console.log = origLog;
-    console.error = origErr;
-  }
-  return { exitCode, logs, errors };
 }
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -421,8 +393,11 @@ describe('renderPrTail — standalone story-NNN label (AC4)', () => {
       { id: 'epic-001', kind: 'standalone', epic_pr_url: 'https://example.com/pr/1' },
     ]);
     const joined = lines.join('\n');
-    assert.ok(joined.includes('https://example.com/pr/1'), 'PR URL must be shown');
-    // Single-entry case never shows the id label.
+    // Single-entry case: only "PR: <url>" — no id label at all, regardless of kind.
+    assert.ok(
+      joined.includes('PR: https://example.com/pr/1'),
+      `single-entry must show "PR: <url>" format. Got:\n${joined}`
+    );
     assert.ok(!joined.includes('epic-001'), 'single-entry must not show epic-001 label');
     assert.ok(!joined.includes('story-001'), 'single-entry must not show story-001 label');
   });
@@ -482,8 +457,24 @@ describe('weave/epic — DB agent row uses story-NNN id on the standalone path (
     const container = epics.find((e) => e.kind === 'standalone');
     assert.ok(container, 'a standalone container epic must exist in the DB');
 
-    // The story id must be story-NNN (derived from the container epic-NNN).
+    // The expected user-facing story id is story-NNN (internal row is epic-NNN).
     const expectedStoryId = container!.id.replace(/^epic-/, 'story-');
-    assert.match(expectedStoryId, /^story-\d{3}$/, 'story id must match story-NNN pattern');
+    assert.match(expectedStoryId, /^story-\d{3}$/, 'expected story id must match story-NNN pattern');
+
+    // Planner.runStandalone atomically creates an agents row with the story-NNN
+    // identity and the story/story-NNN branch name (ADR-002 §5 identity scheme).
+    const agentStore = new AgentStore(db);
+    const agentRows = agentStore.listByEpic(container!.id);
+    assert.equal(agentRows.length, 1, 'exactly one agent row must exist for the standalone container');
+    assert.equal(
+      agentRows[0].story_id,
+      expectedStoryId,
+      `agent row story_id must be ${expectedStoryId}, not the internal epic id`
+    );
+    assert.equal(
+      agentRows[0].branch_name,
+      `story/${expectedStoryId}`,
+      `agent row branch_name must be story/${expectedStoryId}`
+    );
   });
 });
