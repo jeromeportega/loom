@@ -118,6 +118,10 @@ describe('ensureLoomHome — case 3: existing non-git directory', () => {
   it('result is now a git repository', () => {
     assert.ok(isGitRepo(target));
   });
+
+  it('writes a .gitignore', () => {
+    assert.ok(fs.existsSync(path.join(target, '.gitignore')));
+  });
 });
 
 describe('ensureLoomHome — case 4: idempotency', () => {
@@ -150,6 +154,7 @@ describe('ensureLoomHome — guard: path inside an existing git repo (projectRoo
     projectRoot = path.join(tmp, 'project');
     fs.mkdirSync(projectRoot);
     gitInit(projectRoot);
+    gitCommit(projectRoot); // ensure HEAD exists — some git versions need a commit for rev-parse --show-toplevel
     nestedTarget = path.join(projectRoot, 'loom-home');
   });
 
@@ -169,8 +174,11 @@ describe('ensureLoomHome — guard: path inside an existing git repo (projectRoo
     );
   });
 
-  it('does not create a .git directory', () => {
-    assert.ok(!fs.existsSync(path.join(nestedTarget, '.git')));
+  it('does not create the target directory', () => {
+    assert.ok(
+      !fs.existsSync(nestedTarget),
+      'ensureLoomHome must not create the target directory when the guard fires',
+    );
   });
 });
 

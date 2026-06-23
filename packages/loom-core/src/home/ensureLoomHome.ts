@@ -16,8 +16,8 @@ const GITIGNORE_CONTENT = `# loom-home: machine-local namespaces (not pushed in 
 
 /**
  * Guards against nested-repo corruption: throws when loomHomePath is inside
- * a .git directory (any path component is ".git") or is a strict subdirectory
- * of an existing git repository.
+ * a .git directory (any path component is ".git") or is inside (or equal to)
+ * an existing git repository.
  */
 function guardAgainstNesting(loomHomePath: string): void {
   const parts = loomHomePath.split(path.sep);
@@ -37,18 +37,29 @@ function guardAgainstNesting(loomHomePath: string): void {
 
   const res = gitSafe(ancestor, ['rev-parse', '--show-toplevel']);
   if (res.ok) {
-    // Resolve symlinks in both paths so platform-specific symlinks
-    // (e.g. /var/folders → /private/var/folders on macOS) don't break the check.
-    const repoRoot = fs.realpathSync(ancestor);
+    // Resolve symlinks so platform aliases (e.g. /var → /private/var on macOS)
+    // don't cause false negatives. git() already trims, but .trim() is defensive.
+    const gitTopLevel = fs.realpathSync(res.output.trim());
+    const ancestorReal = fs.realpathSync(ancestor);
     const rel = path.relative(ancestor, loomHomePath);
-    const loomHomeReal = path.join(repoRoot, rel);
-    const gitTopLevel = fs.realpathSync(res.output);
+    const loomHomeReal = path.join(ancestorReal, rel);
+    // Block only when loomHome is a strict subdirectory of an existing repo.
+    // The equality case (loomHome IS the git root) is intentionally allowed:
+    // it covers the legitimate reuse path where loomHome is itself a pre-existing
+    // git repo. Guarding against "loomHome == projectRoot" requires projectRoot
+    // context that this function does not receive; the caller (resolveLoomHomePath)
+    // defaults to a sibling and enforces that separation.
     if (loomHomeReal.startsWith(gitTopLevel + path.sep)) {
       throw new Error(
-        `ensureLoomHome: path is inside an existing git repository (${repoRoot}): ${loomHomePath}`,
+        `ensureLoomHome: path is inside an existing git repository (${gitTopLevel}): ${loomHomePath}`,
       );
     }
   }
+}
+
+function runGitInit(loomHomePath: string): void {
+  const res = gitSafe(loomHomePath, ['init']);
+  if (!res.ok) throw new Error(`ensureLoomHome: git init failed: ${res.output}`);
 }
 
 /**
@@ -69,7 +80,7 @@ export function ensureLoomHome(loomHomePath: string): EnsureResult {
 
   if (!dirExists) {
     fs.mkdirSync(loomHomePath, { recursive: true });
-    gitSafe(loomHomePath, ['init']);
+    runGitInit(loomHomePath);
     fs.writeFileSync(path.join(loomHomePath, '.gitignore'), GITIGNORE_CONTENT, 'utf8');
     return { path: loomHomePath, created: true, initialized: true, reused: false };
   }
@@ -78,7 +89,11 @@ export function ensureLoomHome(loomHomePath: string): EnsureResult {
     return { path: loomHomePath, created: false, initialized: false, reused: true };
   }
 
-  // Existing non-git directory → init in place.
-  gitSafe(loomHomePath, ['init']);
+  // Existing non-git directory → init in place (non-destructive; preserves content).
+  runGitInit(loomHomePath);
+  // Write .gitignore only if not already present, to avoid overwriting user rules.
+  if (!fs.existsSync(path.join(loomHomePath, '.gitignore'))) {
+    fs.writeFileSync(path.join(loomHomePath, '.gitignore'), GITIGNORE_CONTENT, 'utf8');
+  }
   return { path: loomHomePath, created: false, initialized: true, reused: false };
 }
