@@ -23,6 +23,7 @@ import {
   AuditLog,
   ControlStore,
   ProjectRegistry,
+  resolveRepoStatePaths,
 } from '@loom-ai/core';
 import type Database from 'better-sqlite3';
 import { requireToken } from '../server/auth.js';
@@ -261,20 +262,23 @@ describe('inbox — escalation source', () => {
 
 describe('inbox — cross-project federation', () => {
   it('federates decisions from ≥2 registered projects, each tagged with correct project_root', async () => {
-    // Set up a second project on disk
+    // Set up a second project on disk with a controlled loom_home so inbox.ts
+    // can resolve the DB path via resolveRepoStatePaths (same pattern as approve/reject tests).
     const projectB = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-inbox-projB-'));
+    const projBLoomHome = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-inbox-projB-home-'));
     fs.mkdirSync(path.join(projectB, '.loom'), { recursive: true });
+    fs.writeFileSync(path.join(projectB, '.loom', 'policy.yaml'), `loom_home: ${projBLoomHome}\n`, 'utf8');
     new ProjectRegistry().register(projectB);
 
-    const dbB = createDatabase(path.join(projectB, '.loom', 'loom.db'));
-    const epicsB = new EpicStore(dbB);
-    epicsB.create('epic-B1', 'Epic in project B');
+    const policyB = { loom_home: projBLoomHome };
+    const { namespaceDir: nsDirB } = resolveRepoStatePaths(projectB, policyB);
+    fs.mkdirSync(nsDirB, { recursive: true });
+    const dbB = createDatabase(path.join(nsDirB, 'loom.db'));
+    new EpicStore(dbB).create('epic-B1', 'Epic in project B');
+    dbB.close(); // close so the inbox re-opens it via createDatabase
 
     // Plant a planned epic in project A (the host)
-    const epicsA = new EpicStore(server.db);
-    epicsA.create('epic-A1', 'Epic in project A');
-
-    dbB.close(); // close so the inbox re-opens it via createDatabase
+    new EpicStore(server.db).create('epic-A1', 'Epic in project A');
 
     try {
       const res = await fetch(`${server.baseUrl}/api/inbox`, { headers: HEADERS });
@@ -292,6 +296,42 @@ describe('inbox — cross-project federation', () => {
       assert.equal(b.type, 'plan_approval');
     } finally {
       fs.rmSync(projectB, { recursive: true, force: true });
+      fs.rmSync(projBLoomHome, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── Cross-project policy.yaml fallback ──────────────────────────────────────
+
+describe('inbox — peer with missing policy.yaml falls back (not skipped)', () => {
+  it('includes epics from a peer project whose policy.yaml is absent', async () => {
+    // Peer project: no policy.yaml — PolicyEngine.load will throw.
+    // inbox.ts must fall back to loom_home='' (default resolver) instead of
+    // silently dropping the project (the pre-fix behaviour was `continue`).
+    const projectB = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-inbox-nopolicy-'));
+    fs.mkdirSync(path.join(projectB, '.loom'), { recursive: true });
+    // Intentionally write a malformed policy.yaml so PolicyEngine.load throws.
+    fs.writeFileSync(path.join(projectB, '.loom', 'policy.yaml'), 'not: valid: yaml: ::::', 'utf8');
+    new ProjectRegistry().register(projectB);
+
+    // Resolve the default (no-override) DB path and seed a planned epic.
+    const { namespaceDir: nsDirB } = resolveRepoStatePaths(projectB, { loom_home: '' });
+    fs.mkdirSync(nsDirB, { recursive: true });
+    const dbB = createDatabase(path.join(nsDirB, 'loom.db'));
+    new EpicStore(dbB).create('epic-B-nopolicy', 'Epic in no-policy project');
+    dbB.close();
+
+    try {
+      const res = await fetch(`${server.baseUrl}/api/inbox`, { headers: HEADERS });
+      assert.equal(res.status, 200);
+      const body = await res.json() as InboxEntry[];
+      const ids = body.map((e) => e.epic_id);
+      assert.ok(
+        ids.includes('epic-B-nopolicy'),
+        `inbox must include peers with missing/malformed policy.yaml, got: ${ids.join(', ')}`,
+      );
+    } finally {
+      fs.rmSync(projectB, { recursive: true, force: true });
     }
   });
 });
@@ -300,12 +340,16 @@ describe('inbox — cross-project federation', () => {
 
 describe('inbox — end-to-end approve via existing route', () => {
   it('POST /api/epics/:id/approve transitions planned→approved in peer DB + audit row', async () => {
-    // Set up peer project
+    // Set up peer project with controlled loom_home so resolveProjectDb finds the DB.
     const projectB = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-e2e-projB-'));
+    const peerLoomHome = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-peer-home-'));
     fs.mkdirSync(path.join(projectB, '.loom'), { recursive: true });
+    fs.writeFileSync(path.join(projectB, '.loom', 'policy.yaml'), `loom_home: ${peerLoomHome}\n`, 'utf8');
     new ProjectRegistry().register(projectB);
 
-    const dbB = createDatabase(path.join(projectB, '.loom', 'loom.db'));
+    const peerPolicy = { loom_home: peerLoomHome };
+    const { dbPath: dbPathB } = resolveRepoStatePaths(projectB, peerPolicy);
+    const dbB = createDatabase(dbPathB);
     new EpicStore(dbB).create('epic-B1', 'Auth epic');
     dbB.close();
 
@@ -319,8 +363,8 @@ describe('inbox — end-to-end approve via existing route', () => {
       assert.equal(body.status, 'dispatching');
       assert.equal(body.epic_id, 'epic-B1');
 
-      // Verify state in peer DB
-      const verifyDb = createDatabase(path.join(projectB, '.loom', 'loom.db'));
+      // Verify state in peer DB (at loom-home path)
+      const verifyDb = createDatabase(dbPathB);
       const epic = new EpicStore(verifyDb).get('epic-B1');
       assert.equal(epic?.status, 'approved', 'peer epic transitioned to approved');
 
@@ -329,6 +373,7 @@ describe('inbox — end-to-end approve via existing route', () => {
       verifyDb.close();
     } finally {
       fs.rmSync(projectB, { recursive: true, force: true });
+      fs.rmSync(peerLoomHome, { recursive: true, force: true });
     }
   });
 
@@ -351,10 +396,14 @@ describe('inbox — end-to-end approve via existing route', () => {
 describe('inbox — end-to-end reject via existing route', () => {
   it('POST /api/epics/:id/reject in peer DB — transitions to rejected + audit row', async () => {
     const projectB = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-e2e-rej-'));
+    const peerLoomHome = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-peer-home-'));
     fs.mkdirSync(path.join(projectB, '.loom'), { recursive: true });
+    fs.writeFileSync(path.join(projectB, '.loom', 'policy.yaml'), `loom_home: ${peerLoomHome}\n`, 'utf8');
     new ProjectRegistry().register(projectB);
 
-    const dbB = createDatabase(path.join(projectB, '.loom', 'loom.db'));
+    const peerPolicy = { loom_home: peerLoomHome };
+    const { dbPath: dbPathB } = resolveRepoStatePaths(projectB, peerPolicy);
+    const dbB = createDatabase(dbPathB);
     new EpicStore(dbB).create('epic-R1', 'Reject me');
     dbB.close();
 
@@ -371,8 +420,8 @@ describe('inbox — end-to-end reject via existing route', () => {
       const body = await res.json() as { status: string };
       assert.equal(body.status, 'rejected');
 
-      // Verify peer DB
-      const verifyDb = createDatabase(path.join(projectB, '.loom', 'loom.db'));
+      // Verify peer DB (at loom-home path)
+      const verifyDb = createDatabase(dbPathB);
       const epic = new EpicStore(verifyDb).get('epic-R1');
       assert.equal(epic?.status, 'rejected');
       const rows = new AuditLog(verifyDb).getByCommand('epic-R1', ['epic_rejected']);
@@ -381,6 +430,7 @@ describe('inbox — end-to-end reject via existing route', () => {
       verifyDb.close();
     } finally {
       fs.rmSync(projectB, { recursive: true, force: true });
+      fs.rmSync(peerLoomHome, { recursive: true, force: true });
     }
   });
 

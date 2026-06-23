@@ -19,7 +19,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import type { Express } from 'express';
-import { EpicStore, AgentStore, ProjectRegistry, createDatabase } from '@loom-ai/core';
+import { EpicStore, AgentStore, ProjectRegistry, PolicyEngine, createDatabase, resolveRepoStatePaths } from '@loom-ai/core';
 import type { InboxEntry } from '../../shared/inbox.js';
 
 export interface InboxDeps {
@@ -45,7 +45,17 @@ export function registerInboxRoutes(app: Express, deps: InboxDeps): void {
     const registryEntries = new ProjectRegistry().list();
     for (const entry of registryEntries) {
       if (entry.root === currentProjectRoot) continue;
-      const dbPath = path.join(entry.root, '.loom', 'loom.db');
+      const peerLoomDir = path.join(entry.root, '.loom');
+      let peerPolicy: { loom_home?: string };
+      try {
+        peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
+      } catch {
+        // policy.yaml absent or malformed — mirror fleet.ts: fall back to default
+        // resolver rather than silently dropping the project from the inbox.
+        peerPolicy = { loom_home: '' };
+      }
+      const { namespaceDir: peerNsDir } = resolveRepoStatePaths(entry.root, { loom_home: peerPolicy.loom_home ?? '' });
+      const dbPath = path.join(peerNsDir, 'loom.db');
       if (!fs.existsSync(dbPath)) continue;
       try {
         const peerDb = createDatabase(dbPath);

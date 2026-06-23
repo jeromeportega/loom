@@ -108,7 +108,8 @@ function offPathResponder(req: LLMRequest): string {
 
 /** Read the final epic YAML written by the Planner for a given run. */
 function readEpicYaml(projectRoot: string, runId: string): string {
-  return fs.readFileSync(planningPaths(projectRoot, runId).epicFile(runId), 'utf8');
+  const planningRoot = path.join(projectRoot, '.loom', 'planning');
+  return fs.readFileSync(planningPaths(planningRoot, runId).epicFile(runId), 'utf8');
 }
 
 /** Run Planner.run() with routing:undefined in a clean, isolated environment. */

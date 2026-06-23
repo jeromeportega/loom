@@ -823,12 +823,22 @@ export class EpicFinalizer {
         ? path.basename(path.dirname(epic.brief_path))
         : epicId;
 
-      const planningBase = path.join(projectRoot, '.loom', 'planning', runId);
+      // Derive architecture.md from the same directory as brief_path —
+      // planningRelPaths stores a consistent layout (brief and architecture
+      // are siblings), so this works for both in-repo and loom-home roots.
+      const briefAbsPath = epic.brief_path ? path.join(projectRoot, epic.brief_path) : null;
+      const archBase = briefAbsPath ? path.dirname(briefAbsPath) : null;
+      // Derive all four artifact paths from archBase (the run directory of brief_path)
+      // rather than joining projectRoot with the stored relative paths. After
+      // migratePlanningScratch moves files to loom-home, archBase reflects wherever
+      // brief_path now lives, keeping prd/epicYaml co-located with brief/architecture.
       const artifactSources = {
-        brief: epic.brief_path ? path.join(projectRoot, epic.brief_path) : undefined,
-        prd: epic.prd_path ? path.join(projectRoot, epic.prd_path) : undefined,
-        architecture: path.join(planningBase, 'architecture.md'),
-        epicYaml: epic.yaml_path ? path.join(projectRoot, epic.yaml_path) : undefined,
+        brief: briefAbsPath ?? undefined,
+        prd: archBase ? path.join(archBase, 'prd.md') : undefined,
+        architecture: archBase ? path.join(archBase, 'architecture.md') : undefined,
+        epicYaml: archBase && epic.yaml_path
+          ? path.join(archBase, 'epics', path.basename(epic.yaml_path))
+          : undefined,
       };
 
       const { relDir, provenance } = routeArtifacts({

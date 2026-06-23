@@ -11,8 +11,10 @@ import {
   SkillUsageStore,
   ProjectRegistry,
   WorkerLogStore,
+  PolicyEngine,
   openDatabase,
   createDatabase,
+  resolveRepoStatePaths,
   deriveBlocked,
   STANDALONE_KIND,
   type IntakeVerdict,
@@ -147,12 +149,15 @@ export function createApp(opts: CreateAppOptions): Express {
     const registryEntries = new ProjectRegistry().list();
     for (const entry of registryEntries) {
       if (entry.root === currentProjectRoot) continue;
-      const dbPath = path.join(entry.root, '.loom', 'loom.db');
-      if (!fs.existsSync(dbPath)) continue;
       try {
         // createDatabase() returns a fresh non-singleton connection — using
         // openDatabase() here would reuse the current-project singleton.
-        const peerDb = createDatabase(dbPath);
+        const peerLoomDir = path.join(entry.root, '.loom');
+        const peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
+        const { namespaceDir: peerNsDir } = resolveRepoStatePaths(entry.root, peerPolicy);
+        const peerDbPath = path.join(peerNsDir, 'loom.db');
+        if (!fs.existsSync(peerDbPath)) continue;
+        const peerDb = createDatabase(peerDbPath);
         const peerEpicStore = new EpicStore(peerDb);
         const peerAgentStore = new AgentStore(peerDb);
         result.push(
@@ -401,18 +406,24 @@ export function createApp(opts: CreateAppOptions): Express {
       // DB just yields undefined snapshot — the registry entry is still
       // useful even when the project is mid-run with the DB busy.
       try {
-        const dbPath = path.join(entry.root, '.loom', 'loom.db');
-        if (fs.existsSync(dbPath)) {
-          const peerDb = openDatabase(path.join(entry.root, '.loom'));
-          // Count every epic (including archived) — the directory count is a
-          // "how much has this project done" signal, not a working set.
-          const peerEpics = new EpicStore(peerDb).list({ includeArchived: true });
-          epicCount = peerEpics.length;
-          const last = peerEpics[peerEpics.length - 1];
-          if (last) {
-            latestEpic = { id: last.id, title: last.title, status: last.status };
+        const peerLoomDir = path.join(entry.root, '.loom');
+        const peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
+        const { namespaceDir: peerNamespaceDir } = resolveRepoStatePaths(entry.root, peerPolicy);
+        const peerDbPath = path.join(peerNamespaceDir, 'loom.db');
+        if (fs.existsSync(peerDbPath)) {
+          const peerDb = createDatabase(peerDbPath);
+          try {
+            // Count every epic (including archived) — the directory count is a
+            // "how much has this project done" signal, not a working set.
+            const peerEpics = new EpicStore(peerDb).list({ includeArchived: true });
+            epicCount = peerEpics.length;
+            const last = peerEpics[peerEpics.length - 1];
+            if (last) {
+              latestEpic = { id: last.id, title: last.title, status: last.status };
+            }
+          } finally {
+            peerDb.close();
           }
-          peerDb.close();
         }
       } catch {
         // Best-effort — registry entry stays useful without the snapshot.
@@ -669,7 +680,17 @@ function openPeer(
   // createDatabase() — fresh connection, NOT the openDatabase() singleton.
   // The singleton would alias the current-project DB and close-on-cleanup
   // would tear down the long-lived connection the rest of the server uses.
-  const peerDb = createDatabase(path.join(root, '.loom', 'loom.db'));
+  const peerLoomDir = path.join(root, '.loom');
+  let peerPolicy: { loom_home?: string };
+  try {
+    peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
+  } catch {
+    // Absent or malformed policy.yaml — fall back to default loom_home so the
+    // peer DB can still be opened. Matches the degraded behaviour of crossEpicOverlap.
+    peerPolicy = { loom_home: '' };
+  }
+  const { namespaceDir: peerNsDir } = resolveRepoStatePaths(root, peerPolicy);
+  const peerDb = createDatabase(path.join(peerNsDir, 'loom.db'));
   const peerEpics = new EpicStore(peerDb);
   const peerAgents = new AgentStore(peerDb);
   const peerAudit = new AuditLog(peerDb);

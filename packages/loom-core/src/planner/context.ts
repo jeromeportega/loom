@@ -8,6 +8,11 @@ import type { EffectiveRouting } from '../intake/routing.js';
  */
 export interface PlannerContext {
   projectRoot: string;
+  /**
+   * Resolved planning root directory (e.g. `<namespaceDir>/planning`).
+   * All planning artifacts are written under `<planningRoot>/<runId>/`.
+   */
+  planningRoot: string;
   llm: LLMClient;
   /** Model id for planning calls, e.g. claude-sonnet-4-6. */
   model: string;

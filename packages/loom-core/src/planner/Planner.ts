@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { LLMClient, LLMUsage } from '../llm/index.js';
 import { addUsage, EMPTY_USAGE } from '../llm/index.js';
@@ -62,6 +63,12 @@ export interface PlanResult {
 
 export interface PlannerOptions {
   projectRoot: string;
+  /**
+   * Pre-resolved planning root (e.g. `RepoStatePaths.planningRoot`).
+   * When absent, defaults to `<projectRoot>/.loom/planning` for backward
+   * compatibility with callers that pre-date loom-home relocation.
+   */
+  planningRoot?: string;
   llm: LLMClient;
   model: string;
   db: Database.Database;
@@ -103,6 +110,10 @@ export interface PlannerOptions {
  */
 export class Planner {
   constructor(private opts: PlannerOptions) {}
+
+  private get planningRoot(): string {
+    return this.opts.planningRoot ?? path.join(this.opts.projectRoot, '.loom', 'planning');
+  }
 
   /**
    * Selects bundled/project/global skills relevant to a brief and returns
@@ -182,6 +193,7 @@ export class Planner {
 
     const ctx: PlannerContext = {
       projectRoot: this.opts.projectRoot,
+      planningRoot: this.planningRoot,
       llm: wrappedLlm,
       model: this.opts.model,
       runId,
@@ -190,7 +202,7 @@ export class Planner {
       qaPlanning: this.opts.qaPlanning,
       routing: this.opts.routing,
     };
-    const rel = planningRelPaths(runId);
+    const rel = planningRelPaths(runId, this.planningRoot, this.opts.projectRoot);
     let usage: LLMUsage = { ...EMPTY_USAGE };
 
     sink.start();
@@ -289,8 +301,8 @@ export class Planner {
     const usage = addUsage(usageSoFar, storyUsage);
     const durationMs = Date.now() - startedAt;
     const now = new Date().toISOString();
-    const rel = planningRelPaths(runId);
-    const paths = planningPaths(this.opts.projectRoot, runId);
+    const rel = planningRelPaths(runId, this.planningRoot, this.opts.projectRoot);
+    const paths = planningPaths(this.planningRoot, runId);
 
     // Write the YAML file before the transaction so a disk-full error doesn't
     // leave the DB row committed but the plan file missing.
@@ -392,7 +404,7 @@ export class Planner {
     // Serialize same-file story groups: derive dependency edges for stories
     // that edit the same file, ensuring they integrate sequentially.
     const audit = new AuditLog(this.opts.db);
-    applySameFileSerialization(architect.epics, this.opts.projectRoot, audit, runId);
+    applySameFileSerialization(architect.epics, this.opts.projectRoot, audit, runId, this.planningRoot);
 
     return {
       runId,
@@ -429,14 +441,16 @@ export function applySameFileSerialization(
   projectRoot: string,
   audit: AuditLog,
   runId?: string,
+  planningRoot?: string,
 ): void {
   if (epics.length === 0) return;
 
-  // All epics in a planning run share .loom/planning/<runId>/epics/.
+  // All epics in a planning run share <planningRoot>/<runId>/epics/.
   // The caller passes the true runId; we fall back to epics[0].epic_id for
   // single-epic callers (tests, standalone) where they are the same.
   const resolvedRunId = runId ?? epics[0].epic_id;
-  const paths = planningPaths(projectRoot, resolvedRunId);
+  const effectivePlanningRoot = planningRoot ?? path.join(projectRoot, '.loom', 'planning');
+  const paths = planningPaths(effectivePlanningRoot, resolvedRunId);
 
   for (const epic of epics) {
     // Per-epic guard: advisory serialization must never abort the planning run.

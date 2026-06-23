@@ -78,6 +78,7 @@ describe('NFR-1 off-path PM message output-equivalence (story-045-001)', () => {
 
     const ctx = {
       projectRoot: tmpDir,
+      planningRoot: path.join(tmpDir, '.loom', 'planning'),
       llm,
       model: 'test-model',
       runId: 'epic-001',

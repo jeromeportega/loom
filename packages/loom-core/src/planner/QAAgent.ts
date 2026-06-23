@@ -39,7 +39,7 @@ export class QAAgent {
     architectureContent: string,
     epics: EpicYaml[]
   ): Promise<QAResult> {
-    const paths = planningPaths(this.ctx.projectRoot, this.ctx.runId);
+    const paths = planningPaths(this.ctx.planningRoot, this.ctx.runId);
     const epicsJson = JSON.stringify({ epics }, null, 2);
 
     const { map, usage } = await this.generateTestPlans(
