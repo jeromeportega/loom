@@ -22,7 +22,9 @@ import {
   AgentStore,
   AuditLog,
   ProjectRegistry,
+  PolicyEngine,
   createDatabase,
+  resolveRepoStatePaths,
 } from '@loom-ai/core';
 
 export interface ResolvedProject {
@@ -74,7 +76,10 @@ export function makeResolveProjectDb(
       throw Object.assign(err, { statusCode: 400 });
     }
 
-    const dbPath = path.join(raw, '.loom', 'loom.db');
+    const peerLoomDir = path.join(raw, '.loom');
+    const peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
+    const { namespaceDir: peerNsDir } = resolveRepoStatePaths(raw, peerPolicy);
+    const dbPath = path.join(peerNsDir, 'loom.db');
     if (!fs.existsSync(dbPath)) {
       throw Object.assign(
         new Error(`project DB not found: ${dbPath}`),

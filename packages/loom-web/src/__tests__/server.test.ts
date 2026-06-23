@@ -310,16 +310,25 @@ describe('loom-web — cross-repo federation of /api/status', () => {
     const fs = require('node:fs') as typeof import('node:fs');
     const os = require('node:os') as typeof import('node:os');
     const path = require('node:path') as typeof import('node:path');
-    const { createDatabase, EpicStore, ProjectRegistry } = require('@loom-ai/core') as typeof import('@loom-ai/core');
+    const { createDatabase, EpicStore, ProjectRegistry, resolveRepoStatePaths } = require('@loom-ai/core') as typeof import('@loom-ai/core');
 
-    // Two fake projects on disk, each with its own .loom/loom.db. The web
-    // server is launched in projectA; projectB shows up as a peer via the
-    // ProjectRegistry redirected to a temp HOME.
+    // Two fake projects on disk. The web server is launched in projectA;
+    // projectB shows up as a peer via ProjectRegistry. Both projects point
+    // their loom_home to loomHomeTmp so the server finds each DB there.
     const loomHomeTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-home-'));
     const projectA = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-projA-'));
     const projectB = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-projB-'));
     fs.mkdirSync(path.join(projectA, '.loom'), { recursive: true });
     fs.mkdirSync(path.join(projectB, '.loom'), { recursive: true });
+
+    // Write policy.yaml so the server resolves loom_home to the controlled temp dir.
+    fs.writeFileSync(path.join(projectA, '.loom', 'policy.yaml'), `loom_home: ${loomHomeTmp}\n`, 'utf8');
+    fs.writeFileSync(path.join(projectB, '.loom', 'policy.yaml'), `loom_home: ${loomHomeTmp}\n`, 'utf8');
+
+    const policyA = { loom_home: loomHomeTmp };
+    const policyB = { loom_home: loomHomeTmp };
+    const { dbPath: dbPathA } = resolveRepoStatePaths(projectA, policyA);
+    const { dbPath: dbPathB } = resolveRepoStatePaths(projectB, policyB);
 
     const prevLoomHome = process.env.LOOM_HOME;
     process.env.LOOM_HOME = loomHomeTmp;
@@ -330,10 +339,10 @@ describe('loom-web — cross-repo federation of /api/status', () => {
       // Use createDatabase (non-singleton) for both fixtures so they live
       // as separate connections — openDatabase() is a process-wide singleton
       // and would alias the two DBs together.
-      const dbA = createDatabase(path.join(projectA, '.loom', 'loom.db'));
+      const dbA = createDatabase(dbPathA);
       new EpicStore(dbA).create('epic-A1', 'In project A');
 
-      const dbB = createDatabase(path.join(projectB, '.loom', 'loom.db'));
+      const dbB = createDatabase(dbPathB);
       new EpicStore(dbB).create('epic-B1', 'In project B');
       dbB.close();
 
