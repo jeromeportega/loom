@@ -15,3 +15,4 @@ export * from './brief/index.js';
 export * from './mcp/index.js';
 export * from './intake/IntakeClassifier.js';
 export * from './intake/routing.js';
+export { resolveLoomHomePath } from './home/resolveLoomHomePath.js';

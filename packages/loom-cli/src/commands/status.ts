@@ -7,6 +7,8 @@ import {
   AgentStore,
   AuditLog,
   ProjectRegistry,
+  PolicyEngine,
+  resolveLoomHomePath,
   deriveBlocked,
   displayModel,
   STANDALONE_KIND,
@@ -117,7 +119,13 @@ export function runStatus(options: StatusOptions): void {
       console.log('');
       return;
     }
-    renderLoomDir(path.join(process.cwd(), '.loom'), options.epicId, options.archived);
+    const cwd = process.cwd();
+    const loomDir = path.join(cwd, '.loom');
+    const policy = PolicyEngine.load(loomDir).policyData;
+    const loomHomePath = resolveLoomHomePath(cwd, policy);
+    const existsNote = fs.existsSync(loomHomePath) ? '' : '  (will be created on first use)';
+    console.log(`   loom-home: ${loomHomePath}${existsNote}`);
+    renderLoomDir(loomDir, options.epicId, options.archived);
     console.log('');
   }
 
@@ -175,6 +183,8 @@ interface JsonEpic {
 
 interface JsonStatus {
   epics: JsonEpic[];
+  /** Resolved loom-home path for the current project view (omitted in --all mode). */
+  loom_home?: string;
 }
 
 /**
@@ -197,6 +207,15 @@ function buildJsonStatus(options: StatusOptions, projectLoomDir?: string): JsonS
   const epics: JsonEpic[] = [];
   for (const loomDir of loomDirs) {
     epics.push(...collectJsonEpics(loomDir, options.epicId, options.archived));
+  }
+
+  // Include resolved loom-home only for a single-project view (not --all).
+  if (!options.all) {
+    const loomDir = projectLoomDir ?? path.join(process.cwd(), '.loom');
+    const projectRoot = path.dirname(loomDir);
+    const policy = PolicyEngine.load(loomDir).policyData;
+    const loomHome = resolveLoomHomePath(projectRoot, policy);
+    return { epics, loom_home: loomHome };
   }
   return { epics };
 }
@@ -552,7 +571,7 @@ export const spec: CommandDescription = {
   ],
   output: {
     text: 'Human-readable tree of epics and stories with status icons and PR links',
-    json: { supported: true, shape: '{ epics: { id, title, status, stories: { id, title, status, pr_url?, history? }[] }[] }' },
+    json: { supported: true, shape: '{ epics: { id, title, status, stories: { id, title, status, pr_url?, history? }[] }[], loom_home?: string }' },
   },
   examples: [
     { command: 'loom status', description: 'Show all epics in the current project' },
