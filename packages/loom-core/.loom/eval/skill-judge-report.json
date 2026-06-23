@@ -1,0 +1,43 @@
+{
+  "metrics": {
+    "totalCases": 1,
+    "scoredCases": 1,
+    "gateFailures": 0,
+    "gateFailureRate": 0,
+    "judgeInconclusive": 0,
+    "judgeInconclusiveRate": 0,
+    "decisionAccuracy": 1,
+    "bandAgreement": 1,
+    "independentAgreement": 1,
+    "failOpenObserved": 0
+  },
+  "decision": {
+    "verdict": "inconclusive",
+    "reasons": [
+      "scoredCases 1 < minScoredCases 5"
+    ]
+  },
+  "perCase": [
+    {
+      "caseId": "sj-consumer-test-001",
+      "gate": {
+        "status": "ok",
+        "output": {
+          "score": 8,
+          "verdict": "accept",
+          "reason": "test verdict: accept"
+        }
+      },
+      "judge": {
+        "status": "ok",
+        "judgment": {
+          "decision_correct": true,
+          "band_in_range": true,
+          "independent_verdict": "accept",
+          "band_defensible": true,
+          "reason": "test judgment"
+        }
+      }
+    }
+  ]
+}
