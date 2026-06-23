@@ -605,6 +605,9 @@ export const PolicySchema = z.object({
       registry: z.string().optional(),
     })
     .default({}),
+  // Absolute or ~-expandable path to the loom-home repository. Omit to use
+  // the default sibling directory (parent of projectRoot + '/loom-home').
+  loom_home: z.string().optional(),
 });
 export type Policy = z.infer<typeof PolicySchema>;
 
