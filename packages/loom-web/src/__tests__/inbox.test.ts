@@ -301,6 +301,41 @@ describe('inbox — cross-project federation', () => {
   });
 });
 
+// ─── Cross-project policy.yaml fallback ──────────────────────────────────────
+
+describe('inbox — peer with missing policy.yaml falls back (not skipped)', () => {
+  it('includes epics from a peer project whose policy.yaml is absent', async () => {
+    // Peer project: no policy.yaml — PolicyEngine.load will throw.
+    // inbox.ts must fall back to loom_home='' (default resolver) instead of
+    // silently dropping the project (the pre-fix behaviour was `continue`).
+    const projectB = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-inbox-nopolicy-'));
+    fs.mkdirSync(path.join(projectB, '.loom'), { recursive: true });
+    // Intentionally write a malformed policy.yaml so PolicyEngine.load throws.
+    fs.writeFileSync(path.join(projectB, '.loom', 'policy.yaml'), 'not: valid: yaml: ::::', 'utf8');
+    new ProjectRegistry().register(projectB);
+
+    // Resolve the default (no-override) DB path and seed a planned epic.
+    const { namespaceDir: nsDirB } = resolveRepoStatePaths(projectB, { loom_home: '' });
+    fs.mkdirSync(nsDirB, { recursive: true });
+    const dbB = createDatabase(path.join(nsDirB, 'loom.db'));
+    new EpicStore(dbB).create('epic-B-nopolicy', 'Epic in no-policy project');
+    dbB.close();
+
+    try {
+      const res = await fetch(`${server.baseUrl}/api/inbox`, { headers: HEADERS });
+      assert.equal(res.status, 200);
+      const body = await res.json() as InboxEntry[];
+      const ids = body.map((e) => e.epic_id);
+      assert.ok(
+        ids.includes('epic-B-nopolicy'),
+        `inbox must include peers with missing/malformed policy.yaml, got: ${ids.join(', ')}`,
+      );
+    } finally {
+      fs.rmSync(projectB, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── End-to-end approve ───────────────────────────────────────────────────────
 
 describe('inbox — end-to-end approve via existing route', () => {

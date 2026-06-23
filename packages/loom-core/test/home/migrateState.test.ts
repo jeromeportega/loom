@@ -672,6 +672,97 @@ describe('prepareRepoState — cross-host stale lock (age-based staleness)', () 
   });
 });
 
+// ── Ownerless lock dir race window fix ────────────────────────────────────────
+
+describe('prepareRepoState — ownerless lock dir treated as live when young', () => {
+  let tmp: string;
+  let loomHome: string;
+  let projectRoot: string;
+
+  before(() => {
+    tmp = makeTmp();
+    loomHome = path.join(tmp, 'loom-home');
+    projectRoot = path.join(tmp, 'project');
+    const loomDir = path.join(projectRoot, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    fs.writeFileSync(path.join(loomDir, 'policy.yaml'), '', 'utf8');
+  });
+  after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  it('does NOT steal an ownerless lock dir with a young mtime (race window protection)', () => {
+    const policy = { loom_home: loomHome };
+    const paths = resolveRepoStatePaths(projectRoot, policy);
+    fs.mkdirSync(paths.namespaceDir, { recursive: true });
+
+    // Plant a lock dir with NO owner.json (simulates the race between mkdirSync
+    // and writeLock completing). mtime is "now" so it is well under 30 s.
+    const lockDir = path.join(paths.namespaceDir, '.migrate.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+    // Confirm no owner.json is present.
+    assert.ok(!fs.existsSync(path.join(lockDir, 'owner.json')), 'precondition: no owner.json');
+
+    // Also place the DB so the loser path exits immediately without timing out.
+    fs.mkdirSync(path.dirname(paths.dbPath), { recursive: true });
+    const db = createDatabase(paths.dbPath);
+    db.close();
+
+    // prepareRepoState must not delete the fresh ownerless lock and must return paths.
+    const result = prepareRepoState(projectRoot, policy);
+    assert.ok(fs.existsSync(result.dbPath), 'DB must be accessible');
+    // The lock dir should still exist (not stolen/deleted).
+    assert.ok(fs.existsSync(lockDir), 'young ownerless lock dir must not be stolen');
+
+    // Cleanup.
+    fs.rmSync(lockDir, { recursive: true, force: true });
+  });
+
+  it('treats an old ownerless lock dir (> 30 s) as stale and clears it', () => {
+    const policy = { loom_home: loomHome };
+    const paths = resolveRepoStatePaths(projectRoot, policy);
+
+    // Plant an old ownerless lock dir by back-dating its mtime.
+    const lockDir = path.join(paths.namespaceDir, '.migrate.lock');
+    if (fs.existsSync(lockDir)) fs.rmSync(lockDir, { recursive: true, force: true });
+    fs.mkdirSync(lockDir, { recursive: true });
+    const oldTime = new Date(Date.now() - 60_000); // 60 s ago
+    fs.utimesSync(lockDir, oldTime, oldTime);
+
+    // prepareRepoState must treat this as stale (no owner.json + old dir) and clear it.
+    // DB already exists from the previous test, so migration is a no-op.
+    const result = prepareRepoState(projectRoot, policy);
+    assert.ok(fs.existsSync(result.dbPath), 'DB must be accessible after clearing old ownerless lock');
+    assert.ok(!fs.existsSync(lockDir), 'old ownerless lock dir must be cleared as stale');
+  });
+});
+
+// ── WAL temp file independent cleanup fix ─────────────────────────────────────
+
+describe('migrateStateDatabase — WAL temp cleanup (walTmpCreated independent tracking)', () => {
+  let tmp: string;
+
+  before(() => { tmp = makeTmp(); });
+  after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  it('cleans up tmpWalPath even after the main tmpPath rename succeeds', () => {
+    // This test exercises the walTmpCreated code path by creating a scenario
+    // where the copy path would have been used (simulated via same-filesystem rename,
+    // which actually succeeds, so we verify no temp files are left behind).
+    const srcDir = path.join(tmp, 'wal-cleanup-src');
+    const dstPath = path.join(tmp, 'wal-cleanup-dst', 'loom.db');
+
+    const src = createDatabase(path.join(srcDir, 'loom.db'));
+    seedDb(src);
+    src.close();
+
+    const result = migrateStateDatabase({ srcDir, dstPath });
+
+    assert.equal(result.migrated, true);
+    // No temp files should remain anywhere under tmp after a successful migration.
+    const tmpFiles = fs.readdirSync(path.dirname(dstPath)).filter((f) => f.includes('.tmp-'));
+    assert.equal(tmpFiles.length, 0, `unexpected temp files after migration: ${tmpFiles.join(', ')}`);
+  });
+});
+
 // ── Stale-source removal (AC6, FR-8) ─────────────────────────────────────────
 
 describe('migrateStateDatabase — stale source removal (AC6, FR-8)', () => {

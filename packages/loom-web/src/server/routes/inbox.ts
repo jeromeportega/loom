@@ -50,7 +50,9 @@ export function registerInboxRoutes(app: Express, deps: InboxDeps): void {
       try {
         peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
       } catch {
-        continue;
+        // policy.yaml absent or malformed — mirror fleet.ts: fall back to default
+        // resolver rather than silently dropping the project from the inbox.
+        peerPolicy = { loom_home: '' };
       }
       const { namespaceDir: peerNsDir } = resolveRepoStatePaths(entry.root, { loom_home: peerPolicy.loom_home ?? '' });
       const dbPath = path.join(peerNsDir, 'loom.db');

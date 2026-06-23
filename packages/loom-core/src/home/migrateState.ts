@@ -45,7 +45,6 @@ function removeSidecars(dbPath: string): void {
 /**
  * Verifies the copy at tmpPath against the original at srcPath.
  * Returns true only when integrity_check passes AND key-table row counts match.
- * structurally unreachable on any failure (see ADR-004).
  */
 function verifyMigration(srcPath: string, tmpPath: string): boolean {
   let dstDb: Database.Database;
@@ -144,10 +143,11 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
   const tmpPath = `${dstPath}.tmp-${process.pid}`;
   const tmpWalPath = `${tmpPath}-wal`;
   let tmpCreated = false;
+  let walTmpCreated = false;
   try {
     fs.copyFileSync(srcPath, tmpPath);
     if (walHasResidual && fs.existsSync(srcWalPath)) {
-      try { fs.copyFileSync(srcWalPath, tmpWalPath); } catch { /* best-effort */ }
+      try { fs.copyFileSync(srcWalPath, tmpWalPath); walTmpCreated = true; } catch { /* best-effort */ }
     }
     tmpCreated = true;
 
@@ -170,6 +170,7 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
       // Source is still intact at this point and can be retried.
       if (!fs.existsSync(dstPath + '-wal')) {
         fs.renameSync(tmpWalPath, dstPath + '-wal');
+        walTmpCreated = false; // WAL temp file is now at dstPath+'-wal'
       }
       reCheckpointAtDst(dstPath);
     }
@@ -182,7 +183,9 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
   } catch (err) {
     if (tmpCreated) {
       try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
-      try { if (fs.existsSync(tmpWalPath)) fs.unlinkSync(tmpWalPath); } catch { /* best-effort */ }
+    }
+    if (walTmpCreated) {
+      try { fs.unlinkSync(tmpWalPath); } catch { /* best-effort */ }
     }
     throw err;
   }

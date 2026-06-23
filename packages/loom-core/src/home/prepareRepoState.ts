@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import type { Policy } from '../types.js';
 import { resolveLoomHomePath } from './resolveLoomHomePath.js';
 import { ensureLoomHome } from './ensureLoomHome.js';
@@ -49,7 +50,18 @@ function readLockOwner(lockDir: string): LockOwner | null {
 
 function isLockStale(lockDir: string): boolean {
   const owner = readLockOwner(lockDir);
-  if (!owner) return true; // No owner.json → stale
+  if (!owner) {
+    // Lock dir exists but no owner.json: may be mid-creation (race between mkdirSync
+    // and writeLock completing). Use directory mtime: if the dir is very young (< 30 s)
+    // treat it as live so we do not steal a lock that is actively being set up.
+    // If it is old without an owner file the creator must have crashed — treat as stale.
+    try {
+      const age = Date.now() - fs.statSync(lockDir).mtimeMs;
+      return age > 30_000;
+    } catch {
+      return true; // Cannot stat → treat as stale.
+    }
+  }
 
   if (owner.hostname !== os.hostname()) {
     // Different host; cannot check PID. Use age as a fallback: a lock older
@@ -139,10 +151,15 @@ export function prepareRepoState(
     // Uses a Date.now() busy-poll instead of Atomics.wait: Node.js forbids
     // Atomics.wait on the main thread (throws TypeError on Node ≥ 9.4).
     if (!fs.existsSync(paths.dbPath)) {
-      const deadline = Date.now() + 10_000;
-      while (!fs.existsSync(paths.dbPath) && Date.now() < deadline) {
-        const until = Date.now() + 20;
-        while (Date.now() < until) { /* busy-wait 20 ms */ }
+      // Poll until the winning process places the DB at dbPath.
+      // Uses execFileSync('sleep') for an OS-level block that yields the event loop,
+      // avoiding the CPU-burning busy-wait that would freeze Node's main thread.
+      // 250 × 20 ms = 5 s maximum wait.
+      const MAX_POLLS = 250;
+      let polls = 0;
+      while (!fs.existsSync(paths.dbPath) && polls < MAX_POLLS) {
+        execFileSync('sleep', ['0.02']);
+        polls++;
       }
       if (!fs.existsSync(paths.dbPath)) {
         throw new Error(
