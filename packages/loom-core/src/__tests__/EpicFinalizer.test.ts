@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,7 +9,9 @@ import {
   EpicFinalizer,
   AuditLog,
   EpicStore,
+  gitSafe,
 } from '../index.js';
+import { createDatabase } from '../state/Database.js';
 import type { IntegrationGate } from '../orchestrator/IntegrationGate.js';
 
 // ─── story-005-001: finalizeRef naming helper ──────────────────────────────
@@ -200,5 +202,122 @@ describe('EpicFinalizer.rebindLatebound — multi-epic spurious rebind regressio
       'tracks the effective value, not opts.testCommand'
     );
     assert.equal(detail.changes.test_command.to, 'c');
+  });
+});
+
+// ── story-050-004: re-pointed promoteArtifacts seam ──────────────────────────
+//
+// Integration test: after promoteArtifacts(), the target epic branch must have
+// NO .loom_outputs write and NO new commit from promotion; loom-home gets the
+// commit; EpicStore has loom_home_status='committed'.
+
+describe('EpicFinalizer.promoteArtifacts (story-050-004) — re-pointed seam', () => {
+  let tmp: string;
+  let targetRepo: string;
+  let loomHomePath: string;
+  let store: EpicStore;
+  const epicId = 'epic-seam-001';
+
+  function makeTargetRepo(root: string): void {
+    fs.mkdirSync(root, { recursive: true });
+    gitSafe(root, ['init']);
+    gitSafe(root, ['config', 'user.email', 'test@loom.test']);
+    gitSafe(root, ['config', 'user.name', 'Loom Test']);
+    // Create a .loom/planning/<epicId>/ directory with planning artifacts.
+    const planDir = path.join(root, '.loom', 'planning', epicId);
+    fs.mkdirSync(planDir, { recursive: true });
+    fs.writeFileSync(path.join(planDir, 'project-brief.md'), '# Brief\n', 'utf8');
+    fs.writeFileSync(path.join(planDir, 'prd.md'), '# PRD\n', 'utf8');
+    fs.writeFileSync(path.join(planDir, 'architecture.md'), '# Architecture\n', 'utf8');
+    const epicsDir = path.join(planDir, 'epics');
+    fs.mkdirSync(epicsDir, { recursive: true });
+    fs.writeFileSync(path.join(epicsDir, `${epicId}.yaml`), `id: ${epicId}\n`, 'utf8');
+    // Commit everything so HEAD resolves.
+    gitSafe(root, ['add', '.']);
+    gitSafe(root, ['commit', '-m', 'initial']);
+  }
+
+  function makeLoomHome(root: string): void {
+    fs.mkdirSync(root, { recursive: true });
+    gitSafe(root, ['init']);
+    gitSafe(root, ['config', 'user.email', 'test@loom.test']);
+    gitSafe(root, ['config', 'user.name', 'Loom Test']);
+    fs.writeFileSync(path.join(root, 'README.md'), '# loom-home\n', 'utf8');
+    gitSafe(root, ['add', 'README.md']);
+    gitSafe(root, ['commit', '-m', 'initial']);
+  }
+
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-seam-'));
+    targetRepo = path.join(tmp, 'target');
+    loomHomePath = path.join(tmp, 'loom-home');
+
+    makeTargetRepo(targetRepo);
+    makeLoomHome(loomHomePath);
+
+    // Create DB + store in a .loom dir under targetRepo (mirrors real layout).
+    const loomDir = path.join(targetRepo, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    const db = createDatabase(path.join(loomDir, 'loom.db'));
+    store = new EpicStore(db);
+    store.create(epicId, 'Seam test epic');
+    // Populate paths that promoteArtifacts reads from the epic row.
+    store.updatePaths(epicId, {
+      brief_path: `.loom/planning/${epicId}/project-brief.md`,
+      prd_path: `.loom/planning/${epicId}/prd.md`,
+      yaml_path: `.loom/planning/${epicId}/epics/${epicId}.yaml`,
+    });
+
+    // Record the target HEAD so rev-parse works.
+    const headRes = gitSafe(targetRepo, ['rev-parse', 'HEAD']);
+    store.updateBaseSha(epicId, headRes.output.trim());
+
+    // Access the private promoteArtifacts via type cast.
+    const finalizer = new EpicFinalizer({
+      projectRoot: targetRepo,
+      db,
+      allowedRemotes: [],
+      prStrategy: 'per-epic',
+      loomHome: loomHomePath,
+    });
+    const epic = store.get(epicId)!;
+    (finalizer as unknown as {
+      promoteArtifacts(id: string, e: typeof epic, s: EpicStore): void;
+    }).promoteArtifacts(epicId, epic, store);
+  });
+
+  after(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('target repo has NO .loom_outputs directory (AC2)', () => {
+    assert.ok(!fs.existsSync(path.join(targetRepo, '.loom_outputs')));
+  });
+
+  it('target repo HEAD is unchanged (no new commit from promotion)', () => {
+    const headBefore = store.get(epicId)?.base_sha;
+    const headNow = gitSafe(targetRepo, ['rev-parse', 'HEAD']).output.trim();
+    assert.equal(headNow, headBefore);
+  });
+
+  it('loom-home has a new commit after promoteArtifacts', () => {
+    const logRes = gitSafe(loomHomePath, ['rev-list', '--count', 'HEAD']);
+    const count = parseInt(logRes.output.trim(), 10);
+    assert.ok(count >= 2, `expected at least 2 commits in loom-home, got ${count}`);
+  });
+
+  it('EpicStore loom_home_status=committed (AC1)', () => {
+    const { status } = store.getLoomHomeStatus(epicId);
+    assert.equal(status, 'committed');
+  });
+
+  it('EpicStore loom_home_sha is a non-empty string', () => {
+    const { sha } = store.getLoomHomeStatus(epicId);
+    assert.ok(sha && sha.length > 0, `expected a sha, got: ${sha}`);
+  });
+
+  it('loom-home commit subject contains the epic-id', () => {
+    const logRes = gitSafe(loomHomePath, ['log', '--format=%s', '-1']);
+    assert.ok(logRes.output.includes(epicId), `subject must contain epicId: ${logRes.output}`);
   });
 });

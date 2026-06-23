@@ -504,6 +504,35 @@ export class EpicStore {
     }
   }
 
+  // ─── loom-home artifact commit marker (v25, epic-050) ────────────────────────
+
+  /**
+   * Records the outcome of committing artifacts to loom-home. 'committed' with
+   * a sha means the commit landed; 'pending' means it failed and a reconciler
+   * should retry. Called exclusively by commitArtifacts; never migrated.
+   */
+  setLoomHomeStatus(epicId: string, status: 'committed' | 'pending', sha?: string): void {
+    this.db
+      .prepare(
+        `UPDATE epics SET loom_home_status = ?, loom_home_sha = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(status, sha ?? null, new Date().toISOString(), epicId);
+  }
+
+  /**
+   * Returns the current loom-home commit status for an epic.
+   * status is null for pre-migration rows and epics not yet finalized.
+   */
+  getLoomHomeStatus(epicId: string): { status: 'committed' | 'pending' | null; sha: string | null } {
+    const row = this.db
+      .prepare('SELECT loom_home_status, loom_home_sha FROM epics WHERE id = ?')
+      .get(epicId) as { loom_home_status: string | null; loom_home_sha: string | null } | undefined;
+    return {
+      status: (row?.loom_home_status ?? null) as 'committed' | 'pending' | null,
+      sha: row?.loom_home_sha ?? null,
+    };
+  }
+
   /**
    * Fetches intake verdicts for multiple epics in a single query.
    * Returns a Map from epic id to verdict (or null). IDs not found in the

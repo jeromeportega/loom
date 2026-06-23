@@ -541,18 +541,17 @@ describe('Supervisor + EpicFinalizer (per-epic PR strategy)', () => {
     // the local branch is real and reflects the work.
   });
 
-  it('promotes planning artifacts into .loom_outputs/<epic-id>/ on the epic branch', async () => {
+  it('routes planning artifacts to loom-home (not .loom_outputs) on finalize', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
 
-    // Seed the shared planning artifacts (brief / PRD / architecture) that
-    // the EpicFinalizer expects to find next to the epic YAML.
     const planningDir = path.join(repo, '.loom', 'planning', 'epic-001');
     fs.writeFileSync(path.join(planningDir, 'project-brief.md'), '# Brief\nbody');
     fs.writeFileSync(path.join(planningDir, 'prd.md'), '# PRD\nbody');
     fs.writeFileSync(path.join(planningDir, 'architecture.md'), '# Architecture\nbody');
 
     const db = openDatabase(path.join(repo, '.loom'));
-    new EpicStore(db).updatePaths('epic-001', {
+    const epicStore = new EpicStore(db);
+    epicStore.updatePaths('epic-001', {
       brief_path: '.loom/planning/epic-001/project-brief.md',
       prd_path: '.loom/planning/epic-001/prd.md',
     });
@@ -561,37 +560,38 @@ describe('Supervisor + EpicFinalizer (per-epic PR strategy)', () => {
       execFileSync('git', ['commit', '--allow-empty', '-m', `${a.storyId}`], {
         cwd: a.worktreePath,
       });
-      return {
-        status: 'done' as const,
-        commitCount: 1,
-        summary: 'ok',
-        logTail: '',
-      };
+      return { status: 'done' as const, commitCount: 1, summary: 'ok', logTail: '' };
     });
 
-    await new Supervisor({
-      projectRoot: repo,
-      db,
-      worker,
-      maxConcurrent: 1,
-      epicFinalizer: new EpicFinalizer({
+    // Use a sibling directory so afterEach's repo rmSync doesn't cover it;
+    // clean up manually in finally.
+    const loomHomeDir = repo + '-home';
+    try {
+      await new Supervisor({
         projectRoot: repo,
         db,
-        allowedRemotes: [],
-        prStrategy: 'per-epic',
-      }),
-    }).run();
+        worker,
+        maxConcurrent: 1,
+        epicFinalizer: new EpicFinalizer({
+          projectRoot: repo,
+          db,
+          allowedRemotes: [],
+          prStrategy: 'per-epic',
+          loomHome: loomHomeDir,
+        }),
+      }).run();
 
-    const outDir = path.join(repo, '.loom_outputs', 'epic-001');
-    for (const name of ['project-brief.md', 'prd.md', 'architecture.md', 'epic.yaml']) {
-      assert.ok(
-        fs.existsSync(path.join(outDir, name)),
-        `${name} should be promoted into .loom_outputs/epic-001/`
-      );
+      // Target branch: no .loom_outputs (artifacts no longer go here).
+      assert.ok(!fs.existsSync(path.join(repo, '.loom_outputs')));
+      // Epic branch: no artifact-promotion commit.
+      const log = gitc(['log', '--oneline', 'epic/epic-001']);
+      assert.ok(!/loom: artifacts/.test(log), `no artifact commit on target branch: ${log}`);
+      // loom-home DB status: committed.
+      const { status } = epicStore.getLoomHomeStatus('epic-001');
+      assert.equal(status, 'committed', 'loom_home_status must be committed');
+    } finally {
+      fs.rmSync(loomHomeDir, { recursive: true, force: true });
     }
-    // The promotion commit must live on the epic branch.
-    const log = gitc(['log', '--oneline', 'epic/epic-001']);
-    assert.match(log, /planning artifacts for epic-001/);
   });
 
   it('falls back to the hand-rolled PR body when the LLM throws', async () => {

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -388,6 +388,18 @@ export function runMigrations(db: Database.Database): void {
   // single-story container. Additive; never DROP/TRUNCATE; never backfilled (NFR-1).
   if (!epicCols.some((c) => c.name === 'kind')) {
     db.exec('ALTER TABLE epics ADD COLUMN kind TEXT');
+  }
+  // v25: loom-home artifact commit marker (epic-050 story-050-004). 'committed'
+  // means the artifacts for this epic are committed to loom-home; 'pending' means
+  // the commit failed and the reconciler should retry. Both NULL for pre-migration
+  // rows and epics that have not yet been finalized.
+  if (!epicCols.some((c) => c.name === 'loom_home_status')) {
+    db.exec(
+      "ALTER TABLE epics ADD COLUMN loom_home_status TEXT CHECK (loom_home_status IN ('committed','pending'))"
+    );
+  }
+  if (!epicCols.some((c) => c.name === 'loom_home_sha')) {
+    db.exec('ALTER TABLE epics ADD COLUMN loom_home_sha TEXT');
   }
 
   const row = db
