@@ -114,7 +114,13 @@ afterEach(() => {
 });
 
 function ctx(llm: MockLLMClient): PlannerContext {
-  return { projectRoot: tmpDir, llm, model: 'mock-model', runId: 'epic-001' };
+  return {
+    projectRoot: tmpDir,
+    planningRoot: path.join(tmpDir, '.loom', 'planning'),
+    llm,
+    model: 'mock-model',
+    runId: 'epic-001',
+  };
 }
 
 // ─── util ───────────────────────────────────────────────────────────────────
@@ -435,7 +441,7 @@ describe('QAAgent', () => {
     assert.ok(qa.epics[0].stories[0].test_plan!.includes('Test plan for story-001-001'));
 
     // Persisted to the epic YAML so the loaded story carries the plan at dispatch.
-    const file = planningPaths(tmpDir, 'epic-001').epicFile('epic-001');
+    const file = planningPaths(path.join(tmpDir, '.loom', 'planning'), 'epic-001').epicFile('epic-001');
     const onDisk = EpicYamlSchema.parse(yaml.load(fs.readFileSync(file, 'utf8')));
     assert.ok(onDisk.stories[0].test_plan && onDisk.stories[0].test_plan.length > 0);
     assert.ok(onDisk.stories[1].test_plan && onDisk.stories[1].test_plan.length > 0);
@@ -443,7 +449,7 @@ describe('QAAgent', () => {
 
   it('soft-fails (no plans, no throw, YAML untouched) when the LLM call errors', async () => {
     const arch = await plannedEpics();
-    const before = fs.readFileSync(planningPaths(tmpDir, 'epic-001').epicFile('epic-001'), 'utf8');
+    const before = fs.readFileSync(planningPaths(path.join(tmpDir, '.loom', 'planning'), 'epic-001').epicFile('epic-001'), 'utf8');
 
     const llm = new MockLLMClient(() => {
       throw new Error('provider rate limit');
@@ -454,7 +460,7 @@ describe('QAAgent', () => {
     assert.equal(qa.storiesMissingPlan.length, 2);
     assert.ok(qa.epics.every((e) => e.stories.every((s) => s.test_plan === undefined)));
     // The architect's YAML is left byte-for-byte intact on a soft failure.
-    const after = fs.readFileSync(planningPaths(tmpDir, 'epic-001').epicFile('epic-001'), 'utf8');
+    const after = fs.readFileSync(planningPaths(path.join(tmpDir, '.loom', 'planning'), 'epic-001').epicFile('epic-001'), 'utf8');
     assert.equal(after, before);
   });
 
@@ -477,6 +483,7 @@ describe('QAAgent', () => {
     };
     const qa = await new QAAgent({
       projectRoot: tmpDir,
+      planningRoot: path.join(tmpDir, '.loom', 'planning'),
       llm,
       model: 'mock-model',
       runId: 'epic-001',
@@ -548,7 +555,7 @@ describe('Planner', () => {
       qaPlanning: true,
     }).run('Build something worth planning.');
 
-    const file = planningPaths(tmpDir, 'epic-001').epicFile('epic-001');
+    const file = planningPaths(path.join(tmpDir, '.loom', 'planning'), 'epic-001').epicFile('epic-001');
     const epic = EpicYamlSchema.parse(yaml.load(fs.readFileSync(file, 'utf8')));
     assert.ok(epic.stories.every((s) => s.test_plan && s.test_plan.length > 0));
   });
@@ -562,7 +569,7 @@ describe('Planner', () => {
       db,
     }).run('Build something worth planning.');
 
-    const file = planningPaths(tmpDir, 'epic-001').epicFile('epic-001');
+    const file = planningPaths(path.join(tmpDir, '.loom', 'planning'), 'epic-001').epicFile('epic-001');
     const epic = EpicYamlSchema.parse(yaml.load(fs.readFileSync(file, 'utf8')));
     assert.ok(epic.stories.every((s) => s.test_plan === undefined));
   });

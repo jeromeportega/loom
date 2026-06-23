@@ -109,6 +109,7 @@ describe('BriefRefiner / Planner — identical model on the wire (contract §3)'
     const llm = new MockLLMClient(['# Brief\n\nbody']);
     await new AnalystAgent({
       projectRoot: tmpDir,
+      planningRoot: path.join(tmpDir, '.loom', 'planning'),
       llm,
       model: modelFor(policy, 'planning'),
       runId: 'epic-001',

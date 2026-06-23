@@ -38,7 +38,7 @@ export class ArchitectAgent {
 
   async run(prdContent: string, epics: EpicYaml[]): Promise<ArchitectResult> {
     const persona = PersonaLoader.load('architect');
-    const paths = planningPaths(this.ctx.projectRoot, this.ctx.runId);
+    const paths = planningPaths(this.ctx.planningRoot, this.ctx.runId);
     let usage: LLMUsage = { ...EMPTY_USAGE };
 
     const epicsJson = JSON.stringify({ epics }, null, 2);

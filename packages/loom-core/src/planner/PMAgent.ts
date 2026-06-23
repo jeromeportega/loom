@@ -36,7 +36,7 @@ export class PMAgent {
    */
   async run(briefContent: string, startEpicNumber = 1): Promise<PMResult> {
     const persona = PersonaLoader.load('pm');
-    const paths = planningPaths(this.ctx.projectRoot, this.ctx.runId);
+    const paths = planningPaths(this.ctx.planningRoot, this.ctx.runId);
     const rel = planningRelPaths(this.ctx.runId);
     let usage: LLMUsage = { ...EMPTY_USAGE };
 

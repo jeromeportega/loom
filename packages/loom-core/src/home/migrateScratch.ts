@@ -1,0 +1,83 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import type { MigrationResult } from './repoState.js';
+import { gitSafe } from '../orchestrator/git.js';
+
+/**
+ * Migrate the planning scratch directory from in-repo to loom-home.
+ *
+ * Iterates direct children of srcRoot and moves each one to the corresponding
+ * location under dstRoot, skipping any child that is git-tracked (to preserve
+ * committed planning artifacts like epic-040/). Uses renameSync with an EXDEV
+ * copy+delete fallback for cross-filesystem moves.
+ *
+ * Stale-source removal: only the entries actually relocated are removed from
+ * srcRoot. Git-tracked entries are never touched.
+ */
+export function migratePlanningScratch(opts: {
+  srcRoot: string;
+  dstRoot: string;
+}): MigrationResult {
+  const { srcRoot, dstRoot } = opts;
+
+  if (!fs.existsSync(srcRoot)) {
+    return { migrated: false, from: null, to: dstRoot, method: null };
+  }
+
+  const entries = fs.readdirSync(srcRoot);
+  if (entries.length === 0) {
+    return { migrated: false, from: null, to: dstRoot, method: null };
+  }
+
+  fs.mkdirSync(dstRoot, { recursive: true });
+
+  let migratedCount = 0;
+  let usedCopy = false;
+
+  for (const entry of entries) {
+    const srcEntry = path.join(srcRoot, entry);
+    const dstEntry = path.join(dstRoot, entry);
+
+    if (isGitTrackedEntry(srcRoot, entry)) continue;
+    if (fs.existsSync(dstEntry)) continue;
+
+    try {
+      fs.renameSync(srcEntry, dstEntry);
+      migratedCount++;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+      copyDirRecursive(srcEntry, dstEntry);
+      fs.rmSync(srcEntry, { recursive: true, force: true });
+      migratedCount++;
+      usedCopy = true;
+    }
+  }
+
+  if (migratedCount === 0) {
+    return { migrated: false, from: null, to: dstRoot, method: null };
+  }
+
+  return {
+    migrated: true,
+    from: srcRoot,
+    to: dstRoot,
+    method: usedCopy ? 'copy' : 'rename',
+  };
+}
+
+function isGitTrackedEntry(dir: string, entry: string): boolean {
+  const res = gitSafe(dir, ['ls-files', entry]);
+  return res.ok && res.output.length > 0;
+}
+
+function copyDirRecursive(src: string, dst: string): void {
+  const stat = fs.statSync(src);
+  if (stat.isDirectory()) {
+    fs.mkdirSync(dst, { recursive: true });
+    for (const child of fs.readdirSync(src)) {
+      copyDirRecursive(path.join(src, child), path.join(dst, child));
+    }
+  } else {
+    fs.copyFileSync(src, dst);
+  }
+}

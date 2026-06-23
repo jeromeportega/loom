@@ -85,7 +85,7 @@ describe('PMAgent routing injection — routing absent (NFR-1 seam)', () => {
       throw new Error(`Unexpected: ${last.slice(0, 80)}`);
     });
 
-    const ctx = { projectRoot: tmpDir, llm, model: 'test-model', runId: 'epic-001' };
+    const ctx = { projectRoot: tmpDir, planningRoot: path.join(tmpDir, '.loom', 'planning'), llm, model: 'test-model', runId: 'epic-001' };
     await new PMAgent(ctx).run(BRIEF, 1);
     noRoutingRequestCount = llm.requests.length;
 
@@ -127,6 +127,7 @@ describe('PMAgent routing injection — story-sized routing present (AC1, AC2)',
 
     const ctx = {
       projectRoot: tmpDir,
+      planningRoot: path.join(tmpDir, '.loom', 'planning'),
       llm,
       model: 'test-model',
       runId: 'epic-001',
@@ -190,6 +191,7 @@ describe('PMAgent routing injection — epic-sized routing present (AC1, AC2)', 
 
     const ctx = {
       projectRoot: tmpDir,
+      planningRoot: path.join(tmpDir, '.loom', 'planning'),
       llm,
       model: 'test-model',
       runId: 'epic-001',
@@ -253,6 +255,7 @@ describe('AC5 outcome-level: story verdict routed through planner → single-sto
 
     const ctx = {
       projectRoot: tmpDir,
+      planningRoot: path.join(tmpDir, '.loom', 'planning'),
       llm,
       model: 'test-model',
       runId: 'epic-001',

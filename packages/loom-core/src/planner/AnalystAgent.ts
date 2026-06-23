@@ -20,7 +20,7 @@ export class AnalystAgent {
 
   async run(brief: string): Promise<AnalystResult> {
     const persona = PersonaLoader.load('analyst');
-    const paths = planningPaths(this.ctx.projectRoot, this.ctx.runId);
+    const paths = planningPaths(this.ctx.planningRoot, this.ctx.runId);
 
     const skills = this.ctx.skills ?? [];
     const skillsBlock = skills.length > 0
