@@ -1,6 +1,8 @@
 import path from 'node:path';
 import {
   openDatabase,
+  PolicyEngine,
+  resolveRepoStatePaths,
   EpicStore,
   parseOwnershipMap,
   normalizePath,
@@ -142,9 +144,24 @@ export function printOverlapAdvisory(
   }
 }
 
-/** Default in-flight epic lookup: read the loom DB under `<projectRoot>/.loom`. */
+/** Default in-flight epic lookup: read the loom DB at the loom-home-resolved path. */
 function defaultListInFlightEpicIds(projectRoot: string): string[] {
-  const db = openDatabase(path.join(projectRoot, '.loom'));
+  const loomDir = path.join(projectRoot, '.loom');
+  let loomHome = '';
+  try {
+    loomHome = PolicyEngine.load(loomDir).policyData.loom_home ?? '';
+  } catch {
+    // .loom/policy.yaml is absent or malformed (e.g. project never fully initialised).
+    // Fall back to no-override so the overlap check degrades gracefully rather than
+    // crashing the entire `loom run` preflight.
+  }
+  // openDatabase(namespaceDir) returns the existing _db singleton when one is
+  // already open. In run.ts, prepareRepoState() runs before printOverlapAdvisory
+  // so the singleton is already at the migrated loom-home path. In gate.ts,
+  // openLoom() sets the singleton first and openDatabase() returns it unchanged.
+  // NEVER call this before prepareRepoState (loom run) or openLoom (loom approve).
+  const { namespaceDir } = resolveRepoStatePaths(projectRoot, { loom_home: loomHome });
+  const db = openDatabase(namespaceDir);
   const store = new EpicStore(db);
   const ids: string[] = [];
   for (const status of IN_FLIGHT_STATUSES) {

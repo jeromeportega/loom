@@ -22,7 +22,9 @@ import {
   AgentStore,
   AuditLog,
   ProjectRegistry,
+  PolicyEngine,
   createDatabase,
+  resolveRepoStatePaths,
 } from '@loom-ai/core';
 
 export interface ResolvedProject {
@@ -74,7 +76,21 @@ export function makeResolveProjectDb(
       throw Object.assign(err, { statusCode: 400 });
     }
 
-    const dbPath = path.join(raw, '.loom', 'loom.db');
+    const peerLoomDir = path.join(raw, '.loom');
+    let peerPolicy: { loom_home?: string };
+    try {
+      peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
+    } catch (loadErr) {
+      // Log the full error (which may include absolute filesystem paths) server-side only.
+      // Return a sanitized message to the client to avoid leaking internal path structure.
+      console.error(`[resolveProjectDb] cannot load policy for project ${raw}:`, loadErr);
+      throw Object.assign(
+        new Error('cannot load policy for project — check server logs for details'),
+        { statusCode: 400 },
+      );
+    }
+    const { namespaceDir: peerNsDir } = resolveRepoStatePaths(raw, { loom_home: peerPolicy.loom_home ?? '' });
+    const dbPath = path.join(peerNsDir, 'loom.db');
     if (!fs.existsSync(dbPath)) {
       throw Object.assign(
         new Error(`project DB not found: ${dbPath}`),

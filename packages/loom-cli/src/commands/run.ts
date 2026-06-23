@@ -23,6 +23,7 @@ import {
   validateCursorModels,
   registerReviewerSkills,
   STANDALONE_KIND,
+  prepareRepoState,
 } from '@loom-ai/core';
 import type { WorkerEvent, SkillEvent } from '@loom-ai/core';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
@@ -272,7 +273,8 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   }
 
   maybeWarnGatePreflight(projectRoot, policy);
-  const db = openDatabase(loomDir);
+  const { namespaceDir } = prepareRepoState(projectRoot, policy);
+  const db = openDatabase(namespaceDir);
   const skillStore = new SkillStore({ projectRoot });
 
   // Self-learning needs an LLM. Skip it (with a note) if the backend cannot be
