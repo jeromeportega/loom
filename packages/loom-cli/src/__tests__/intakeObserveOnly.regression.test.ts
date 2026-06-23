@@ -26,8 +26,8 @@ import {
   MockLLMClient,
   resetDatabaseForTest,
   EpicStore,
-  openDatabase,
 } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import type { LLMRequest } from '@loom-ai/core';
 import { runEpic } from '../commands/epic.js';
 import { runInProcess, jsonBlock } from './testUtils.js';
@@ -132,14 +132,14 @@ function makeLoomRepo(prefix: string): string {
   return dir;
 }
 
-// Reads the epic-001 artifact using the SAME singleton handle the write used
-// (ADR-003) — never a fresh read-only connection.
+// Reads the epic-001 artifact using the same loom-home DB path that runEpic
+// writes to (via openProjectDatabase) — both use the same singleton handle.
 function readEpicArtifact(repoDir: string): {
   title: string;
   status: string;
   parsedEpic: unknown;
 } {
-  const db = openDatabase(path.join(repoDir, '.loom'));
+  const db = openProjectDatabase(repoDir);
   const epic = new EpicStore(db).get('epic-001');
   if (!epic) return { title: '', status: 'missing', parsedEpic: null };
   const yamlPath = epic.yaml_path ? path.join(repoDir, epic.yaml_path) : null;

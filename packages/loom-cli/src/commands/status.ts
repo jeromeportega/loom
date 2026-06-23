@@ -9,12 +9,27 @@ import {
   ProjectRegistry,
   PolicyEngine,
   resolveLoomHomePath,
+  prepareRepoState,
   deriveBlocked,
   displayModel,
   STANDALONE_KIND,
   type IntakeVerdict,
   type EpicRecord,
 } from '@loom-ai/core';
+
+/**
+ * Resolves the canonical DB path for a loom project directory (story-053).
+ * Calls prepareRepoState so the one-time migration runs before any read,
+ * ensuring status and JSON output always see the migrated loom-home state.
+ */
+function resolveDbPath(loomDir: string): string {
+  const projectRoot = path.dirname(loomDir);
+  let policy: { loom_home?: string } = {};
+  try {
+    policy = PolicyEngine.load(loomDir).policyData;
+  } catch { /* tolerate missing/malformed policy */ }
+  return prepareRepoState(projectRoot, policy).dbPath;
+}
 
 /** Audit actions that mark a worker as approaching/hitting a deadline. */
 const STALL_ACTIONS = ['worker_timeout_warn', 'worker_watchdog_warn'];
@@ -236,7 +251,7 @@ function collectJsonEpics(
   epicId?: string,
   includeArchived?: boolean
 ): JsonEpic[] {
-  const dbPath = path.join(loomDir, 'loom.db');
+  const dbPath = resolveDbPath(loomDir);
   if (!fs.existsSync(dbPath)) return [];
   const db = createDatabase(dbPath);
   try {
@@ -343,7 +358,7 @@ function collectJsonEpics(
 
 /** Renders one loom project's epic/agent tree. */
 function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boolean): void {
-  const dbPath = path.join(loomDir, 'loom.db');
+  const dbPath = resolveDbPath(loomDir);
   if (!fs.existsSync(dbPath)) {
     console.log('   Not yet planned — run `loom epic "<brief>"` here.');
     return;
@@ -508,7 +523,7 @@ function allTerminal(options: StatusOptions): boolean {
 }
 
 function loomDirTerminal(loomDir: string, epicId?: string): boolean {
-  const dbPath = path.join(loomDir, 'loom.db');
+  const dbPath = resolveDbPath(loomDir);
   if (!fs.existsSync(dbPath)) return true;
   const db = createDatabase(dbPath);
   try {

@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
-  openDatabase,
   PolicyEngine,
   createLLMClient,
   modelFor,
@@ -15,6 +14,7 @@ import {
   Planner,
   proposeNextEpic,
 } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import type { LLMClient, BriefRefinement } from '@loom-ai/core';
 
 export interface ProposeOptions {
@@ -71,7 +71,7 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
     const policy = PolicyEngine.load(loomDir).policyData;
     minBriefQualityScore = policy.agents.min_brief_quality_score;
     model = modelFor(policy, 'planning');
-    db = openDatabase(loomDir);
+    db = openProjectDatabase(projectRoot);
 
     if (!llm && !opts._refiner) {
       try {

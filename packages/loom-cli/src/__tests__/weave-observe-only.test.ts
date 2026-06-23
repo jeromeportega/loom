@@ -26,6 +26,7 @@ import {
   MockLLMClient,
   resetDatabaseForTest,
   EpicStore,
+  resolveRepoStatePaths,
 } from '@loom-ai/core';
 import type { LLMRequest } from '@loom-ai/core';
 import { runEpic } from '../commands/epic.js';
@@ -149,7 +150,8 @@ function readEpicArtifact(repoDir: string): {
   status: string;
   parsedEpic: unknown;
 } {
-  const db = new Database(path.join(repoDir, '.loom', 'loom.db'), { readonly: true });
+  const { dbPath } = resolveRepoStatePaths(repoDir, {});
+  const db = new Database(dbPath, { readonly: true });
   try {
     const epic = new EpicStore(db).get('epic-001');
     if (!epic) return { title: '', status: 'missing', parsedEpic: null };
@@ -167,8 +169,9 @@ function readEpicArtifact(repoDir: string): {
 // resetDatabaseForTest() releases module singleton handles before deletion.
 function wipeLoomDb(repoDir: string): void {
   resetDatabaseForTest();
+  const { dbPath } = resolveRepoStatePaths(repoDir, {});
   for (const ext of ['', '-wal', '-shm']) {
-    fs.rmSync(path.join(repoDir, '.loom', `loom.db${ext}`), { force: true });
+    fs.rmSync(`${dbPath}${ext}`, { force: true });
   }
 }
 

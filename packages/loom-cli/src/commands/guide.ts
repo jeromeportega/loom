@@ -1,7 +1,8 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { OperatorGuidance, openDatabase } from '@loom-ai/core';
+import { OperatorGuidance } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 export interface GuideOptions {
   clear?: boolean;
@@ -16,14 +17,15 @@ export interface GuideOptions {
  * `loom guide <story-id> --clear` wipes the file.
  */
 export function runGuide(storyId: string, message: string | undefined, opts: GuideOptions = {}): void {
-  const loomDir = path.join(process.cwd(), '.loom');
+  const projectRoot = process.cwd();
+  const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
-  const guidance = new OperatorGuidance({ projectRoot: process.cwd(), db });
+  const db = openProjectDatabase(projectRoot);
+  const guidance = new OperatorGuidance({ projectRoot, db });
 
   if (opts.clear) {
     guidance.clear(storyId);

@@ -13,7 +13,7 @@ import {
   derivePlaceholderTitle,
   evaluateBriefGate,
   validateCursorModels,
-  resolveRepoStatePaths,
+  prepareRepoState,
 } from '@loom-ai/core';
 import type { LLMClient } from '@loom-ai/core';
 import { recordIntakeClassification } from '../intake/recordIntakeClassification.js';
@@ -50,9 +50,10 @@ export async function runEpic(
 
   const policy = PolicyEngine.load(loomDir).policyData;
 
-  // Resolve loom-home planning root for this repo. The DB migration is handled
-  // by prepareRepoState (called in run.ts); epic only needs the planning root.
-  const { planningRoot } = resolveRepoStatePaths(projectRoot, policy);
+  // Resolve loom-home paths and trigger idempotent migration (story-053).
+  // prepareRepoState returns both planningRoot and the canonical DB path so
+  // every command sees the same state regardless of invocation order.
+  const { planningRoot, namespaceDir } = prepareRepoState(projectRoot, policy);
 
   // Fail fast on a bad cursor_model before spending any LLM tokens. Exit only
   // on a confirmed-invalid id; an 'unavailable' probe (FR-8) or a boundary-
@@ -68,7 +69,7 @@ export async function runEpic(
   }
 
   maybeWarnGatePreflight(projectRoot, policy);
-  const db = openDatabase(loomDir);
+  const db = openDatabase(namespaceDir);
 
   let llm: LLMClient;
   if (opts.llm) {

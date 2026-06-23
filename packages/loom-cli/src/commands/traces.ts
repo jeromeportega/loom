@@ -1,7 +1,8 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, DecisionTraceStore, AgentStore, displayModel } from '@loom-ai/core';
+import { DecisionTraceStore, AgentStore, displayModel } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 export interface TracesOptions {
   story?: string;
@@ -16,7 +17,8 @@ export interface TracesOptions {
  * `--story` / `--agent` / `--epic` bounds the lookup.
  */
 export function runTraces(opts: TracesOptions = {}): void {
-  const loomDir = path.join(process.cwd(), '.loom');
+  const projectRoot = process.cwd();
+  const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
     process.exit(1);
@@ -29,7 +31,7 @@ export function runTraces(opts: TracesOptions = {}): void {
     return;
   }
 
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const store = new DecisionTraceStore(db);
   const traces = opts.agent
     ? store.getByAgent(opts.agent, opts.limit ?? 200)

@@ -4,7 +4,8 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDatabase, EpicStore, resetDatabaseForTest } from '@loom-ai/core';
+import { EpicStore, resetDatabaseForTest } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
 
@@ -36,7 +37,7 @@ before(() => {
 
   // Seed two planned epics directly into the DB (planning needs an API key).
   resetDatabaseForTest();
-  const db = openDatabase(path.join(tmpDir, '.loom'));
+  const db = openProjectDatabase(tmpDir);
   const store = new EpicStore(db);
   store.create('epic-001', 'First seeded epic');
   store.create('epic-002', 'Second seeded epic');
@@ -50,7 +51,7 @@ after(() => {
 
 function epicStatus(id: string): string | undefined {
   resetDatabaseForTest();
-  const db = openDatabase(path.join(tmpDir, '.loom'));
+  const db = openProjectDatabase(tmpDir);
   const status = new EpicStore(db).get(id)?.status;
   resetDatabaseForTest();
   return status;
@@ -76,7 +77,7 @@ describe('loom approve / reject', () => {
     // the status). The snapshot is the EpicFinalizer's rebind input; without
     // it CLI-approved epics couldn't diff against live policy at finalize.
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     const row = new EpicStore(db).get('epic-001');
     resetDatabaseForTest();
     assert.ok(row, 'epic row exists');

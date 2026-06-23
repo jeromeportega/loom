@@ -1,7 +1,8 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, AuditLog } from '@loom-ai/core';
+import { AuditLog } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 export interface AuditOptions {
   story?: string;
@@ -15,13 +16,14 @@ export interface AuditOptions {
  * attempt; `--agent` scopes to one agent; default is the most recent rows.
  */
 export function runAudit(opts: AuditOptions = {}): void {
-  const loomDir = path.join(process.cwd(), '.loom');
+  const projectRoot = process.cwd();
+  const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const audit = new AuditLog(db);
   const entries = opts.story
     ? audit.getByStory(opts.story, opts.limit ?? 50)

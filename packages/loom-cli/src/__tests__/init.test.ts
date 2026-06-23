@@ -46,8 +46,8 @@ describe('loom init', () => {
     assert.ok(fs.existsSync(path.join(tmpDir, '.loom', 'policy.yaml')));
   });
 
-  it('creates .loom/loom.db', () => {
-    assert.ok(fs.existsSync(path.join(tmpDir, '.loom', 'loom.db')));
+  it('does NOT create .loom/loom.db (DB is now at loom-home)', () => {
+    assert.ok(!fs.existsSync(path.join(tmpDir, '.loom', 'loom.db')));
   });
 
   it('creates .loom/worktrees/ directory', () => {

@@ -4,7 +4,8 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDatabase, EpicStore, resetDatabaseForTest } from '@loom-ai/core';
+import { EpicStore, resetDatabaseForTest } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 // __dirname = packages/loom-cli/dist/__tests__
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
@@ -240,7 +241,7 @@ describe('runApprove success copy ends with the run-hint (story-007-003)', () =>
     execSync('git init -q', { cwd: tmpDir });
     loom('init');
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     const store = new EpicStore(db);
     store.create('epic-001', 'First seeded epic');
     store.create('epic-002', 'Second seeded epic');

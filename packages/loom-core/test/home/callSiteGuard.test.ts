@@ -74,22 +74,22 @@ describe('call-site guard — run.ts uses prepareRepoState for DB open', () => {
   });
 });
 
-describe('call-site guard — crossEpicOverlap.ts uses resolveRepoStatePaths for DB open', () => {
+describe('call-site guard — crossEpicOverlap.ts uses prepareRepoState for DB open', () => {
   let src: string;
   it('source file is readable', () => {
     src = readSrc('packages/loom-cli/src/crossEpicOverlap.ts');
     assert.ok(src.length > 0);
   });
-  it('imports resolveRepoStatePaths', () => {
+  it('imports prepareRepoState', () => {
     assert.ok(
-      src.includes('resolveRepoStatePaths'),
-      'crossEpicOverlap.ts must use resolveRepoStatePaths',
+      src.includes('prepareRepoState'),
+      'crossEpicOverlap.ts must use prepareRepoState (not the read-only resolver)',
     );
   });
   it('derives namespaceDir before calling openDatabase', () => {
     assert.ok(
       src.includes('namespaceDir'),
-      'crossEpicOverlap.ts must destructure namespaceDir from resolveRepoStatePaths',
+      'crossEpicOverlap.ts must destructure namespaceDir from prepareRepoState',
     );
     assert.ok(
       src.includes('openDatabase(namespaceDir)'),
@@ -191,6 +191,8 @@ describe('broad source scan — no hand-built .loom DB/scratch outside home/ res
       /['"]\.loom['"],\s*['"]loom\.db['"]/,
       // path.join(..., '.loom', 'planning') — raw scratch path construction
       /['"]\.loom['"],\s*['"]planning['"]/,
+      // openDatabase(loomDir) — passing the .loom directory directly as DB arg
+      /openDatabase\(\s*loom[Dd]ir\s*\)/,
     ];
 
     let totalScanned = 0;
@@ -222,6 +224,63 @@ describe('broad source scan — no hand-built .loom DB/scratch outside home/ res
       assert.fail(
         `Found ${violations.length} forbidden .loom DB/scratch path construction(s) outside home/:\n${details}\n` +
           'Each must route through prepareRepoState() or resolveRepoStatePaths() instead.',
+      );
+    }
+  });
+});
+
+// ── loom-cli command layer guard ─────────────────────────────────────────────
+
+/**
+ * story-053 — Every command file that opens the DB directly (openDatabase /
+ * createDatabase) must also route through prepareRepoState so the migration
+ * runs before any read. Commands that delegate to openProjectDatabase() are
+ * exempt — that helper wraps prepareRepoState internally.
+ */
+describe('loom-cli command layer — direct DB opens must pair with prepareRepoState', () => {
+  const cmdDir = path.join(WORKTREE_ROOT, 'packages', 'loom-cli', 'src', 'commands');
+  const helperDir = path.join(WORKTREE_ROOT, 'packages', 'loom-cli', 'src');
+
+  // Non-command helper files in loom-cli/src that open DB directly but ARE the
+  // bridge layer (dbHelper.ts itself, crossEpicOverlap.ts) — still checked but
+  // listed here for clarity.
+  const extraSrcs = [
+    path.join(helperDir, 'dbHelper.ts'),
+    path.join(helperDir, 'crossEpicOverlap.ts'),
+  ];
+
+  let layerViolations: Array<{ file: string; issue: string }> = [];
+
+  it('collects command files and verifies resolver pairing', () => {
+    const cmdFiles = fs.existsSync(cmdDir)
+      ? fs.readdirSync(cmdDir)
+          .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+          .map((f) => path.join(cmdDir, f))
+      : [];
+
+    const allFiles = [...cmdFiles, ...extraSrcs.filter((f) => fs.existsSync(f))];
+
+    for (const file of allFiles) {
+      const src = fs.readFileSync(file, 'utf8');
+      const callsDirect = src.includes('openDatabase(') || src.includes('createDatabase(');
+      const callsResolver = src.includes('prepareRepoState(') || src.includes('resolveRepoStatePaths(');
+
+      if (callsDirect && !callsResolver) {
+        layerViolations.push({
+          file: path.relative(WORKTREE_ROOT, file),
+          issue: 'calls openDatabase/createDatabase without pairing with prepareRepoState or resolveRepoStatePaths',
+        });
+      }
+    }
+    assert.ok(allFiles.length > 0, 'must find at least one command file to check');
+  });
+
+  it('no command file opens the DB without going through the resolver', () => {
+    if (layerViolations.length > 0) {
+      const details = layerViolations.map((v) => `  ${v.file}: ${v.issue}`).join('\n');
+      assert.fail(
+        `Found ${layerViolations.length} command file(s) with unguarded DB open:\n${details}\n` +
+          'Use openProjectDatabase() from dbHelper.ts or call prepareRepoState() first.',
       );
     }
   });

@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { openDatabase, EpicStore, AgentStore } from '@loom-ai/core';
+import { EpicStore, AgentStore } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 const execFileP = promisify(execFile);
 
@@ -26,7 +27,7 @@ export async function runDiff(id: string, opts: DiffOptions = {}): Promise<void>
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const epicStore = new EpicStore(db);
   const agentStore = new AgentStore(db);
   const maxBytes = opts.maxBytes ?? 200_000;

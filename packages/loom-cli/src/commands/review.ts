@@ -1,7 +1,8 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, AgentStore } from '@loom-ai/core';
+import { AgentStore } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 export interface ReviewOptions {
   json?: boolean;
@@ -12,13 +13,14 @@ export interface ReviewOptions {
  * `review_status` (pending/approved/blocked/errored) and the markdown summary.
  */
 export function runReview(storyId: string, opts: ReviewOptions = {}): void {
-  const loomDir = path.join(process.cwd(), '.loom');
+  const projectRoot = process.cwd();
+  const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const agent = new AgentStore(db).getByStory(storyId);
   if (!agent) {
     console.error(`No agent for story "${storyId}".`);

@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { openDatabase } from '@loom-ai/core';
 import { createApp, newToken } from '@loom-ai/web';
+import { openProjectDatabase } from '../dbHelper.js';
 
 export interface WebOptions {
   /** Port to bind. Default: 8765, with a small free-port search if taken. */
@@ -30,7 +30,7 @@ export async function runWeb(opts: WebOptions = {}): Promise<void> {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
     process.exit(1);
   }
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const token = newToken();
   const staticDir = resolveStaticDir();
   const loomBin = resolveLoomBin();

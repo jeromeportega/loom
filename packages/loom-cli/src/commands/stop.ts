@@ -2,7 +2,8 @@ import type { CommandDescription } from '../describe/schema.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, ControlStore, AgentStore, EpicStore, AuditLog } from '@loom-ai/core';
+import { ControlStore, AgentStore, EpicStore, AuditLog } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import type { AgentRecord } from '@loom-ai/core';
 import type Database from 'better-sqlite3';
 
@@ -278,7 +279,8 @@ export function runStop(storyIds: string[] = [], opts?: { epic?: string; reason?
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
+  const projectRoot = process.cwd();
+  const db = openProjectDatabase(projectRoot);
   const reason = opts?.reason || 'cli';
 
   // ─── loom stop --epic <id> ───────────────────────────────────────────────

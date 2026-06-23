@@ -1,7 +1,8 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, EpicReverter, PolicyEngine } from '@loom-ai/core';
+import { EpicReverter, PolicyEngine } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 export interface RevertCommandOptions {
   remote?: boolean;
@@ -25,7 +26,7 @@ export function runRevert(epicId: string, opts: RevertCommandOptions = {}): void
   }
 
   const policy = PolicyEngine.load(loomDir).policyData;
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
 
   const reverter = new EpicReverter({
     projectRoot,

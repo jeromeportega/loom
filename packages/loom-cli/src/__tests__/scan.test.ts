@@ -20,6 +20,7 @@ import {
   createDatabase,
   AuditLog,
   ProjectRegistry,
+  resolveRepoStatePaths,
 } from '@loom-ai/core';
 import type { LLMClient, LLMRequest, LLMResponse } from '@loom-ai/core';
 import { runScanCommand, runOpportunitiesCommand } from '../commands/scan.js';
@@ -174,9 +175,9 @@ describe('runScanCommand', () => {
 
       assert.equal(exitCode, null, 'should not exit with error');
 
-      // project A's DB must exist and contain a signal_scan audit record
-      const dbAPath = path.join(projectA, '.loom', 'loom.db');
-      assert.ok(fs.existsSync(dbAPath), 'projectA loom.db must be created by the scan');
+      // project A's DB must exist at the loom-home path and contain a signal_scan audit record
+      const { dbPath: dbAPath } = resolveRepoStatePaths(projectA, {});
+      assert.ok(fs.existsSync(dbAPath), 'projectA loom.db must be created by the scan at loom-home path');
       const dbA = createDatabase(dbAPath);
       const auditA = new AuditLog(dbA);
       const entries = auditA.recent(10);
@@ -186,7 +187,7 @@ describe('runScanCommand', () => {
         'signal_scan must be recorded in projectA DB'
       );
 
-      // cwd (tmpDir) must NOT have a loom.db — the scan never opened it
+      // cwd (tmpDir) must NOT have a loom.db at the legacy path — the scan never opened it
       assert.ok(
         !fs.existsSync(path.join(tmpDir, '.loom', 'loom.db')),
         'cwd loom.db must not be created when --project targets a different dir'

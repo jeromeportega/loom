@@ -1,7 +1,8 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, EpicStore } from '@loom-ai/core';
+import { EpicStore } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 export interface ArtifactsOptions {
   json?: boolean;
@@ -24,7 +25,7 @@ export function runArtifacts(epicId: string, opts: ArtifactsOptions = {}): void 
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const epic = new EpicStore(db).get(epicId);
   if (!epic) {
     console.error(`Epic "${epicId}" not found.`);

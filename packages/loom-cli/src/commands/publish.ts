@@ -1,7 +1,8 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, EpicPublisher } from '@loom-ai/core';
+import { EpicPublisher } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 export interface PublishCommandOptions {
   /** Test seam — injectable PR-open function to avoid real gh invocations. */
@@ -16,7 +17,7 @@ export function runPublish(epicId: string, opts: PublishCommandOptions = {}): vo
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const publisher = new EpicPublisher({
     projectRoot,
     db,

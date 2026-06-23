@@ -1,6 +1,7 @@
 import type { CommandDescription } from '../describe/schema.js';
 import path from 'node:path';
-import { PolicyEngine, openDatabase, AuditLog } from '@loom-ai/core';
+import { PolicyEngine, AuditLog } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 const LOOM_DIR = '.loom';
 
@@ -79,7 +80,7 @@ function evaluateCommand(command: string): EvaluatedCommand {
 
   // Log to audit_log if DB is available
   try {
-    const db = openDatabase(loomDir);
+    const db = openProjectDatabase(projectRoot);
     const audit = new AuditLog(db);
     audit.record({
       action: 'bash_command',
