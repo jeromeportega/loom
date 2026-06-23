@@ -1,6 +1,8 @@
 import path from 'node:path';
 import {
   openDatabase,
+  PolicyEngine,
+  resolveRepoStatePaths,
   EpicStore,
   parseOwnershipMap,
   normalizePath,
@@ -142,9 +144,12 @@ export function printOverlapAdvisory(
   }
 }
 
-/** Default in-flight epic lookup: read the loom DB under `<projectRoot>/.loom`. */
+/** Default in-flight epic lookup: read the loom DB at the loom-home-resolved path. */
 function defaultListInFlightEpicIds(projectRoot: string): string[] {
-  const db = openDatabase(path.join(projectRoot, '.loom'));
+  const loomDir = path.join(projectRoot, '.loom');
+  const policy = PolicyEngine.load(loomDir).policyData;
+  const { namespaceDir } = resolveRepoStatePaths(projectRoot, policy);
+  const db = openDatabase(namespaceDir);
   const store = new EpicStore(db);
   const ids: string[] = [];
   for (const status of IN_FLIGHT_STATUSES) {
