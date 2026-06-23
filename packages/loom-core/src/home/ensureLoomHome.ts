@@ -9,9 +9,12 @@ export interface EnsureResult {
   reused: boolean;
 }
 
-const GITIGNORE_CONTENT = `# loom-home: machine-local namespaces (not pushed in Phase 1)
+export const GITIGNORE_CONTENT = `# loom-home: machine-local namespaces (not pushed in Phase 1)
 *.log
 .DS_Store
+repos/*/loom.db
+repos/*/loom.db-*
+repos/*/planning/
 `;
 
 /**

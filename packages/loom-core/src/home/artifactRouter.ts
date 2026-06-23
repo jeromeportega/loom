@@ -1,8 +1,8 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { defaultRemote, gitSafe, remoteUrl } from '../orchestrator/git.js';
+import { gitSafe } from '../orchestrator/git.js';
 import type { Provenance } from './types.js';
+import { computeRepoSlug } from './repoSlug.js';
 
 export type ArtifactSources = {
   brief?: string;
@@ -18,22 +18,6 @@ const ARTIFACT_MAP: Array<{ key: keyof ArtifactSources; dest: string }> = [
   { key: 'epicYaml', dest: 'epic.yaml' },
 ];
 
-function sanitizeName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-function computeRepoSlug(projectRoot: string): { slug: string; remoteUrlValue: string | null } {
-  const remote = defaultRemote(projectRoot);
-  const url = remote ? remoteUrl(projectRoot, remote) : null;
-  const hashInput = url ?? projectRoot;
-  const hash = crypto.createHash('sha256').update(hashInput).digest('hex').slice(0, 8);
-  const name = sanitizeName(path.basename(projectRoot)) || 'repo';
-  return { slug: `${name}-${hash}`, remoteUrlValue: url };
-}
-
 export function routeArtifacts(input: {
   loomHomePath: string;
   projectRoot: string;
@@ -45,7 +29,7 @@ export function routeArtifacts(input: {
   const { loomHomePath, projectRoot, epicId, runId, artifactSources } = input;
   const now = input.clock ? input.clock() : new Date().toISOString();
 
-  const { slug, remoteUrlValue } = computeRepoSlug(projectRoot);
+  const { slug, remoteUrl } = computeRepoSlug(projectRoot);
 
   // relDir uses posix separators so it is platform-consistent when stored in provenance / returned
   const relDir = path.posix.join('repos', slug, epicId);
@@ -83,7 +67,7 @@ export function routeArtifacts(input: {
     target_repo: {
       name: path.basename(projectRoot),
       path: projectRoot,
-      remote_url: remoteUrlValue,
+      remote_url: remoteUrl,
       slug,
     },
     epic_id: epicId,
