@@ -22,6 +22,7 @@ import {
   stallConfigWarning,
   validateCursorModels,
   registerReviewerSkills,
+  STANDALONE_KIND,
 } from '@loom-ai/core';
 import type { WorkerEvent, SkillEvent } from '@loom-ai/core';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
@@ -195,9 +196,12 @@ export function renderSkillSummary(tally: SkillEventTally): string[] {
  * produced a PR, fall back to the generic "run `loom status`" pointer so a
  * PR-less run (gated / skipped / failed finalize) still tells the operator
  * where to look. Pure for testability — the CLI prints each returned line.
+ *
+ * `kind` is optional: when `'standalone'`, the multi-entry label uses
+ * `story-NNN` framing so the operator sees the user-facing id they know.
  */
 export function renderPrTail(
-  epics: Array<{ id: string; epic_pr_url?: string | null }>
+  epics: Array<{ id: string; epic_pr_url?: string | null; kind?: string | null }>
 ): string[] {
   const withUrls = epics.filter((e) => e.epic_pr_url);
   if (withUrls.length === 0) {
@@ -208,8 +212,37 @@ export function renderPrTail(
   }
   return [
     '  PRs:',
-    ...withUrls.map((e) => `    ${e.id}: ${e.epic_pr_url}`),
+    ...withUrls.map((e) => {
+      const label = e.kind === STANDALONE_KIND ? e.id.replace(/^epic-/, 'story-') : e.id;
+      return `    ${label}: ${e.epic_pr_url}`;
+    }),
   ];
+}
+
+/**
+ * Converts an internal epic-NNN id to its user-facing display id.
+ * Standalone story containers are shown as story-NNN; regular epics pass through.
+ */
+function toDisplayId(store: EpicStore, id: string): string {
+  return store.isStandalone(id) ? id.replace(/^epic-/, 'story-') : id;
+}
+
+/**
+ * Resolves a user-provided id (story-NNN or epic-NNN) to the internal epic-NNN.
+ * Returns the id unchanged for plain epic-NNN ids.
+ *
+ * Note: the story-NNN → epic-NNN regex replace is intentionally duplicated here
+ * rather than imported from gate.ts. gate.ts's resolveToInternalEpicId also
+ * validates against EpicStore (checking isStandalone), while this function is
+ * a pure id translation. The DB validation for run happens separately in the
+ * per-id isStandalone check below so the Supervisor never dispatches a
+ * non-existent or non-standalone story-NNN.
+ */
+function resolveRunInputId(id: string): string {
+  if (/^story-\d+$/.test(id)) {
+    return id.replace(/^story-/, 'epic-');
+  }
+  return id;
 }
 
 export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<void> {
@@ -471,7 +504,41 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
 
   const supervisor = new Supervisor(supervisorOpts);
 
-  const target = epicIds.length > 0 ? epicIds.join(', ') : 'all approved epics';
+  // Resolve any user-provided story-NNN ids to their internal epic-NNN container
+  // ids before passing to the supervisor. Standalone stories are stored as
+  // epic-NNN (kind='standalone'); the user-facing id is story-NNN. Plain
+  // epic-NNN ids pass through unchanged, so full-epic and non-routed paths
+  // are byte-identical to today.
+  //
+  // EpicStore is not a snapshot — every .get()/.isStandalone() hits the live DB,
+  // so post-supervisor.run() reads (processedEpics, toDisplayId) reflect finalized
+  // state written by the EpicFinalizer.
+  const epicStore = new EpicStore(db);
+  const resolvedEpicIds = epicIds.map(resolveRunInputId);
+
+  // Validate that any story-NNN input actually maps to a standalone container.
+  // Without this check `story-003` would silently dispatch the full multi-story
+  // epic-003 when the user had an unrelated epic with that number.
+  for (let i = 0; i < epicIds.length; i++) {
+    const original = epicIds[i];
+    if (/^story-\d+$/.test(original) && !epicStore.isStandalone(resolvedEpicIds[i])) {
+      console.error(`Story "${original}" not found (no standalone story with that number exists).`);
+      process.exit(1);
+    }
+  }
+
+  // Compute the user-facing target string from the ORIGINAL (unresolved) ids
+  // so the dispatch banner shows story-NNN when that is what the operator typed.
+  // For ids that arrived as internal epic-NNN but belong to a standalone
+  // container (chained approve→run path), convert them to story-NNN for display.
+  const displayIds = epicIds.map((id, i) => {
+    const resolved = resolvedEpicIds[i];
+    // If original was already epic-NNN, check if it's a standalone to show story-NNN.
+    if (id === resolved) return toDisplayId(epicStore, id);
+    // Original was story-NNN; user already provided the display form.
+    return id;
+  });
+  const target = displayIds.length > 0 ? displayIds.join(', ') : 'all approved epics';
   console.log(`\n  Dispatching story agents for ${target}.`);
   if (opts.checkpoint) {
     console.log(`  Checkpoint mode: will pause after the next ${opts.checkpoint}.`);
@@ -490,13 +557,13 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   // Cross-epic overlap advisory at dispatch start (FR-7). Warns about files a
   // to-be-dispatched epic shares with another in-flight epic's contract; never
   // blocks the run. Suppressed on a chained approve→run, which already printed
-  // it at approve time. Targets: the explicit ids, else every approved epic
-  // the supervisor is about to pick up.
+  // it at approve time. Targets: the resolved (internal) ids, else every approved
+  // epic the supervisor is about to pick up.
   if (!opts.suppressOverlap) {
     const advisoryTargets =
-      epicIds.length > 0
-        ? epicIds
-        : new EpicStore(db).listByStatus('approved').map((e) => e.id);
+      resolvedEpicIds.length > 0
+        ? resolvedEpicIds
+        : epicStore.listByStatus('approved').map((e) => e.id);
     for (const id of advisoryTargets) {
       printOverlapAdvisory(projectRoot, id);
     }
@@ -504,7 +571,7 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
 
   let result;
   try {
-    result = await supervisor.run(epicIds.length > 0 ? epicIds : undefined);
+    result = await supervisor.run(resolvedEpicIds.length > 0 ? resolvedEpicIds : undefined);
   } catch (err) {
     console.error('  Supervisor failed:', (err as Error).message);
     globalLimiter?.close();
@@ -515,14 +582,18 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   if (result.epicsProcessed.length === 0) {
     console.log('  No approved epics to run. Approve a plan first: `loom approve`.');
     if (result.epicsSkipped.length > 0) {
-      console.log(`  Skipped (not approved / not found): ${result.epicsSkipped.join(', ')}`);
+      const skippedDisplay = result.epicsSkipped.map((id) => toDisplayId(epicStore, id)).join(', ');
+      console.log(`  Skipped (not approved / not found): ${skippedDisplay}`);
     }
     return;
   }
 
-  console.log(`  Epics processed: ${result.epicsProcessed.join(', ')}`);
+  // Convert processed epic-NNN ids to story-NNN for standalone containers.
+  const processedDisplay = result.epicsProcessed.map((id) => toDisplayId(epicStore, id)).join(', ');
+  console.log(`  Epics processed: ${processedDisplay}`);
   if (result.epicsSkipped.length > 0) {
-    console.log(`  Skipped: ${result.epicsSkipped.join(', ')}`);
+    const skippedDisplay = result.epicsSkipped.map((id) => toDisplayId(epicStore, id)).join(', ');
+    console.log(`  Skipped: ${skippedDisplay}`);
   }
   console.log('');
   console.log(`  Stories: ${result.storiesTotal} total`);
@@ -552,10 +623,9 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   // don't widen SupervisorRunResult; one extra EpicStore.get() per epic at run
   // end is negligible). For PR-producing runs the tail prints the actual URL
   // instead of the generic "run loom status for PR links" fallback.
-  const epicStore = new EpicStore(db);
   const processedEpics = result.epicsProcessed.map((id) => {
     const row = epicStore.get(id);
-    return { id, epic_pr_url: row?.epic_pr_url ?? null };
+    return { id, kind: row?.kind ?? null, epic_pr_url: row?.epic_pr_url ?? null };
   });
   for (const line of renderPrTail(processedEpics)) {
     console.log(line);
