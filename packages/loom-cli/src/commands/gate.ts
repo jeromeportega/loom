@@ -1,9 +1,35 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, EpicStore, PolicyEngine } from '@loom-ai/core';
+import { openDatabase, EpicStore, PolicyEngine, STANDALONE_KIND } from '@loom-ai/core';
 import { printOverlapAdvisory as defaultPrintOverlapAdvisory } from '../crossEpicOverlap.js';
 import { runRun as defaultRunRun, type RunOptions } from './run.js';
+
+/**
+ * Resolves a user-provided id to the internal epic-NNN container id.
+ *
+ * When the operator types `story-049`, the DB stores the container as
+ * `epic-049` (kind='standalone'). This helper translates the user-facing
+ * story-NNN id to the internal epic-NNN id so gate lookups and updates use
+ * the correct primary key. A plain `epic-NNN` id passes through unchanged.
+ * Returns `undefined` when the translated `epic-NNN` does not exist as a
+ * standalone container — the caller treats this as not-found.
+ */
+function resolveToInternalEpicId(
+  store: EpicStore,
+  id: string
+): { internalId: string; displayId: string } | undefined {
+  if (/^story-\d+$/.test(id)) {
+    const containerEpicId = id.replace(/^story-/, 'epic-');
+    if (!store.isStandalone(containerEpicId)) return undefined;
+    return { internalId: containerEpicId, displayId: id };
+  }
+  // Plain epic-NNN: display as story-NNN if the row is standalone.
+  if (store.isStandalone(id)) {
+    return { internalId: id, displayId: id.replace(/^epic-/, 'story-') };
+  }
+  return { internalId: id, displayId: id };
+}
 
 /**
  * Persists the live policy snapshot on the epic row. Best-effort: a
@@ -74,35 +100,42 @@ export async function runApprove(
   const store = new EpicStore(db);
 
   if (epicId) {
-    const epic = store.get(epicId);
+    // Resolve story-NNN (user-facing) to epic-NNN (internal) for standalone stories.
+    // Plain epic-NNN ids pass through unchanged. If story-NNN does not resolve to a
+    // known standalone container the caller gets a "not found" error below.
+    const resolved = resolveToInternalEpicId(store, epicId);
+    const internalId = resolved?.internalId ?? epicId;
+    const displayId = resolved?.displayId ?? epicId;
+
+    const epic = store.get(internalId);
     if (!epic) {
       console.error(`Epic "${epicId}" not found.`);
       process.exit(1);
     }
     if (epic.status !== 'planned') {
-      console.error(`Epic "${epicId}" is "${epic.status}", not "planned" — nothing to approve.`);
+      console.error(`Epic "${displayId}" is "${epic.status}", not "planned" — nothing to approve.`);
       process.exit(1);
     }
-    persistPolicySnapshot(store, loomDir, epicId);
-    store.updateStatus(epicId, 'approved');
-    console.log(`  approved  ${epicId}: ${epic.title}`);
+    persistPolicySnapshot(store, loomDir, internalId);
+    store.updateStatus(internalId, 'approved');
+    console.log(`  approved  ${displayId}: ${epic.title}`);
     // Advisory only — warns about files this epic shares with another in-flight
     // epic's contract; it never blocks the approval above. Runs ONCE here; on
     // the chained `--run` path the dispatch is told to suppress its own copy.
-    printOverlapAdvisory(path.dirname(loomDir), epicId);
+    printOverlapAdvisory(path.dirname(loomDir), internalId);
 
     if (opts.run) {
       // Chain into the SAME dispatch path `loom run` uses — only a path that
       // truly dispatches prints 'dispatching now'. suppressOverlap=true so the
       // advisory printed just above is not printed a second time at dispatch.
-      await runRun([epicId], { suppressOverlap: true });
+      await runRun([internalId], { suppressOverlap: true });
       return;
     }
 
     // Approve only flips status to `approved`; it does NOT dispatch workers.
     // The success copy must end with the run-hint so operators know the next
     // step is `loom run`, not assume dispatch already happened.
-    console.log('\n  Next: run `loom run <epic-id>` to dispatch.');
+    console.log(`\n  Next: run \`loom run ${displayId}\` to dispatch.`);
     return;
   }
 
@@ -115,7 +148,10 @@ export async function runApprove(
   for (const epic of planned) {
     persistPolicySnapshot(store, loomDir, epic.id);
     store.updateStatus(epic.id, 'approved');
-    console.log(`  approved  ${epic.id}: ${epic.title}`);
+    // Show story-NNN for standalone containers in the per-item approval line.
+    const itemDisplayId =
+      epic.kind === STANDALONE_KIND ? epic.id.replace(/^epic-/, 'story-') : epic.id;
+    console.log(`  approved  ${itemDisplayId}: ${epic.title}`);
     // Advisory only — never blocks the bulk approval.
     printOverlapAdvisory(projectRoot, epic.id);
   }
@@ -128,17 +164,21 @@ export function runReject(epicId: string, reason: string | undefined): void {
   const { db } = openLoom();
   const store = new EpicStore(db);
 
-  const epic = store.get(epicId);
+  const resolved = resolveToInternalEpicId(store, epicId);
+  const internalId = resolved?.internalId ?? epicId;
+  const displayId = resolved?.displayId ?? epicId;
+
+  const epic = store.get(internalId);
   if (!epic) {
     console.error(`Epic "${epicId}" not found.`);
     process.exit(1);
   }
   if (epic.status !== 'planned') {
-    console.error(`Epic "${epicId}" is "${epic.status}", not "planned" — cannot reject.`);
+    console.error(`Epic "${displayId}" is "${epic.status}", not "planned" — cannot reject.`);
     process.exit(1);
   }
-  store.updateStatus(epicId, 'rejected', reason);
-  console.log(`  rejected  ${epicId}: ${epic.title}`);
+  store.updateStatus(internalId, 'rejected', reason);
+  console.log(`  rejected  ${displayId}: ${epic.title}`);
   if (reason) console.log(`  reason    ${reason}`);
 }
 

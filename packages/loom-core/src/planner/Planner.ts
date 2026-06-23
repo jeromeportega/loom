@@ -51,6 +51,13 @@ export interface PlanResult {
   storyCount: number;
   storiesEnriched: number;
   usage: LLMUsage;
+  /**
+   * Set only on the standalone-story path (intake_routing + size='story').
+   * Carries the user-facing story-NNN id (derived from the container epicId)
+   * so CLI surfaces can present the standalone story with story framing instead
+   * of the epic-NNN container id. Absent on all full-epic and off-path runs.
+   */
+  standaloneStoryId?: string;
 }
 
 export interface PlannerOptions {
@@ -328,6 +335,9 @@ export class Planner {
       // for the epic pipeline. Report 1 so CLI output is accurate.
       storiesEnriched: 1,
       usage,
+      // Signal to CLI surfaces that this is a standalone story so they can
+      // present story-NNN framing instead of the epic-NNN container id.
+      standaloneStoryId: storyId,
     };
   }
 

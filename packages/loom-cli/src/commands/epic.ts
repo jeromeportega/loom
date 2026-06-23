@@ -266,16 +266,24 @@ export async function runEpic(
   console.log(`  Architecture:  ${rel(projectRoot, result.architecturePath)}`);
   console.log('');
   const plannerModel = modelFor(policy, 'planning');
+  const isStandaloneResult = result.standaloneStoryId !== undefined;
   for (const epicId of result.epicIds) {
     // `model` is '' on the test-seam path where llm is null — guard before writing.
     if (plannerModel) store.setPlannerModel(epicId, plannerModel);
-    console.log(`  ${epicId}`);
+    // Standalone stories: display story-NNN instead of the epic-NNN container id.
+    const displayId = isStandaloneResult ? result.standaloneStoryId! : epicId;
+    console.log(`  ${displayId}`);
   }
   console.log('');
-  console.log(
-    `  ${result.epicIds.length} epic(s), ${result.storyCount} stories ` +
-      `(${result.storiesEnriched} enriched with tech notes).`
-  );
+  if (isStandaloneResult) {
+    // Standalone-story path: present as a story, not a one-story epic.
+    console.log(`  Standalone story: ${result.standaloneStoryId}`);
+  } else {
+    console.log(
+      `  ${result.epicIds.length} epic(s), ${result.storyCount} stories ` +
+        `(${result.storiesEnriched} enriched with tech notes).`
+    );
+  }
   const billed = result.usage.inputTokens + result.usage.outputTokens;
   console.log(
     `  Tokens: ${result.usage.inputTokens} in / ${result.usage.outputTokens} out ` +
@@ -291,10 +299,17 @@ export async function runEpic(
   }
   console.log('');
 
-  console.log('  Review the plan above, then:');
-  console.log('    loom approve            approve all planned epics');
-  console.log('    loom approve <epic-id>  approve one epic');
-  console.log('    loom reject <epic-id> --reason "..."  reject an epic');
+  if (isStandaloneResult) {
+    const sid = result.standaloneStoryId!;
+    console.log('  Review the plan above, then:');
+    console.log(`    loom approve ${sid}            approve this story`);
+    console.log(`    loom reject ${sid} --reason "..."  reject this story`);
+  } else {
+    console.log('  Review the plan above, then:');
+    console.log('    loom approve            approve all planned epics');
+    console.log('    loom approve <epic-id>  approve one epic');
+    console.log('    loom reject <epic-id> --reason "..."  reject an epic');
+  }
   console.log('');
 }
 

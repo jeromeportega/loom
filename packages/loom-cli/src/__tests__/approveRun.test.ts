@@ -223,10 +223,10 @@ describe('loom approve (no --run) — existing behavior is unchanged (story-007-
     // No dispatch when --run is absent.
     assert.equal(calls.length, 0, 'runRun is NOT called without --run');
 
-    // The story-007-003 run-hint is preserved verbatim.
+    // Single-epic approve shows the actual epic id in the run-hint.
     assert.ok(
-      logs.some((l) => l.includes('Next: run `loom run <epic-id>` to dispatch.')),
-      'the run-hint from story-007-003 is printed unchanged'
+      logs.some((l) => l.includes('Next: run `loom run epic-103` to dispatch.')),
+      'the run-hint shows the actual epic id'
     );
     assert.ok(
       !logs.some((l) => /dispatching story agents/i.test(l)),

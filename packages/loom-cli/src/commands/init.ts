@@ -629,6 +629,14 @@ agents:
   #   advisory — emit + inject per-story test plans
   qa_planning: "off"
 
+  # Intake classification routing. Before planning, loom classifies the brief
+  # (feature / bug / chore, story / epic). This knob controls whether the
+  # verdict changes the planning path or is observe-only.
+  #   off      — classifier runs observe-only; planner is byte-identical to baseline (default)
+  #   advisory — route automatically: size=story → StandaloneStoryAgent (skips PM+Architect)
+  #   confirm  — like advisory but prompts the operator to confirm or override first
+  intake_routing: "off"
+
   # Rolling integration branch. When 'rolling', loom keeps a live epic/<id>
   # branch: workers branch from its tip and each story is merged back as it
   # completes, so parallel agents build on real integrated code instead of
