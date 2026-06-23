@@ -111,6 +111,17 @@ export async function runApprove(
     if (!epic) {
       const label = epicId.startsWith('story-') ? 'Story' : 'Epic';
       console.error(`${label} "${epicId}" not found.`);
+      // If the operator passed story-NNN but a regular (non-standalone) epic-NNN
+      // exists, surface a hint so they know to try the epic-NNN id instead.
+      if (epicId.startsWith('story-')) {
+        const correspondingEpicId = epicId.replace(/^story-/, 'epic-');
+        const regularEpic = store.get(correspondingEpicId);
+        if (regularEpic && !store.isStandalone(correspondingEpicId)) {
+          console.error(
+            `  Hint: a regular epic with id ${correspondingEpicId} exists; try \`loom approve ${correspondingEpicId}\`.`
+          );
+        }
+      }
       process.exit(1);
     }
     if (epic.status !== 'planned') {

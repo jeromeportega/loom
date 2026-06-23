@@ -279,6 +279,9 @@ export class Planner {
     // Derive storyId here (not inside StandaloneStoryAgent) to avoid a transitive
     // intake/ import in StandaloneStoryAgent's module — physical-separation invariant.
     const storyId = standaloneStoryId(runId);
+    if (!storyId.startsWith('story-')) {
+      throw new Error(`[internal] runStandalone: expected story-NNN id from '${runId}', got '${storyId}'`);
+    }
     const { story, usage: storyUsage } = await new StandaloneStoryAgent(ctx).run(
       analyst.briefContent,
       storyId

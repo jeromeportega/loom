@@ -12,7 +12,13 @@ export interface Captured {
   errors: string[];
 }
 
-/** Runs `fn`, capturing process.exit, console.log, and console.error. */
+/**
+ * Runs `fn`, capturing process.exit, console.log, and console.error.
+ * NOT concurrency-safe: mutates global process/console state without any lock.
+ * Tests using this helper must run with --test-concurrency=1 (the Node test
+ * runner default) to avoid interleaved capture calls corrupting each other's
+ * exit code and log state.
+ */
 export async function capture(fn: () => Promise<void> | void): Promise<Captured> {
   const origExit = process.exit;
   const origLog = console.log;

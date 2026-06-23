@@ -22,6 +22,7 @@ import {
   stallConfigWarning,
   validateCursorModels,
   registerReviewerSkills,
+  STANDALONE_KIND,
 } from '@loom-ai/core';
 import type { WorkerEvent, SkillEvent } from '@loom-ai/core';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
@@ -212,7 +213,7 @@ export function renderPrTail(
   return [
     '  PRs:',
     ...withUrls.map((e) => {
-      const label = e.kind === 'standalone' ? e.id.replace(/^epic-/, 'story-') : e.id;
+      const label = e.kind === STANDALONE_KIND ? e.id.replace(/^epic-/, 'story-') : e.id;
       return `    ${label}: ${e.epic_pr_url}`;
     }),
   ];
@@ -229,6 +230,13 @@ function toDisplayId(store: EpicStore, id: string): string {
 /**
  * Resolves a user-provided id (story-NNN or epic-NNN) to the internal epic-NNN.
  * Returns the id unchanged for plain epic-NNN ids.
+ *
+ * Note: the story-NNN → epic-NNN regex replace is intentionally duplicated here
+ * rather than imported from gate.ts. gate.ts's resolveToInternalEpicId also
+ * validates against EpicStore (checking isStandalone), while this function is
+ * a pure id translation. The DB validation for run happens separately in the
+ * per-id isStandalone check below so the Supervisor never dispatches a
+ * non-existent or non-standalone story-NNN.
  */
 function resolveRunInputId(id: string): string {
   if (/^story-\d+$/.test(id)) {

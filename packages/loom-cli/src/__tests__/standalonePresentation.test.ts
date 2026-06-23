@@ -277,11 +277,17 @@ describe('intake_routing=off — byte-identical to loom epic (AC9)', () => {
 
 describe('loom approve — standalone story uses story-NNN framing (AC3)', () => {
   function seedStandalone(id: string, title: string): void {
+    // First reset: drop the in-process singleton so openDatabase() below opens
+    // a fresh connection (not the one from beforeEach which may point at a
+    // different tmpDir from a previous test run).
     resetDatabaseForTest();
     const db = openDatabase(path.join(tmpDir, '.loom'));
     const store = new EpicStore(db);
-    // Create a standalone container row (kind='standalone').
     store.createStandalone(id, title);
+    // Second reset: drop the singleton handle so the next openDatabase() call
+    // inside runApprove/runReject opens a fresh connection to the same file.
+    // resetDatabaseForTest() only sets _db = null — it does NOT wipe the SQLite
+    // file, so the seeded row persists on disk and will be visible to the caller.
     resetDatabaseForTest();
   }
 
