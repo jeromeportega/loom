@@ -122,6 +122,11 @@ describe('routeArtifacts — case 1: all four artifacts written to loom-home', (
     const projectFiles = fs.readdirSync(projectRoot);
     assert.equal(projectFiles.length, 0, `target repo must remain empty, got: ${projectFiles}`);
   });
+
+  it('target_head_sha is null when projectRoot has no git history', () => {
+    // Case 1 does not call gitInit(projectRoot), so HEAD does not exist
+    assert.equal(result.provenance.target_head_sha, null);
+  });
 });
 
 // ── Case 2: provenance.json has all required fields ───────────────────────────
@@ -190,23 +195,40 @@ describe('routeArtifacts — case 2: provenance.json fields', () => {
   it('created_at matches injected clock', () => {
     assert.equal(provenance.created_at, FIXED_CLOCK);
   });
+});
+
+// ── Case 2b: target_head_sha is null when projectRoot has no git history ──────
+
+describe('routeArtifacts — case 2b: target_head_sha null for repo with no commits', () => {
+  let tmp: string;
+  let loomHomePath: string;
+  let noGitDir: string;
+
+  before(() => {
+    tmp = makeTmp();
+    loomHomePath = path.join(tmp, 'loom-home');
+    noGitDir = path.join(tmp, 'no-git-project');
+    fs.mkdirSync(loomHomePath, { recursive: true });
+    fs.mkdirSync(noGitDir, { recursive: true });
+    gitInit(loomHomePath);
+  });
+
+  after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
   it('target_head_sha is null when projectRoot has no git history', () => {
-    const noGitDir = path.join(tmp, 'no-git-project');
-    fs.mkdirSync(noGitDir, { recursive: true });
-    const runDir2 = path.join(tmp, 'run', 'run-nogit');
-    const sources2 = setupSourceArtifacts(runDir2);
-    const r2 = routeArtifacts({
+    const runDir = path.join(tmp, 'run', 'run-nogit');
+    const sources = setupSourceArtifacts(runDir);
+    const r = routeArtifacts({
       loomHomePath,
       projectRoot: noGitDir,
       epicId: 'epic-003',
       runId: 'run-nogit',
-      artifactSources: sources2,
+      artifactSources: sources,
       clock,
     });
-    const raw2 = fs.readFileSync(path.join(r2.artifactDir, 'provenance.json'), 'utf8');
-    const p2 = JSON.parse(raw2) as Provenance;
-    assert.equal(p2.target_head_sha, null);
+    const raw = fs.readFileSync(path.join(r.artifactDir, 'provenance.json'), 'utf8');
+    const p = JSON.parse(raw) as Provenance;
+    assert.equal(p.target_head_sha, null);
   });
 });
 
@@ -298,7 +320,25 @@ describe('routeArtifacts — case 3: slug determinism', () => {
       clock,
     });
     const slug = r.provenance.target_repo.slug;
-    assert.equal(r.relDir, path.join('repos', slug, 'epic-012'));
+    assert.equal(r.relDir, `repos/${slug}/epic-012`);
+  });
+
+  it('slug fallback to "repo" when basename has no alphanumeric chars', () => {
+    const weirdRoot = path.join(tmp, '___');
+    fs.mkdirSync(weirdRoot, { recursive: true });
+    const runDir = path.join(tmp, 'run-weird');
+    const sources = setupSourceArtifacts(runDir);
+    const r = routeArtifacts({
+      loomHomePath,
+      projectRoot: weirdRoot,
+      epicId: 'epic-013',
+      runId: 'run-weird',
+      artifactSources: sources,
+      clock,
+    });
+    const slug = r.provenance.target_repo.slug;
+    assert.match(slug, /^[a-z0-9-]+-[0-9a-f]{8}$/, `slug must be valid even for odd basename: ${slug}`);
+    assert.ok(!slug.startsWith('-'), `slug must not start with hyphen: ${slug}`);
   });
 });
 
@@ -457,5 +497,80 @@ describe('routeArtifacts — case 6: machine-local state untouched', () => {
 
     const hasWorktrees = fs.existsSync(path.join(loomHomePath, 'worktrees'));
     assert.ok(!hasWorktrees, 'no worktrees directory must be created in loom-home');
+  });
+});
+
+// ── Case 7: Overwrite guard — existing provenance.json throws ─────────────────
+
+describe('routeArtifacts — case 7: overwrite guard', () => {
+  let tmp: string;
+  let loomHomePath: string;
+  let projectRoot: string;
+
+  before(() => {
+    tmp = makeTmp();
+    loomHomePath = path.join(tmp, 'loom-home');
+    projectRoot = path.join(tmp, 'project');
+    fs.mkdirSync(loomHomePath, { recursive: true });
+    fs.mkdirSync(projectRoot, { recursive: true });
+    gitInit(loomHomePath);
+  });
+
+  after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('throws when the same (projectRoot, epicId) is routed twice', () => {
+    const runDir1 = path.join(tmp, 'run-ow1');
+    const sources1 = setupSourceArtifacts(runDir1);
+    routeArtifacts({
+      loomHomePath,
+      projectRoot,
+      epicId: 'epic-050',
+      runId: 'run-ow1',
+      artifactSources: sources1,
+      clock,
+    });
+
+    const runDir2 = path.join(tmp, 'run-ow2');
+    const sources2 = setupSourceArtifacts(runDir2);
+    assert.throws(
+      () =>
+        routeArtifacts({
+          loomHomePath,
+          projectRoot,
+          epicId: 'epic-050',
+          runId: 'run-ow2',
+          artifactSources: sources2,
+          clock,
+        }),
+      /will not overwrite/,
+    );
+  });
+
+  it('different epicIds for the same projectRoot do not conflict', () => {
+    const runDir1 = path.join(tmp, 'run-diff1');
+    const sources1 = setupSourceArtifacts(runDir1);
+    assert.doesNotThrow(() =>
+      routeArtifacts({
+        loomHomePath,
+        projectRoot,
+        epicId: 'epic-051',
+        runId: 'run-diff1',
+        artifactSources: sources1,
+        clock,
+      }),
+    );
+
+    const runDir2 = path.join(tmp, 'run-diff2');
+    const sources2 = setupSourceArtifacts(runDir2);
+    assert.doesNotThrow(() =>
+      routeArtifacts({
+        loomHomePath,
+        projectRoot,
+        epicId: 'epic-052',
+        runId: 'run-diff2',
+        artifactSources: sources2,
+        clock,
+      }),
+    );
   });
 });
