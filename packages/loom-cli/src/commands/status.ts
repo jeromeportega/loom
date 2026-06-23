@@ -7,6 +7,8 @@ import {
   AgentStore,
   AuditLog,
   ProjectRegistry,
+  PolicyEngine,
+  resolveLoomHomePath,
   deriveBlocked,
   displayModel,
   STANDALONE_KIND,
@@ -67,6 +69,8 @@ export interface StatusOptions {
   json?: boolean;
   /** Target the named registered project (absolute path). */
   project?: string;
+  /** Override the project root (defaults to process.cwd()). Avoids process.chdir() in tests. */
+  projectRoot?: string;
 }
 
 export function runStatus(options: StatusOptions): void {
@@ -117,7 +121,18 @@ export function runStatus(options: StatusOptions): void {
       console.log('');
       return;
     }
-    renderLoomDir(path.join(process.cwd(), '.loom'), options.epicId, options.archived);
+    const cwd = options.projectRoot ?? process.cwd();
+    const loomDir = path.join(cwd, '.loom');
+    let policy: { loom_home?: string } = {};
+    try {
+      policy = PolicyEngine.load(loomDir).policyData;
+    } catch {
+      // tolerate missing/malformed policy — render with default heuristic
+    }
+    const loomHomePath = resolveLoomHomePath(cwd, policy);
+    const existsNote = fs.existsSync(loomHomePath) ? '' : ' (will be created on first use)';
+    console.log(`   loom-home: ${loomHomePath}${existsNote}`);
+    renderLoomDir(loomDir, options.epicId, options.archived);
     console.log('');
   }
 
@@ -175,6 +190,7 @@ interface JsonEpic {
 
 interface JsonStatus {
   epics: JsonEpic[];
+  loom_home?: string; // omitted in --all mode
 }
 
 /**
@@ -191,12 +207,26 @@ function buildJsonStatus(options: StatusOptions, projectLoomDir?: string): JsonS
   } else {
     loomDirs = options.all
       ? new ProjectRegistry().list().map((p) => path.join(p.root, '.loom'))
-      : [path.join(process.cwd(), '.loom')];
+      : [path.join(options.projectRoot ?? process.cwd(), '.loom')];
   }
 
   const epics: JsonEpic[] = [];
   for (const loomDir of loomDirs) {
     epics.push(...collectJsonEpics(loomDir, options.epicId, options.archived));
+  }
+
+  // Include resolved loom-home only for a single-project view (not --all).
+  if (!options.all) {
+    const loomDir = projectLoomDir ?? path.join(options.projectRoot ?? process.cwd(), '.loom');
+    const projectRoot = path.dirname(loomDir);
+    let policy: { loom_home?: string } = {};
+    try {
+      policy = PolicyEngine.load(loomDir).policyData;
+    } catch {
+      // tolerate missing/malformed policy — use default heuristic
+    }
+    const loomHome = resolveLoomHomePath(projectRoot, policy);
+    return { epics, loom_home: loomHome };
   }
   return { epics };
 }
@@ -471,7 +501,7 @@ function allTerminal(options: StatusOptions): boolean {
   } else {
     loomDirs = options.all
       ? new ProjectRegistry().list().map((p) => path.join(p.root, '.loom'))
-      : [path.join(process.cwd(), '.loom')];
+      : [path.join(options.projectRoot ?? process.cwd(), '.loom')];
   }
   if (loomDirs.length === 0) return true;
   return loomDirs.every((dir) => loomDirTerminal(dir, options.epicId));
@@ -552,7 +582,7 @@ export const spec: CommandDescription = {
   ],
   output: {
     text: 'Human-readable tree of epics and stories with status icons and PR links',
-    json: { supported: true, shape: '{ epics: { id, title, status, stories: { id, title, status, pr_url?, history? }[] }[] }' },
+    json: { supported: true, shape: '{ epics: { id, title, status, stories: { id, title, status, pr_url?, history? }[] }[], loom_home?: string }' },
   },
   examples: [
     { command: 'loom status', description: 'Show all epics in the current project' },
