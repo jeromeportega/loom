@@ -172,8 +172,15 @@ describe('registerRepo — new entry', () => {
 
 describe('registerRepo — identity by inspection', () => {
   it('workspaceManifest.ts imports computeRepoSlug from repoSlug and uses no second identity scheme', () => {
-    // Resolve source file relative to compiled test at dist/__tests__/WorkspaceManifest.test.js
+    // Resolve source file relative to compiled test at dist/__tests__/WorkspaceManifest.test.js.
+    // Source files must be present (they are in this repo — not an npm-dist-only environment).
     const srcFile = path.resolve(__dirname, '../../src/home/workspaceManifest.ts');
+    assert.ok(
+      fs.existsSync(srcFile),
+      `Source file not found at ${srcFile}. ` +
+      'Expected compiled output to be exactly two directory levels below src/ ' +
+      '(dist/__tests__/ → src/home/). Check tsconfig outDir if this path is wrong.',
+    );
     const src = fs.readFileSync(srcFile, 'utf8');
 
     assert.ok(

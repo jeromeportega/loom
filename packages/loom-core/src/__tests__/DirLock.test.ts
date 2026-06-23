@@ -61,9 +61,12 @@ describe('withDirLock — stale lock reclaim', () => {
     try {
       const lockDir = path.join(dir, '.stale.lock');
       fs.mkdirSync(lockDir);
-      // Seed owner.json with a definitely-dead PID (very high number)
+      // Use a PID within the valid OS range (macOS max is 99998) but extremely
+      // unlikely to be running. isLockStale also treats EINVAL (out-of-range PID
+      // on macOS) as dead, so any value works after the EINVAL fix.
+      const stalePid = (Number.MAX_SAFE_INTEGER % 99998) + 2; // in [2, 99999]
       const fakeOwner = {
-        pid: 2_147_483_647,
+        pid: stalePid,
         hostname: os.hostname(),
         started_at: new Date(Date.now() - 10_000).toISOString(),
       };

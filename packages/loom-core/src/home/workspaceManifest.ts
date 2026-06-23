@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
@@ -21,7 +22,8 @@ export interface WorkspaceManifest {
 const ManifestEntrySchema = z.object({
   slug: z.string().min(1),
   path: z.string().min(1),
-  remote_url: z.string().nullable(),
+  // Accept omitted field (hand-edited manifests) and coerce to null.
+  remote_url: z.string().nullable().optional().default(null),
 });
 
 export const WorkspaceManifestSchema = z.object({
@@ -39,11 +41,16 @@ export function manifestPath(loomHome: string): string {
 /** Read + Zod-validate. Returns { version: 1, repos: [] } if the file is absent. */
 export function readManifest(loomHome: string): WorkspaceManifest {
   const p = manifestPath(loomHome);
-  if (!fs.existsSync(p)) {
-    return { version: 1, repos: [] };
+  let raw: unknown;
+  try {
+    raw = yaml.load(fs.readFileSync(p, 'utf8'));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { version: 1, repos: [] };
+    }
+    throw err;
   }
-  const raw = yaml.load(fs.readFileSync(p, 'utf8')) as unknown;
-  return WorkspaceManifestSchema.parse(raw ?? {}) as WorkspaceManifest;
+  return WorkspaceManifestSchema.parse(raw ?? {});
 }
 
 /**
@@ -77,7 +84,7 @@ export function registerRepo(loomHome: string, projectRoot: string): ManifestEnt
 
     // Persist via temp-file-then-rename for atomicity.
     const p = manifestPath(loomHome);
-    const tmp = `${p}.${process.pid}.tmp`;
+    const tmp = `${p}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     fs.writeFileSync(tmp, yaml.dump(updated, { lineWidth: 120, noRefs: true }), 'utf8');
     try {
       fs.renameSync(tmp, p);

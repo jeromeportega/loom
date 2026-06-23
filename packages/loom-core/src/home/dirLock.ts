@@ -1,7 +1,14 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+/**
+ * Cross-host staleness window: if a lock was last touched more than this many ms
+ * ago by a different host, it is assumed to be from a crashed process and is reclaimed.
+ * Note: there is no heartbeat — a legitimately long-running holder on another host
+ * could have its lock stolen after 5 minutes. Use on shared filesystems with caution.
+ */
 const LOCK_STALE_CROSS_HOST_MS = 5 * 60 * 1000; // 5 minutes
 const OWNER_FILE = 'owner.json';
 
@@ -20,7 +27,7 @@ function writeLock(lockDir: string): void {
   const payload = JSON.stringify(owner);
   // Write to a temp file first, then rename into the lock dir so owner.json
   // is never observed in a partially-written state.
-  const tmp = path.join(lockDir, `${OWNER_FILE}.${process.pid}.tmp`);
+  const tmp = path.join(lockDir, `${OWNER_FILE}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`);
   fs.writeFileSync(tmp, payload, 'utf8');
   try {
     fs.renameSync(tmp, path.join(lockDir, OWNER_FILE));
@@ -55,10 +62,14 @@ function isLockStale(lockDir: string): boolean {
   }
 
   if (owner.hostname !== os.hostname()) {
-    // Different host; cannot check PID. Use age as a fallback: a lock older
-    // than LOCK_STALE_CROSS_HOST_MS is assumed to be from a crashed process.
-    const age = Date.now() - Date.parse(owner.started_at);
-    return Number.isFinite(age) && age > LOCK_STALE_CROSS_HOST_MS;
+    // Different host; cannot check PID. Use lock directory mtime as age baseline —
+    // more reliable than self-reported started_at across clock skews.
+    try {
+      const age = Date.now() - fs.statSync(lockDir).mtimeMs;
+      return Number.isFinite(age) && age > LOCK_STALE_CROSS_HOST_MS;
+    } catch {
+      return true; // Cannot stat → treat as stale.
+    }
   }
 
   // Same host: check whether the owning process is still alive.
@@ -66,38 +77,37 @@ function isLockStale(lockDir: string): boolean {
     process.kill(owner.pid, 0); // Throws ESRCH if process is gone.
     return false; // Process alive → not stale.
   } catch (err: unknown) {
-    // ESRCH = no such process (dead). EPERM = alive but owned by another user.
-    // Only treat as stale when we are certain the process is gone.
-    return (err as NodeJS.ErrnoException).code === 'ESRCH';
+    const code = (err as NodeJS.ErrnoException).code;
+    // ESRCH = no such process (dead).
+    // EINVAL = PID out of valid OS range (e.g. exceeds macOS max 99998) — treat as dead.
+    // EPERM = alive but owned by another user → not stale.
+    return code === 'ESRCH' || code === 'EINVAL';
   }
 }
 
 function tryAcquire(lockDir: string): boolean {
-  for (let attempt = 0; attempt < 3; attempt++) {
+  try {
+    fs.mkdirSync(lockDir);
+    // If writeLock throws (e.g. rename of temp owner file fails), clean up
+    // the ownerless lock directory so it is not treated as a live lock.
     try {
-      fs.mkdirSync(lockDir);
-      // If writeLock throws (e.g. rename of temp owner file fails), clean up
-      // the ownerless lock directory so it is not treated as a live lock.
-      try {
-        writeLock(lockDir);
-      } catch (writeErr) {
-        try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-        throw writeErr;
-      }
-      return true;
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-
-      if (isLockStale(lockDir)) {
-        try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* ignore */ }
-        continue; // Retry after clearing the stale lock.
-      }
-
-      // Live lock held by another process — loser path.
-      return false;
+      writeLock(lockDir);
+    } catch (writeErr) {
+      try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      throw writeErr;
     }
+    return true;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+
+    if (isLockStale(lockDir)) {
+      // Remove stale lock so the outer loop can retry acquisition.
+      try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+
+    // Either a live lock or just cleared a stale one — outer loop retries.
+    return false;
   }
-  return false;
 }
 
 function release(lockDir: string): void {
@@ -106,22 +116,31 @@ function release(lockDir: string): void {
 
 /**
  * Runs `fn` while holding an atomic-mkdir lock at path.join(dir, lockName).
- * Reclaims stale locks (dead PID same-host; age heuristic cross-host), releases
+ * Reclaims stale locks (dead PID same-host; mtime heuristic cross-host), releases
  * unconditionally. Generalizes the acquireMigrateLock/writeLock/isLockStale pattern
  * currently inline in prepareRepoState.ts.
+ *
+ * `dir` must exist before calling; an `ENOENT` here means the parent (e.g. loom-home)
+ * has not been initialized yet.
  */
 export function withDirLock<T>(dir: string, lockName: string, fn: () => T): T {
+  if (!fs.existsSync(dir)) {
+    throw new Error(
+      `[loom] Lock parent directory does not exist: ${dir}. ` +
+      'Ensure loom-home is initialized before acquiring a lock.',
+    );
+  }
+
   const lockDir = path.join(dir, lockName);
 
-  // Spin-wait until we can acquire the lock (up to ~5 s, 250 × 20 ms).
+  // Poll until we can acquire the lock (up to ~5 s, 250 × 20 ms).
   const MAX_POLLS = 250;
   let acquired = false;
   for (let i = 0; i < MAX_POLLS; i++) {
     acquired = tryAcquire(lockDir);
     if (acquired) break;
-    // Busy-wait ~20 ms before retrying — mirrors the loser poll in prepareRepoState.
-    const spinUntil = Date.now() + 20;
-    while (Date.now() < spinUntil) { /* busy-wait */ }
+    // Block the OS thread for 20 ms without busy-spinning the CPU.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
   }
   if (!acquired) {
     throw new Error(
