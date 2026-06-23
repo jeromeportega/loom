@@ -57,7 +57,10 @@
         gap: 16px;
         margin-bottom: 6px;
       }
-      .epic-id { color: #58a6ff; font-weight: 600; }
+      /* Goal-first: the title is the headline; the id is a small backing handle
+         (the card-first principle — see Mission Control). */
+      .epic-title { color: #e6edf3; font-weight: 600; }
+      .epic-id { color: #6e7681; font-weight: 400; font-size: 12px; }
       .epic-status {
         font-size: 11px;
         padding: 2px 8px;
@@ -394,7 +397,7 @@
                 (e) => `
               <div class="epic${e.archived ? ' archived' : ''}" data-id="${esc(e.id)}" data-project="${esc(e.project_root)}">
                 <div class="epic-head">
-                  <div><span class="epic-id">${esc(e.id)}</span> · ${esc(e.title)}</div>
+                  <div><span class="epic-title">${esc(e.title)}</span> <span class="epic-id">${esc(e.id)}</span></div>
                   <div style="display:flex;gap:8px;align-items:baseline;">
                     ${e.archived ? '<span class="archived-badge">archived</span>' : ''}
                     ${statusBadge(e)}
@@ -444,8 +447,8 @@
         const renderRow = (a) => `
           <tr data-agent-id="${esc(a.id)}" data-story-id="${esc(a.story_id)}">
             <td>
-              <code>${esc(a.story_id)}</code>
-              <br><span style="color:#8b949e;font-size:12px">${esc(a.story_title ?? '')}</span>
+              <span style="font-weight:600;color:#e6edf3">${esc(a.story_title || a.story_id)}</span>
+              <br><code style="color:#6e7681;font-size:11px">${esc(a.story_id)}</code>
               <div class="log-pane" id="log-${esc(a.id)}" data-agent-id="${esc(a.id)}"></div>
             </td>
             <td>
@@ -497,7 +500,7 @@
           <div class="back"><a id="backLink">← all epics</a></div>
           <div class="panel">
             <div class="epic-head">
-              <div><span class="epic-id">${esc(epic.id)}</span> · ${esc(epic.title)}</div>
+              <div><span class="epic-title">${esc(epic.title)}</span> <span class="epic-id">${esc(epic.id)}</span></div>
               <div style="display:flex;gap:8px;align-items:baseline;">
                 ${epic.archived ? '<span class="archived-badge">archived</span>' : ''}
                 ${statusBadge(epic)}
