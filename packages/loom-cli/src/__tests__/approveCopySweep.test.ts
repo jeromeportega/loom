@@ -252,12 +252,14 @@ describe('runApprove success copy ends with the run-hint (story-007-003)', () =>
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('single-epic approve ends with the literal `loom run <epic-id>` dispatch hint', () => {
+  it('single-epic approve ends with the literal `loom run epic-001` dispatch hint', () => {
     const result = loom('approve epic-001');
     assert.equal(result.status, 0);
     const trimmed = result.stdout.trimEnd();
+    // Single-epic approve now shows the actual id (epic-001), not the placeholder <epic-id>.
+    const SINGLE_RUN_HINT = 'run `loom ' + 'run epic-001` to ' + 'dispatch.';
     assert.ok(
-      trimmed.endsWith(RUN_HINT),
+      trimmed.endsWith(SINGLE_RUN_HINT),
       `approve copy must END WITH the run-hint.\nGot:\n${result.stdout}`
     );
   });
