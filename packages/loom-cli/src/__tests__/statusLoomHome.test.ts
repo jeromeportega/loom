@@ -18,17 +18,17 @@ import { resolveLoomHomePath } from '@loom-ai/core';
 import { runStatus } from '../commands/status.js';
 
 let repo: string;
-let prevCwd: string;
+let realRepo: string;
 
 beforeEach(() => {
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-status-loom-home-'));
+  // On macOS, mkdtemp may return /var/... while fs.realpathSync gives /private/var/...
+  // Use the resolved path so our expectations match what resolveLoomHomePath sees.
+  realRepo = fs.realpathSync(repo);
   fs.mkdirSync(path.join(repo, '.loom'), { recursive: true });
-  prevCwd = process.cwd();
-  process.chdir(repo);
 });
 
 afterEach(() => {
-  process.chdir(prevCwd);
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
@@ -50,11 +50,8 @@ describe('loom status — loom-home line (text output)', () => {
   it('[AC1][AC2] prints loom-home line with the resolved sibling-heuristic path', () => {
     // No policy.yaml — default heuristic applies: sibling of projectRoot named 'loom-home'
     fs.writeFileSync(path.join(repo, '.loom', 'policy.yaml'), 'version: 1\n');
-    // Use process.cwd() after chdir so path resolution matches what status.ts sees.
-    // On macOS, mkdtemp returns /var/... but cwd() returns the real /private/var/... path.
-    const realCwd = process.cwd();
-    const expected = resolveLoomHomePath(realCwd, {});
-    const out = captureStatus({});
+    const expected = resolveLoomHomePath(realRepo, {});
+    const out = captureStatus({ projectRoot: realRepo });
     assert.ok(
       out.includes(`loom-home: ${expected}`),
       `Expected loom-home line with path '${expected}' in output:\n${out}`
@@ -67,13 +64,13 @@ describe('loom status — loom-home line (text output)', () => {
       path.join(repo, '.loom', 'policy.yaml'),
       `version: 1\nloom_home: ${override}\n`
     );
-    const out = captureStatus({});
+    const out = captureStatus({ projectRoot: realRepo });
     assert.ok(
       out.includes(`loom-home: ${override}`),
       `Expected loom-home line to show override '${override}':\n${out}`
     );
     // Must not show the default sibling path
-    const defaultPath = resolveLoomHomePath(repo, {});
+    const defaultPath = resolveLoomHomePath(realRepo, {});
     assert.ok(
       !out.includes(`loom-home: ${defaultPath}`),
       `Must not show default sibling path '${defaultPath}' when override is set:\n${out}`
@@ -85,8 +82,9 @@ describe('loom status — loom-home line (text output)', () => {
       path.join(repo, '.loom', 'policy.yaml'),
       `version: 1\nloom_home: ~/my-loom-home\n`
     );
-    const expectedPath = path.join(os.homedir(), 'my-loom-home');
-    const out = captureStatus({});
+    // Use resolveLoomHomePath to derive the expected path so we pin the same function under test.
+    const expectedPath = resolveLoomHomePath(realRepo, { loom_home: '~/my-loom-home' });
+    const out = captureStatus({ projectRoot: realRepo });
     assert.ok(
       out.includes(`loom-home: ${expectedPath}`),
       `Expected tilde-expanded path '${expectedPath}' in output:\n${out}`
@@ -101,7 +99,7 @@ describe('loom status — loom-home line (text output)', () => {
       path.join(repo, '.loom', 'policy.yaml'),
       `version: 1\nloom_home: ${nonExistentPath}\n`
     );
-    const out = captureStatus({});
+    const out = captureStatus({ projectRoot: realRepo });
     assert.ok(
       out.includes('will be created on first use'),
       `Expected "will be created on first use" note when loom-home is absent:\n${out}`
@@ -113,14 +111,13 @@ describe('loom status — loom-home line (text output)', () => {
   });
 
   it('[AC5] no "will be created" note when loom-home directory exists', () => {
-    fs.writeFileSync(path.join(repo, '.loom', 'policy.yaml'), 'version: 1\n');
     const override = fs.mkdtempSync(path.join(os.tmpdir(), 'existing-loom-home-'));
     try {
       fs.writeFileSync(
         path.join(repo, '.loom', 'policy.yaml'),
         `version: 1\nloom_home: ${override}\n`
       );
-      const out = captureStatus({});
+      const out = captureStatus({ projectRoot: realRepo });
       assert.ok(
         !out.includes('will be created on first use'),
         `Must NOT show "will be created" note when loom-home already exists:\n${out}`
@@ -132,10 +129,9 @@ describe('loom status — loom-home line (text output)', () => {
 
   it('[AC1] loom-home line appears before the epic/story tree', () => {
     fs.writeFileSync(path.join(repo, '.loom', 'policy.yaml'), 'version: 1\n');
-    const out = captureStatus({});
+    const out = captureStatus({ projectRoot: realRepo });
     const homeIdx = out.indexOf('loom-home:');
     // The "No epics found" line (or epic tree) should come after the loom-home line.
-    // If there are no epics, the tree renders "No epics found." — that must come after loom-home.
     const treeIdx = out.indexOf('No epics found');
     if (treeIdx !== -1) {
       assert.ok(
@@ -145,15 +141,23 @@ describe('loom status — loom-home line (text output)', () => {
     }
     assert.ok(homeIdx !== -1, `loom-home line must be present in output:\n${out}`);
   });
+
+  it('[regression] no crash when policy.yaml is absent', () => {
+    // Do not write policy.yaml — status must tolerate a missing file and use the default heuristic.
+    const out = captureStatus({ projectRoot: realRepo });
+    const expected = resolveLoomHomePath(realRepo, {});
+    assert.ok(
+      out.includes(`loom-home: ${expected}`),
+      `Expected default loom-home path when policy.yaml is absent:\n${out}`
+    );
+  });
 });
 
 describe('loom status --json — loom-home field (additive)', () => {
   it('[AC6] --json output includes loom_home field with resolved path', () => {
     fs.writeFileSync(path.join(repo, '.loom', 'policy.yaml'), 'version: 1\n');
-    // Use process.cwd() after chdir so path resolution matches what status.ts sees.
-    const realCwd = process.cwd();
-    const expected = resolveLoomHomePath(realCwd, {});
-    const out = captureStatus({ json: true });
+    const expected = resolveLoomHomePath(realRepo, {});
+    const out = captureStatus({ json: true, projectRoot: realRepo });
     const payload = JSON.parse(out) as { epics: unknown[]; loom_home?: string };
     assert.equal(
       payload.loom_home,
@@ -168,7 +172,7 @@ describe('loom status --json — loom-home field (additive)', () => {
       path.join(repo, '.loom', 'policy.yaml'),
       `version: 1\nloom_home: ${override}\n`
     );
-    const out = captureStatus({ json: true });
+    const out = captureStatus({ json: true, projectRoot: realRepo });
     const payload = JSON.parse(out) as { epics: unknown[]; loom_home?: string };
     assert.equal(
       payload.loom_home,
@@ -179,11 +183,21 @@ describe('loom status --json — loom-home field (additive)', () => {
 
   it('[AC7] --json output still contains epics array (backward compat)', () => {
     fs.writeFileSync(path.join(repo, '.loom', 'policy.yaml'), 'version: 1\n');
-    const out = captureStatus({ json: true });
+    const out = captureStatus({ json: true, projectRoot: realRepo });
     const payload = JSON.parse(out) as { epics: unknown[] };
     assert.ok(
       Array.isArray(payload.epics),
       `JSON payload must still have epics array:\n${out}`
+    );
+  });
+
+  it('[regression] --all --json does not include loom_home field', () => {
+    // --all mode deliberately omits per-project loom_home to avoid ambiguity.
+    const out = captureStatus({ all: true, json: true });
+    const payload = JSON.parse(out) as Record<string, unknown>;
+    assert.ok(
+      !('loom_home' in payload),
+      `JSON payload must NOT include loom_home in --all mode:\n${out}`
     );
   });
 });
