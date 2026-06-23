@@ -1,7 +1,8 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, EpicStore, AuditLog } from '@loom-ai/core';
+import { EpicStore, AuditLog } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 /**
  * `loom archive <epic-id>` hides a run from the default `loom status`, web
@@ -53,13 +54,14 @@ function mutate(epicId: string, archive: boolean): void {
   }
 }
 
-function openLoom(): { db: ReturnType<typeof openDatabase>; loomDir: string } {
-  const loomDir = path.join(process.cwd(), '.loom');
+function openLoom(): { db: ReturnType<typeof openProjectDatabase>; loomDir: string } {
+  const projectRoot = process.cwd();
+  const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
     process.exit(1);
   }
-  return { db: openDatabase(loomDir), loomDir };
+  return { db: openProjectDatabase(projectRoot), loomDir };
 }
 
 export const spec: CommandDescription = {

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { resetDatabaseForTest, EMPTY_USAGE } from '@loom-ai/core';
+import { resetDatabaseForTest, EMPTY_USAGE, resolveRepoStatePaths } from '@loom-ai/core';
 import type { LLMClient, LLMRequest, LLMResponse } from '@loom-ai/core';
 import { runEpic } from '../commands/epic.js';
 
@@ -116,7 +116,8 @@ function epicRowViaFreshConn(id: string): {
   status: string;
   planning_phase: string | null;
 } | undefined {
-  const probe = new Database(path.join(tmpDir, '.loom', 'loom.db'), { readonly: true });
+  const { dbPath } = resolveRepoStatePaths(tmpDir, {});
+  const probe = new Database(dbPath, { readonly: true });
   try {
     return probe.prepare('SELECT id, title, status, planning_phase FROM epics WHERE id = ?').get(id) as
       | { id: string; title: string; status: string; planning_phase: string | null }
@@ -127,7 +128,8 @@ function epicRowViaFreshConn(id: string): {
 }
 
 function allEpicIdsViaFreshConn(): string[] {
-  const probe = new Database(path.join(tmpDir, '.loom', 'loom.db'), { readonly: true });
+  const { dbPath } = resolveRepoStatePaths(tmpDir, {});
+  const probe = new Database(dbPath, { readonly: true });
   try {
     return (probe.prepare('SELECT id FROM epics ORDER BY id').all() as { id: string }[]).map(
       (r) => r.id

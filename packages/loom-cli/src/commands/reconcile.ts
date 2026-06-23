@@ -1,7 +1,8 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDatabase, EpicReconciler } from '@loom-ai/core';
+import { EpicReconciler } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 export interface ReconcileCommandOptions {
   pr?: string;
@@ -27,7 +28,7 @@ export function runReconcile(epicId: string, opts: ReconcileCommandOptions = {})
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const reconciler = new EpicReconciler({
     projectRoot,
     db,

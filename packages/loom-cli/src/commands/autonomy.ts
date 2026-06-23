@@ -2,13 +2,13 @@ import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  openDatabase,
   EpicStore,
   AuditLog,
   AutonomyLevelSchema,
   setEpicAutonomy,
   EpicNotFoundError,
 } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 
 export interface AutonomyOptions {
   json?: boolean;
@@ -19,13 +19,14 @@ export interface AutonomyOptions {
  * (full-auto | checkpoint | manual). Omit `level` to print the current value.
  */
 export function runAutonomy(epicId: string, level: string | undefined, opts: AutonomyOptions = {}): void {
-  const loomDir = path.join(process.cwd(), '.loom');
+  const projectRoot = process.cwd();
+  const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const epicStore = new EpicStore(db);
 
   // Read mode: no level supplied.

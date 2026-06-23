@@ -5,7 +5,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  openDatabase,
   EpicStore,
   resetDatabaseForTest,
   computeOverlaps,
@@ -13,6 +12,7 @@ import {
   KNOWN_EXT,
   type OwnershipMap,
 } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import { printOverlapAdvisory } from '../crossEpicOverlap.js';
 
 // ---------------------------------------------------------------------------
@@ -437,7 +437,7 @@ describe('cross-epic overlap advisory — wiring at approve and dispatch', () =>
 
   function epicStatus(id: string): string | undefined {
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     const status = new EpicStore(db).get(id)?.status;
     resetDatabaseForTest();
     return status;
@@ -451,7 +451,7 @@ describe('cross-epic overlap advisory — wiring at approve and dispatch', () =>
     // Seed epic-100 (planned, the approve/dispatch target) and epic-200
     // (already in-flight). Both contracts claim the EXACT same path.
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     const store = new EpicStore(db);
     store.create('epic-100', 'Overlap target epic');
     const inflight = store.create('epic-200', 'In-flight epic');

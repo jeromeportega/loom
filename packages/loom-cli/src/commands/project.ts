@@ -1,7 +1,7 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ProjectRegistry, createDatabase, EpicStore, PolicyEngine, resolveRepoStatePaths } from '@loom-ai/core';
+import { ProjectRegistry, createDatabase, EpicStore, PolicyEngine, prepareRepoState } from '@loom-ai/core';
 
 export interface ProjectOptions {
   json?: boolean;
@@ -24,12 +24,11 @@ export function runProject(projectRoot: string, opts: ProjectOptions = {}): void
   let latestEpic: { id: string; status: string; title: string } | undefined;
   try {
     const peerLoomDir = path.join(entry.root, '.loom');
-    let peerLoomHome: string | undefined;
+    let peerPolicy: { loom_home?: string } = {};
     try {
-      peerLoomHome = PolicyEngine.load(peerLoomDir).policyData.loom_home;
+      peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
     } catch { /* use default */ }
-    const { namespaceDir } = resolveRepoStatePaths(entry.root, { loom_home: peerLoomHome ?? '' });
-    const dbPath = path.join(namespaceDir, 'loom.db');
+    const { dbPath } = prepareRepoState(entry.root, peerPolicy);
     if (fs.existsSync(dbPath)) {
       const db = createDatabase(dbPath);
       try {

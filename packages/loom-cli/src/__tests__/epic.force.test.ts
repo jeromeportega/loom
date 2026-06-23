@@ -7,11 +7,12 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import {
   MockLLMClient,
-  openDatabase,
   resetDatabaseForTest,
   AuditLog,
   EpicStore,
+  resolveRepoStatePaths,
 } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import type { LLMRequest, BriefRefinement } from '@loom-ai/core';
 import { runEpic } from '../commands/epic.js';
 
@@ -115,7 +116,8 @@ function forcedRowsViaFreshConn(): Array<{
   allowed: number | null;
   detail: string | null;
 }> {
-  const probe = new Database(path.join(tmpDir, '.loom', 'loom.db'), { readonly: true });
+  const { dbPath } = resolveRepoStatePaths(tmpDir, {});
+  const probe = new Database(dbPath, { readonly: true });
   try {
     return probe
       .prepare("SELECT command, allowed, detail FROM audit_log WHERE action = 'brief_gate_forced'")
@@ -194,7 +196,7 @@ describe('loom epic --force', () => {
     // Did not bail out — the planner was reached and produced an epic.
     assert.equal(exitCode, null);
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     assert.equal(new EpicStore(db).get('epic-001')?.status, 'planned', 'planner was invoked');
 
     // The forced override is audit-logged with the full critique embedded.
@@ -248,7 +250,7 @@ describe('loom epic --force', () => {
     assert.equal(refinerCalls.length, 1, 'refiner was invoked exactly once');
 
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     const row = new AuditLog(db).recent(50).find((r) => r.action === 'brief_gate_forced')!;
     assert.deepEqual(JSON.parse(row.detail!).critique, FAILING_CRITIQUE);
     resetDatabaseForTest();
@@ -260,7 +262,7 @@ describe('loom epic --force', () => {
     assert.equal(exitCode, 1, 'CLI exits non-zero on a failed gate');
 
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     const forced = new AuditLog(db).recent(50).filter((r) => r.action === 'brief_gate_forced');
     assert.equal(forced.length, 0, 'no forced row without --force');
     // The epic row is reserved at submission (before the refiner), so it exists
@@ -277,7 +279,7 @@ describe('loom epic --force', () => {
     assert.equal(exitCode, null);
 
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     assert.equal(new EpicStore(db).get('epic-001')?.status, 'planned');
     const forced = new AuditLog(db).recent(50).filter((r) => r.action === 'brief_gate_forced');
     assert.equal(forced.length, 0, 'a passing gate never audits a forced override');
@@ -305,7 +307,7 @@ describe('three-outcome gate routing', () => {
     assert.equal(exitCode, null, 'pass-clean exits 0 (null means no explicit exit)');
 
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     assert.equal(new EpicStore(db).get('epic-001')?.status, 'planned', 'planner was invoked');
     resetDatabaseForTest();
   });
@@ -316,7 +318,7 @@ describe('three-outcome gate routing', () => {
     assert.equal(exitCode, 1, 'below-threshold exits 1');
 
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     assert.notEqual(new EpicStore(db).get('epic-001')?.status, 'planned', 'planner not invoked');
     resetDatabaseForTest();
   });
@@ -331,7 +333,7 @@ describe('three-outcome gate routing', () => {
 
     // Planner never ran — reserved row must be cleaned up (not left dangling)
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     assert.equal(new EpicStore(db).get('epic-001')?.status, 'rejected', 'row cleaned up on exit 3');
     resetDatabaseForTest();
   });
@@ -342,7 +344,7 @@ describe('three-outcome gate routing', () => {
     assert.equal(exitCode, null, 'forced past pass-with-clarifications exits 0');
 
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     assert.equal(new EpicStore(db).get('epic-001')?.status, 'planned', 'planner was invoked');
     const forced = new AuditLog(db).recent(50).filter((r) => r.action === 'brief_gate_forced');
     assert.equal(forced.length, 1, 'one forced audit row written for pass-with-clarifications');

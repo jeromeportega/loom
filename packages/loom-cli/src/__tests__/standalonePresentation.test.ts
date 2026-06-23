@@ -24,8 +24,8 @@ import {
   resetDatabaseForTest,
   EpicStore,
   AgentStore,
-  openDatabase,
 } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import type { LLMRequest } from '@loom-ai/core';
 import { runEpic } from '../commands/epic.js';
 import { runApprove, runReject } from '../commands/gate.js';
@@ -281,7 +281,7 @@ describe('loom approve — standalone story uses story-NNN framing (AC3)', () =>
     // a fresh connection (not the one from beforeEach which may point at a
     // different tmpDir from a previous test run).
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     const store = new EpicStore(db);
     store.createStandalone(id, title);
     // Second reset: drop the singleton handle so the next openDatabase() call
@@ -318,7 +318,7 @@ describe('loom approve — standalone story uses story-NNN framing (AC3)', () =>
     assert.ok(approvedLine?.includes('story-043'), `output must show story-043. Got: ${approvedLine}`);
 
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     assert.equal(
       new EpicStore(db).get('epic-043')?.status,
       'approved',
@@ -381,7 +381,7 @@ describe('loom approve — standalone story uses story-NNN framing (AC3)', () =>
     assert.ok(rejectedLine?.includes('story-046'), `output must show story-046. Got: ${rejectedLine}`);
 
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     assert.equal(
       new EpicStore(db).get('epic-046')?.status,
       'rejected',
@@ -456,7 +456,7 @@ describe('weave/epic — DB agent row uses story-NNN id on the standalone path (
     const { exitCode } = await runInProcess(() => runEpic(BRIEF, { llm, force: true }));
     assert.equal(exitCode, null, 'must exit cleanly');
 
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     const epicStore = new EpicStore(db);
     // The container should be a standalone with kind='standalone'.
     const epics = epicStore.list({ includeStandalone: true });

@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDatabase, EpicStore, resetDatabaseForTest } from '@loom-ai/core';
+import { EpicStore, resetDatabaseForTest } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import type { RunOptions } from '../commands/run.js';
 import { runApprove } from '../commands/gate.js';
 
@@ -84,7 +85,7 @@ async function capture(fn: () => Promise<void> | void): Promise<Captured> {
 
 function epicStatus(id: string): string | undefined {
   resetDatabaseForTest();
-  const db = openDatabase(path.join(tmpDir, '.loom'));
+  const db = openProjectDatabase(tmpDir);
   const status = new EpicStore(db).get(id)?.status;
   resetDatabaseForTest();
   return status;
@@ -92,7 +93,7 @@ function epicStatus(id: string): string | undefined {
 
 function seedPlannedEpic(id: string, title: string): void {
   resetDatabaseForTest();
-  const db = openDatabase(path.join(tmpDir, '.loom'));
+  const db = openProjectDatabase(tmpDir);
   new EpicStore(db).create(id, title);
   resetDatabaseForTest();
 }
@@ -267,7 +268,7 @@ describe('loom approve --run — failure modes (story-007-004)', () => {
   it('an already-approved id with --run exits non-zero and never dispatches', async () => {
     seedPlannedEpic('epic-106', 'Already approved');
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     new EpicStore(db).updateStatus('epic-106', 'approved');
     resetDatabaseForTest();
 

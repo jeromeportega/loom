@@ -2,7 +2,6 @@ import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  openDatabase,
   PolicyEngine,
   createLLMClient,
   modelFor,
@@ -11,6 +10,7 @@ import {
   OpportunityStore,
   ProjectRegistry,
 } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import type { LLMClient, SignalScanner } from '@loom-ai/core';
 import type { OpportunityRecord } from '@loom-ai/core';
 
@@ -61,7 +61,7 @@ export async function runScanCommand(opts: ScanOptions = {}): Promise<void> {
   }
 
   const policy = PolicyEngine.load(loomDir).policyData;
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const auditLog = new AuditLog(db);
 
   let llm: LLMClient;
@@ -156,7 +156,7 @@ export function runOpportunitiesCommand(opts: { json?: boolean } = {}): void {
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const store = new OpportunityStore(db);
   const opportunities = store.listRanked();
 

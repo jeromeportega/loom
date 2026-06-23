@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MockLLMClient, resetDatabaseForTest, EpicStore, openDatabase } from '@loom-ai/core';
+import { MockLLMClient, resetDatabaseForTest, EpicStore } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import type { LLMRequest } from '@loom-ai/core';
 import { runWeave } from '../commands/weave.js';
 import { buildProgram } from '../index.js';
@@ -243,7 +244,7 @@ describe('loom weave integration: produces an epic via runEpic', () => {
 
     assert.equal(exitCode, null, 'exit 0 (null = no explicit exit) on a passing brief');
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     const epic = new EpicStore(db).get('epic-001');
     assert.equal(epic?.status, 'planned', 'planner completed an epic via runEpic');
     resetDatabaseForTest();
@@ -261,7 +262,7 @@ describe('loom weave integration: produces an epic via runEpic', () => {
     assert.equal(exitCode, null, 'forced weave exits 0');
 
     resetDatabaseForTest();
-    const db = openDatabase(path.join(tmpDir, '.loom'));
+    const db = openProjectDatabase(tmpDir);
     const epic = new EpicStore(db).get('epic-001');
     assert.equal(epic?.status, 'planned', 'planner completed an epic when --force is passed');
     resetDatabaseForTest();

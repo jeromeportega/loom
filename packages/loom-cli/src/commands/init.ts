@@ -2,7 +2,7 @@ import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { openDatabase, ProjectRegistry, bundledSkillsDir, missingPolicyKeys } from '@loom-ai/core';
+import { openDatabase, ProjectRegistry, bundledSkillsDir, missingPolicyKeys, PolicyEngine, prepareRepoState } from '@loom-ai/core';
 
 const LOOM_DIR = '.loom';
 const CLAUDE_SETTINGS = '.claude/settings.json';
@@ -44,17 +44,20 @@ export function runInit(options: { cursor?: boolean; yes?: boolean }): void {
   reportPolicyDrift(loomDir);
 
   // ─── SQLite DB ────────────────────────────────────────────────────────────
-  // openDatabase() opens an existing DB if present, otherwise creates a
-  // fresh one. Migrations are additive (CREATE TABLE IF NOT EXISTS, ALTER
-  // ADD COLUMN IF NOT EXISTS) — re-running `loom init` on a repo with an
-  // existing DB preserves all data and only adds any new columns from a
-  // newer schema version.
-  const dbExisted = fs.existsSync(path.join(loomDir, 'loom.db'));
-  openDatabase(loomDir);
+  // Route through prepareRepoState so the DB is created/opened at the
+  // canonical loom-home location (ADR-006 / story-053). prepareRepoState is
+  // idempotent: it migrates a legacy .loom/loom.db on the first call and is
+  // a cheap no-op thereafter. openDatabase then creates the DB if absent or
+  // opens the existing one (schema migrations are additive — no data loss).
+  let initPolicy: { loom_home?: string } = {};
+  try { initPolicy = PolicyEngine.load(loomDir).policyData; } catch { /* tolerate pre-existing minimal policy */ }
+  const { namespaceDir } = prepareRepoState(projectRoot, initPolicy);
+  const dbExisted = fs.existsSync(path.join(namespaceDir, 'loom.db'));
+  openDatabase(namespaceDir);
   console.log(
     dbExisted
-      ? '  exists   .loom/loom.db (migrated in place; data preserved)'
-      : '  created  .loom/loom.db'
+      ? '  exists   loom-home database (schema migrated in place; data preserved)'
+      : '  created  loom-home database'
   );
 
   // ─── machine-level project registry ──────────────────────────────────────

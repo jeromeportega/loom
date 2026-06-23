@@ -2,13 +2,13 @@ import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  openDatabase,
   AgentStore,
   EpicStore,
   AuditLog,
   LeaseStore,
   StoryRetryService,
 } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import type Database from 'better-sqlite3';
 import { runRun } from './run.js';
 
@@ -220,7 +220,7 @@ export async function runRetry(storyId: string, opts: RetryOptions = {}): Promis
     process.exit(1);
   }
 
-  const db = openDatabase(loomDir);
+  const db = openProjectDatabase(projectRoot);
   const prep = prepareRetry(db, projectRoot, storyId, opts);
 
   if (prep.status !== 'ready') {
