@@ -115,7 +115,6 @@ describe('v23 → v24 migration (standalone story container kind)', () => {
     runMigrations(db);
 
     assert.equal(schemaVersion(db), SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 24, 'SCHEMA_VERSION is 24');
     const after = epicColumns(db);
     assert.ok(after.includes('kind'), 'kind column added by v24 migration');
 
@@ -161,11 +160,11 @@ describe('v23 → v24 migration (standalone story container kind)', () => {
     db.close();
   });
 
-  it('fresh DB initializes with kind column present at SCHEMA_VERSION=24', () => {
+  it('fresh DB initializes with kind column present', () => {
     const dbPath = path.join(tmpDir, 'v24-fresh.db');
     const db = createDatabase(dbPath);
 
-    assert.equal(schemaVersion(db), 24);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
     const cols = epicColumns(db);
     assert.ok(cols.includes('kind'), 'kind column in fresh DB');
 
