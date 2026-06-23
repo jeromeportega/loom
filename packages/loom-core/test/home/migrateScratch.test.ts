@@ -290,3 +290,84 @@ describe('migratePlanningScratch — srcRoot preserved when git-tracked entries 
     );
   });
 });
+
+// ── EXDEV copy-throws: partial dst cleanup ────────────────────────────────────
+
+describe('migratePlanningScratch — EXDEV copy throws: partial dst is cleaned up', () => {
+  let tmp: string;
+  before(() => { tmp = makeTmp(); });
+  after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('removes the partial dstEntry and re-throws when copyDirRecursive fails mid-copy', () => {
+    const srcRoot = path.join(tmp, 'planning-copy-throws');
+    const dstRoot = path.join(tmp, 'dst-copy-throws', 'planning');
+    seedScratch(srcRoot, 'epic-003');
+
+    const origRename = (fs.renameSync as (...a: unknown[]) => void).bind(fs);
+    const origCopy = (fs.copyFileSync as (...a: unknown[]) => void).bind(fs);
+
+    // Patch renameSync to throw EXDEV so the copy fallback is invoked.
+    (fs as Record<string, unknown>)['renameSync'] = (src: unknown, dst: unknown) => {
+      if (path.basename(String(src)) === 'epic-003') {
+        throw Object.assign(new Error('cross-device link'), { code: 'EXDEV' });
+      }
+      origRename(src, dst);
+    };
+    // Patch copyFileSync to throw mid-copy (simulates disk-full / permission error).
+    let copyCallCount = 0;
+    (fs as Record<string, unknown>)['copyFileSync'] = (src: unknown, dst: unknown) => {
+      copyCallCount++;
+      if (copyCallCount >= 2) {
+        throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
+      }
+      origCopy(src, dst);
+    };
+
+    try {
+      assert.throws(
+        () => migratePlanningScratch({ srcRoot, dstRoot }),
+        (err: NodeJS.ErrnoException) => err.code === 'EPERM',
+        'must propagate the copy error',
+      );
+    } finally {
+      (fs as Record<string, unknown>)['renameSync'] = origRename;
+      (fs as Record<string, unknown>)['copyFileSync'] = origCopy;
+    }
+
+    // The partial dstEntry must have been cleaned up so the next run can retry.
+    assert.ok(
+      !fs.existsSync(path.join(dstRoot, 'epic-003')),
+      'partial dstEntry must be removed after copy failure',
+    );
+    // The srcEntry must still be present (nothing was deleted from src).
+    assert.ok(
+      fs.existsSync(path.join(srcRoot, 'epic-003')),
+      'srcEntry must remain intact after copy failure',
+    );
+  });
+});
+
+// ── Non-git directory: all entries migrate without git checks ─────────────────
+
+describe('migratePlanningScratch — non-git directory migrates all entries', () => {
+  let tmp: string;
+  before(() => { tmp = makeTmp(); });
+  after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  it('migrates all entries in a directory that is not a git repo', () => {
+    const srcRoot = path.join(tmp, 'nongit-planning');
+    const dstRoot = path.join(tmp, 'nongit-dst', 'planning');
+    // Seed two run directories — no git init, so neither is tracked.
+    seedScratch(srcRoot, 'epic-100');
+    seedScratch(srcRoot, 'epic-101');
+
+    const result = migratePlanningScratch({ srcRoot, dstRoot });
+
+    assert.equal(result.migrated, true);
+    assert.equal(result.from, srcRoot);
+    assert.ok(fs.existsSync(path.join(dstRoot, 'epic-100', 'project-brief.md')));
+    assert.ok(fs.existsSync(path.join(dstRoot, 'epic-101', 'project-brief.md')));
+    // srcRoot was fully emptied and removed.
+    assert.ok(!fs.existsSync(srcRoot), 'empty srcRoot must be removed');
+  });
+});

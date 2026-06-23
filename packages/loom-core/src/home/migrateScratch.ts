@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { MigrationResult } from './repoState.js';
-import { gitSafe } from '../orchestrator/git.js';
+import { gitSafe, isGitRepo } from '../orchestrator/git.js';
 
 /**
  * Migrate the planning scratch directory from in-repo to loom-home.
@@ -29,6 +29,12 @@ export function migratePlanningScratch(opts: {
     return { migrated: false, from: null, to: dstRoot, method: null };
   }
 
+  // Pre-check git state once. When srcRoot is inside a git working tree we
+  // use per-entry tracking checks to protect committed artifacts (AC3). When
+  // it is not (non-git project or git unavailable), no committed entries can
+  // exist so all entries are safe to migrate without per-entry checks.
+  const inGitRepo = isGitRepo(srcRoot);
+
   fs.mkdirSync(dstRoot, { recursive: true });
 
   let migratedCount = 0;
@@ -38,7 +44,7 @@ export function migratePlanningScratch(opts: {
     const srcEntry = path.join(srcRoot, entry);
     const dstEntry = path.join(dstRoot, entry);
 
-    if (isGitTrackedEntry(srcRoot, entry)) continue;
+    if (inGitRepo && isGitTrackedEntry(srcRoot, entry)) continue;
     if (fs.existsSync(dstEntry)) continue;
 
     try {
@@ -46,10 +52,18 @@ export function migratePlanningScratch(opts: {
       migratedCount++;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
-      copyDirRecursive(srcEntry, dstEntry);
-      fs.rmSync(srcEntry, { recursive: true, force: true });
-      migratedCount++;
-      usedCopy = true;
+      // Cross-filesystem move: copy then delete. If the copy fails midway,
+      // clean up the partial destination before re-throwing so the next
+      // invocation does not skip it via the existsSync guard above.
+      try {
+        copyDirRecursive(srcEntry, dstEntry);
+        fs.rmSync(srcEntry, { recursive: true, force: true });
+        migratedCount++;
+        usedCopy = true;
+      } catch (copyErr) {
+        try { fs.rmSync(dstEntry, { recursive: true, force: true }); } catch { /* best-effort */ }
+        throw copyErr;
+      }
     }
   }
 

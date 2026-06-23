@@ -57,10 +57,22 @@ export async function runEpic(
   const planningRoot = repoStatePaths.planningRoot;
 
   // Relocate any existing in-repo scratch before the planner starts (AC2, AC3).
-  migratePlanningScratch({
-    srcRoot: path.join(projectRoot, '.loom', 'planning'),
-    dstRoot: planningRoot,
-  });
+  // Non-critical: a migration failure must not abort the planning run — the
+  // planner writes directly to planningRoot on this invocation regardless.
+  try {
+    const migrationResult = migratePlanningScratch({
+      srcRoot: path.join(projectRoot, '.loom', 'planning'),
+      dstRoot: planningRoot,
+    });
+    if (migrationResult.migrated) {
+      console.log(
+        `  Planning scratch relocated: ${migrationResult.from} → ${migrationResult.to}` +
+          ` (${migrationResult.method})`,
+      );
+    }
+  } catch (err) {
+    console.warn(`  Warning: could not relocate planning scratch — ${(err as Error).message}`);
+  }
 
   // Fail fast on a bad cursor_model before spending any LLM tokens. Exit only
   // on a confirmed-invalid id; an 'unavailable' probe (FR-8) or a boundary-
