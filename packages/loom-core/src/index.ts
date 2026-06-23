@@ -16,3 +16,5 @@ export * from './mcp/index.js';
 export * from './intake/IntakeClassifier.js';
 export * from './intake/routing.js';
 export { resolveLoomHomePath } from './home/resolveLoomHomePath.js';
+export { resolveRepoStatePaths } from './home/repoState.js';
+export { migratePlanningScratch } from './home/migrateScratch.js';

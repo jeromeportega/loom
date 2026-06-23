@@ -57,6 +57,17 @@ export function migratePlanningScratch(opts: {
     return { migrated: false, from: null, to: dstRoot, method: null };
   }
 
+  // Remove the srcRoot directory itself when all untracked entries were
+  // relocated and only git-tracked entries (if any) remain. If git-tracked
+  // entries are present, srcRoot will be non-empty and we leave it in place.
+  try {
+    if (fs.readdirSync(srcRoot).length === 0) {
+      fs.rmdirSync(srcRoot);
+    }
+  } catch {
+    // Best-effort: failing to remove an empty parent does not invalidate the migration.
+  }
+
   return {
     migrated: true,
     from: srcRoot,
@@ -67,7 +78,7 @@ export function migratePlanningScratch(opts: {
 
 function isGitTrackedEntry(dir: string, entry: string): boolean {
   const res = gitSafe(dir, ['ls-files', entry]);
-  return res.ok && res.output.length > 0;
+  return res.ok && res.output.trim().length > 0;
 }
 
 function copyDirRecursive(src: string, dst: string): void {

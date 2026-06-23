@@ -228,11 +228,65 @@ describe('migratePlanningScratch — stale removal after confirmed move (AC3/FR-
     assert.ok(fs.existsSync(path.join(dstRoot, 'epic-007', 'project-brief.md')));
   });
 
+  it('srcRoot itself is removed when all entries were untracked and migrated', () => {
+    // After the previous test, srcRoot exists but is now empty (epic-007 was moved).
+    // The migration should have removed the empty srcRoot.
+    const srcRoot = path.join(tmp, 'planning-stale');
+    assert.ok(
+      !fs.existsSync(srcRoot),
+      'empty srcRoot must be removed once all untracked entries are migrated',
+    );
+  });
+
   it('subsequent call with same srcRoot/dstRoot returns migrated:false (idempotent)', () => {
     const srcRoot = path.join(tmp, 'planning-stale');
     const dstRoot = path.join(tmp, 'loom-home2', 'planning');
-    // srcRoot now has no untracked entries (epic-007 was moved above)
+    // srcRoot was removed above — does-not-exist path returns migrated:false
     const result = migratePlanningScratch({ srcRoot, dstRoot });
     assert.equal(result.migrated, false);
+  });
+});
+
+// ── srcRoot retention when git-tracked entries remain ───────────────────────
+
+describe('migratePlanningScratch — srcRoot preserved when git-tracked entries remain', () => {
+  let projectRoot: string;
+  let srcRoot: string;
+  let dstRoot: string;
+
+  before(() => {
+    projectRoot = makeTmp();
+    srcRoot = path.join(projectRoot, '.loom', 'planning');
+    dstRoot = path.join(projectRoot, 'loom-home', 'planning');
+
+    gitInit(projectRoot);
+    gitCommit(projectRoot, 'initial empty commit');
+
+    // Commit a planning artifact (stays in repo)
+    const committedDir = path.join(srcRoot, 'epic-011');
+    fs.mkdirSync(committedDir, { recursive: true });
+    fs.writeFileSync(path.join(committedDir, 'prd.md'), '# Committed\n');
+    gitAdd(projectRoot, path.relative(projectRoot, path.join(committedDir, 'prd.md')));
+    gitCommit(projectRoot, 'add committed artifact');
+
+    // Add an untracked scratch dir
+    seedScratch(srcRoot, 'epic-012');
+  });
+
+  after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+
+  it('migrates the untracked entry and leaves srcRoot because tracked entries remain', () => {
+    migratePlanningScratch({ srcRoot, dstRoot });
+    // Untracked epic-012 was migrated
+    assert.ok(fs.existsSync(path.join(dstRoot, 'epic-012', 'project-brief.md')));
+    // srcRoot still exists because epic-011 (git-tracked) is still there
+    assert.ok(
+      fs.existsSync(srcRoot),
+      'srcRoot must NOT be removed when git-tracked entries remain',
+    );
+    assert.ok(
+      fs.existsSync(path.join(srcRoot, 'epic-011', 'prd.md')),
+      'git-tracked epic-011 must still be in srcRoot',
+    );
   });
 });
