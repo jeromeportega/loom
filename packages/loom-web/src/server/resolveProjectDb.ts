@@ -81,8 +81,11 @@ export function makeResolveProjectDb(
     try {
       peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
     } catch (loadErr) {
+      // Log the full error (which may include absolute filesystem paths) server-side only.
+      // Return a sanitized message to the client to avoid leaking internal path structure.
+      console.error(`[resolveProjectDb] cannot load policy for project ${raw}:`, loadErr);
       throw Object.assign(
-        new Error(`cannot load policy for project ${raw}: ${(loadErr as Error).message}`),
+        new Error('cannot load policy for project — check server logs for details'),
         { statusCode: 400 },
       );
     }

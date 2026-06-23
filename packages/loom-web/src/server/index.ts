@@ -681,7 +681,14 @@ function openPeer(
   // The singleton would alias the current-project DB and close-on-cleanup
   // would tear down the long-lived connection the rest of the server uses.
   const peerLoomDir = path.join(root, '.loom');
-  const peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
+  let peerPolicy: { loom_home?: string };
+  try {
+    peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
+  } catch {
+    // Absent or malformed policy.yaml — fall back to default loom_home so the
+    // peer DB can still be opened. Matches the degraded behaviour of crossEpicOverlap.
+    peerPolicy = { loom_home: '' };
+  }
   const { namespaceDir: peerNsDir } = resolveRepoStatePaths(root, peerPolicy);
   const peerDb = createDatabase(path.join(peerNsDir, 'loom.db'));
   const peerEpics = new EpicStore(peerDb);

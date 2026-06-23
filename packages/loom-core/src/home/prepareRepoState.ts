@@ -8,6 +8,8 @@ import { resolveRepoStatePaths, type RepoStatePaths } from './repoState.js';
 import { migrateStateDatabase } from './migrateState.js';
 import { migratePlanningScratch } from './migrateScratch.js';
 
+const LOCK_STALE_CROSS_HOST_MS = 5 * 60 * 1000; // 5 minutes
+
 const LOCK_DIR_NAME = '.migrate.lock';
 const OWNER_FILE = 'owner.json';
 
@@ -23,7 +25,17 @@ function writeLock(lockDir: string): void {
     hostname: os.hostname(),
     started_at: new Date().toISOString(),
   };
-  fs.writeFileSync(path.join(lockDir, OWNER_FILE), JSON.stringify(owner), 'utf8');
+  const payload = JSON.stringify(owner);
+  // Write to a temp file first, then rename into the lock dir so owner.json
+  // is never observed in a partially-written state.
+  const tmp = path.join(lockDir, `${OWNER_FILE}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, payload, 'utf8');
+  try {
+    fs.renameSync(tmp, path.join(lockDir, OWNER_FILE));
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* best-effort cleanup */ }
+    throw err;
+  }
 }
 
 function readLockOwner(lockDir: string): LockOwner | null {
@@ -40,8 +52,10 @@ function isLockStale(lockDir: string): boolean {
   if (!owner) return true; // No owner.json → stale
 
   if (owner.hostname !== os.hostname()) {
-    // Different host; cannot check PID — treat as live (conservative).
-    return false;
+    // Different host; cannot check PID. Use age as a fallback: a lock older
+    // than LOCK_STALE_CROSS_HOST_MS is assumed to be from a crashed process.
+    const age = Date.now() - Date.parse(owner.started_at);
+    return Number.isFinite(age) && age > LOCK_STALE_CROSS_HOST_MS;
   }
 
   // Same host: check whether the owning process is still alive.
@@ -121,11 +135,20 @@ export function prepareRepoState(
     // openDatabase() would create an empty file at paths.dbPath before the
     // winner's renameSync runs, triggering the winner's fs.existsSync guard and
     // permanently orphaning all historical state.
+    //
+    // Uses a Date.now() busy-poll instead of Atomics.wait: Node.js forbids
+    // Atomics.wait on the main thread (throws TypeError on Node ≥ 9.4).
     if (!fs.existsSync(paths.dbPath)) {
-      const pollBuf = new Int32Array(new SharedArrayBuffer(4));
       const deadline = Date.now() + 10_000;
       while (!fs.existsSync(paths.dbPath) && Date.now() < deadline) {
-        Atomics.wait(pollBuf, 0, 0, 20);
+        const until = Date.now() + 20;
+        while (Date.now() < until) { /* busy-wait 20 ms */ }
+      }
+      if (!fs.existsSync(paths.dbPath)) {
+        throw new Error(
+          `[loom] Timed out waiting for migration to complete at ${paths.dbPath}. ` +
+          'Another process is migrating the database. Try again once it finishes.',
+        );
       }
     }
     return paths;

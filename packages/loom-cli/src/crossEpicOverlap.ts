@@ -155,6 +155,11 @@ function defaultListInFlightEpicIds(projectRoot: string): string[] {
     // Fall back to no-override so the overlap check degrades gracefully rather than
     // crashing the entire `loom run` preflight.
   }
+  // openDatabase(namespaceDir) returns the existing _db singleton when one is
+  // already open. In run.ts, prepareRepoState() runs before printOverlapAdvisory
+  // so the singleton is already at the migrated loom-home path. In gate.ts,
+  // openLoom() sets the singleton first and openDatabase() returns it unchanged.
+  // NEVER call this before prepareRepoState (loom run) or openLoom (loom approve).
   const { namespaceDir } = resolveRepoStatePaths(projectRoot, { loom_home: loomHome });
   const db = openDatabase(namespaceDir);
   const store = new EpicStore(db);

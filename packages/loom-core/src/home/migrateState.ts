@@ -127,7 +127,9 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
     fs.renameSync(srcPath, dstPath);
     if (walHasResidual && fs.existsSync(srcWalPath)) {
       // Move residual WAL alongside the main file, then consolidate at dst.
-      try { fs.renameSync(srcWalPath, dstPath + '-wal'); } catch { /* best-effort */ }
+      // Non-best-effort: if WAL rename fails, throw to prevent removeSidecars
+      // from silently discarding committed WAL frames.
+      fs.renameSync(srcWalPath, dstPath + '-wal');
       reCheckpointAtDst(dstPath);
     }
     removeSidecars(srcPath);
@@ -157,11 +159,20 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
 
     // Atomic rename temp into final position.
     fs.renameSync(tmpPath, dstPath);
+    // tmpPath is now at dstPath; clear the flag so the catch block does not
+    // try to unlink it there (it no longer exists at tmpPath).
+    tmpCreated = false;
+
     if (walHasResidual && fs.existsSync(tmpWalPath)) {
-      try { fs.renameSync(tmpWalPath, dstPath + '-wal'); } catch { /* best-effort */ }
+      // Non-best-effort: confirm the WAL is in place before checkpointing and
+      // before unlinking the source. If the rename fails, throwing here prevents
+      // removeSidecars(srcPath) from running and discarding committed WAL frames.
+      // Source is still intact at this point and can be retried.
+      if (!fs.existsSync(dstPath + '-wal')) {
+        fs.renameSync(tmpWalPath, dstPath + '-wal');
+      }
       reCheckpointAtDst(dstPath);
     }
-    tmpCreated = false;
 
     // Only delete source AFTER destination is fully in place.
     fs.unlinkSync(srcPath);

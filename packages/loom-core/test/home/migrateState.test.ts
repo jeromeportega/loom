@@ -595,6 +595,83 @@ describe('prepareRepoState — crash recovery (AC5, FR-3)', () => {
   });
 });
 
+// ── Cross-host stale lock recovery ───────────────────────────────────────────
+
+describe('prepareRepoState — cross-host stale lock (age-based staleness)', () => {
+  let tmp: string;
+  let loomHome: string;
+  let projectRoot: string;
+  let seed: SeedResult;
+
+  before(() => {
+    tmp = makeTmp();
+    loomHome = path.join(tmp, 'loom-home');
+    projectRoot = path.join(tmp, 'project');
+    const loomDir = path.join(projectRoot, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    fs.writeFileSync(path.join(loomDir, 'policy.yaml'), '', 'utf8');
+
+    const src = createDatabase(path.join(loomDir, 'loom.db'));
+    seed = seedDb(src);
+    src.close();
+  });
+  after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  it('clears a cross-host lock older than 5 minutes and migrates successfully', () => {
+    const policy = { loom_home: loomHome };
+    const paths = resolveRepoStatePaths(projectRoot, policy);
+    fs.mkdirSync(paths.namespaceDir, { recursive: true });
+
+    // Plant a lock from a different host with a very old started_at (> 5 min).
+    const lockDir = path.join(paths.namespaceDir, '.migrate.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+    const staleOwner = {
+      pid: 12345,
+      hostname: 'other-host-that-does-not-exist',
+      started_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(), // 10 min ago
+    };
+    fs.writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify(staleOwner));
+
+    // prepareRepoState must treat this as stale (age > 5 min), clear it, and migrate.
+    const result = prepareRepoState(projectRoot, policy);
+
+    assert.ok(fs.existsSync(result.dbPath), 'DB must be migrated even with cross-host stale lock');
+    assert.ok(!fs.existsSync(lockDir), 'stale cross-host lock must be removed after migration');
+
+    const dst = new Database(result.dbPath, { readonly: true });
+    try {
+      const n = dst.prepare('SELECT COUNT(*) AS n FROM epics').get() as { n: number };
+      assert.equal(n.n, seed.epicIds.length, 'all rows must be present after cross-host stale-lock recovery');
+    } finally {
+      dst.close();
+    }
+  });
+
+  it('treats a fresh cross-host lock as live (does not re-migrate)', () => {
+    // At this point the DB was already migrated by the previous test.
+    const policy = { loom_home: loomHome };
+    const paths = resolveRepoStatePaths(projectRoot, policy);
+
+    // Plant a FRESH cross-host lock (< 5 min old).
+    const lockDir = path.join(paths.namespaceDir, '.migrate.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+    const freshOwner = {
+      pid: 99999,
+      hostname: 'another-host',
+      started_at: new Date().toISOString(), // just now — NOT stale
+    };
+    fs.writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify(freshOwner));
+
+    // The DB already exists at dstPath (from the previous migration), so the
+    // loser path should return immediately without timing out.
+    const result = prepareRepoState(projectRoot, policy);
+    assert.ok(fs.existsSync(result.dbPath), 'DB must still be accessible when fresh cross-host lock is present');
+
+    // Clean up the manually created lock so other tests aren't affected.
+    fs.rmSync(lockDir, { recursive: true, force: true });
+  });
+});
+
 // ── Stale-source removal (AC6, FR-8) ─────────────────────────────────────────
 
 describe('migrateStateDatabase — stale source removal (AC6, FR-8)', () => {
