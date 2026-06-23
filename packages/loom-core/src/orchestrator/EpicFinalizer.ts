@@ -22,6 +22,7 @@ import { resolveLoomHomePath } from '../home/resolveLoomHomePath.js';
 import { ensureLoomHome } from '../home/ensureLoomHome.js';
 import { routeArtifacts } from '../home/artifactRouter.js';
 import { commitArtifacts } from '../home/commitArtifacts.js';
+import { resolveRepoStatePaths } from '../home/repoState.js';
 
 export interface EpicFinalizerOptions {
   projectRoot: string;
@@ -823,7 +824,8 @@ export class EpicFinalizer {
         ? path.basename(path.dirname(epic.brief_path))
         : epicId;
 
-      const planningBase = path.join(projectRoot, '.loom', 'planning', runId);
+      const { planningRoot } = resolveRepoStatePaths(projectRoot, { loom_home: this.opts.loomHome });
+      const planningBase = path.join(planningRoot, runId);
       const artifactSources = {
         brief: epic.brief_path ? path.join(projectRoot, epic.brief_path) : undefined,
         prd: epic.prd_path ? path.join(projectRoot, epic.prd_path) : undefined,
