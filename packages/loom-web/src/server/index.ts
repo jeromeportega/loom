@@ -412,15 +412,18 @@ export function createApp(opts: CreateAppOptions): Express {
         const peerDbPath = path.join(peerNamespaceDir, 'loom.db');
         if (fs.existsSync(peerDbPath)) {
           const peerDb = createDatabase(peerDbPath);
-          // Count every epic (including archived) — the directory count is a
-          // "how much has this project done" signal, not a working set.
-          const peerEpics = new EpicStore(peerDb).list({ includeArchived: true });
-          epicCount = peerEpics.length;
-          const last = peerEpics[peerEpics.length - 1];
-          if (last) {
-            latestEpic = { id: last.id, title: last.title, status: last.status };
+          try {
+            // Count every epic (including archived) — the directory count is a
+            // "how much has this project done" signal, not a working set.
+            const peerEpics = new EpicStore(peerDb).list({ includeArchived: true });
+            epicCount = peerEpics.length;
+            const last = peerEpics[peerEpics.length - 1];
+            if (last) {
+              latestEpic = { id: last.id, title: last.title, status: last.status };
+            }
+          } finally {
+            peerDb.close();
           }
-          peerDb.close();
         }
       } catch {
         // Best-effort — registry entry stays useful without the snapshot.

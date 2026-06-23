@@ -147,8 +147,15 @@ export function printOverlapAdvisory(
 /** Default in-flight epic lookup: read the loom DB at the loom-home-resolved path. */
 function defaultListInFlightEpicIds(projectRoot: string): string[] {
   const loomDir = path.join(projectRoot, '.loom');
-  const policy = PolicyEngine.load(loomDir).policyData;
-  const { namespaceDir } = resolveRepoStatePaths(projectRoot, policy);
+  let loomHome = '';
+  try {
+    loomHome = PolicyEngine.load(loomDir).policyData.loom_home ?? '';
+  } catch {
+    // .loom/policy.yaml is absent or malformed (e.g. project never fully initialised).
+    // Fall back to no-override so the overlap check degrades gracefully rather than
+    // crashing the entire `loom run` preflight.
+  }
+  const { namespaceDir } = resolveRepoStatePaths(projectRoot, { loom_home: loomHome });
   const db = openDatabase(namespaceDir);
   const store = new EpicStore(db);
   const ids: string[] = [];

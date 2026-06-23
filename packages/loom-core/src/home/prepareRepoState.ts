@@ -48,8 +48,10 @@ function isLockStale(lockDir: string): boolean {
   try {
     process.kill(owner.pid, 0); // Throws ESRCH if process is gone.
     return false; // Process alive → not stale.
-  } catch {
-    return true; // Process dead → stale.
+  } catch (err: unknown) {
+    // ESRCH = no such process (dead). EPERM = alive but owned by another user.
+    // Only treat as stale when we are certain the process is gone.
+    return (err as NodeJS.ErrnoException).code === 'ESRCH';
   }
 }
 
@@ -61,7 +63,7 @@ function isLockStale(lockDir: string): boolean {
 function acquireMigrateLock(namespaceDir: string): boolean {
   const lockDir = path.join(namespaceDir, LOCK_DIR_NAME);
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       fs.mkdirSync(lockDir);
       writeLock(lockDir);
@@ -114,8 +116,18 @@ export function prepareRepoState(
   const acquired = acquireMigrateLock(paths.namespaceDir);
 
   if (!acquired) {
-    // Another process holds the lock. It will (or has already) migrated the DB.
-    // Just return paths; the caller opens the DB at paths.dbPath.
+    // Another process holds the lock and is migrating the DB. Spin-wait until
+    // it places the DB at paths.dbPath. Without this guard, the caller's
+    // openDatabase() would create an empty file at paths.dbPath before the
+    // winner's renameSync runs, triggering the winner's fs.existsSync guard and
+    // permanently orphaning all historical state.
+    if (!fs.existsSync(paths.dbPath)) {
+      const pollBuf = new Int32Array(new SharedArrayBuffer(4));
+      const deadline = Date.now() + 10_000;
+      while (!fs.existsSync(paths.dbPath) && Date.now() < deadline) {
+        Atomics.wait(pollBuf, 0, 0, 20);
+      }
+    }
     return paths;
   }
 

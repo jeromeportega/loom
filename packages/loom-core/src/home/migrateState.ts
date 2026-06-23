@@ -6,13 +6,29 @@ import type { MigrationResult } from './repoState.js';
 const DB_FILENAME = 'loom.db';
 const KEY_TABLES = ['epics', 'agents', 'audit_log', 'skill_usage', 'lessons'];
 
-function checkpointAndClose(dbPath: string): void {
+/**
+ * Checkpoints WAL pages into the main DB file and closes.
+ * Returns true when the WAL file still has residual data after the checkpoint
+ * (which can happen when concurrent readers hold a read transaction and prevent
+ * a full TRUNCATE — the residual frames are still committed and must travel
+ * alongside the main file so no rows are lost).
+ */
+function checkpointAndClose(dbPath: string): boolean {
   const db = new Database(dbPath);
   try {
     db.pragma('wal_checkpoint(TRUNCATE)');
   } finally {
     db.close();
   }
+  const walPath = dbPath + '-wal';
+  return fs.existsSync(walPath) && fs.statSync(walPath).size > 0;
+}
+
+function reCheckpointAtDst(dstPath: string): void {
+  try {
+    const db = new Database(dstPath);
+    try { db.pragma('wal_checkpoint(TRUNCATE)'); } finally { db.close(); }
+  } catch { /* best-effort */ }
 }
 
 function removeSidecars(dbPath: string): void {
@@ -101,11 +117,19 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
   fs.mkdirSync(path.dirname(dstPath), { recursive: true });
 
   // Fold all WAL pages into the main file before any move.
-  checkpointAndClose(srcPath);
+  // Returns true when concurrent readers prevented a full checkpoint and the
+  // WAL sidecar still contains committed frames that must move with the DB.
+  const walHasResidual = checkpointAndClose(srcPath);
+  const srcWalPath = srcPath + '-wal';
 
   // Attempt atomic rename (same filesystem).
   try {
     fs.renameSync(srcPath, dstPath);
+    if (walHasResidual && fs.existsSync(srcWalPath)) {
+      // Move residual WAL alongside the main file, then consolidate at dst.
+      try { fs.renameSync(srcWalPath, dstPath + '-wal'); } catch { /* best-effort */ }
+      reCheckpointAtDst(dstPath);
+    }
     removeSidecars(srcPath);
     return { migrated: true, from: srcPath, to: dstPath, method: 'rename' };
   } catch (err: unknown) {
@@ -116,9 +140,13 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
   // EXDEV fallback: copy → verify → atomic rename into place → unlink source.
   // `fs.unlinkSync(srcPath)` is structurally unreachable on any failure path.
   const tmpPath = `${dstPath}.tmp-${process.pid}`;
+  const tmpWalPath = `${tmpPath}-wal`;
   let tmpCreated = false;
   try {
     fs.copyFileSync(srcPath, tmpPath);
+    if (walHasResidual && fs.existsSync(srcWalPath)) {
+      try { fs.copyFileSync(srcWalPath, tmpWalPath); } catch { /* best-effort */ }
+    }
     tmpCreated = true;
 
     if (!verifyMigration(srcPath, tmpPath)) {
@@ -129,6 +157,10 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
 
     // Atomic rename temp into final position.
     fs.renameSync(tmpPath, dstPath);
+    if (walHasResidual && fs.existsSync(tmpWalPath)) {
+      try { fs.renameSync(tmpWalPath, dstPath + '-wal'); } catch { /* best-effort */ }
+      reCheckpointAtDst(dstPath);
+    }
     tmpCreated = false;
 
     // Only delete source AFTER destination is fully in place.
@@ -139,6 +171,7 @@ export function migrateStateDatabase(opts: { srcDir: string; dstPath: string }):
   } catch (err) {
     if (tmpCreated) {
       try { fs.unlinkSync(tmpPath); } catch { /* best-effort */ }
+      try { if (fs.existsSync(tmpWalPath)) fs.unlinkSync(tmpWalPath); } catch { /* best-effort */ }
     }
     throw err;
   }

@@ -77,8 +77,16 @@ export function makeResolveProjectDb(
     }
 
     const peerLoomDir = path.join(raw, '.loom');
-    const peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
-    const { namespaceDir: peerNsDir } = resolveRepoStatePaths(raw, peerPolicy);
+    let peerPolicy: { loom_home?: string };
+    try {
+      peerPolicy = PolicyEngine.load(peerLoomDir).policyData;
+    } catch (loadErr) {
+      throw Object.assign(
+        new Error(`cannot load policy for project ${raw}: ${(loadErr as Error).message}`),
+        { statusCode: 400 },
+      );
+    }
+    const { namespaceDir: peerNsDir } = resolveRepoStatePaths(raw, { loom_home: peerPolicy.loom_home ?? '' });
     const dbPath = path.join(peerNsDir, 'loom.db');
     if (!fs.existsSync(dbPath)) {
       throw Object.assign(
