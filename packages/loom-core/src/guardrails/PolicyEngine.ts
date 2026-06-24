@@ -1,12 +1,9 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { minimatch } from 'minimatch';
-import yaml from 'js-yaml';
-import { ZodError } from 'zod';
 import { PolicySchema, type Policy, type PolicyCheckResult } from '../types.js';
 import { parseCommand } from './CommandParser.js';
-import { describePolicyIssues, PolicyValidationError } from './policyError.js';
+import { resolveEffectiveConfig } from '../config/resolveEffectiveConfig.js';
 
 export class PolicyEngine {
   private policy: Policy;
@@ -15,21 +12,15 @@ export class PolicyEngine {
     this.policy = policy;
   }
 
-  static load(loomdir: string): PolicyEngine {
-    const policyPath = path.join(loomdir, 'policy.yaml');
-    if (!fs.existsSync(policyPath)) {
-      return new PolicyEngine(PolicySchema.parse({}));
-    }
-    const raw = yaml.load(fs.readFileSync(policyPath, 'utf8')) as unknown;
-    try {
-      const parsed = PolicySchema.parse(raw ?? {});
-      return new PolicyEngine(parsed);
-    } catch (err) {
-      if (err instanceof ZodError) {
-        throw new PolicyValidationError(policyPath, describePolicyIssues(err));
-      }
-      throw err;
-    }
+  static load(
+    loomdir: string,
+    opts?: { projectRoot?: string; env?: NodeJS.ProcessEnv },
+  ): PolicyEngine {
+    const projectRoot = opts?.projectRoot ?? path.dirname(loomdir);
+    // env defaults to process.env so existing single-arg call sites inherit
+    // real env vars; pass opts.env: {} for hermetic tests.
+    const { policy } = resolveEffectiveConfig({ loomdir, projectRoot, env: opts?.env ?? process.env });
+    return new PolicyEngine(policy);
   }
 
   static defaultPolicy(): Policy {
@@ -240,7 +231,7 @@ export class PolicyEngine {
         allowed: false,
         rule: 'git.allowed_remotes',
         reason:
-          'No allowed_remotes configured in policy.yaml — all remote pushes are blocked',
+          'No allowed_remotes configured in the effective policy — all remote pushes are blocked',
       };
     }
     for (const pattern of allowed_remotes) {

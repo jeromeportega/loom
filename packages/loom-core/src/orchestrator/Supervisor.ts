@@ -464,7 +464,13 @@ export class Supervisor {
       if (!epic) continue;
       const autonomy = this.epics.getAutonomy(epic.id);
       if (autonomy !== 'manual') {
-        const policy = PolicyEngine.load(loomDir).policyData;
+        let policy: ReturnType<typeof PolicyEngine.defaultPolicy>;
+        try {
+          policy = PolicyEngine.load(loomDir).policyData;
+        } catch {
+          // Never let a policy load failure crash dispatch — use safe defaults.
+          policy = PolicyEngine.defaultPolicy();
+        }
         await approveAndDispatch(
           { epicStore: this.epics, auditLog: this.audit, policy },
           epic.id,
