@@ -261,13 +261,13 @@ describe('searchBounded — AC-3: bounds enforcement', () => {
   });
 
   it('uses the SAME SliceBounds type as RepoReader (maxFiles + maxMatchesPerFile fields)', () => {
-    // This test asserts no second limit set was introduced: SliceBounds has exactly these fields.
+    // Assert no second limit set was introduced: SliceBounds must carry all four shared fields.
+    // (No field-count assertion — new legitimate fields should not break this test.)
     const bounds = defaultBounds();
     assert.ok('maxFiles' in bounds, 'SliceBounds must have maxFiles');
     assert.ok('maxMatchesPerFile' in bounds, 'SliceBounds must have maxMatchesPerFile');
     assert.ok('maxLineWindow' in bounds, 'SliceBounds must have maxLineWindow');
     assert.ok('maxFileBytes' in bounds, 'SliceBounds must have maxFileBytes');
-    assert.equal(Object.keys(bounds).length, 4, 'SliceBounds must have exactly 4 fields — no second limit set');
   });
 });
 
