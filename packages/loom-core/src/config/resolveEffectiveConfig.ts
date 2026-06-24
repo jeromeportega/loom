@@ -55,9 +55,15 @@ export function resolveEffectiveConfig(opts: ResolveOptions): EffectiveConfig {
     opts.projectRoot,
     { loom_home: typeof rawLoomHome === 'string' ? rawLoomHome : undefined },
   );
+  // Normalize to an absolute path. resolveLoomHomePath may return a relative path
+  // when loom_home is set to something like '../../etc/evil' in policy.yaml, which
+  // would resolve relative to process.cwd() — not projectRoot — at runtime.
+  const absLoomHome = path.isAbsolute(loomHome)
+    ? loomHome
+    : path.resolve(opts.projectRoot, loomHome);
 
   // Step 3: Team layer.
-  const teamLayer = loadTeamConfigLayer(loomHome);
+  const teamLayer = loadTeamConfigLayer(absLoomHome);
 
   // Step 4: Env layer.
   const envLayer = loadEnvLayer(opts.env ?? process.env);
@@ -75,7 +81,20 @@ export function resolveEffectiveConfig(opts: ResolveOptions): EffectiveConfig {
     return { policy, provenance };
   } catch (err) {
     if (err instanceof ZodError) {
-      throw new PolicyValidationError(policyPath, describePolicyIssues(err));
+      // Annotate each issue's hint with the contributing layer from the provenance
+      // map so operators know whether to fix policy.yaml, team-config.yaml, or a
+      // LOOM_* env variable — not just that the merged config is invalid.
+      const issues = describePolicyIssues(err).map(issue => {
+        const layer = provenance[issue.fieldPath];
+        if (layer && layer !== 'repo') {
+          return {
+            ...issue,
+            hint: `${issue.hint} (value was contributed by the ${layer} layer, not policy.yaml)`,
+          };
+        }
+        return issue;
+      });
+      throw new PolicyValidationError(policyPath, issues);
     }
     throw err;
   }

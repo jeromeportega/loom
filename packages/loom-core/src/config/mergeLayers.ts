@@ -113,14 +113,26 @@ function mergeAtPath(
       // Provenance records the last present layer as a context marker.
       const sets = present.map(l => l.value as unknown[]).filter(a => a.length > 0);
       if (sets.length === 0) {
-        // All present layers are empty arrays — treat as absent.
-        provenance[dotPath] = present[present.length - 1].name;
+        // All present layers are empty arrays — treat as absent. No provenance
+        // is written: this key contributes no value to the effective config.
         return undefined;
       }
       const intersected = sets.slice(1).reduce(
         (acc, arr) => acc.filter(v => arr.includes(v)),
         [...sets[0]],
       );
+      if (intersected.length === 0 && sets.length > 1) {
+        // The configured layers share no common elements. The effective allowlist
+        // is empty, which blocks ALL operations at this path. This is mathematically
+        // correct (most-restrictive intersection) but is almost certainly a
+        // misconfiguration — warn so the operator can diagnose it.
+        console.warn(
+          `[loom] mergeLayers: intersect at "${dotPath}" produced an empty allowlist — ` +
+          `no element is permitted by all configured layers. ` +
+          `All operations restricted by this field will be blocked. ` +
+          `Check that every layer's value for "${dotPath}" shares at least one common entry.`,
+        );
+      }
       provenance[dotPath] = present[present.length - 1].name;
       return intersected;
     }

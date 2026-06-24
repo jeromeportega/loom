@@ -125,30 +125,54 @@ describe('T3 — allowlist intersect: no layer can widen the permitted set', () 
     assert.deepEqual(remotes, ['origin']);
   });
 
-  it('widening attempt from env is blocked by intersection', () => {
-    const wideningAttempts = [
-      // env tries to add 'upstream' that team doesn't have
-      { git: { allowed_remotes: ['origin', 'upstream'] } },
-      // env tries to completely replace with a new list
-      { git: { allowed_remotes: ['upstream', 'backup'] } },
+  it('widening attempt: env adding to team list is blocked by intersection', () => {
+    // env tries to add 'upstream' that team doesn't have.
+    // Result: only 'origin' (the intersection of team's ['origin'] and env's ['origin', 'upstream']).
+    const envTree = { git: { allowed_remotes: ['origin', 'upstream'] } };
+    const layers = [
+      layer('team', { git: { allowed_remotes: ['origin'] } }),
+      layer('repo', {}),
+      layer('env',  envTree),
     ];
-    for (const envTree of wideningAttempts) {
-      const layers = [
-        layer('team', { git: { allowed_remotes: ['origin'] } }),
-        layer('repo', {}),
-        layer('env',  envTree),
-      ];
+    const { tree } = mergeLayers(layers, MERGE_STRATEGY);
+    const remotes = get(tree, 'git.allowed_remotes') as string[];
+    assert.ok(
+      !remotes.includes('upstream'),
+      `'upstream' must NOT be added by env — it is not in team's allowlist`,
+    );
+    // The team-permitted 'origin' must survive the widening attempt.
+    assert.ok(
+      remotes.includes('origin'),
+      `'origin' must remain after env widening attempt: got ${JSON.stringify(remotes)}`,
+    );
+  });
+
+  it('widening attempt: env with completely disjoint list produces empty intersect (with warning)', () => {
+    // env tries to completely replace with a new list that shares nothing with team.
+    // Result: empty intersect [] — this is most-restrictive but should emit a warning.
+    // An empty allowlist blocks ALL operations at this path; this test confirms
+    // the semantic (empty result is correct) while the console.warn notifies the operator.
+    const envTree = { git: { allowed_remotes: ['upstream', 'backup'] } };
+    const layers = [
+      layer('team', { git: { allowed_remotes: ['origin'] } }),
+      layer('repo', {}),
+      layer('env',  envTree),
+    ];
+    const warns: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => { warns.push(String(args[0])); };
+    let remotes: string[];
+    try {
       const { tree } = mergeLayers(layers, MERGE_STRATEGY);
-      const remotes = get(tree, 'git.allowed_remotes') as string[];
-      assert.ok(
-        !remotes.includes('upstream'),
-        `'upstream' must NOT be added by env=${JSON.stringify(envTree)}`,
-      );
-      assert.ok(
-        !remotes.includes('backup'),
-        `'backup' must NOT be added by env=${JSON.stringify(envTree)}`,
-      );
+      remotes = (get(tree, 'git.allowed_remotes') ?? []) as string[];
+    } finally {
+      console.warn = orig;
     }
+    // The empty intersect is mathematically correct.
+    assert.ok(!remotes.includes('upstream'), `'upstream' must NOT appear`);
+    assert.ok(!remotes.includes('backup'), `'backup' must NOT appear`);
+    // The operator must receive a warning about the empty allowlist.
+    assert.ok(warns.some(w => w.includes('empty allowlist')), 'must warn about empty intersect allowlist');
   });
 
   it('absent layers are not treated as a universal allowlist (do not collapse to [])', () => {

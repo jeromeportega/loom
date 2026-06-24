@@ -34,6 +34,13 @@ function schemaPathMap(): Map<string, z.ZodTypeAny> {
   if (_pathCache) return _pathCache;
   const result = new Map<string, z.ZodTypeAny>();
 
+  // NOTE: this walker is intentionally two levels deep (section → field).
+  // PolicySchema is currently flat: every settable field lives at exactly one
+  // level of nesting inside a top-level section object. If a field were ever
+  // added at three or more levels (e.g. PolicySchema.agents.limits.max_cost),
+  // it would be silently unreachable via LOOM_* env vars and the corresponding
+  // LOOM_AGENTS_LIMITS_MAX_COST key would emit an 'unknown config key' warning.
+  // Extend this walker to recurse if PolicySchema gains deeper nesting.
   for (const [sectionKey, sectionSchema] of Object.entries(PolicySchema.shape) as [string, z.ZodTypeAny][]) {
     const inner = unwrapZod(sectionSchema);
     if (inner instanceof z.ZodObject) {
@@ -101,8 +108,9 @@ function resolveSchemaPath(
 /**
  * Coerce a raw env string to the target zod type. Throws on type mismatch so
  * the caller can emit a warning and skip the key.
+ * @param keyForDiag - the original env key name, included in warnings for operator visibility.
  */
-function coerceValue(raw: string, schema: z.ZodTypeAny): unknown {
+function coerceValue(raw: string, schema: z.ZodTypeAny, keyForDiag?: string): unknown {
   const inner = unwrapZod(schema);
 
   if (inner instanceof z.ZodBoolean) {
@@ -127,7 +135,16 @@ function coerceValue(raw: string, schema: z.ZodTypeAny): unknown {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) return parsed;
       } catch {
-        // fall through to comma-split
+        // Value starts with '[' but is not valid JSON (e.g. [main,release] — unquoted).
+        // Strip the brackets and fall back to comma-split so the guard list is not
+        // contaminated with bracket characters. Emit a warning so operators can fix the syntax.
+        const keyDesc = keyForDiag ? `"${keyForDiag}"` : 'a list field';
+        console.warn(
+          `[loom] loadEnvLayer: ${keyDesc} looks like a JSON array but failed to parse; ` +
+          `stripping brackets and falling back to comma-split (tip: use plain "a,b" or valid JSON '["a","b"]')`,
+        );
+        const stripped = trimmed.replace(/^\[/, '').replace(/\]$/, '');
+        return stripped.split(',').map(s => s.trim()).filter(s => s.length > 0);
       }
     }
     return raw.split(',').map(s => s.trim()).filter(s => s.length > 0);
@@ -204,7 +221,7 @@ export function loadEnvLayer(env: NodeJS.ProcessEnv): ConfigLayer {
 
     let coerced: unknown;
     try {
-      coerced = coerceValue(value, resolved.schema);
+      coerced = coerceValue(value, resolved.schema, key);
     } catch (err) {
       // Omit the raw value from the warning to avoid leaking misrouted secrets.
       console.warn(
