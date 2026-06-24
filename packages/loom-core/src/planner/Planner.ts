@@ -16,7 +16,7 @@ import { SharedContract } from '../orchestrator/SharedContract.js';
 import { loadOwnershipMap, computeWithinEpicOverlaps } from '../orchestrator/ContractOwnership.js';
 import { deriveSameFileSerialization } from '../orchestrator/SerializeOverlaps.js';
 import type { SerializationEdge } from '../orchestrator/SerializeOverlaps.js';
-import { epicId, epicNumber, planningPaths, planningRelPaths } from './paths.js';
+import { epicId, epicNumber, storyId, idNumber, planningPaths, planningRelPaths } from './paths.js';
 import { PlanningOutputSink } from './PlanningOutputSink.js';
 import type { PlanningEvent } from './PlanningEvent.js';
 import { serializeEpic } from './epicSerializer.js';
@@ -131,11 +131,12 @@ export class Planner {
   /** Returns the epic id the next planning run will start numbering from. */
   static nextEpicId(db: Database.Database): string {
     const epicStore = new EpicStore(db);
-    // Include archived and standalone rows — id numbering must be globally unique
-    // across ALL rows (both hold their primary keys), or a new run could collide.
+    // Include archived and standalone rows — id numbering is shared across ALL
+    // rows regardless of prefix ('epic-NNN' or 'story-NNN'). idNumber() parses
+    // both so a story-NNN row is never invisible to the counter (NFR-4).
     const maxNum = epicStore
       .list({ includeArchived: true, includeStandalone: true })
-      .reduce((max, e) => Math.max(max, epicNumber(e.id)), 0);
+      .reduce((max, e) => Math.max(max, idNumber(e.id)), 0);
     return epicId(maxNum + 1);
   }
 
@@ -159,21 +160,42 @@ export class Planner {
     if (reservedId !== undefined) {
       // Pre-reserved by the caller: adopt the id, do not allocate again. The
       // row already exists (status 'planning') so we skip beginPlanning here.
-      runId = reservedId;
+      // The caller reserves BEFORE classification knows the size, so a
+      // standalone run arrives with an epic-NNN id — repoint the reserved row
+      // to its story-NNN identity (story-059-002) so runStandalone's PK is the
+      // story id, never an epic-NNN container. No-op for non-standalone runs.
+      runId = isStandalone(this.opts.routing)
+        ? epicStore.repointReservationToStandalone(reservedId)
+        : reservedId;
     } else {
-      // Globally-unique epic numbering: start after the highest existing epic.
-      runId = Planner.nextEpicId(this.opts.db);
+      // Globally-unique id numbering: draw from the shared counter that spans
+      // both 'epic-NNN' and 'story-NNN' rows (nextEpicId counts via idNumber).
+      const nextId = Planner.nextEpicId(this.opts.db);
 
-      // Reserve the epic row IMMEDIATELY so observers (`loom web`,
-      // `loom status`) can see "what kicked off this job?" before the
-      // Analyst → PM → Architect chain finishes (~5 min). The placeholder
-      // is updated through phases and flipped to 'planned' at the end.
-      // On a planner crash, the catch block below records status 'failed'
-      // with the error message in `epics.error` — distinct from a human
-      // 'rejected' verdict (ADR-4, FR-5).
-      epicStore.beginPlanning(runId, brief);
+      if (isStandalone(this.opts.routing)) {
+        // Standalone path: format the number as story-NNN. Reserve the row
+        // immediately (before any LLM work) so concurrent planners cannot
+        // allocate the same number (analogous to beginPlanning for epics).
+        runId = storyId(idNumber(nextId));
+        if (idNumber(runId) === 0) {
+          throw new Error(
+            `[internal] standalone runId resolved to story-000 — nextEpicId returned unexpected format: ${nextId}`
+          );
+        }
+        epicStore.beginStandalonePlanning(runId, brief);
+      } else {
+        // Epic path: reserve the row IMMEDIATELY so observers (`loom web`,
+        // `loom status`) can see "what kicked off this job?" before the
+        // Analyst → PM → Architect chain finishes (~5 min). The placeholder
+        // is updated through phases and flipped to 'planned' at the end.
+        // On a planner crash, the catch block below records status 'failed'
+        // with the error message in `epics.error` — distinct from a human
+        // 'rejected' verdict (ADR-4, FR-5).
+        runId = nextId;
+        epicStore.beginPlanning(runId, brief);
+      }
     }
-    const startNum = epicNumber(runId);
+    const startNum = idNumber(runId);
 
     // Create a planning output sink that captures streamed text, redacts
     // secrets, and flushes to epics.planning_log_tail on the periodic timer.
@@ -288,19 +310,17 @@ export class Planner {
     analyst: Awaited<ReturnType<AnalystAgent['run']>>,
     usageSoFar: LLMUsage
   ): Promise<PlanResult> {
-    // Derive storyId here (not inside StandaloneStoryAgent) to avoid a transitive
-    // intake/ import in StandaloneStoryAgent's module — physical-separation invariant.
-    const storyId = standaloneStoryId(runId);
-    if (!storyId.startsWith('story-')) {
-      throw new Error(`[internal] runStandalone: expected story-NNN id from '${runId}', got '${storyId}'`);
+    // runId IS already story-NNN (formatted by Planner.run before calling here).
+    // No epic-NNN derivation — the story id is the primary identity (NFR-4).
+    if (!runId.startsWith('story-')) {
+      throw new Error(`[internal] runStandalone: expected story-NNN id, got '${runId}'`);
     }
     const { story, usage: storyUsage } = await new StandaloneStoryAgent(ctx).run(
       analyst.briefContent,
-      storyId
+      runId
     );
     const usage = addUsage(usageSoFar, storyUsage);
     const durationMs = Date.now() - startedAt;
-    const now = new Date().toISOString();
     const rel = planningRelPaths(runId, this.planningRoot, this.opts.projectRoot);
     const paths = planningPaths(this.planningRoot, runId);
 
@@ -319,18 +339,16 @@ export class Planner {
     const yamlPath = paths.epicFile(runId);
     fs.writeFileSync(yamlPath, serializeEpic(epicYaml));
 
-    // Atomically commit epics + agents in one transaction. Covering all four
-    // writes prevents a crash between them from leaving either:
-    //  - an epics row with status='planned' but kind=NULL → EpicStore.isStandalone() returns false
+    // Atomically commit epics + agents in one transaction. The row's PK IS
+    // story-NNN — no epic-NNN container intermediate. Covering both writes
+    // prevents a crash between them from leaving either:
     //  - an epics row with kind='standalone' but no agents row → Supervisor finds a stuck epic
+    //  - an agents row with no epics row → FK violation
     const agentStore = new AgentStore(this.opts.db);
     this.opts.db.transaction(() => {
-      epicStore.completePlanning(runId, story.title);
-      this.opts.db
-        .prepare(`UPDATE epics SET kind = 'standalone', updated_at = ? WHERE id = ?`)
-        .run(now, runId);
-      const agent = agentStore.create(runId, storyId, story.title);
-      agentStore.updateStatus(agent.id, 'pending', { branch_name: standaloneBranch(storyId) });
+      epicStore.createStandalone(runId, story.title);
+      const agent = agentStore.create(runId, runId, story.title);
+      agentStore.updateStatus(agent.id, 'pending', { branch_name: standaloneBranch(runId) });
     })();
 
     // Both paths (brief and yaml) are known at this point — write in one call.
@@ -350,9 +368,8 @@ export class Planner {
       // for the epic pipeline. Report 1 so CLI output is accurate.
       storiesEnriched: 1,
       usage,
-      // Signal to CLI surfaces that this is a standalone story so they can
-      // present story-NNN framing instead of the epic-NNN container id.
-      standaloneStoryId: storyId,
+      // Signal to CLI surfaces that this is a standalone story (runId IS story-NNN).
+      standaloneStoryId: runId,
     };
   }
 

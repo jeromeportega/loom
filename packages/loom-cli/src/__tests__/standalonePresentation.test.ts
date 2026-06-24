@@ -274,16 +274,18 @@ describe('intake_routing=off — byte-identical to loom epic (AC9)', () => {
 });
 
 // ── Suite 3: loom approve — story-NNN framing ────────────────────────────────
+// After story-059-002, standalone rows have PK='story-NNN' directly — no epic-NNN container.
 
 describe('loom approve — standalone story uses story-NNN framing (AC3)', () => {
-  function seedStandalone(id: string, title: string): void {
+  function seedStandalone(storyId: string, title: string): void {
     // First reset: drop the in-process singleton so openDatabase() below opens
     // a fresh connection (not the one from beforeEach which may point at a
     // different tmpDir from a previous test run).
     resetDatabaseForTest();
     const db = openProjectDatabase(tmpDir);
     const store = new EpicStore(db);
-    store.createStandalone(id, title);
+    // storyId IS the PK ('story-NNN') after story-059-002.
+    store.createStandalone(storyId, title);
     // Second reset: drop the singleton handle so the next openDatabase() call
     // inside runApprove/runReject opens a fresh connection to the same file.
     // resetDatabaseForTest() only sets _db = null — it does NOT wipe the SQLite
@@ -291,25 +293,21 @@ describe('loom approve — standalone story uses story-NNN framing (AC3)', () =>
     resetDatabaseForTest();
   }
 
-  it('approve epic-NNN for a standalone container prints story-NNN in output', async () => {
-    seedStandalone('epic-042', 'Test standalone approve');
+  it('approve story-NNN (the standalone PK) prints story-NNN in output', async () => {
+    seedStandalone('story-042', 'Test standalone approve');
     const { logs } = await capture(() =>
-      runApprove('epic-042', { printOverlapAdvisory: () => {} })
+      runApprove('story-042', { printOverlapAdvisory: () => {} })
     );
     const approvedLine = logs.find((l) => l.includes('approved'));
     assert.ok(approvedLine, 'An approved line must be printed');
     assert.ok(
       approvedLine!.includes('story-042'),
-      `Approved line must use story-042, not epic-042. Got: ${approvedLine}`
-    );
-    assert.ok(
-      !approvedLine!.includes('epic-042'),
-      `Approved line must NOT show epic-042. Got: ${approvedLine}`
+      `Approved line must use story-042. Got: ${approvedLine}`
     );
   });
 
-  it('approve story-NNN (user-facing id) resolves to the standalone container and approves it', async () => {
-    seedStandalone('epic-043', 'Resolve-by-story-id test');
+  it('approve story-NNN approves the standalone row and reports story-NNN', async () => {
+    seedStandalone('story-043', 'Resolve-by-story-id test');
     const { exitCode, logs } = await capture(() =>
       runApprove('story-043', { printOverlapAdvisory: () => {} })
     );
@@ -320,15 +318,15 @@ describe('loom approve — standalone story uses story-NNN framing (AC3)', () =>
     resetDatabaseForTest();
     const db = openProjectDatabase(tmpDir);
     assert.equal(
-      new EpicStore(db).get('epic-043')?.status,
+      new EpicStore(db).get('story-043')?.status,
       'approved',
-      'the internal epic-043 row must be approved'
+      'the story-043 row must be approved'
     );
     resetDatabaseForTest();
   });
 
   it('approve with story-NNN run-hint shows story-NNN, not epic-NNN', async () => {
-    seedStandalone('epic-044', 'Run-hint display test');
+    seedStandalone('story-044', 'Run-hint display test');
     const { logs } = await capture(() =>
       runApprove('story-044', { printOverlapAdvisory: () => {} })
     );
@@ -352,8 +350,8 @@ describe('loom approve — standalone story uses story-NNN framing (AC3)', () =>
     assert.ok(errors.some((e) => e.includes('not found')), 'must print "not found" error');
   });
 
-  it('approve story-NNN chains into runRun with the internal epic-NNN id', async () => {
-    seedStandalone('epic-045', 'Chain-test standalone');
+  it('approve story-NNN chains into runRun with story-NNN (the direct PK)', async () => {
+    seedStandalone('story-045', 'Chain-test standalone');
     const calls: Array<{ epicIds: string[]; opts: RunOptions }> = [];
     const runRunStub = async (epicIds: string[], opts: RunOptions = {}): Promise<void> => {
       calls.push({ epicIds, opts });
@@ -366,13 +364,13 @@ describe('loom approve — standalone story uses story-NNN framing (AC3)', () =>
     assert.equal(calls.length, 1, 'runRun must be called exactly once');
     assert.deepEqual(
       calls[0].epicIds,
-      ['epic-045'],
-      'runRun must receive the internal epic-045 id, not story-045'
+      ['story-045'],
+      'runRun must receive story-045 (the direct PK, no derivation)'
     );
   });
 
-  it('reject story-NNN resolves to the standalone container and rejects it', async () => {
-    seedStandalone('epic-046', 'Reject test standalone');
+  it('reject story-NNN rejects the standalone row directly', async () => {
+    seedStandalone('story-046', 'Reject test standalone');
     const { exitCode, logs } = await capture(() =>
       runReject('story-046', 'scope too small')
     );
@@ -383,9 +381,9 @@ describe('loom approve — standalone story uses story-NNN framing (AC3)', () =>
     resetDatabaseForTest();
     const db = openProjectDatabase(tmpDir);
     assert.equal(
-      new EpicStore(db).get('epic-046')?.status,
+      new EpicStore(db).get('story-046')?.status,
       'rejected',
-      'the internal epic-046 row must be rejected'
+      'the story-046 row must be rejected'
     );
     resetDatabaseForTest();
   });
@@ -408,9 +406,10 @@ describe('renderPrTail — standalone story-NNN label (AC4)', () => {
     assert.ok(!joined.includes('story-001'), 'single-entry must not show story-001 label');
   });
 
-  it('multi-entry: standalone entry is labeled story-NNN, not epic-NNN', () => {
+  it('multi-entry: standalone entry (story-NNN PK) is labeled story-NNN', () => {
+    // After story-059-002, standalone rows have id='story-NNN' directly.
     const lines = renderPrTail([
-      { id: 'epic-001', kind: 'standalone', epic_pr_url: 'https://example.com/pr/1' },
+      { id: 'story-001', kind: 'standalone', epic_pr_url: 'https://example.com/pr/1' },
       { id: 'epic-002', kind: null, epic_pr_url: 'https://example.com/pr/2' },
     ]);
     const joined = lines.join('\n');
@@ -425,14 +424,15 @@ describe('renderPrTail — standalone story-NNN label (AC4)', () => {
     assert.ok(!joined.includes('epic-001'), 'epic-001 must not appear in output');
   });
 
-  it('multi-entry: all standalones show story-NNN labels', () => {
+  it('multi-entry: all standalones (story-NNN PKs) show story-NNN labels', () => {
+    // After story-059-002, standalone rows have id='story-NNN' directly.
     const lines = renderPrTail([
-      { id: 'epic-010', kind: 'standalone', epic_pr_url: 'https://example.com/pr/10' },
-      { id: 'epic-011', kind: 'standalone', epic_pr_url: 'https://example.com/pr/11' },
+      { id: 'story-010', kind: 'standalone', epic_pr_url: 'https://example.com/pr/10' },
+      { id: 'story-011', kind: 'standalone', epic_pr_url: 'https://example.com/pr/11' },
     ]);
     const joined = lines.join('\n');
-    assert.ok(joined.includes('story-010:'), 'epic-010 standalone must show story-010');
-    assert.ok(joined.includes('story-011:'), 'epic-011 standalone must show story-011');
+    assert.ok(joined.includes('story-010:'), 'story-010 standalone must show story-010');
+    assert.ok(joined.includes('story-011:'), 'story-011 standalone must show story-011');
     assert.ok(!joined.includes('epic-010'), 'epic-010 must not appear');
     assert.ok(!joined.includes('epic-011'), 'epic-011 must not appear');
   });
@@ -463,19 +463,23 @@ describe('weave/epic — DB agent row uses story-NNN id on the standalone path (
     const container = epics.find((e) => e.kind === 'standalone');
     assert.ok(container, 'a standalone container epic must exist in the DB');
 
-    // The expected user-facing story id is story-NNN (internal row is epic-NNN).
-    const expectedStoryId = container!.id.replace(/^epic-/, 'story-');
+    // The user-facing story id is story-NNN. In the planning output, the container
+    // row's id may be epic-NNN (old path) or story-NNN (new path per story-059-002).
+    // Either way, the AGENTS table row must have story_id=story-NNN and branch_name=story/story-NNN.
+    const storyNum = container!.id.replace(/^(?:epic|story)-/, '');
+    const expectedStoryId = `story-${storyNum}`;
     assert.match(expectedStoryId, /^story-\d{3}$/, 'expected story id must match story-NNN pattern');
 
     // Planner.runStandalone atomically creates an agents row with the story-NNN
     // identity and the story/story-NNN branch name (ADR-002 §5 identity scheme).
+    // Use listByEpic with the container's own id (whatever PK it was stored under).
     const agentStore = new AgentStore(db);
     const agentRows = agentStore.listByEpic(container!.id);
     assert.equal(agentRows.length, 1, 'exactly one agent row must exist for the standalone container');
     assert.equal(
       agentRows[0].story_id,
       expectedStoryId,
-      `agent row story_id must be ${expectedStoryId}, not the internal epic id`
+      `agent row story_id must be ${expectedStoryId}`
     );
     assert.equal(
       agentRows[0].branch_name,

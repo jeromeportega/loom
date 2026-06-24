@@ -82,9 +82,9 @@ function captureAudit(opts: Parameters<typeof runAudit>[0]): string {
 describe('loom status — standalone story framing', () => {
   it('[AC1] renders a standalone container with Story framing using the story-NNN id', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
-    new EpicStore(db).createStandalone('epic-047', 'Fix the flaky test');
+    new EpicStore(db).createStandalone('story-047', 'Fix the flaky test');
     const agents = new AgentStore(db);
-    const agent = agents.create('epic-047', 'story-047', 'Fix the flaky test');
+    const agent = agents.create('story-047', 'story-047', 'Fix the flaky test');
     agents.setModel(agent.id, 'claude-sonnet-4-6');
     db.close();
 
@@ -103,8 +103,8 @@ describe('loom status — standalone story framing', () => {
 
   it('[AC2] never renders a standalone container as epic-NNN', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
-    new EpicStore(db).createStandalone('epic-047', 'Fix the flaky test');
-    new AgentStore(db).create('epic-047', 'story-047', 'Fix the flaky test');
+    new EpicStore(db).createStandalone('story-047', 'Fix the flaky test');
+    new AgentStore(db).create('story-047', 'story-047', 'Fix the flaky test');
     db.close();
 
     const out = captureStatus({});
@@ -123,7 +123,7 @@ describe('loom status — standalone story framing', () => {
   it('[AC1] standalone container with no agent yet shows story framing with container status', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
     // Container exists but no agent dispatched yet (pre-dispatch phase).
-    new EpicStore(db).createStandalone('epic-048', 'Plan something');
+    new EpicStore(db).createStandalone('story-048', 'Plan something');
     db.close();
 
     const out = captureStatus({});
@@ -133,8 +133,8 @@ describe('loom status — standalone story framing', () => {
       `Expected 'Story' header in pre-dispatch output:\n${out}`
     );
     assert.ok(
-      !out.includes('Epic epic-048'),
-      `Must not show 'Epic epic-048' for standalone container:\n${out}`
+      !out.includes('Epic story-048'),
+      `Must not show 'Epic story-048' for standalone container:\n${out}`
     );
   });
 });
@@ -144,8 +144,8 @@ describe('loom status — standalone story framing', () => {
 describe('loom status --json — standalone story framing', () => {
   it('[AC1] JSON output surfaces story-NNN as the top-level id with kind=standalone', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
-    new EpicStore(db).createStandalone('epic-047', 'Fix the flaky test');
-    const agent = new AgentStore(db).create('epic-047', 'story-047', 'Fix the flaky test');
+    new EpicStore(db).createStandalone('story-047', 'Fix the flaky test');
+    const agent = new AgentStore(db).create('story-047', 'story-047', 'Fix the flaky test');
     new AgentStore(db).updateStatus(agent.id, 'done');
     db.close();
 
@@ -165,8 +165,8 @@ describe('loom status --json — standalone story framing', () => {
 
   it('[AC2] JSON output never contains epic-047 as a top-level id for standalone', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
-    new EpicStore(db).createStandalone('epic-047', 'Fix the flaky test');
-    new AgentStore(db).create('epic-047', 'story-047', 'Fix the flaky test');
+    new EpicStore(db).createStandalone('story-047', 'Fix the flaky test');
+    new AgentStore(db).create('story-047', 'story-047', 'Fix the flaky test');
     db.close();
 
     const out = captureStatus({ json: true });
@@ -182,15 +182,15 @@ describe('loom status --json — standalone story framing', () => {
   it('[AC2] JSON pre-dispatch (no agent) standalone emits story-NNN id, not container epic id', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
     // Container exists but no agent dispatched — exercises the pre-dispatch branch.
-    new EpicStore(db).createStandalone('epic-049', 'Pre-dispatch standalone');
+    new EpicStore(db).createStandalone('story-049', 'Pre-dispatch standalone');
     db.close();
 
     const out = captureStatus({ json: true });
     const payload = JSON.parse(out) as { epics: Array<{ id: string; kind?: string }> };
-    // Must surface as story-049, not epic-049.
+    // Must surface as story-049 directly (PK lookup, no derivation).
     const entry = payload.epics.find((e) => e.kind === 'standalone');
     assert.ok(entry, 'Pre-dispatch standalone must appear with kind=standalone');
-    assert.equal(entry.id, 'story-049', 'Pre-dispatch standalone id must be story-049, not epic-049');
+    assert.equal(entry.id, 'story-049', 'Pre-dispatch standalone id must be story-049 (direct PK)');
     assert.ok(
       !payload.epics.some((e) => e.id === 'epic-049'),
       `Container id epic-049 must not appear as a top-level id:\n${out}`
@@ -241,17 +241,17 @@ describe('loom status — normal epic regression (AC3)', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
     new EpicStore(db).create('epic-001', 'Normal epic');
     new AgentStore(db).create('epic-001', 'story-001-001', 'Normal story');
-    new EpicStore(db).createStandalone('epic-002', 'Standalone task');
-    new AgentStore(db).create('epic-002', 'story-002', 'Standalone task');
+    new EpicStore(db).createStandalone('story-002', 'Standalone task');
+    new AgentStore(db).create('story-002', 'story-002', 'Standalone task');
     db.close();
 
     const out = captureStatus({});
     // Normal epic has epic framing
     assert.ok(out.includes('Epic epic-001'), `Normal epic must have 'Epic epic-001' framing:\n${out}`);
-    // Standalone has story framing
+    // Standalone has story framing (story_id=story-002, from the agent row)
     assert.ok(out.includes('Story story-002'), `Standalone must have 'Story story-002' framing:\n${out}`);
     // Container id must not appear as epic header
-    assert.ok(!out.includes('Epic epic-002'), `Container id must not appear as 'Epic epic-002':\n${out}`);
+    assert.ok(!out.includes('Epic story-002'), `Container id must not appear as 'Epic story-002':\n${out}`);
   });
 });
 
@@ -262,7 +262,7 @@ describe('loom status — enumeration default (AC5)', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
     const epicStore = new EpicStore(db);
     epicStore.create('epic-001', 'Normal epic');
-    epicStore.createStandalone('epic-002', 'Standalone task');
+    epicStore.createStandalone('story-002', 'Standalone task');
     db.close();
 
     // Default list() must exclude the standalone container.
@@ -275,15 +275,15 @@ describe('loom status — enumeration default (AC5)', () => {
       'Normal epic must appear in default list()'
     );
     assert.ok(
-      !epics.some((e) => e.id === 'epic-002'),
+      !epics.some((e) => e.id === 'story-002'),
       'Standalone container must be absent from default list()'
     );
   });
 
   it('standalone container is absent from default epic listing but present via story-framing path', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
-    new EpicStore(db).createStandalone('epic-047', 'Solo task');
-    new AgentStore(db).create('epic-047', 'story-047', 'Solo task');
+    new EpicStore(db).createStandalone('story-047', 'Solo task');
+    new AgentStore(db).create('story-047', 'story-047', 'Solo task');
     db.close();
 
     const out = captureStatus({});
@@ -294,7 +294,7 @@ describe('loom status — enumeration default (AC5)', () => {
     );
     // Absent from the epic listing path
     assert.ok(
-      !out.includes('Epic epic-047'),
+      !out.includes('Epic story-047'),
       `Standalone container must be absent from epic listing path:\n${out}`
     );
   });
@@ -305,14 +305,14 @@ describe('loom status — enumeration default (AC5)', () => {
 describe('loom traces/audit — parentless story-NNN id (AC4)', () => {
   it('[traces] loom traces --story story-NNN does not throw for a flat story id', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
-    new EpicStore(db).createStandalone('epic-047', 'Standalone task');
+    new EpicStore(db).createStandalone('story-047', 'Standalone task');
     const agentStore = new AgentStore(db);
-    const agent = agentStore.create('epic-047', 'story-047', 'Standalone task');
+    const agent = agentStore.create('story-047', 'story-047', 'Standalone task');
     agentStore.setModel(agent.id, 'claude-sonnet-4-6');
     const traces = new DecisionTraceStore(db);
     traces.record({
       agent_id: agent.id,
-      epic_id: 'epic-047',
+      epic_id: 'story-047',
       story_id: 'story-047',
       kind: 'thinking',
       rationale: 'Working on the standalone fix.',
@@ -336,13 +336,13 @@ describe('loom traces/audit — parentless story-NNN id (AC4)', () => {
 
   it('[traces JSON] --story story-NNN returns JSON without error', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
-    new EpicStore(db).createStandalone('epic-047', 'Standalone task');
+    new EpicStore(db).createStandalone('story-047', 'Standalone task');
     const agentStore = new AgentStore(db);
-    const agent = agentStore.create('epic-047', 'story-047', 'Standalone task');
+    const agent = agentStore.create('story-047', 'story-047', 'Standalone task');
     const traces = new DecisionTraceStore(db);
     traces.record({
       agent_id: agent.id,
-      epic_id: 'epic-047',
+      epic_id: 'story-047',
       story_id: 'story-047',
       kind: 'thinking',
       rationale: 'Standalone reasoning.',
@@ -368,9 +368,9 @@ describe('loom traces/audit — parentless story-NNN id (AC4)', () => {
 
   it('[audit] loom audit --story story-NNN does not throw for a flat story id', () => {
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
-    new EpicStore(db).createStandalone('epic-047', 'Standalone task');
+    new EpicStore(db).createStandalone('story-047', 'Standalone task');
     const agentStore = new AgentStore(db);
-    const agent = agentStore.create('epic-047', 'story-047', 'Standalone task');
+    const agent = agentStore.create('story-047', 'story-047', 'Standalone task');
     new AuditLog(db).record({
       agent_id: agent.id,
       action: 'worker_started',
