@@ -96,15 +96,22 @@ export function parseOwnershipMap(markdown: string, epicId: string): OwnershipMa
     if (SEPARATOR_ROW.test(row)) continue;
     if (!seenHeader) {
       seenHeader = true; // first non-separator pipe row is the column header
-      // Detect optional Repo column by scanning header cells. The cross-repo
-      // layout is | Story | Repo | Owns |; single-repo omits the middle column.
+      // Locate Repo and Owns columns by searching header cells directly.
+      // The cross-repo layout is | Story | Repo | Owns |; single-repo omits
+      // the middle column. We search for each header explicitly so that extra
+      // columns between Repo and Owns do not cause pathColIdx to land on the
+      // wrong column.
       const headerCells = splitRow(row);
+      let ownsColIdx = -1;
       for (let ci = 0; ci < headerCells.length; ci++) {
-        if (/^repo(sitory)?$/i.test(headerCells[ci].trim())) {
-          repoColIdx = ci;
-          pathColIdx = ci + 1; // Owns column immediately follows Repo
-          break;
-        }
+        const cell = headerCells[ci].trim();
+        if (/^repo(sitory)?$/i.test(cell)) repoColIdx = ci;
+        if (/^owns?(\s.*)?$/i.test(cell)) ownsColIdx = ci;
+      }
+      if (ownsColIdx >= 0) {
+        pathColIdx = ownsColIdx; // authoritative: use the exact Owns column
+      } else if (repoColIdx >= 0) {
+        pathColIdx = repoColIdx + 1; // fallback when Owns header absent but Repo found
       }
       continue;
     }
@@ -251,25 +258,6 @@ export interface Overlap {
   owners: Array<{ epicId: string; storyId?: string }>;
 }
 
-/**
- * Builds a path-to-owners index from a flat OwnershipMap, accumulating all
- * owners for each exact path. Shared by computeOverlaps() and
- * computeWithinEpicOverlaps() so the indexing loop lives in one place.
- */
-function groupOwnersByPath(
-  map: OwnershipMap
-): Map<string, Array<{ epicId: string; storyId?: string }>> {
-  const result = new Map<string, Array<{ epicId: string; storyId?: string }>>();
-  for (const entry of map) {
-    const owner: { epicId: string; storyId?: string } = entry.storyId
-      ? { epicId: entry.epicId, storyId: entry.storyId }
-      : { epicId: entry.epicId };
-    const list = result.get(entry.path);
-    if (list) list.push(owner);
-    else result.set(entry.path, [owner]);
-  }
-  return result;
-}
 
 /**
  * Computes the set of files the `target` ownership map shares with any of the
@@ -282,6 +270,10 @@ function groupOwnersByPath(
  * is omitted (single-repo callers that have no manifest context), all repo-absent
  * entries are treated as belonging to the same implicit repo and still collide
  * correctly — single-repo behaviour is unchanged.
+ *
+ * **Sentinel note**: `primarySlug = ''` (the default) is the internal sentinel
+ * meaning "no primary slug given". Callers must never pass an actual empty-string
+ * slug, as it would be indistinguishable from omitted-repo entries.
  *
  * Every owner (the target's plus each other map's) of a shared (repo, path) is
  * listed in `owners`. A path that appears only in the target, or only in the
@@ -334,20 +326,45 @@ export function computeOverlaps(
 
 /**
  * Detects files declared by two or more distinct stories within a single
- * epic's OwnershipMap, using EXACT lexical path equality — no globbing, no
- * directory-prefix inference. Only story-attributed entries (storyId present)
- * participate; epic-level entries without a story are not story-to-story
- * conflicts. A single story claiming the same path twice is NOT an overlap —
- * overlap requires ≥2 distinct storyIds.
+ * epic's OwnershipMap, using EXACT lexical path equality within the same repo
+ * — no globbing, no directory-prefix inference. Only story-attributed entries
+ * (storyId present) participate; epic-level entries without a story are not
+ * story-to-story conflicts. A single story claiming the same path twice is NOT
+ * an overlap — overlap requires ≥2 distinct storyIds.
  *
- * Routes through groupOwnersByPath(), the same helper used by computeOverlaps(),
- * so the indexing logic lives in exactly one place.
+ * The comparison key is the composite `${repo}\0${path}` so the same relative
+ * path in two different repos within the same epic is NOT a false conflict —
+ * only the same path within the same repo produces an overlap. When every entry
+ * omits `repo`, all resolve to `primarySlug` (or the `''` sentinel when no
+ * slug is provided) and single-repo behaviour is unchanged.
  */
-export function computeWithinEpicOverlaps(map: OwnershipMap): Overlap[] {
-  const ownersByPath = groupOwnersByPath(map);
-  const overlaps: Overlap[] = [];
+export function computeWithinEpicOverlaps(map: OwnershipMap, primarySlug = ''): Overlap[] {
+  // Composite key mirrors computeOverlaps() so cross-repo paths don't collide.
+  const repoKey = (e: OwnershipEntry): string => `${e.repo ?? primarySlug}\0${e.path}`;
 
-  for (const [path, owners] of ownersByPath) {
+  // Index entries by composite (repo, path) key, carrying path + repo for output.
+  type KeyedGroup = { path: string; repo?: string; owners: Array<{ epicId: string; storyId?: string }> };
+  const byKey = new Map<string, KeyedGroup>();
+  for (const entry of map) {
+    const key = repoKey(entry);
+    const owner: { epicId: string; storyId?: string } = entry.storyId
+      ? { epicId: entry.epicId, storyId: entry.storyId }
+      : { epicId: entry.epicId };
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.owners.push(owner);
+    } else {
+      const repoValue = entry.repo ?? primarySlug;
+      byKey.set(key, {
+        path: entry.path,
+        ...(repoValue ? { repo: repoValue } : {}),
+        owners: [owner],
+      });
+    }
+  }
+
+  const overlaps: Overlap[] = [];
+  for (const [, { path, repo, owners }] of byKey) {
     // Collect one representative owner per distinct storyId.
     const byStoryId = new Map<string, { epicId: string; storyId: string }>();
     for (const o of owners) {
@@ -356,7 +373,7 @@ export function computeWithinEpicOverlaps(map: OwnershipMap): Overlap[] {
       }
     }
     if (byStoryId.size < 2) continue; // single story (or no stories) — not an overlap
-    overlaps.push({ path, owners: [...byStoryId.values()] });
+    overlaps.push({ path, ...(repo ? { repo } : {}), owners: [...byStoryId.values()] });
   }
 
   return overlaps;
