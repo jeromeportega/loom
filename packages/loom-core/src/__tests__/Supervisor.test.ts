@@ -2822,7 +2822,10 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
     assert.equal(detail.silence_kind, 'hung_request_no_response');
   });
 
-  it('no-checkpoint → failed: stall kill without checkpointCommitted leaves story failed', async () => {
+  it('no-checkpoint → still retried (clean-retry needs no checkpoint)', async () => {
+    // story-061-003: clean retry starts fresh — no checkpoint needed.
+    // With default stallRecoveryBudget=2 the story is retried twice before
+    // the budget is exhausted and it surfaces as failed.
     seedEpic('epic-001', [story('story-001-001')]);
     const db = openDatabase(path.join(repo, '.loom'));
 
@@ -2844,33 +2847,33 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
       db,
       worker,
       maxConcurrent: 1,
-      autoResumeAttempts: 2,
+      // stallRecoveryBudget unset → default 2 → two clean retries before failure
     }).run();
 
     assert.equal(result.storiesFailed, 1);
     assert.equal(result.storiesDone, 0);
     assert.equal(agentStatus('story-001-001'), 'failed');
-    // Worker dispatched only once — no retry without a checkpoint.
-    assert.equal(callCount, 1, 'worker called once (no auto-resume without checkpoint)');
-    // Stall-kill audit row written, but no story_retry row (prepare never called).
+    // 1 initial + 2 clean retries = 3 dispatches before budget exhausted.
+    assert.equal(callCount, 3, 'worker called 3 times (initial + 2 clean retries then budget spent)');
+    // Stall-kill rows for all 3 kills; story_retry rows for the 2 retries.
     const auditLog = new AuditLogClass(db);
-    assert.equal(auditLog.getByCommand('story-001-001', ['worker_stall_kill']).length, 1);
+    assert.equal(auditLog.getByCommand('story-001-001', ['worker_stall_kill']).length, 3);
     assert.equal(
       auditLog.getByCommand('story-001-001', ['story_retry']).length,
-      0,
-      'prepare() must NOT be called when no checkpoint exists',
+      2,
+      'prepare() called for each retry (2 retries before budget spent)',
     );
   });
 
-  it('cap-exhausted → failed: stall kill after cap reached leaves story failed', async () => {
+  it('cap-exhausted → failed: stall kill after stallRecoveryBudget reached leaves story failed', async () => {
+    // story-061-003: the per-story budget is stallRecoveryBudget (durable),
+    // not the old run-scoped autoResumeAttempts.
     seedEpic('epic-001', [story('story-001-001')]);
     const db = openDatabase(path.join(repo, '.loom'));
 
     let callCount = 0;
     const worker = new MockWorkerRunner(async () => {
       callCount++;
-      // Both calls return stall kill with checkpoint — the second should be
-      // rejected by the cap.
       return {
         status: 'failed' as const,
         commitCount: 0,
@@ -2886,23 +2889,23 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
       db,
       worker,
       maxConcurrent: 1,
-      autoResumeAttempts: 1,  // cap at 1: first kill → resume, second kill → failed
+      stallRecoveryBudget: 1,  // cap at 1: first kill → clean retry, second kill → failed
     }).run();
 
     assert.equal(result.storiesFailed, 1);
     assert.equal(result.storiesDone, 0);
     assert.equal(agentStatus('story-001-001'), 'failed');
-    // Two dispatches: first (killed + resumed) + second (killed, cap reached).
-    assert.equal(callCount, 2, 'worker called twice before cap is exhausted');
+    // Two dispatches: first (killed + one clean retry) + second (killed, budget spent).
+    assert.equal(callCount, 2, 'worker called twice before budget is exhausted');
     // Two stall-kill audit rows (one per kill).
     const auditLog = new AuditLogClass(db);
     const stallRows = auditLog.getByCommand('story-001-001', ['worker_stall_kill']);
     assert.equal(stallRows.length, 2, 'one stall-kill row per kill event');
-    // Only one story_retry row (the second kill hits the cap).
+    // Only one story_retry row (the second kill hits the budget cap).
     assert.equal(
       auditLog.getByCommand('story-001-001', ['story_retry']).length,
       1,
-      'prepare() called only for the first kill; cap blocks the second',
+      'prepare() called only for the first kill; budget cap blocks the second',
     );
   });
 

@@ -11,6 +11,7 @@ import {
   DecisionTraceStore,
   LeaseStore,
   WorkerLogStore,
+  RecoveryStore,
 } from '../state/index.js';
 import type { GlobalLimiter, LimiterSlot } from '../state/index.js';
 import { EpicYamlSchema, type Story, type AgentStatus } from '../types.js';
@@ -62,7 +63,8 @@ import { redactSecrets } from '../util/redact.js';
 import { AutoResumeCounter } from './AutoResumeCounter.js';
 import { StoryRetryService } from './StoryRetryService.js';
 import { shouldAutoResume } from './autoResume.js';
-import { recordStallKill } from './StallKillAudit.js';
+import { recordStallKill, recordAutoRecovery } from './StallKillAudit.js';
+import { classifyWorkerExit } from './classifyWorkerExit.js';
 
 export interface SupervisorOptions {
   projectRoot: string;
@@ -268,6 +270,18 @@ export interface SupervisorOptions {
    * instance built from projectRoot + db.
    */
   retryService?: StoryRetryService;
+  /**
+   * Per-story clean-retry budget on stall (policy.agents.stall_recovery_budget).
+   * When a worker stalls, the supervisor auto-retries with a fresh worktree +
+   * branch up to this many times (durable, survives restarts). 0 disables.
+   * Default 2 when unset.
+   */
+  stallRecoveryBudget?: number;
+  /**
+   * Injectable clean StoryRetryService for tests. Defaults to a clean-mode
+   * (clean=true) instance built from projectRoot + db.
+   */
+  cleanRetryService?: StoryRetryService;
 }
 
 export interface SupervisorResult {
@@ -376,6 +390,10 @@ export class Supervisor {
   private autoResumeCounter = new AutoResumeCounter();
   /** Shared retry-preparation path for auto-resume (story-032-002). */
   private retryService!: StoryRetryService;
+  /** Durable per-story clean-retry budget store (story-061-001). */
+  private recoveryStore!: RecoveryStore;
+  /** Clean-retry service (clean=true) for stall auto-recovery (story-061-003). */
+  private cleanRetryService!: StoryRetryService;
 
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
@@ -462,6 +480,13 @@ export class Supervisor {
     this.retryService = opts.retryService ?? new StoryRetryService({
       projectRoot: opts.projectRoot,
       db: opts.db,
+      leaseStore: this.lease,
+    });
+    this.recoveryStore = new RecoveryStore(opts.db);
+    this.cleanRetryService = opts.cleanRetryService ?? new StoryRetryService({
+      projectRoot: opts.projectRoot,
+      db: opts.db,
+      clean: true,
       leaseStore: this.lease,
     });
   }
@@ -2535,12 +2560,12 @@ export class Supervisor {
       this.skillGenPromises.push(promise);
     }
 
-    // Auto-resume from stall / hung-request kills that left a checkpoint commit
-    // (story-032-002). Audit-first so the kill row lands even when prep later
-    // rejects. Flows through the existing StoryRetryService.prepare() with
-    // clean=false (resume disposition), then re-enters the same dispatchLoop by
-    // setting task.status='pending' and returning early. No second dispatch path.
-    if (result.killReason === 'stall' || result.killReason === 'hung_request') {
+    // Clean auto-retry on stall (story-061-003). Classify the exit; only
+    // 'stall' takes the recovery path. Audit-first: the stall-kill row lands
+    // even when budget is exhausted or prep rejects. Recovery never resumes
+    // from a checkpoint — it always starts a fresh worktree + branch.
+    const exitClass = classifyWorkerExit(result);
+    if (exitClass === 'stall') {
       const attempt = this.autoResumeCounter.attemptsFor(task.story.id);
       recordStallKill(this.audit, {
         agentId: task.agentId,
@@ -2548,16 +2573,27 @@ export class Supervisor {
         result,
         resumeAttempt: attempt,
       });
-      const cap = this.opts.autoResumeAttempts ?? 0;
-      if (shouldAutoResume(result, attempt, cap)) {
-        const prep = this.retryService.prepare(task.story.id);
-        if (prep.status === 'ready' && prep.willResume) {
-          this.autoResumeCounter.record(task.story.id);
+      const budget = this.opts.stallRecoveryBudget ?? 2;
+      const currentCount = this.recoveryStore.getRecoveryCount(task.story.id);
+      if (currentCount < budget) {
+        const prep = this.cleanRetryService.prepare(task.story.id);
+        if (prep.status === 'ready') {
+          const newCount = this.recoveryStore.incrementRecoveryCount(task.story.id);
+          recordAutoRecovery(this.audit, {
+            agentId: task.agentId,
+            storyId: task.story.id,
+            detail: {
+              recovery_attempt: newCount,
+              budget,
+              kill_reason: result.killReason as 'stall' | 'hung_request',
+              reset_stories: prep.resetStories,
+            },
+          });
           task.status = 'pending';
           return;
         }
       }
-      // No checkpoint, cap reached, or prep rejected → leave the story failed.
+      // Budget spent or prep rejected → surface for manual intervention.
     }
   }
 

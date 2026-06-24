@@ -198,6 +198,18 @@ properties:
           supervisor auto-resumes it from the checkpoint up to this many times
           within one `loom run` (run-scoped, not persisted). 0 disables
           auto-resume. Cap exhausted or no checkpoint leaves the story failed.
+      stall_recovery_budget:
+        type: integer
+        minimum: 0
+        default: 2
+        description: |
+          Per-story budget of automatic clean-retries on a no-output stall
+          (epic-061). When a worker is killed by the stall or hung-request guard,
+          the supervisor spawns a fresh worktree + branch and re-runs from scratch
+          up to this many times. Unlike auto_resume_attempts, this never resumes
+          from a checkpoint — it always starts over. 0 disables auto-recovery
+          and leaves the story in the existing surface-for-manual-intervention
+          state. Durable: persisted in the DB, survives process restarts.
       story_timeout_multipliers:
         type: object
         description: |

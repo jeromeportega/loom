@@ -590,6 +590,11 @@ export const PolicySchema = z.object({
       // 0 disables auto-resume (today's behavior). Volatile: counted per run,
       // not persisted to the DB.
       auto_resume_attempts: z.number().int().min(0).default(2),
+      // Per-story budget of automatic clean-retries on a no-output stall
+      // (epic-061). When a worker stalls, the supervisor spawns a fresh
+      // worktree + branch and re-runs up to this many times. 0 disables.
+      // Durable: persisted in the DB, survives process restarts.
+      stall_recovery_budget: z.number().int().min(0).default(2),
       // Phased worker pipeline. When 'on', a story runs as discrete agent
       // spawns — implement, then verify (full build/test suite) — each with
       // its OWN fresh stall/cap timer and a checkpoint commit + handoff
