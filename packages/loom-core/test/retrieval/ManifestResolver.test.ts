@@ -193,9 +193,13 @@ describe('resolveRegisteredRepo — AC-3/T6: stale path (path swapped with diffe
     gitAddRemote(repoDir, 'https://github.com/test/original-repo.git');
     const entry = registerRepo(loomHome, repoDir);
     slug = entry.slug;
-    // Simulate path swap: remove the original repo, put an unrelated directory in place.
+    // Simulate path swap: remove the original repo, put a different git repo in place.
+    // Using a real git repo with a different remote URL makes the slug mismatch deterministic
+    // without depending on computeRepoSlug's behavior for non-git paths.
     fs.rmSync(repoDir, { recursive: true, force: true });
-    fs.mkdirSync(repoDir);  // plain directory, no git, no remote
+    fs.mkdirSync(repoDir);
+    gitInit(repoDir);
+    gitAddRemote(repoDir, 'https://github.com/test/attacker-repo.git');
   });
 
   after(() => {
@@ -277,6 +281,7 @@ describe('resolveRegisteredRepo — fail closed: path resolves to a file', () =>
 describe('resolveRegisteredRepo — symlink: entry.path is a symlink', () => {
   let loomHome: string;
   let realDir: string;
+  let symlinkDir: string;
   let symlinkPath: string;
   let expectedSlug: string;
   let result: ResolvedRepo;
@@ -284,6 +289,7 @@ describe('resolveRegisteredRepo — symlink: entry.path is a symlink', () => {
   before(() => {
     loomHome = makeTmp('home6');
     realDir = makeTmp('real-repo');
+    symlinkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-resolver-symlink-'));
     fs.mkdirSync(loomHome, { recursive: true });
     gitInit(realDir);
 
@@ -291,9 +297,8 @@ describe('resolveRegisteredRepo — symlink: entry.path is a symlink', () => {
     const realpath = fs.realpathSync(realDir);
     expectedSlug = computeRepoSlug(realpath).slug;
 
-    // Create a symlink pointing to the real directory.
-    symlinkPath = path.join(os.tmpdir(), `loom-resolver-symlink-${process.pid}`);
-    try { fs.unlinkSync(symlinkPath); } catch { /* ignore */ }
+    // Create a symlink inside a unique temp dir to avoid PID collisions.
+    symlinkPath = path.join(symlinkDir, 'target');
     fs.symlinkSync(realpath, symlinkPath);
 
     // Write manifest manually with the SYMLINK path as entry.path.
@@ -308,7 +313,7 @@ describe('resolveRegisteredRepo — symlink: entry.path is a symlink', () => {
   });
 
   after(() => {
-    try { fs.unlinkSync(symlinkPath); } catch { /* ignore */ }
+    fs.rmSync(symlinkDir, { recursive: true, force: true });
     fs.rmSync(realDir, { recursive: true, force: true });
     fs.rmSync(loomHome, { recursive: true, force: true });
   });
@@ -465,7 +470,9 @@ describe('types.ts — exported shared contracts', () => {
     assert.ok(err instanceof RetrievalRefused);
     assert.equal(err.rule, 'cross_repo.unregistered');
     assert.equal(err.reason, 'test reason');
-    assert.equal(err.message, 'test reason');
+    // err.message includes the rule prefix for distinguishable stack traces.
+    assert.equal(err.message, '[cross_repo.unregistered] test reason');
+    assert.equal(err.name, 'RetrievalRefused');
   });
 
   it('CROSS_REPO_RULES contains all required rule strings', () => {

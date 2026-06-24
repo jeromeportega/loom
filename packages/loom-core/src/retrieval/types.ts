@@ -1,6 +1,5 @@
-// Consumed from epic-054 (DO NOT redefine; import from home/workspaceManifest.ts)
-//   interface ManifestEntry { slug: string; path: string; remote_url: string | null; }
-//   interface WorkspaceManifest { version: 1; repos: ManifestEntry[]; }
+// Re-exported from epic-054 so downstream stories import from one place without re-declaring.
+export type { ManifestEntry, WorkspaceManifest } from '../home/workspaceManifest.js';
 
 /** A registered repo whose on-disk root is verified present AND identity-matched. */
 export interface ResolvedRepo {
@@ -27,7 +26,10 @@ export interface ReadResult   { slug: string; path: string; content: string;
 
 /** Thrown for EVERY refusal; carries the guard-style rule/reason for the audit log. */
 export class RetrievalRefused extends Error {
-  constructor(readonly rule: string, readonly reason: string) { super(reason); }
+  constructor(readonly rule: string, readonly reason: string) {
+    super(`[${rule}] ${reason}`);
+    this.name = 'RetrievalRefused';
+  }
 }
 
 /** Canonical audit rule strings — resolver, guard, reader, searcher, service ALL use these. */

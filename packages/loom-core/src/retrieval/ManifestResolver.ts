@@ -25,10 +25,11 @@ export function resolveRegisteredRepo(loomHome: string, slug: string): ResolvedR
   let realpath: string;
   try {
     realpath = fs.realpathSync(entry.path);
-  } catch {
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? 'unknown';
     throw new RetrievalRefused(
       CROSS_REPO_RULES.STALE_PATH,
-      `Registered path for "${slug}" no longer exists: ${entry.path}`,
+      `Registered path for "${slug}" is inaccessible (${code}): ${entry.path}`,
     );
   }
 
@@ -51,8 +52,16 @@ export function resolveRegisteredRepo(loomHome: string, slug: string): ResolvedR
   }
 
   // Identity check: re-derive slug from the on-disk realpath.
-  // A mismatch means the path was swapped or replaced with a different repo (TOCTOU/T6).
-  const { slug: derivedSlug } = computeRepoSlug(realpath);
+  // A mismatch (or a non-git directory that throws) means the path was swapped (TOCTOU/T6).
+  let derivedSlug: string;
+  try {
+    ({ slug: derivedSlug } = computeRepoSlug(realpath));
+  } catch {
+    throw new RetrievalRefused(
+      CROSS_REPO_RULES.STALE_PATH,
+      `Cannot derive slug for "${slug}" at "${realpath}" — path may not be a git repository`,
+    );
+  }
   if (derivedSlug !== entry.slug) {
     throw new RetrievalRefused(
       CROSS_REPO_RULES.STALE_PATH,
@@ -77,11 +86,22 @@ export function listWorkspaceRoots(loomHome: string): string[] {
       const realpath = fs.realpathSync(entry.path);
       const stat = fs.statSync(realpath);
       if (!stat.isDirectory()) continue;
-      const { slug } = computeRepoSlug(realpath);
-      if (slug !== entry.slug) continue;
+      let derivedSlug: string;
+      try {
+        ({ slug: derivedSlug } = computeRepoSlug(realpath));
+      } catch {
+        // Non-git directory or git unavailable → treat as stale, skip silently.
+        continue;
+      }
+      if (derivedSlug !== entry.slug) continue;
       roots.push(realpath);
-    } catch {
-      // Stale or unresolvable entry — skip without throwing.
+    } catch (e) {
+      // Expected fs failures (stale/deleted path) are silently skipped.
+      // Unexpected errors (programming bugs in realpathSync/statSync callers) surface.
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'ELOOP' ||
+          code === 'EACCES' || code === 'EPERM') continue;
+      throw e;
     }
   }
 
