@@ -107,23 +107,25 @@ function copyDirRecursive(src: string, dst: string): void {
   }
 }
 
-function ensureGitUserConfig(projectRoot: string): void {
+/**
+ * Returns true when both user.email and user.name are configured in git.
+ * Used to decide whether to supply a fallback identity via -c flags on commit.
+ */
+function hasGitIdentity(projectRoot: string): boolean {
   try {
     execFileSync('git', ['config', 'user.email'], {
       cwd: projectRoot,
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf8',
     });
+    execFileSync('git', ['config', 'user.name'], {
+      cwd: projectRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    });
+    return true;
   } catch {
-    // Not configured — set a loom identity for this commit only (local config)
-    execFileSync('git', ['config', 'user.email', 'loom@loom.local'], {
-      cwd: projectRoot,
-      stdio: 'ignore',
-    });
-    execFileSync('git', ['config', 'user.name', 'loom'], {
-      cwd: projectRoot,
-      stdio: 'ignore',
-    });
+    return false;
   }
 }
 
@@ -167,9 +169,12 @@ export function runMigrate(opts: {
     ? getCommittedLoomOutputs(projectRoot)
     : [];
 
+  // Compute once; reused in both the dry-run preview and the live precondition check.
+  const workingTreeClean = isWorkingTreeClean(projectRoot);
+
   // ─── Precondition check (before any operations) ─────────────────────────────
   if (relocateCommittedArtifacts && !dryRun && committedOutputs.length > 0) {
-    if (!isWorkingTreeClean(projectRoot)) {
+    if (!workingTreeClean) {
       process.stderr.write(
         '\nerror: working tree has uncommitted changes.\n' +
         '--relocate-committed-artifacts requires a clean working tree to avoid\n' +
@@ -218,7 +223,7 @@ export function runMigrate(opts: {
     if (relocateCommittedArtifacts) {
       if (committedOutputs.length === 0) {
         console.log(`  artifacts  no committed .loom_outputs to relocate`);
-      } else if (!isWorkingTreeClean(projectRoot)) {
+      } else if (!workingTreeClean) {
         console.log(`  artifacts  ERROR: working tree is dirty — cannot relocate committed artifacts`);
         console.log(`             (commit or stash your changes first)`);
       } else {
@@ -279,7 +284,14 @@ export function runMigrate(opts: {
       const loomOutputsSrc = path.join(projectRoot, '.loom_outputs');
       const loomOutputsDst = path.join(namespaceDir, 'loom_outputs');
       if (fs.existsSync(loomOutputsSrc)) {
-        copyDirRecursive(loomOutputsSrc, loomOutputsDst);
+        try {
+          copyDirRecursive(loomOutputsSrc, loomOutputsDst);
+        } catch (err) {
+          throw new Error(
+            `failed to copy artifacts from ${loomOutputsSrc} to ${loomOutputsDst}: ` +
+            `${(err as Error).message}`
+          );
+        }
       }
 
       // Remove from working tree and index
@@ -288,16 +300,41 @@ export function runMigrate(opts: {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
 
-      // Create a single forward commit (no history rewrite)
-      ensureGitUserConfig(projectRoot);
+      // Create a single forward commit (no history rewrite).
+      // -c commit.gpgsign=false: suppress GPG signing for this loom-internal commit.
+      // -c user.{email,name}: supply a fallback identity via flag (not written to
+      //   .git/config) when the repo has no configured git identity.
       const commitMessage =
         `loom migrate: relocate .loom_outputs artifacts to loom-home\n\n` +
         `Moved ${committedOutputs.length} file(s) to ${loomOutputsDst}.\n` +
         `This is a forward commit — no prior commits are rewritten.`;
-      execFileSync('git', ['commit', '-m', commitMessage], {
-        cwd: projectRoot,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      const commitArgs = [
+        '-c', 'commit.gpgsign=false',
+        ...(!hasGitIdentity(projectRoot)
+          ? ['-c', 'user.email=loom@loom.local', '-c', 'user.name=loom']
+          : []),
+        'commit', '-m', commitMessage,
+      ];
+      try {
+        execFileSync('git', commitArgs, {
+          cwd: projectRoot,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (commitErr) {
+        // git rm staged the deletions but the commit failed. Unstage them so the
+        // repo is left in a clean state and the user can diagnose and retry.
+        try {
+          execFileSync('git', ['rm', '--cached', '-r', '.loom_outputs'], {
+            cwd: projectRoot,
+            stdio: 'ignore',
+          });
+        } catch { /* best-effort unstage */ }
+        throw new Error(
+          `failed to commit artifact relocation (staged deletions have been unstaged); ` +
+          `re-run loom migrate --relocate-committed-artifacts to retry: ` +
+          `${(commitErr as Error).message}`
+        );
+      }
 
       console.log(`  artifacts  ${committedOutputs.length} file(s) relocated → ${loomOutputsDst}`);
       console.log(`             single forward commit created (no history rewrite)`);

@@ -1,4 +1,4 @@
-import { describe, it, before, after, beforeEach } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -14,12 +14,16 @@ const LOOM_CLI = path.resolve(__dirname, '../index.js');
 // Each suite gets its own isolated tmpDir so tests do not share state.
 // tmpDir/project/ is the target repo; loom-home lives at tmpDir/loom-home
 // (the sibling created by resolveLoomHomePath).
+// tmpDir/machine-loom is passed as LOOM_HOME to isolate the machine-level
+// ProjectRegistry from the developer's real ~/.loom.
 
 function makeSuite(): {
   tmpDir: () => string;
   projectDir: () => string;
   loomHomeDir: () => string;
   loom: (...args: string[]) => { stdout: string; stderr: string; status: number };
+  _setup(prefix: string): void;
+  _teardown(): void;
 } {
   let _tmpDir = '';
   let _projectDir = '';
@@ -30,14 +34,15 @@ function makeSuite(): {
     projectDir: () => _projectDir,
     loomHomeDir: () => _loomHomeDir,
     loom: (...args: string[]) => {
+      const machineHome = path.join(_tmpDir, 'machine-loom');
       try {
-        const stdout = execSync(`node "${LOOM_CLI}" ${args.join(' ')}`, {
+        const stdout = execFileSync('node', [LOOM_CLI, ...args], {
           cwd: _projectDir,
           encoding: 'utf8',
           stdio: ['pipe', 'pipe', 'pipe'],
           timeout: 30_000,
           // Isolate machine-level ProjectRegistry from the developer's real ~/.loom
-          env: { ...process.env, LOOM_HOME: path.join(_tmpDir, 'machine-loom') },
+          env: { ...process.env, LOOM_HOME: machineHome },
         });
         return { stdout, stderr: '', status: 0 };
       } catch (err: unknown) {
@@ -50,24 +55,33 @@ function makeSuite(): {
       _tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
       _projectDir = path.join(_tmpDir, 'project');
       fs.mkdirSync(_projectDir);
-      execSync('git init -q', { cwd: _projectDir, timeout: 30_000 });
-      execSync('git config user.email "test@test.com"', { cwd: _projectDir });
-      execSync('git config user.name "Test"', { cwd: _projectDir });
-      _loomHomeDir = resolveLoomHomePath(_projectDir, {});
+      execFileSync('git', ['init', '-q'], { cwd: _projectDir, timeout: 30_000 });
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: _projectDir });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: _projectDir });
+      // Mirror the subprocess LOOM_HOME env so _loomHomeDir agrees with what the
+      // CLI resolves. resolveLoomHomePath currently uses the sibling-dir heuristic
+      // and ignores LOOM_HOME, so this is equivalent today — but setting it makes
+      // the intent explicit and keeps the paths aligned if that ever changes.
+      const machineHome = path.join(_tmpDir, 'machine-loom');
+      const prev = process.env.LOOM_HOME;
+      process.env.LOOM_HOME = machineHome;
+      try {
+        _loomHomeDir = resolveLoomHomePath(_projectDir, {});
+      } finally {
+        if (prev !== undefined) process.env.LOOM_HOME = prev;
+        else delete process.env.LOOM_HOME;
+      }
     },
     _teardown(): void {
       fs.rmSync(_tmpDir, { recursive: true, force: true });
     },
-  } as ReturnType<typeof makeSuite> & { _setup(p: string): void; _teardown(): void };
+  };
 }
 
 // ─── Suite: fresh migration ───────────────────────────────────────────────────
 
 describe('loom migrate — fresh migration', () => {
-  const suite = makeSuite() as ReturnType<typeof makeSuite> & {
-    _setup(p: string): void;
-    _teardown(): void;
-  };
+  const suite = makeSuite();
 
   before(() => suite._setup('loom-migrate-fresh-'));
   after(() => suite._teardown());
@@ -126,24 +140,15 @@ describe('loom migrate — fresh migration', () => {
 // ─── Suite: state DB migration ────────────────────────────────────────────────
 
 describe('loom migrate — state DB migration', () => {
-  const suite = makeSuite() as ReturnType<typeof makeSuite> & {
-    _setup(p: string): void;
-    _teardown(): void;
-  };
+  const suite = makeSuite();
 
   before(() => {
     suite._setup('loom-migrate-db-');
-    // Create a fake legacy .loom/loom.db so the migration has something to do
+    // Create a fake legacy .loom/loom.db so the migration has something to detect.
+    // An empty (non-valid) DB file is sufficient: loom migrate must exit 0 and
+    // mention 'state db' regardless of the file's contents.
     const loomDir = path.join(suite.projectDir(), '.loom');
     fs.mkdirSync(loomDir, { recursive: true });
-    // Write a valid minimal SQLite DB header
-    const sqliteHeader = Buffer.alloc(4096, 0);
-    sqliteHeader.write('SQLite format 3\0', 0, 'ascii');
-    sqliteHeader.writeUInt16BE(4096, 16); // page size
-    sqliteHeader.writeUInt8(1, 18); // file format write version
-    sqliteHeader.writeUInt8(1, 19); // file format read version
-    // Leave the rest as zero — enough to fool fs.existsSync, not a real DB
-    // Use a simple empty file instead to avoid opening it as a SQLite DB
     fs.writeFileSync(path.join(loomDir, 'loom.db'), '');
   });
 
@@ -164,10 +169,7 @@ describe('loom migrate — state DB migration', () => {
 // ─── Suite: idempotent no-op re-run ──────────────────────────────────────────
 
 describe('loom migrate — idempotent no-op re-run', () => {
-  const suite = makeSuite() as ReturnType<typeof makeSuite> & {
-    _setup(p: string): void;
-    _teardown(): void;
-  };
+  const suite = makeSuite();
 
   before(() => {
     suite._setup('loom-migrate-noop-');
@@ -216,10 +218,7 @@ describe('loom migrate — idempotent no-op re-run', () => {
 // ─── Suite: dry-run makes no changes ─────────────────────────────────────────
 
 describe('loom migrate --dry-run', () => {
-  const suite = makeSuite() as ReturnType<typeof makeSuite> & {
-    _setup(p: string): void;
-    _teardown(): void;
-  };
+  const suite = makeSuite();
 
   before(() => suite._setup('loom-migrate-dryrun-'));
   after(() => suite._teardown());
@@ -271,10 +270,7 @@ describe('loom migrate --dry-run', () => {
 // ─── Suite: default leaves committed history untouched ───────────────────────
 
 describe('loom migrate — default leaves committed .loom_outputs untouched', () => {
-  const suite = makeSuite() as ReturnType<typeof makeSuite> & {
-    _setup(p: string): void;
-    _teardown(): void;
-  };
+  const suite = makeSuite();
 
   let initialCommitSha = '';
 
@@ -331,10 +327,7 @@ describe('loom migrate — default leaves committed .loom_outputs untouched', ()
 // ─── Suite: --relocate-committed-artifacts creates single forward commit ─────
 
 describe('loom migrate --relocate-committed-artifacts', () => {
-  const suite = makeSuite() as ReturnType<typeof makeSuite> & {
-    _setup(p: string): void;
-    _teardown(): void;
-  };
+  const suite = makeSuite();
 
   let shaBeforeReloc = '';
   let shaAfterReloc = '';
@@ -367,7 +360,9 @@ describe('loom migrate --relocate-committed-artifacts', () => {
 
     // Run migration with relocation
     const result = suite.loom('migrate', '--relocate-committed-artifacts');
-    assert.equal(result.status, 0, `migrate --relocate-committed-artifacts must exit 0; stderr: ${result.stderr}`);
+    if (result.status !== 0) {
+      throw new Error('setup: loom migrate --relocate-committed-artifacts failed: ' + result.stderr);
+    }
 
     shaAfterReloc = execSync('git rev-parse HEAD', {
       cwd: projectDir,
@@ -464,10 +459,7 @@ describe('loom migrate --relocate-committed-artifacts', () => {
 // ─── Suite: dirty working tree refusal ───────────────────────────────────────
 
 describe('loom migrate --relocate-committed-artifacts — dirty working tree refusal', () => {
-  const suite = makeSuite() as ReturnType<typeof makeSuite> & {
-    _setup(p: string): void;
-    _teardown(): void;
-  };
+  const suite = makeSuite();
 
   before(() => {
     suite._setup('loom-migrate-dirty-');
@@ -533,10 +525,7 @@ describe('loom migrate --relocate-committed-artifacts — dirty working tree ref
 // ─── Suite: dry-run with relocate flag ───────────────────────────────────────
 
 describe('loom migrate --dry-run --relocate-committed-artifacts', () => {
-  const suite = makeSuite() as ReturnType<typeof makeSuite> & {
-    _setup(p: string): void;
-    _teardown(): void;
-  };
+  const suite = makeSuite();
 
   before(() => {
     suite._setup('loom-migrate-dryrun-reloc-');
