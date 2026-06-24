@@ -88,24 +88,49 @@ export function parseOwnershipMap(markdown: string, epicId: string): OwnershipMa
   // 3. Walk the contiguous table. Skip the header row and a dash separator row
   //    if present; everything else is a data row.
   let seenHeader = false;
+  let repoColIdx = -1; // -1 = no Repo column present
+  let pathColIdx = 1;  // default: Owns is in column index 1 (two-column layout)
+
   for (; i < lines.length && TABLE_ROW.test(lines[i]); i++) {
     const row = lines[i];
     if (SEPARATOR_ROW.test(row)) continue;
     if (!seenHeader) {
       seenHeader = true; // first non-separator pipe row is the column header
+      // Detect optional Repo column by scanning header cells. The cross-repo
+      // layout is | Story | Repo | Owns |; single-repo omits the middle column.
+      const headerCells = splitRow(row);
+      for (let ci = 0; ci < headerCells.length; ci++) {
+        if (/^repo(sitory)?$/i.test(headerCells[ci].trim())) {
+          repoColIdx = ci;
+          pathColIdx = ci + 1; // Owns column immediately follows Repo
+          break;
+        }
+      }
       continue;
     }
 
     const cells = splitRow(row);
-    if (cells.length < 2) continue; // need at least owner + path columns
+    if (cells.length < pathColIdx + 1) continue; // need enough columns
 
     const owner = parseOwner(cells[0], epicId);
     if (!owner) continue; // unparseable owner cell -> skip the whole row
 
-    for (const token of cells[1].split(PATH_DELIMITER)) {
+    // Extract repo slug when the Repo column is present.
+    let repo: string | undefined;
+    if (repoColIdx >= 0 && repoColIdx < cells.length) {
+      const slug = cells[repoColIdx].trim();
+      if (slug.length > 0) repo = slug;
+    }
+
+    for (const token of cells[pathColIdx].split(PATH_DELIMITER)) {
       const normalized = normalizePath(token);
       if (!normalized) continue; // empty / prose-only token -> skip just it
-      entries.push({ epicId: owner.epicId, ...(owner.storyId ? { storyId: owner.storyId } : {}), path: normalized });
+      entries.push({
+        epicId: owner.epicId,
+        ...(owner.storyId ? { storyId: owner.storyId } : {}),
+        ...(repo !== undefined ? { repo } : {}),
+        path: normalized,
+      });
     }
   }
 
@@ -215,6 +240,13 @@ export function normalizePath(token: string): string {
 export interface Overlap {
   /** The exact repo-relative POSIX path both/all owners share. */
   path: string;
+  /**
+   * Manifest slug of the repo where the conflict was detected. Populated from
+   * `entry.repo ?? primarySlug`; absent when `primarySlug` was not provided
+   * (single-repo callers that pass no slug). Cross-repo consumers use this to
+   * emit unambiguous conflict messages when two repos share the same relative path.
+   */
+  repo?: string;
   /** Every owner claiming `path`, across all compared maps. */
   owners: Array<{ epicId: string; storyId?: string }>;
 }
@@ -289,7 +321,12 @@ export function computeOverlaps(
     const targetOwner = entry.storyId
       ? { epicId: entry.epicId, storyId: entry.storyId }
       : { epicId: entry.epicId };
-    overlaps.push({ path: entry.path, owners: [targetOwner, ...otherOwners] });
+    const repoValue = entry.repo ?? primarySlug;
+    overlaps.push({
+      path: entry.path,
+      ...(repoValue ? { repo: repoValue } : {}),
+      owners: [targetOwner, ...otherOwners],
+    });
   }
 
   return overlaps;

@@ -737,6 +737,108 @@ describe('computeOverlaps — single-repo regression [AC5]', () => {
   });
 });
 
+describe('parseOwnershipMap — repo column round-trip [blocker fix]', () => {
+  const mdWithRepoCol =
+    '## File & module ownership map\n\n' +
+    '| Story | Repo | Owns |\n' +
+    '|---|---|---|\n' +
+    '| story-058-004 | producer-svc | `packages/loom-core/src/orchestrator/ContractOwnership.ts` |\n' +
+    '| story-058-005 | consumer-svc | `packages/loom-core/src/orchestrator/CrossRepoCoordinator.ts` |\n';
+
+  it('populates entry.repo from the Repo column', () => {
+    const map = parseOwnershipMap(mdWithRepoCol, 'epic-058');
+    assert.equal(map.length, 2);
+    assert.equal(map[0].repo, 'producer-svc');
+    assert.equal(map[0].path, 'packages/loom-core/src/orchestrator/ContractOwnership.ts');
+    assert.equal(map[1].repo, 'consumer-svc');
+    assert.equal(map[1].path, 'packages/loom-core/src/orchestrator/CrossRepoCoordinator.ts');
+  });
+
+  it('entries from a two-column table (no Repo column) still have repo: undefined', () => {
+    const md =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n' +
+      '| --- | --- |\n' +
+      '| story-007-001 | `src/foo.ts` |\n';
+    const map = parseOwnershipMap(md, 'epic-007');
+    assert.equal(map.length, 1);
+    assert.equal(map[0].repo, undefined, 'single-repo table must not produce a repo field');
+  });
+
+  it('parsed cross-repo entries with the same path in different repos do NOT conflict', () => {
+    const mdA =
+      '## File & module ownership map\n' +
+      '| Story | Repo | Owns |\n' +
+      '|---|---|---|\n' +
+      '| story-058-001 | repo-a | `src/shared.ts` |\n';
+    const mdB =
+      '## File & module ownership map\n' +
+      '| Story | Repo | Owns |\n' +
+      '|---|---|---|\n' +
+      '| story-058-002 | repo-b | `src/shared.ts` |\n';
+    const target = parseOwnershipMap(mdA, 'epic-058');
+    const others = new Map([['epic-058-b', parseOwnershipMap(mdB, 'epic-058')]]);
+    assert.equal(target[0].repo, 'repo-a', 'parseOwnershipMap must set repo from the Repo column');
+    assert.equal(parseOwnershipMap(mdB, 'epic-058')[0].repo, 'repo-b');
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 0, 'cross-repo same-path must NOT conflict after repo column is parsed');
+  });
+
+  it('parsed entries with the same path in the SAME repo still conflict', () => {
+    const mdSameRepo =
+      '## File & module ownership map\n' +
+      '| Story | Repo | Owns |\n' +
+      '|---|---|---|\n' +
+      '| story-001-001 | repo-a | `src/shared.ts` |\n';
+    const mdSameRepo2 =
+      '## File & module ownership map\n' +
+      '| Story | Repo | Owns |\n' +
+      '|---|---|---|\n' +
+      '| story-002-001 | repo-a | `src/shared.ts` |\n';
+    const target = parseOwnershipMap(mdSameRepo, 'epic-001');
+    const others = new Map([['epic-002', parseOwnershipMap(mdSameRepo2, 'epic-002')]]);
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 1, 'same-repo same-path must still be flagged after repo column is parsed');
+    assert.equal(overlaps[0].path, 'src/shared.ts');
+  });
+});
+
+describe('computeOverlaps — Overlap.repo field [medium fix]', () => {
+  it('Overlap.repo is populated from entry.repo when present', () => {
+    const target: OwnershipMap = [repoEntry('epic-001', 'story-001-001', 'repo-a', 'src/shared.ts')];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [repoEntry('epic-002', 'story-002-001', 'repo-a', 'src/shared.ts')]],
+    ]);
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].repo, 'repo-a', 'Overlap.repo must be populated from the entry repo');
+  });
+
+  it('Overlap.repo falls back to primarySlug when entry.repo is absent', () => {
+    const target: OwnershipMap = [
+      { epicId: 'epic-001', storyId: 'story-001-001', path: 'src/shared.ts' },
+    ];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [{ epicId: 'epic-002', storyId: 'story-002-001', path: 'src/shared.ts' }]],
+    ]);
+    const overlaps = computeOverlaps(target, others, 'loom');
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].repo, 'loom', 'Overlap.repo must fall back to primarySlug');
+  });
+
+  it('Overlap.repo is absent when primarySlug is empty (single-repo callers that pass no slug)', () => {
+    const target: OwnershipMap = [
+      { epicId: 'epic-001', storyId: 'story-001-001', path: 'src/shared.ts' },
+    ];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [{ epicId: 'epic-002', storyId: 'story-002-001', path: 'src/shared.ts' }]],
+    ]);
+    const overlaps = computeOverlaps(target, others); // no primarySlug
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].repo, undefined, 'Overlap.repo must be absent when no primarySlug given');
+  });
+});
+
 describe('SharedContract — repo column passthrough [AC4]', () => {
   let tmpDir: string;
 
@@ -779,22 +881,16 @@ describe('SharedContract — repo column passthrough [AC4]', () => {
     );
   });
 
-  it('repo column content is preserved through the injection path (includes() check)', () => {
+  it('repo column content is present in the contract body (both repo slugs and story ids)', () => {
+    // The round-trip is already proven by the first two tests. This asserts that
+    // the written contract body directly contains the repo identities needed for
+    // worker prompt injection — the preamble template is tested in workerPrompt.ts.
     SharedContract.write(tmpDir, 'epic-058', CONTRACT_WITH_REPO_COL);
     const body = SharedContract.read(tmpDir, 'epic-058');
     assert.ok(body !== null);
-    // The assembled string that would be injected into a worker prompt
-    const injectedBlock =
-      '\n\n### Shared contract (epic-wide — read first)\n' +
-      'The architect produced the contract below for EVERY story in epic epic-058. ' +
-      'Other stories are being implemented in parallel against it. Conform to the ' +
-      'shared interfaces/types EXACTLY — do not invent your own — and edit only the ' +
-      'files this story owns per the ownership map; you may import from other stories\' ' +
-      'files but must not modify them.\n\n' +
-      body;
-    assert.ok(injectedBlock.includes('producer-svc'), 'injected prompt must contain producer repo slug');
-    assert.ok(injectedBlock.includes('consumer-svc'), 'injected prompt must contain consumer repo slug');
-    assert.ok(injectedBlock.includes('story-058-004'), 'injected prompt must contain producer story');
-    assert.ok(injectedBlock.includes('story-058-005'), 'injected prompt must contain consumer story');
+    assert.ok((body as string).includes('producer-svc'), 'contract body must contain producer repo slug');
+    assert.ok((body as string).includes('consumer-svc'), 'contract body must contain consumer repo slug');
+    assert.ok((body as string).includes('story-058-004'), 'contract body must contain producer story');
+    assert.ok((body as string).includes('story-058-005'), 'contract body must contain consumer story');
   });
 });
