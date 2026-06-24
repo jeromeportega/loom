@@ -219,6 +219,18 @@ export class LandingStore implements LandingStorePort {
       )
       .run(status, blocker !== undefined ? JSON.stringify(blocker) : null, attemptId);
   }
+
+  latestAttemptIdForEpic(epicId: string): string | undefined {
+    try {
+      const row = this.db
+        .prepare('SELECT id FROM landing_attempts WHERE epic_id = ? ORDER BY rowid DESC LIMIT 1')
+        .get(epicId) as { id: string } | undefined;
+      return row?.id;
+    } catch {
+      // Table may not exist on pre-v27 databases — degrade gracefully.
+      return undefined;
+    }
+  }
 }
 
 // ─── Topological sort (Kahn's BFS) ───────────────────────────────────────────

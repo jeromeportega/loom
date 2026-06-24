@@ -51,6 +51,12 @@ const STATUS_ICONS: Record<string, string> = {
   in_progress: '🔄',
   finalizing: '🚀',
   publish_pending: '📦',
+  // Landing attempt statuses (cross-repo)
+  staging: '⏳',
+  merging: '🔀',
+  landed: '✅',
+  rolling_back: '⏮️',
+  rolled_back: '↩️',
 };
 
 const PUBLISH_PENDING_LABEL = 'work complete · publish pending';
@@ -360,16 +366,7 @@ function collectJsonEpics(
 
 /** Renders a landing report section under an epic when an attempt exists. */
 function renderLandingReport(report: LandingReport): void {
-  const ICONS: Record<string, string> = {
-    staging: '⏳',
-    merging: '🔀',
-    landed: '✅',
-    rolling_back: '⏮️',
-    rolled_back: '↩️',
-    blocked: '🚫',
-    failed: '❌',
-  };
-  const icon = ICONS[report.status] ?? '?';
+  const icon = STATUS_ICONS[report.status] ?? '?';
   console.log(`      ${icon} Landing ${report.attemptId}  [${report.status}]`);
 
   if (report.status === 'blocked' && report.blocker) {
@@ -377,6 +374,13 @@ function renderLandingReport(report: LandingReport): void {
     console.log(`           blocked: ${b.check} on '${b.repoSlug}'`);
     console.log(`           reason: ${b.reason}`);
     console.log(`           retry: open a new landing attempt with new PRs (reverted PRs do not reopen — ADR-006)`);
+  }
+
+  if (report.status === 'rolling_back') {
+    const pending = report.repos.filter((r) => r.mergeState === 'merged' || r.mergeState === 'revert_pending');
+    if (pending.length > 0) {
+      console.log(`           reverting: ${pending.map((r) => r.repoSlug).join(', ')}`);
+    }
   }
 
   if (report.status === 'rolled_back') {
@@ -503,13 +507,17 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
       }
 
       // Show the latest cross-repo landing attempt for this epic, if any.
-      const latestAttemptRow = db
-        .prepare('SELECT id FROM landing_attempts WHERE epic_id = ? ORDER BY rowid DESC LIMIT 1')
-        .get(epic.id) as { id: string } | undefined;
-      if (latestAttemptRow) {
-        const store = new LandingStore(db);
-        const report = landingReport(latestAttemptRow.id, store);
-        renderLandingReport(report);
+      // Landing report is independent of agent presence — show even when no agents have been dispatched.
+      // SHA provider is a no-op: status is read-only and never calls beginAttempt.
+      const landingStore = new LandingStore(db, () => '');
+      const latestAttemptId = landingStore.latestAttemptIdForEpic(epic.id);
+      if (latestAttemptId) {
+        try {
+          const report = landingReport(latestAttemptId, landingStore);
+          renderLandingReport(report);
+        } catch {
+          console.log('      ⚠ landing report unavailable');
+        }
       }
     }
 

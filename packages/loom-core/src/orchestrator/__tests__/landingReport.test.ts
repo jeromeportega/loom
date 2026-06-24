@@ -84,6 +84,7 @@ function makeStore(
     markReverted: noop as unknown as LandingStorePort['markReverted'],
     pendingReverts: noop as unknown as LandingStorePort['pendingReverts'],
     setStatus: noop as unknown as LandingStorePort['setStatus'],
+    latestAttemptIdForEpic: noop as unknown as LandingStorePort['latestAttemptIdForEpic'],
   };
 }
 

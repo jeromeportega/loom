@@ -245,21 +245,15 @@ describe('loom audit — cross_repo.* entries appear in output', () => {
     });
     db.close();
 
-    const origCwd = process.cwd();
-    try {
-      process.chdir(realRepo);
-      const out = captureAudit({ limit: 10 });
-      assert.ok(
-        out.includes(CROSS_REPO_ACTIONS.BLOCKED),
-        `Expected '${CROSS_REPO_ACTIONS.BLOCKED}' in audit output:\n${out}`
-      );
-      assert.ok(
-        out.includes(CROSS_REPO_ACTIONS.STAGED),
-        `Expected '${CROSS_REPO_ACTIONS.STAGED}' in audit output:\n${out}`
-      );
-    } finally {
-      process.chdir(origCwd);
-    }
+    const out = captureAudit({ limit: 10, projectRoot: realRepo });
+    assert.ok(
+      out.includes(CROSS_REPO_ACTIONS.BLOCKED),
+      `Expected '${CROSS_REPO_ACTIONS.BLOCKED}' in audit output:\n${out}`
+    );
+    assert.ok(
+      out.includes(CROSS_REPO_ACTIONS.STAGED),
+      `Expected '${CROSS_REPO_ACTIONS.STAGED}' in audit output:\n${out}`
+    );
   });
 });
 
