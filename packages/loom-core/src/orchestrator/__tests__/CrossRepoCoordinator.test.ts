@@ -20,7 +20,7 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { execFileSync } from 'node:child_process';
 
-import { openDatabase, resetDatabaseForTest } from '../../state/Database.js';
+import { openDatabase, createDatabase, resetDatabaseForTest } from '../../state/Database.js';
 import { EpicStore } from '../../state/EpicStore.js';
 import {
   buildRepoStages,
@@ -240,6 +240,34 @@ describe('topoSortRepos — producer before consumer', () => {
     assert.deepEqual(slugs, ['repo-api', 'repo-frontend']);
   });
 
+  it('handles duplicate entries in dependsOnRepos without false cycle detection', () => {
+    // If buildRepoDag emitted the same slug twice in dependsOnRepos, the
+    // in-degree would be over-counted and the stage would never reach 0.
+    // topoSortRepos must deduplicate before computing in-degree.
+    const dupStages: RepoStage[] = [
+      {
+        repoSlug: 'repo-a',
+        repoRoot: '/repos/repo-a',
+        storyIds: ['s1'],
+        dependsOnRepos: [],
+        status: 'pending',
+      },
+      {
+        repoSlug: 'repo-b',
+        repoRoot: '/repos/repo-b',
+        storyIds: ['s2'],
+        // Intentional duplicate — must not trigger false cycle error.
+        dependsOnRepos: ['repo-a', 'repo-a'],
+        status: 'pending',
+      },
+    ];
+    const sorted = topoSortRepos(dupStages);
+    assert.equal(sorted.length, 2);
+    const aIdx = sorted.findIndex(s => s.repoSlug === 'repo-a');
+    const bIdx = sorted.findIndex(s => s.repoSlug === 'repo-b');
+    assert.ok(aIdx < bIdx, 'producer must still come before consumer with duplicate deps');
+  });
+
   it('throws when a cycle is detected instead of silently returning input order', () => {
     // Manually construct a cyclic stage graph (A depends on B, B depends on A).
     const cycleStages: RepoStage[] = [
@@ -299,10 +327,13 @@ function seedEpicOnDisk(repoDir: string, epicId: string, stories: Story[]): void
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, yaml.dump(epicYaml));
 
-  const db = openDatabase(path.join(repoDir, '.loom'));
+  // Use createDatabase (non-singleton) so we can safely close it here without
+  // poisoning the module-level singleton that openDatabase() returns.
+  const db = createDatabase(path.join(repoDir, '.loom', 'loom.db'));
   const store = new EpicStore(db);
   store.create(epicId, epicYaml.title, rel);
   store.updateStatus(epicId, 'approved');
+  db.close();
 }
 
 // ─── Test state ───────────────────────────────────────────────────────────────
@@ -506,6 +537,51 @@ describe('CrossRepoCoordinator.run — consumer waits for producer merge', () =>
 
     // When waitForMerge is called, the stage must be 'awaiting_merge'.
     assert.equal(capturedStageAStatus, 'awaiting_merge');
+  });
+
+  it('(4) producerStage.status is awaiting_merge when runConsumerGateFn is called', async () => {
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+
+    const epicStories = [
+      story('story-001-001', [], 'repo-a'),
+      story('story-001-002', ['story-001-001'], 'repo-b'),
+    ];
+    seedEpicOnDisk(repoDir, 'epic-001', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+      ],
+    };
+
+    let capturedProducerStatusDuringGate: string | undefined;
+
+    const runConsumerGateFn = async (producerStage: RepoStage) => {
+      capturedProducerStatusDuringGate = producerStage.status;
+    };
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: () => ({ finalize: async () => okFinalizeResult() }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+      waitForMergeFn: async () => { /* resolve immediately */ },
+      runConsumerGateFn,
+    });
+
+    await coordinator.run('epic-001');
+
+    assert.equal(
+      capturedProducerStatusDuringGate,
+      'awaiting_merge',
+      'producerStage.status must be awaiting_merge when runConsumerGateFn is called',
+    );
   });
 });
 

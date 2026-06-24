@@ -56,8 +56,17 @@ export interface CrossRepoCoordinatorOptions {
    * Injectable merge-gate for tests. Defaults to polling `gh pr view` until
    * the PR reaches MERGED state. Only called for stages that have consumers
    * (single-repo epics skip it entirely — AC: identical to today).
+   *
+   * Known limitation: the default implementation polls indefinitely with no
+   * built-in deadline. Pass `abortSignal` on this options object to cancel it,
+   * or set a process-level timeout before calling `coordinator.run()`.
    */
-  waitForMergeFn?: (stage: RepoStage) => Promise<void>;
+  waitForMergeFn?: (stage: RepoStage, signal?: AbortSignal) => Promise<void>;
+  /**
+   * Optional AbortSignal that cancels any in-progress `waitForMerge` poll.
+   * Useful for integration tests and callers that need a hard wall-clock limit.
+   */
+  abortSignal?: AbortSignal;
   /**
    * story-058-006 seam: runs a cross-repo gate after the producer stage lands
    * and before the consumer stage finalizes. Defaults to a no-op until
@@ -113,8 +122,9 @@ export function topoSortRepos(stages: RepoStage[]): RepoStage[] {
   const inDegree = new Map<string, number>(stages.map(s => [s.repoSlug, 0]));
 
   for (const s of stages) {
-    // Each entry in dependsOnRepos increases this stage's in-degree by one.
-    inDegree.set(s.repoSlug, (inDegree.get(s.repoSlug) ?? 0) + s.dependsOnRepos.length);
+    // Deduplicate to avoid over-counting in-degree when a slug appears twice.
+    const deps = [...new Set(s.dependsOnRepos)];
+    inDegree.set(s.repoSlug, (inDegree.get(s.repoSlug) ?? 0) + deps.length);
   }
 
   const queue: RepoStage[] = stages.filter(s => inDegree.get(s.repoSlug) === 0);
@@ -150,7 +160,8 @@ export class CrossRepoCoordinator {
   private readonly db: Database.Database;
   private readonly manifest: WorkspaceManifest;
   private readonly primarySlug: string;
-  private readonly _waitForMerge: (stage: RepoStage) => Promise<void>;
+  private readonly _waitForMerge: (stage: RepoStage, signal?: AbortSignal) => Promise<void>;
+  private readonly abortSignal?: AbortSignal;
   private readonly _runConsumerGate: (
     producerStage: RepoStage,
     consumerStage: RepoStage,
@@ -165,6 +176,7 @@ export class CrossRepoCoordinator {
     this.primarySlug = opts.primarySlug;
     this._waitForMerge = opts.waitForMergeFn ?? defaultWaitForMerge;
     this._runConsumerGate = opts.runConsumerGateFn ?? noopConsumerGate;
+    this.abortSignal = opts.abortSignal;
   }
 
   /**
@@ -212,6 +224,10 @@ export class CrossRepoCoordinator {
         if (result.url) stage.prUrl = result.url;
 
         if (hasConsumers(stage.repoSlug)) {
+          // Set status before calling _runConsumerGate so story-058-006 sees
+          // the correct state when it reads producerStage.status.
+          stage.status = 'awaiting_merge';
+
           // story-058-006 seam: run consumer gate before blocking on merge.
           // `producerStage.status` is `'awaiting_merge'` at invocation time.
           // Currently a no-op; story-058-006 will wire `runConsumerGateFn`.
@@ -220,8 +236,7 @@ export class CrossRepoCoordinator {
           }
 
           // Block subsequent consumer stages until this PR is merged.
-          stage.status = 'awaiting_merge';
-          await this._waitForMerge(stage);
+          await this._waitForMerge(stage, this.abortSignal);
         }
 
         stage.status = 'landed';
@@ -257,7 +272,7 @@ export class CrossRepoCoordinator {
 
 // ─── Default implementations ──────────────────────────────────────────────────
 
-async function defaultWaitForMerge(stage: RepoStage): Promise<void> {
+async function defaultWaitForMerge(stage: RepoStage, signal?: AbortSignal): Promise<void> {
   if (!stage.prUrl) {
     throw new Error(
       `CrossRepoCoordinator: producer stage '${stage.repoSlug}' has no prUrl — cannot wait for merge`,
@@ -269,6 +284,11 @@ async function defaultWaitForMerge(stage: RepoStage): Promise<void> {
   const pollMs = 30_000;
   let consecutiveErrors = 0;
   for (;;) {
+    if (signal?.aborted) {
+      throw new Error(
+        `CrossRepoCoordinator.waitForMerge: aborted while waiting for ${stage.prUrl}`,
+      );
+    }
     let state: string;
     try {
       const { stdout } = await execFileAsync(
@@ -282,10 +302,10 @@ async function defaultWaitForMerge(stage: RepoStage): Promise<void> {
       consecutiveErrors++;
       if (consecutiveErrors >= 3) {
         throw new Error(
-          `CrossRepoCoordinator.waitForMerge: gh poll failed 3 consecutive times for ${stage.prUrl}: ${(err as Error).message}`,
+          `CrossRepoCoordinator.waitForMerge: gh poll failed 3 consecutive times for ${stage.prUrl}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
-      await new Promise<void>(resolve => setTimeout(resolve, pollMs));
+      await abortableSleep(pollMs, signal);
       continue;
     }
     if (state === 'MERGED') return;
@@ -294,8 +314,22 @@ async function defaultWaitForMerge(stage: RepoStage): Promise<void> {
         `CrossRepoCoordinator.waitForMerge: PR ${stage.prUrl} was closed without merging`,
       );
     }
-    await new Promise<void>(resolve => setTimeout(resolve, pollMs));
+    await abortableSleep(pollMs, signal);
   }
+}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(new Error('CrossRepoCoordinator.waitForMerge: aborted during sleep'));
+      },
+      { once: true },
+    );
+  });
 }
 
 async function noopConsumerGate(
