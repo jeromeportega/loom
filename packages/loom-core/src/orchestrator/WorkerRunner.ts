@@ -130,6 +130,15 @@ export interface WorkerAssignment {
    */
   onPhaseBoundary?: (info: { phase: 'implement' | 'verify'; summary: string }) => void;
   /**
+   * Per-story worktree confinement context — the repo slug and worktree path this
+   * story is isolated to. Set by the Supervisor at dispatch so guardrail hooks
+   * can enforce that writes stay within the story's own worktree and repo.
+   * Consumed by story-058-007's repoConfinement guard; optional so existing
+   * mock/bench workers that don't inspect it are unaffected.
+   * TODO(story-058-007): remove this field if the repoConfinement guard is not landed.
+   */
+  worktreeContext?: { repoSlug: string; worktreePath: string };
+  /**
    * Optional attempt-classification sink (epic-006 story-006-003) — invoked
    * once per spawn inside the infra auto-retry loop with the classifier's
    * verdict and the zero-based retry attempt that produced it. The Supervisor
