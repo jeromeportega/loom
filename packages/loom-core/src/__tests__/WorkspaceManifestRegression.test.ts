@@ -2,10 +2,13 @@
  * Cross-cutting regression suite for the workspace manifest epic (epic-054).
  *
  * Invariants verified here:
- *   NFR-3   — workspaceManifest.ts and dirLock.ts import NOTHING from guardrails/
+ *   NFR-3   — workspaceManifest.ts, dirLock.ts, and resolveActiveRepo.ts import NOTHING from guardrails/
  *   POLICY  — PolicyEngine structural checks (forbidden command, protected branch) are untouched
  *   PATHS   — prepareRepoState returns identical RepoStatePaths before and after manifest is present
  *   GUARD   — observe-and-record in prepareRepoState never blocks a command even when the manifest errors
+ *
+ * Note: __dirname is valid here because loom-core has "type": "commonjs" in package.json.
+ * TypeScript emits CJS (module: Node16 + commonjs package type), so __dirname is defined at runtime.
  */
 
 import { describe, it } from 'node:test';
@@ -29,26 +32,29 @@ function tmpDir(): string {
 function makeProjectRoot(parent: string): string {
   const proj = path.join(parent, 'project');
   fs.mkdirSync(path.join(proj, '.loom'), { recursive: true });
-  fs.writeFileSync(path.join(proj, '.loom', 'policy.yaml'), '', 'utf8');
+  // Write a minimal valid (but empty) policy so any YAML parser sees a valid document.
+  fs.writeFileSync(path.join(proj, '.loom', 'policy.yaml'), '{}\n', 'utf8');
   return proj;
 }
 
 // ── NFR-3: guardrail import boundary ─────────────────────────────────────────
 //
-// The manifest modules (workspaceManifest.ts, dirLock.ts, resolveActiveRepo.ts)
+// The manifest modules — workspaceManifest.ts, dirLock.ts, and resolveActiveRepo.ts —
 // must NEVER import from the guardrails/ subtree. Guardrails are structural
 // policy checks; mixing them into the manifest layer would create a coupling
 // that could silently weaken or bypass policy enforcement.
 
 describe('NFR-3 — manifest modules must not import from guardrails/', () => {
+  // All three manifest-layer source files are checked. Adding a fourth file
+  // here is the only change needed when a new manifest module is introduced.
   const MANIFEST_MODULES = [
     path.join(LOOM_CORE_SRC, 'home', 'workspaceManifest.ts'),
     path.join(LOOM_CORE_SRC, 'home', 'dirLock.ts'),
     path.join(LOOM_CORE_SRC, 'home', 'resolveActiveRepo.ts'),
   ];
 
-  // Matches any static import or require that references a path containing '/guardrails'
-  const GUARDRAILS_IMPORT_RE = /from\s*['"][^'"]*\/guardrails(?:\/|['"])/;
+  // Matches static ES import, CommonJS require(), and dynamic import() referencing guardrails/.
+  const GUARDRAILS_IMPORT_RE = /(?:from|require|import)\s*\(?['"][^'"]*\/guardrails(?:\/|['"])/;
 
   for (const modPath of MANIFEST_MODULES) {
     const label = path.relative(LOOM_CORE_SRC, modPath);
@@ -145,6 +151,8 @@ describe('prepareRepoState — returned paths unchanged by manifest introduction
       // Second call: workspace.yaml is now present.
       const paths2 = prepareRepoState(proj, policy);
 
+      assert.ok(paths1.dbPath, 'first call must return a non-empty dbPath');
+      assert.ok(paths1.namespaceDir, 'first call must return a non-empty namespaceDir');
       assert.equal(paths2.dbPath, paths1.dbPath, 'dbPath must be unchanged after manifest is present');
       assert.equal(paths2.namespaceDir, paths1.namespaceDir, 'namespaceDir must be unchanged');
     } finally {
@@ -181,6 +189,9 @@ describe('prepareRepoState — returned paths unchanged by manifest introduction
 
 describe('prepareRepoState — observe-and-record must not block commands', () => {
   it('does not throw even when loom-home is read-only (manifest write fails)', () => {
+    // chmod has no effect when running as root; skip to avoid a vacuous pass.
+    if (process.getuid?.() === 0) return;
+
     const tmp = tmpDir();
     const loomHome = path.join(tmp, 'loom-home');
     const proj = makeProjectRoot(tmp);
