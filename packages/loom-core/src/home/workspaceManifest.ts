@@ -12,6 +12,7 @@ export interface ManifestEntry {
   slug: string;               // computeRepoSlug().slug — canonical identity & primary key
   path: string;               // fs.realpathSync(projectRoot)
   remote_url: string | null;  // computeRepoSlug().remoteUrl
+  primary?: boolean;          // at most one entry true per manifest
 }
 
 export interface WorkspaceManifest {
@@ -24,6 +25,7 @@ const ManifestEntrySchema = z.object({
   path: z.string().min(1),
   // Accept omitted field (hand-edited manifests) and coerce to null.
   remote_url: z.string().nullable().optional().default(null),
+  primary: z.boolean().optional(),
 });
 
 export const WorkspaceManifestSchema = z.object({
