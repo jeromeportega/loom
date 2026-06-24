@@ -959,6 +959,13 @@
               statusEl.textContent = a.status;
               statusEl.className = `agent-status ${a.status}`;
             }
+            // Reconcile the kill control on a live status change: the row is
+            // rendered once, so without this the kill button (rendered while
+            // 'running') lingers on a done/failed/blocked row. A worker that
+            // left 'running' can no longer be killed — drop it.
+            if (a.status !== 'running') {
+              document.querySelector(`[data-kill="${a.id}"]`)?.closest('.row-actions')?.remove();
+            }
             const tokensEl = document.querySelector(`[data-tokens="${a.id}"]`);
             if (tokensEl) tokensEl.textContent = a.tokens_total ?? '—';
             const costEl = document.querySelector(`[data-cost="${a.id}"]`);
