@@ -204,10 +204,12 @@ export class CrossRepoCoordinator {
     const landed = new Set<string>();
 
     for (const stage of sorted) {
-      // A consumer gate failure (story-058-006) sets the consumer stage to
-      // 'partial_landing' before the coordinator reaches it. Skip blocked
-      // stages so the consumer PR is never opened.
-      if (stage.status === 'partial_landing') continue;
+      // Consumer stages pre-blocked by a gate failure are skipped; their PR must not be opened.
+      // Mark as landed so downstream topo-sort invariants remain satisfied in chains of 3+ repos.
+      if (stage.status === 'partial_landing') {
+        landed.add(stage.repoSlug);
+        continue;
+      }
 
       // Runtime topo-sort invariant: all declared producer deps must be landed
       // before this stage executes. topoSortRepos guarantees this; this

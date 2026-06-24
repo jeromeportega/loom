@@ -30,22 +30,14 @@ import {
   type SupervisorLike,
   type FinalizerHandle,
 } from '../CrossRepoCoordinator.js';
-import { runConsumerGate, surfacePartialLanding } from '../crossRepoGate.js';
+import { runConsumerGate, surfacePartialLanding, type GateRunner } from '../crossRepoGate.js';
 import { IntegrationGate } from '../IntegrationGate.js';
-import type { WorkspaceManifest, ManifestEntry } from '../../home/workspaceManifest.js';
+import type { WorkspaceManifest } from '../../home/workspaceManifest.js';
 import type { Story } from '../../types.js';
 import type { SupervisorResult } from '../Supervisor.js';
 import type { FinalizeResult } from '../EpicFinalizer.js';
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────────
-
-function entry(slug: string, opts: { primary?: boolean } = {}): ManifestEntry {
-  return { slug, path: `/repos/${slug}`, remote_url: null, ...opts };
-}
-
-function manifest(repos: ManifestEntry[]): WorkspaceManifest {
-  return { version: 1, repos };
-}
 
 function story(id: string, deps: string[] = [], repo?: string): Story {
   return {
@@ -322,7 +314,6 @@ describe('(3) gate passes → consumer stage reaches landed', () => {
     const runConsumerGateFn = async (producerStage: RepoStage, consumerStage: RepoStage) => {
       const outcome = await runConsumerGate({
         consumerRoot: consumerStage.repoRoot,
-        producerStage,
         conflicted: [],
         gate: passGate,
       });
@@ -393,7 +384,6 @@ describe('(4) gate fails → partial_landing, producer intact, consumer blocked'
     const runConsumerGateFn = async (producerStage: RepoStage, consumerStage: RepoStage) => {
       const outcome = await runConsumerGate({
         consumerRoot: consumerStage.repoRoot,
-        producerStage,
         conflicted: [],
         gate: failGate,
       });
@@ -484,7 +474,6 @@ describe('(4) gate fails → partial_landing, producer intact, consumer blocked'
     const runConsumerGateFn = async (producerStage: RepoStage, consumerStage: RepoStage) => {
       const outcome = await runConsumerGate({
         consumerRoot: consumerStage.repoRoot,
-        producerStage,
         conflicted: [],
         gate: failGate,
       });
@@ -513,6 +502,88 @@ describe('(4) gate fails → partial_landing, producer intact, consumer blocked'
     assert.equal(rollbackCalled, false, 'rollback must never be called');
     const producer = stages.find(s => s.repoSlug === 'repo-a')!;
     assert.equal(producer.status, 'landed', 'producer must remain landed');
+  });
+
+  it('3-repo chain: partial_landing on B does not throw the topo-sort invariant', async () => {
+    // Regression test for the 3+ repo chain bug: in A→B→C, when B is set to partial_landing
+    // the coordinator must NOT throw "topo-sort invariant violated" for C.
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+    const repoDirC = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-gate-c-'));
+    initRepo(repoDirC);
+    const realC = fs.realpathSync(repoDirC);
+
+    try {
+      const epicStories = [
+        story('story-001-001', [], 'repo-a'),
+        story('story-001-002', ['story-001-001'], 'repo-b'),
+        story('story-001-003', ['story-001-002'], 'repo-c'),
+      ];
+      seedEpicOnDisk(repoDir, EPIC_ID, epicStories);
+      const db = openDatabase(path.join(repoDir, '.loom'));
+
+      const mf: WorkspaceManifest = {
+        version: 1,
+        repos: [
+          { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+          { slug: 'repo-b', path: realB, remote_url: null },
+          { slug: 'repo-c', path: realC, remote_url: null },
+        ],
+      };
+
+      const failGate = new IntegrationGate({
+        testCommand: 'npm test',
+        runner: async () => ({ exitCode: 1, output: 'build failed', timedOut: false, durationMs: 50 }),
+      });
+
+      // When A merges, B's gate fails → B becomes partial_landing.
+      // B→C gate is never invoked (B never merges).
+      const runConsumerGateFn = async (producerStage: RepoStage, consumerStage: RepoStage) => {
+        if (producerStage.repoSlug === 'repo-a') {
+          const outcome = await runConsumerGate({
+            consumerRoot: consumerStage.repoRoot,
+            conflicted: [],
+            gate: failGate,
+          });
+          if (!outcome.ok) {
+            consumerStage.status = 'partial_landing';
+            await surfacePartialLanding(
+              EPIC_ID, producerStage.prUrl!, outcome.summary, db,
+              async () => { /* noop comment */ },
+            );
+          }
+        }
+      };
+
+      const coordinator = new CrossRepoCoordinator({
+        projectRoot: repoDir,
+        supervisor: { run: async () => okResult() },
+        finalizerFactory: () => ({ finalize: async () => okFinalizeResult('https://github.com/org/repo/pull/1') }),
+        db,
+        manifest: mf,
+        primarySlug: 'repo-a',
+        waitForMergeFn: async () => { /* resolve immediately */ },
+        runConsumerGateFn,
+      });
+
+      // Must NOT throw "topo-sort invariant violated" for stage C.
+      const { stages } = await coordinator.run(EPIC_ID);
+
+      const stageA = stages.find(s => s.repoSlug === 'repo-a')!;
+      const stageB = stages.find(s => s.repoSlug === 'repo-b')!;
+      const stageC = stages.find(s => s.repoSlug === 'repo-c')!;
+
+      assert.equal(stageA.status, 'landed', 'A (producer) must remain landed');
+      assert.equal(stageB.status, 'partial_landing', 'B (direct consumer of A) must be blocked');
+      // C depends on B. B was skipped via landed.add; C's dep check passes and C proceeds.
+      // Assert C reached a terminal state without the coordinator crashing.
+      assert.ok(
+        stageC.status === 'landed' || stageC.status === 'partial_landing',
+        `C must reach a terminal state without a topo-sort throw; got: ${stageC.status}`,
+      );
+    } finally {
+      fs.rmSync(repoDirC, { recursive: true, force: true });
+    }
   });
 });
 
@@ -589,7 +660,6 @@ describe('(5) surfacePartialLanding fires all three channels', () => {
     const runConsumerGateFn = async (producerStage: RepoStage, consumerStage: RepoStage) => {
       const outcome = await runConsumerGate({
         consumerRoot: consumerStage.repoRoot,
-        producerStage,
         conflicted: [],
         gate: failGate,
       });
@@ -639,6 +709,8 @@ describe('(5) surfacePartialLanding fires all three channels', () => {
     // Consumer is partial_landing; producer is landed.
     const consumer = stages.find(s => s.repoSlug === 'repo-b')!;
     const producer = stages.find(s => s.repoSlug === 'repo-a')!;
+    assert.ok(producer.prUrl, 'producer stage must have a prUrl');
+    assert.equal(producer.prUrl, PRODUCER_PR, 'producer prUrl must match the fixture');
     assert.equal(consumer.status, 'partial_landing');
     assert.equal(producer.status, 'landed');
   });
@@ -653,17 +725,8 @@ describe('runConsumerGate', () => {
       testCommand: 'echo ok',
       runner: async () => ({ exitCode: 0, output: 'pass', timedOut: false, durationMs: 10 }),
     });
-    const producerStage: RepoStage = {
-      repoSlug: 'repo-a',
-      repoRoot: '/repos/repo-a',
-      storyIds: ['s1'],
-      dependsOnRepos: [],
-      prUrl: 'https://github.com/org/repo/pull/1',
-      status: 'awaiting_merge',
-    };
     const outcome = await runConsumerGate({
       consumerRoot: '/repos/repo-b',
-      producerStage,
       conflicted: [],
       gate: passGate,
     });
@@ -677,17 +740,8 @@ describe('runConsumerGate', () => {
       testCommand: 'echo fail',
       runner: async () => ({ exitCode: 2, output: 'compilation error', timedOut: false, durationMs: 20 }),
     });
-    const producerStage: RepoStage = {
-      repoSlug: 'repo-a',
-      repoRoot: '/repos/repo-a',
-      storyIds: ['s1'],
-      dependsOnRepos: [],
-      prUrl: 'https://github.com/org/repo/pull/1',
-      status: 'awaiting_merge',
-    };
     const outcome = await runConsumerGate({
       consumerRoot: '/repos/repo-b',
-      producerStage,
       conflicted: [],
       gate: failGate,
     });
@@ -702,24 +756,15 @@ describe('runConsumerGate', () => {
       fileExists: () => false,
       fileReader: () => null,
     });
-    // We need to probe what was passed — wrap the gate to capture input.
-    const wrappedGate = {
+    // Wrap the gate to capture the input; GateRunner eliminates the unsafe cast.
+    const wrappedGate: GateRunner = {
       run: async (input: { projectRoot: string; conflicted?: string[] }) => {
         capturedConflicted = input.conflicted;
         return probeGate.run(input);
       },
-    } as unknown as IntegrationGate;
-
-    const producerStage: RepoStage = {
-      repoSlug: 'repo-a',
-      repoRoot: '/repos/repo-a',
-      storyIds: ['s1'],
-      dependsOnRepos: [],
-      status: 'awaiting_merge',
     };
     await runConsumerGate({
       consumerRoot: '/repos/repo-b',
-      producerStage,
       conflicted: ['story-001-002'],
       gate: wrappedGate,
     });

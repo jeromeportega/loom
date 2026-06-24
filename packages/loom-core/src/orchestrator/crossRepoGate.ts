@@ -4,22 +4,28 @@ import { promisify } from 'node:util';
 import { AuditLog } from '../state/index.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import type { GateOutcome } from './IntegrationGate.js';
-import type { RepoStage } from './CrossRepoCoordinator.js';
 
 const execFileAsync = promisify(execFile);
 
 /** Injectable PR-comment function for tests. */
 export type PrCommentFn = (prUrl: string, body: string) => Promise<void>;
 
+/**
+ * Structural injection interface for a gate runner — narrows the injection
+ * point to the `run` method only, eliminating unsafe `as unknown as IntegrationGate`
+ * casts in tests. `IntegrationGate` satisfies this interface structurally.
+ */
+export interface GateRunner {
+  run(input: { projectRoot: string; conflicted?: string[] }): Promise<GateOutcome>;
+}
+
 export interface RunConsumerGateArgs {
   /** Absolute path to the consumer repo root. */
   consumerRoot: string;
-  /** The producer stage (status is 'awaiting_merge' — its PR has been merged). */
-  producerStage: RepoStage;
   /** Story ids from the consumer's epic that failed to merge (amputation signal). */
   conflicted: string[];
   /** Injectable gate for tests. Defaults to a standard IntegrationGate. */
-  gate?: IntegrationGate;
+  gate?: GateRunner;
 }
 
 /**
@@ -78,7 +84,13 @@ function formatPartialLandingNote(summary: string): string {
 }
 
 async function defaultPrCommentFn(prUrl: string, body: string): Promise<void> {
-  await execFileAsync('gh', ['pr', 'comment', prUrl, '--body', body], {
-    encoding: 'utf8',
-  });
+  try {
+    await execFileAsync('gh', ['pr', 'comment', prUrl, '--body', body], {
+      encoding: 'utf8',
+    });
+  } catch {
+    // Best-effort: a comment-post failure must not abort the coordinator after
+    // the producer PR has already merged. The audit entry and status are already
+    // recorded; loss of the PR comment is observable but non-fatal.
+  }
 }
