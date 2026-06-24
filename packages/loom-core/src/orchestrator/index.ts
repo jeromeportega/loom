@@ -131,3 +131,4 @@ export type { SignalRenderInput } from './signalRender.js';
 export { oneLine, displayModel } from './renderUtils.js';
 export { ForwardReverter } from './ForwardReverter.js';
 export type { ForwardReverterOptions } from './ForwardReverter.js';
+export { collectSkipped, hasConverged } from './rollbackResume.js';
