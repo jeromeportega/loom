@@ -763,3 +763,66 @@ describe('ForwardReverter — policy gate (commands pre-checked)', () => {
     db.close();
   });
 });
+
+// ─── Error handling — attempt transitions to 'failed' on unexpected throws ────
+
+describe('ForwardReverter — error handling', () => {
+  it('sets attempt status to failed and re-throws when repoRoot is missing', async () => {
+    const db = makeDb('missing-root.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+    const stages = [makeStage('repo-a')];
+    const attemptId = seedMergedRepo(store, 'epic-test', stages, [
+      { slug: 'repo-a', sha: 'sha-a' },
+    ]);
+
+    const stubs = makeStubs();
+    // repoRoots is empty — no entry for 'repo-a'.
+    const reverter = makeReverter(store, stubs, makePassingGate(), DEFAULT_POLICY, {});
+
+    await assert.rejects(
+      () => reverter.rollback(attemptId),
+      /ForwardReverter: no repoRoot for slug 'repo-a'/,
+      'should throw with a descriptive message about the missing repoRoot',
+    );
+
+    // The attempt must be in 'failed' state so callers see a terminal status.
+    const { attempt } = store.getAttempt(attemptId);
+    assert.equal(attempt.status, 'failed', 'attempt must transition to failed on missing repoRoot');
+    db.close();
+  });
+
+  it('sets attempt status to failed when _execGit throws unexpectedly', async () => {
+    const db = makeDb('git-throw.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+    const stages = [makeStage('repo-a')];
+    const attemptId = seedMergedRepo(store, 'epic-test', stages, [
+      { slug: 'repo-a', sha: 'sha-a' },
+    ]);
+
+    const boom = new Error('git: remote failure (simulated)');
+    const stubs = makeStubs();
+    const flakyExecGit = (cwd: string, args: string[]): string => {
+      if (args[0] === 'push') throw boom;
+      return stubs.execGit(cwd, args);
+    };
+
+    const reverter = new ForwardReverter({
+      projectRoot: '/tmp/project',
+      store,
+      policy: DEFAULT_POLICY,
+      integrationGate: makePassingGate(),
+      allowedRemotes: ['https://github.com/org/*'],
+      repoRoots: { 'repo-a': '/tmp/repo-a' },
+      _execGit: flakyExecGit,
+      _execGh: stubs.execGh,
+    });
+
+    await assert.rejects(() => reverter.rollback(attemptId));
+
+    const { attempt } = store.getAttempt(attemptId);
+    assert.equal(attempt.status, 'failed', 'attempt must transition to failed on git execution error');
+    db.close();
+  });
+});
