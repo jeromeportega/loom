@@ -2,7 +2,7 @@ import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { openDatabase, ProjectRegistry, bundledSkillsDir, missingPolicyKeys, PolicyEngine, prepareRepoState } from '@loom-ai/core';
+import { openDatabase, ProjectRegistry, bundledSkillsDir, missingPolicyKeys, PolicyEngine, prepareRepoState, resolveLoomHomePath, registerRepo } from '@loom-ai/core';
 
 const LOOM_DIR = '.loom';
 const CLAUDE_SETTINGS = '.claude/settings.json';
@@ -67,6 +67,16 @@ export function runInit(options: { cursor?: boolean; yes?: boolean }): void {
     new ProjectRegistry().register(projectRoot);
   } catch (err) {
     console.log(`  (skipped project registry: ${(err as Error).message})`);
+  }
+
+  // ─── workspace manifest (committed source of truth) ──────────────────────
+  // Distinct from the machine-local ProjectRegistry (ADR-005). registerRepo is
+  // idempotent — re-running loom init is a no-op. A failure here must not fail
+  // `loom init` (same defensive pattern as ProjectRegistry above).
+  try {
+    registerRepo(resolveLoomHomePath(projectRoot, initPolicy), projectRoot);
+  } catch (err) {
+    console.log(`  (skipped workspace manifest: ${(err as Error).message})`);
   }
 
   // ─── .gitignore additions ─────────────────────────────────────────────────

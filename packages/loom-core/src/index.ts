@@ -19,3 +19,4 @@ export { resolveLoomHomePath } from './home/resolveLoomHomePath.js';
 export { resolveRepoStatePaths, type RepoStatePaths, type MigrationResult } from './home/repoState.js';
 export { prepareRepoState } from './home/prepareRepoState.js';
 export { migratePlanningScratch } from './home/migrateScratch.js';
+export { registerRepo, readManifest, manifestPath, WorkspaceManifestSchema, type ManifestEntry, type WorkspaceManifest } from './home/workspaceManifest.js';
