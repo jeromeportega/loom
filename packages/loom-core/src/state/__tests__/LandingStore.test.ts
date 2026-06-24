@@ -80,14 +80,14 @@ describe('schema v27 migration', () => {
       db.prepare("INSERT INTO repo_merges (attempt_id, repo_slug, merge_state) VALUES ('a1', 'r1', 'pending')").run();
     }, 'duplicate (attempt_id, repo_slug) must throw');
 
-    assert.equal(SCHEMA_VERSION, 27);
+    assert.equal(SCHEMA_VERSION, 28);
     db.close();
   });
 
-  it('bumps schema_version to 27', () => {
+  it('bumps schema_version to current SCHEMA_VERSION', () => {
     const db = makeDb('v27-version.db');
     const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number };
-    assert.equal(row.version, 27);
+    assert.equal(row.version, SCHEMA_VERSION);
     db.close();
   });
 
@@ -99,7 +99,7 @@ describe('schema v27 migration', () => {
     runMigrations(db);
     assert.doesNotThrow(() => runMigrations(db), 'second runMigrations must not throw');
     const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number };
-    assert.equal(row.version, 27);
+    assert.equal(row.version, SCHEMA_VERSION);
     db.close();
   });
 });

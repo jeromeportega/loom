@@ -7,6 +7,7 @@ import {
   AgentStore,
   AuditLog,
   LandingStore,
+  RecoveryStore,
   landingReport,
   ProjectRegistry,
   PolicyEngine,
@@ -197,6 +198,8 @@ interface JsonStory {
    *  when the story was retried — closes the duplicate blocked+done leak by
    *  surfacing the old attempt HERE rather than as a second top-level row. */
   history?: { id: string; status: string; updated_at: string }[];
+  /** Number of auto-recoveries for this story. Omitted when 0. */
+  recovery_count?: number;
 }
 
 interface JsonEpic {
@@ -266,6 +269,7 @@ function collectJsonEpics(
   try {
     const epicStore = new EpicStore(db);
     const agentStore = new AgentStore(db);
+    const recoveryStore = new RecoveryStore(db);
     const allRows = epicId
       ? [epicStore.get(epicId)].filter(Boolean)
       : epicStore.list({ includeArchived, includeStandalone: true });
@@ -296,6 +300,7 @@ function collectJsonEpics(
         const history = agentStore
           .listHistoryByStory(a.story_id)
           .filter((h) => h.id !== a.id);
+        const recoveryCount = recoveryStore.getRecoveryCount(a.story_id);
         const story: JsonStory = {
           id: a.story_id,
           title: a.story_title ?? a.story_id,
@@ -312,6 +317,7 @@ function collectJsonEpics(
                 })),
               }
             : {}),
+          ...(recoveryCount > 0 ? { recovery_count: recoveryCount } : {}),
         };
         out.push({
           id: a.story_id,
@@ -330,6 +336,7 @@ function collectJsonEpics(
         const history = agentStore
           .listHistoryByStory(a.story_id)
           .filter((h) => h.id !== a.id);
+        const recoveryCount = recoveryStore.getRecoveryCount(a.story_id);
         return {
           id: a.story_id,
           title: a.story_title ?? a.story_id,
@@ -346,6 +353,7 @@ function collectJsonEpics(
                 })),
               }
             : {}),
+          ...(recoveryCount > 0 ? { recovery_count: recoveryCount } : {}),
         };
       });
       out.push({
@@ -412,6 +420,7 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
     const epicStore = new EpicStore(db);
     const agentStore = new AgentStore(db);
     const auditStore = new AuditLog(db);
+    const recoveryStore = new RecoveryStore(db);
     const allRows = epicId
       ? [epicStore.get(epicId)].filter(Boolean)
       : epicStore.list({ includeArchived, includeStandalone: true });
@@ -506,8 +515,10 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
           const stallTag = stall ? `  ⚠ ${stall}` : '';
           const attempts = agentStore.listHistoryByStory(agent.story_id).length;
           const retryTag = attempts > 1 ? `  (retry ${attempts - 1})` : '';
+          const recoveryCount = recoveryStore.getRecoveryCount(agent.story_id);
+          const recoveryTag = recoveryCount > 0 ? `  (recovered ${recoveryCount})` : '';
           const modelTag = `  [${displayModel(agent.model)}]`;
-          console.log(`      ${si} ${label}${elapsed}${stallTag}${retryTag}${modelTag}${pr}`);
+          console.log(`      ${si} ${label}${elapsed}${stallTag}${retryTag}${recoveryTag}${modelTag}${pr}`);
           if (agent.branch_name && agent.status !== 'done') {
             console.log(`           ${agent.branch_name}`);
           }
@@ -554,8 +565,10 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
       const stallTag = stall ? `  ⚠ ${stall}` : '';
       const attempts = agentStore.listHistoryByStory(agent.story_id).length;
       const retryTag = attempts > 1 ? `  (retry ${attempts - 1})` : '';
+      const recoveryCount = recoveryStore.getRecoveryCount(agent.story_id);
+      const recoveryTag = recoveryCount > 0 ? `  (recovered ${recoveryCount})` : '';
       const modelTag = `  [${displayModel(agent.model)}]`;
-      console.log(`\n   ${si} Story ${label}  [${agent.status}]${elapsed}${stallTag}${retryTag}${modelTag}${pr}${archivedTag}`);
+      console.log(`\n   ${si} Story ${label}  [${agent.status}]${elapsed}${stallTag}${retryTag}${recoveryTag}${modelTag}${pr}${archivedTag}`);
       if (agent.branch_name && agent.status !== 'done') {
         console.log(`        ${agent.branch_name}`);
       }

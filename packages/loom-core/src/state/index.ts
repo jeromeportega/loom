@@ -12,6 +12,7 @@ export { EvalRunStore } from './EvalRunStore.js';
 export type { EvalRunRecord } from './EvalRunStore.js';
 export { ControlStore } from './ControlStore.js';
 export type { ControlState } from './ControlStore.js';
+export { RecoveryStore } from './RecoveryStore.js';
 export { LeaseStore } from './LeaseStore.js';
 export type { LeaseInfo, LeaseStoreOptions } from './LeaseStore.js';
 export { DecisionTraceStore } from './DecisionTraceStore.js';
