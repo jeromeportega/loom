@@ -12,6 +12,11 @@ const ENV_PREFIX = 'LOOM_';
 
 // ── Zod unwrapping ────────────────────────────────────────────────────────────
 
+/**
+ * Unwraps zod wrapper types to reach the core type for coercion.
+ * NOTE: ZodUnion and ZodEffects are not unwrapped — values for those fields
+ * are returned as strings and validated later by PolicySchema.parse.
+ */
 function unwrapZod(schema: z.ZodTypeAny): z.ZodTypeAny {
   if (schema instanceof z.ZodDefault) return unwrapZod(schema._def.innerType);
   if (schema instanceof z.ZodOptional) return unwrapZod(schema._def.innerType);
@@ -24,11 +29,6 @@ function unwrapZod(schema: z.ZodTypeAny): z.ZodTypeAny {
 // Maps "section.field" (or top-level "field") → the unwrapped ZodTypeAny.
 // Built once on first use.
 let _pathCache: Map<string, z.ZodTypeAny> | null = null;
-
-/** Exposed for tests that inject a modified PolicySchema. Never call in production. */
-export function _resetPathCacheForTesting(): void {
-  _pathCache = null;
-}
 
 function schemaPathMap(): Map<string, z.ZodTypeAny> {
   if (_pathCache) return _pathCache;
@@ -75,7 +75,8 @@ function resolveSchemaPath(
     const dotPath = `${section}.${field}`;
     const schema = paths.get(dotPath);
     if (schema !== undefined) {
-      // Prefer splits with longer field names (rightmost valid split wins).
+      // Prefer the valid split with the longest field segment (earliest underscore
+      // boundary) — picks the most specific known field name, e.g. `allowed_write_root`.
       if (!best || field.length > best.fieldLen) {
         best = { path: dotPath, schema, fieldLen: field.length };
       }
@@ -107,12 +108,14 @@ function coerceValue(raw: string, schema: z.ZodTypeAny): unknown {
   if (inner instanceof z.ZodBoolean) {
     if (raw === 'true') return true;
     if (raw === 'false') return false;
-    throw new Error(`expected "true" or "false", got "${raw}"`);
+    // Omit raw value from error to avoid logging misrouted secrets.
+    throw new Error('expected "true" or "false", got a non-boolean string');
   }
 
   if (inner instanceof z.ZodNumber) {
     const n = Number(raw);
-    if (!Number.isFinite(n)) throw new Error(`cannot convert "${raw}" to a number`);
+    // Omit raw value from error to avoid logging misrouted secrets.
+    if (!Number.isFinite(n)) throw new Error('value is not a finite number');
     return n;
   }
 
@@ -149,7 +152,12 @@ function setAtPath(
   for (let i = 0; i < parts.length - 1; i++) {
     const k = parts[i];
     if (PROTOTYPE_POISON.has(k)) return;
-    if (typeof cur[k] !== 'object' || cur[k] === null) cur[k] = {};
+    if (typeof cur[k] !== 'object' || cur[k] === null) {
+      if (cur[k] !== undefined) {
+        console.warn(`[loom] loadEnvLayer: intermediate node "${k}" was a primitive; overwriting with object`);
+      }
+      cur[k] = {};
+    }
     cur = cur[k] as Record<string, unknown>;
   }
   const last = parts[parts.length - 1];

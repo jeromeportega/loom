@@ -17,6 +17,8 @@ import path from 'node:path';
 import { loadEnvLayer } from '../../src/config/envLayer.js';
 import { loadTeamConfigLayer, TEAM_CONFIG_FILENAME } from '../../src/config/teamConfig.js';
 import { PolicySchema } from '../../src/types.js';
+import { BaseCliWorker } from '../../src/orchestrator/BaseCliWorker.js';
+import type { WorkerAssignment } from '../../src/orchestrator/WorkerRunner.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -28,15 +30,11 @@ function makeTmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'loom-secret-confinement-'));
 }
 
-/** Walk up from startDir until a directory containing package.json is found. */
-function findPackageRoot(startDir: string): string {
-  let dir = startDir;
-  while (true) {
-    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) throw new Error(`package.json not found above ${startDir}`);
-    dir = parent;
-  }
+/** Minimal concrete subclass to exercise the protected workerEnv() path. */
+class TestableWorker extends BaseCliWorker {
+  protected binary() { return 'claude'; }
+  protected agentArgs(_: WorkerAssignment) { return [] as string[]; }
+  workerEnvPublic() { return this.workerEnv(); }
 }
 
 // ── T2-A: loadEnvLayer never maps ANTHROPIC_* ────────────────────────────────
@@ -160,36 +158,50 @@ describe('secretConfinement — committed team-config.yaml with planted secret (
 // ── T2-D: worker_auth / workerEnv() consistency ───────────────────────────────
 
 describe('secretConfinement — worker_auth precedent: secrets flow only via workerEnv() (T2-D)', () => {
-  // This test verifies the structural invariant that secrets remain confined to
+  // These tests verify the behavioral invariant that secrets remain confined to
   // BaseCliWorker.workerEnv() — the sole place where ANTHROPIC_* keys flow into
   // worker subprocesses. Story-055-003 does NOT modify BaseCliWorker.ts; this
-  // test confirms the existing pattern is intact.
+  // test confirms the existing pattern is intact via a test subclass.
 
-  it('BaseCliWorker.ts still reads process.env directly in workerEnv()', () => {
-    // Walk up from __dirname to find the package root regardless of outDir.
-    const pkgRoot = findPackageRoot(__dirname);
-    const srcPath = path.join(pkgRoot, 'src', 'orchestrator', 'BaseCliWorker.ts');
-    const src = fs.readFileSync(srcPath, 'utf8');
+  it('session-mode workerEnv() strips ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN', () => {
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    const savedToken = process.env.ANTHROPIC_AUTH_TOKEN;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-behavioral-test';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'tok-behavioral-test';
+    try {
+      const worker = new TestableWorker({ workerAuth: 'session' });
+      const env = worker.workerEnvPublic();
+      assert.ok(
+        !Object.prototype.hasOwnProperty.call(env, 'ANTHROPIC_API_KEY'),
+        'session mode must strip ANTHROPIC_API_KEY from the subprocess env',
+      );
+      assert.ok(
+        !Object.prototype.hasOwnProperty.call(env, 'ANTHROPIC_AUTH_TOKEN'),
+        'session mode must strip ANTHROPIC_AUTH_TOKEN from the subprocess env',
+      );
+    } finally {
+      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = savedKey;
+      if (savedToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+      else process.env.ANTHROPIC_AUTH_TOKEN = savedToken;
+    }
+  });
 
-    // The method must exist and read process.env
-    assert.ok(
-      src.includes('protected workerEnv()'),
-      'workerEnv() method must still exist in BaseCliWorker',
-    );
-    assert.ok(
-      src.includes('process.env'),
-      'workerEnv() must still read process.env directly',
-    );
-
-    // The 'session' mode must still strip ANTHROPIC keys from the subprocess env
-    assert.ok(
-      src.includes('delete env.ANTHROPIC_API_KEY'),
-      'session mode must still delete ANTHROPIC_API_KEY from the worker env',
-    );
-    assert.ok(
-      src.includes('delete env.ANTHROPIC_AUTH_TOKEN'),
-      'session mode must still delete ANTHROPIC_AUTH_TOKEN from the worker env',
-    );
+  it('inherit-mode workerEnv() (default) keeps ANTHROPIC_API_KEY intact', () => {
+    const savedKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-inherit-test';
+    try {
+      const worker = new TestableWorker({ workerAuth: 'inherit' });
+      const env = worker.workerEnvPublic();
+      assert.equal(
+        env.ANTHROPIC_API_KEY,
+        'sk-ant-inherit-test',
+        'inherit mode must pass ANTHROPIC_API_KEY through unchanged',
+      );
+    } finally {
+      if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = savedKey;
+    }
   });
 
   it('loadEnvLayer is NOT the path through which secrets reach workers', () => {
