@@ -94,6 +94,8 @@ export interface LandingStorePort {
   pendingReverts(attemptId: string): RepoMergeRecord[];   // mergeState IN ('merged','revert_pending'), reverse dep order
   getAttempt(attemptId: string): { attempt: LandingAttempt; merges: RepoMergeRecord[] };
   setStatus(attemptId: string, status: LandingAttemptStatus, blocker?: LandingBlocker): void;
+  /** Returns the most recent attempt id for an epic, or undefined if none (or table not yet created). */
+  latestAttemptIdForEpic(epicId: string): string | undefined;
 }
 
 // ── Audit action types — producers (002/003) emit, consumer (005) renders ─────

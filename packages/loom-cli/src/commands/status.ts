@@ -6,6 +6,8 @@ import {
   EpicStore,
   AgentStore,
   AuditLog,
+  LandingStore,
+  landingReport,
   ProjectRegistry,
   PolicyEngine,
   resolveLoomHomePath,
@@ -15,6 +17,7 @@ import {
   STANDALONE_KIND,
   type IntakeVerdict,
   type EpicRecord,
+  type LandingReport,
 } from '@loom-ai/core';
 
 /**
@@ -48,6 +51,12 @@ const STATUS_ICONS: Record<string, string> = {
   in_progress: '🔄',
   finalizing: '🚀',
   publish_pending: '📦',
+  // Landing attempt statuses (cross-repo)
+  staging: '⏳',
+  merging: '🔀',
+  landed: '✅',
+  rolling_back: '⏮️',
+  rolled_back: '↩️',
 };
 
 const PUBLISH_PENDING_LABEL = 'work complete · publish pending';
@@ -355,6 +364,42 @@ function collectJsonEpics(
   }
 }
 
+/** Renders a landing report section under an epic when an attempt exists. */
+function renderLandingReport(report: LandingReport): void {
+  const icon = STATUS_ICONS[report.status] ?? '?';
+  console.log(`      ${icon} Landing ${report.attemptId}  [${report.status}]`);
+
+  if (report.status === 'blocked' && report.blocker) {
+    const b = report.blocker;
+    console.log(`           blocked: ${b.check} on '${b.repoSlug}'`);
+    console.log(`           reason: ${b.reason}`);
+    console.log(`           retry: open a new landing attempt with new PRs (reverted PRs do not reopen — ADR-006)`);
+  }
+
+  if (report.status === 'rolling_back') {
+    const reverting = report.repos.filter((r) => r.mergeState === 'revert_pending');
+    const awaitingRevert = report.repos.filter((r) => r.mergeState === 'merged');
+    if (reverting.length > 0) {
+      console.log(`           reverting: ${reverting.map((r) => r.repoSlug).join(', ')}`);
+    }
+    if (awaitingRevert.length > 0) {
+      console.log(`           awaiting revert: ${awaitingRevert.map((r) => r.repoSlug).join(', ')}`);
+    }
+  }
+
+  if (report.status === 'rolled_back') {
+    if (report.blocker) {
+      const b = report.blocker;
+      console.log(`           failure: ${b.check} on '${b.repoSlug}' — ${b.reason}`);
+    }
+    const repoLines = report.repos.map((r) => `${r.repoSlug}:${r.mergeState}`).join(', ');
+    console.log(`           repos: ${repoLines}`);
+    const cleanTag = report.cleanState ? 'yes — all repos at pre-landing state' : 'no — manual inspection required';
+    console.log(`           clean state: ${cleanTag}`);
+    console.log(`           retry: create a new landing attempt with new PRs (reverted PRs do not reopen — ADR-006)`);
+  }
+}
+
 /** Renders one loom project's epic/agent tree. */
 function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boolean): void {
   const dbPath = resolveDbPath(loomDir);
@@ -389,6 +434,10 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
     const verdicts = epics.length > 0
       ? epicStore.getIntakeVerdicts(epics.map((e) => e.id))
       : new Map<string, IntakeVerdict | null>();
+
+    // Single read-only LandingStore instance shared across all epics.
+    // SHA provider throws loudly if beginAttempt is ever accidentally called.
+    const landingStore = new LandingStore(db, () => { throw new Error('LandingStore is read-only in status context'); });
 
     for (const epic of epics) {
       if (!epic) continue;
@@ -442,27 +491,38 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
       const agents = agentStore.listLatestByEpic(epic.id);
       if (agents.length === 0) {
         console.log('      No agents dispatched yet.');
-        continue;
+      } else {
+        for (const agent of agents) {
+          const si = STATUS_ICONS[agent.status] ?? '?';
+          const pr = agent.pr_url ? `  → ${agent.pr_url}` : '';
+          const elapsed = agent.started_at
+            ? ` (${elapsedStr(agent.started_at, agent.status === 'running' ? undefined : agent.updated_at)})`
+            : '';
+          const label = agent.story_title
+            ? `${agent.story_id} — ${agent.story_title}`
+            : agent.story_id;
+          const stall =
+            agent.status === 'running' ? stallReasonFor(auditStore, agent.id) : null;
+          const stallTag = stall ? `  ⚠ ${stall}` : '';
+          const attempts = agentStore.listHistoryByStory(agent.story_id).length;
+          const retryTag = attempts > 1 ? `  (retry ${attempts - 1})` : '';
+          const modelTag = `  [${displayModel(agent.model)}]`;
+          console.log(`      ${si} ${label}${elapsed}${stallTag}${retryTag}${modelTag}${pr}`);
+          if (agent.branch_name && agent.status !== 'done') {
+            console.log(`           ${agent.branch_name}`);
+          }
+        }
       }
 
-      for (const agent of agents) {
-        const si = STATUS_ICONS[agent.status] ?? '?';
-        const pr = agent.pr_url ? `  → ${agent.pr_url}` : '';
-        const elapsed = agent.started_at
-          ? ` (${elapsedStr(agent.started_at, agent.status === 'running' ? undefined : agent.updated_at)})`
-          : '';
-        const label = agent.story_title
-          ? `${agent.story_id} — ${agent.story_title}`
-          : agent.story_id;
-        const stall =
-          agent.status === 'running' ? stallReasonFor(auditStore, agent.id) : null;
-        const stallTag = stall ? `  ⚠ ${stall}` : '';
-        const attempts = agentStore.listHistoryByStory(agent.story_id).length;
-        const retryTag = attempts > 1 ? `  (retry ${attempts - 1})` : '';
-        const modelTag = `  [${displayModel(agent.model)}]`;
-        console.log(`      ${si} ${label}${elapsed}${stallTag}${retryTag}${modelTag}${pr}`);
-        if (agent.branch_name && agent.status !== 'done') {
-          console.log(`           ${agent.branch_name}`);
+      // Show the latest cross-repo landing attempt for this epic, if any.
+      // Landing report is independent of agent presence — show even when no agents have been dispatched.
+      const latestAttemptId = landingStore.latestAttemptIdForEpic(epic.id);
+      if (latestAttemptId) {
+        try {
+          const report = landingReport(latestAttemptId, landingStore);
+          renderLandingReport(report);
+        } catch {
+          console.log('      ⚠ landing report unavailable');
         }
       }
     }

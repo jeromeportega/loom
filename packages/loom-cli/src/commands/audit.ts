@@ -9,6 +9,8 @@ export interface AuditOptions {
   agent?: string;
   limit?: number;
   json?: boolean;
+  /** Override the project root (defaults to process.cwd()). Avoids process.chdir() in tests. */
+  projectRoot?: string;
 }
 
 /**
@@ -16,7 +18,7 @@ export interface AuditOptions {
  * attempt; `--agent` scopes to one agent; default is the most recent rows.
  */
 export function runAudit(opts: AuditOptions = {}): void {
-  const projectRoot = process.cwd();
+  const projectRoot = opts.projectRoot ?? process.cwd();
   const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');

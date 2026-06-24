@@ -84,6 +84,7 @@ function makeStore(): {
     setStatus: (attemptId, status, blocker) => {
       setStatusCalls.push({ attemptId, status, blocker });
     },
+    latestAttemptIdForEpic: () => undefined,
   };
   return { store, setStatusCalls };
 }

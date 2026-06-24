@@ -540,4 +540,5 @@ const noopStore: LandingStorePort = {
     throw new Error('noopStore.getAttempt: no LandingStore wired (story-060-002)');
   },
   setStatus: () => undefined,
+  latestAttemptIdForEpic: () => undefined,
 };
