@@ -20,8 +20,8 @@ import { PolicyEngine } from '../guardrails/PolicyEngine.js';
 import { prepareRepoState } from '../home/prepareRepoState.js';
 import { manifestPath } from '../home/workspaceManifest.js';
 
-// From dist/__tests__/ the package src is two levels up:
-//   dist/__tests__  →  dist  →  <package-root>  →  src
+// Two hops from dist/__tests__ → dist → <package-root>.
+// LOOM_CORE_SRC appends 'src' to reach the TypeScript sources.
 const PACKAGE_ROOT = path.resolve(__dirname, '../..');
 const LOOM_CORE_SRC = path.join(PACKAGE_ROOT, 'src');
 
@@ -43,8 +43,25 @@ function makeProjectRoot(parent: string): string {
 // must NEVER import from the guardrails/ subtree. Guardrails are structural
 // policy checks; mixing them into the manifest layer would create a coupling
 // that could silently weaken or bypass policy enforcement.
+//
+// IMPORTANT: If you add a TypeScript path alias (in tsconfig 'paths') that maps
+// a short name (e.g. '#guardrails', '@loom-core/guardrails') to the guardrails/
+// directory, you MUST also update GUARDRAILS_IMPORT_RE below to match that alias,
+// or the NFR-3 check becomes a vacuous pass. The tsconfig-paths test below guards
+// against this — it will fail if any such alias is added without updating this file.
 
 describe('NFR-3 — manifest modules must not import from guardrails/', () => {
+  // Preflight: the source tree must be present for these checks to be meaningful.
+  // In a dist-only packaging scenario this block would produce misleading "source
+  // file not found" failures — skip with a clear message if src/ is absent.
+  it('src/ directory is present (required for NFR-3 source-scan)', () => {
+    assert.ok(
+      fs.existsSync(LOOM_CORE_SRC),
+      `NFR-3 checks require the TypeScript source tree at ${LOOM_CORE_SRC}. ` +
+        'If running from a dist-only package, these tests cannot run.',
+    );
+  });
+
   // All three manifest-layer source files are checked. Adding a fourth file
   // here is the only change needed when a new manifest module is introduced.
   const MANIFEST_MODULES = [
@@ -79,9 +96,49 @@ describe('NFR-3 — manifest modules must not import from guardrails/', () => {
       );
     });
   }
+
+  // Secondary guard: ensure no tsconfig 'paths' alias silently maps a short name
+  // to 'guardrails/', which would allow the per-line regex above to miss the
+  // coupling. If this test fails, update GUARDRAILS_IMPORT_RE to match the new alias.
+  it('no tsconfig paths alias resolves to guardrails/ (would defeat the per-line regex)', () => {
+    const tsconfigCandidates = [
+      path.join(PACKAGE_ROOT, 'tsconfig.json'),
+      // Workspace root tsconfig (two levels above PACKAGE_ROOT)
+      path.resolve(PACKAGE_ROOT, '..', '..', 'tsconfig.base.json'),
+    ];
+
+    for (const tsconfigFile of tsconfigCandidates) {
+      if (!fs.existsSync(tsconfigFile)) continue;
+
+      const content = fs.readFileSync(tsconfigFile, 'utf8');
+      // Strip single-line comments so JSON.parse doesn't choke on tsconfig comment syntax.
+      const stripped = content.replace(/\/\/[^\n]*/g, '');
+
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(stripped) as Record<string, unknown>;
+      } catch {
+        // Cannot parse (e.g. multi-line comment or unusual syntax) — skip file.
+        continue;
+      }
+
+      const co = parsed['compilerOptions'] as { paths?: Record<string, string[]> } | undefined;
+      const aliasPaths = co?.['paths'] ?? {};
+      for (const [alias, targets] of Object.entries(aliasPaths)) {
+        for (const target of targets) {
+          assert.ok(
+            !target.includes('guardrails'),
+            `NFR-3 tsconfig violation in ${path.basename(tsconfigFile)}: ` +
+              `alias '${alias}' resolves to '${target}' which contains 'guardrails/'. ` +
+              'Update GUARDRAILS_IMPORT_RE to match this alias, then re-run.',
+          );
+        }
+      }
+    }
+  });
 });
 
-// ── PolicyEngine structural checks (NFR-3 / Key Invariants 1 & 2) ────────────
+// ── Key Invariants 1 & 2 — PolicyEngine structural checks ────────────────────
 //
 // These assertions prove the policy engine's structural checks are untouched by
 // the manifest introduction. The checks must remain purely structural (no LLM
@@ -189,6 +246,9 @@ describe('prepareRepoState — returned paths unchanged by manifest introduction
 
 describe('prepareRepoState — observe-and-record must not block commands', () => {
   it('does not throw even when loom-home is read-only (manifest write fails)', () => {
+    // chmod has no reliable effect on Windows (fs.chmodSync is a no-op there),
+    // so the read-only scenario cannot be reproduced. Skip on Windows.
+    if (process.platform === 'win32') return;
     // chmod has no effect when running as root; skip to avoid a vacuous pass.
     if (process.getuid?.() === 0) return;
 
@@ -199,10 +259,14 @@ describe('prepareRepoState — observe-and-record must not block commands', () =
     try {
       const policy = { loom_home: loomHome };
 
-      // First call initialises loom-home normally.
+      // First call initialises loom-home normally, creating the namespace subdir
+      // and the DB inside it. The namespace subdir is a child of loomHome so it
+      // retains its own (writable) permissions when loomHome itself is set 0o555.
       const paths1 = prepareRepoState(proj, policy);
 
       // Make loom-home read-only so subsequent manifest writes fail.
+      // Only direct children of loomHome (e.g. workspace.yaml rename) are blocked;
+      // the DB inside the namespace subdir remains accessible.
       fs.chmodSync(loomHome, 0o555);
 
       try {
@@ -211,13 +275,20 @@ describe('prepareRepoState — observe-and-record must not block commands', () =
           () => prepareRepoState(proj, policy),
           'prepareRepoState must not propagate manifest errors to the caller',
         );
-      } finally {
-        fs.chmodSync(loomHome, 0o755); // Restore so cleanup succeeds.
-      }
 
-      // The paths must still be valid.
-      const paths2 = prepareRepoState(proj, policy);
-      assert.equal(paths2.dbPath, paths1.dbPath, 'dbPath unchanged even after manifest write failure');
+        // The paths must still be valid after restoring write permission.
+        fs.chmodSync(loomHome, 0o755);
+        assert.doesNotThrow(
+          () => {
+            const paths2 = prepareRepoState(proj, policy);
+            assert.equal(paths2.dbPath, paths1.dbPath, 'dbPath unchanged even after manifest write failure');
+          },
+          'third prepareRepoState call (post-restore) must not throw',
+        );
+      } finally {
+        // Best-effort restore so the outer finally can delete the temp dir.
+        try { fs.chmodSync(loomHome, 0o755); } catch { /* ignore */ }
+      }
     } finally {
       try { fs.chmodSync(loomHome, 0o755); } catch { /* best-effort */ }
       fs.rmSync(tmp, { recursive: true, force: true });
