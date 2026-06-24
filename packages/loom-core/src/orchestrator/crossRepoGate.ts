@@ -1,11 +1,7 @@
 import type Database from 'better-sqlite3';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { AuditLog } from '../state/index.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import type { GateOutcome } from './IntegrationGate.js';
-
-const execFileAsync = promisify(execFile);
 
 /** Injectable PR-comment function for tests. */
 export type PrCommentFn = (prUrl: string, body: string) => Promise<void>;
@@ -64,11 +60,19 @@ export async function surfacePartialLanding(
 ): Promise<void> {
   // Channel 1 + 2: audit event (loom status reads via latestActionByCommand).
   const audit = new AuditLog(db);
-  audit.record({
-    action: 'cross_repo.partial_landing',
-    command: epicId,
-    detail: { producerPrUrl, summary },
-  });
+  try {
+    audit.record({
+      action: 'cross_repo.partial_landing',
+      command: epicId,
+      detail: { producerPrUrl, summary },
+    });
+  } catch (err) {
+    // Audit write failure must not silently swallow the event — emit to stderr
+    // so operators can diagnose a missing audit entry without re-running.
+    process.stderr.write(
+      `[loom] WARNING: failed to write partial_landing audit entry for ${epicId}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
 
   // Channel 3: note on the producer PR.
   await prCommentFn(producerPrUrl, formatPartialLandingNote(summary));
@@ -84,13 +88,19 @@ function formatPartialLandingNote(summary: string): string {
 }
 
 async function defaultPrCommentFn(prUrl: string, body: string): Promise<void> {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const execFileAsync = promisify(execFile);
   try {
     await execFileAsync('gh', ['pr', 'comment', prUrl, '--body', body], {
       encoding: 'utf8',
     });
-  } catch {
+  } catch (err) {
     // Best-effort: a comment-post failure must not abort the coordinator after
     // the producer PR has already merged. The audit entry and status are already
     // recorded; loss of the PR comment is observable but non-fatal.
+    process.stderr.write(
+      `[loom] WARNING: failed to post partial_landing comment on ${prUrl}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
   }
 }

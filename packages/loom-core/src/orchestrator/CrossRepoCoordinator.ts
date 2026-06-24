@@ -24,6 +24,7 @@ export interface RepoStage {
     | 'running'
     | 'finalizing'
     | 'awaiting_merge'
+    | 'merged_gating'
     | 'landed'
     | 'gated'
     | 'partial_landing'
@@ -202,12 +203,21 @@ export class CrossRepoCoordinator {
       sorted.some(s => s.dependsOnRepos.includes(slug));
 
     const landed = new Set<string>();
+    // Tracks stages that failed their consumer gate — used to propagate partial_landing
+    // transitively to all downstream dependents without adding them to `landed`.
+    const partialLanded = new Set<string>();
 
     for (const stage of sorted) {
+      // Propagate partial_landing from upstream deps before any other check.
+      // This ensures that in a chain A→B→C, C is correctly blocked when B fails
+      // its consumer gate — even though runConsumerGateFn only set B's status.
+      if (stage.dependsOnRepos.some(dep => partialLanded.has(dep))) {
+        stage.status = 'partial_landing';
+      }
+
       // Consumer stages pre-blocked by a gate failure are skipped; their PR must not be opened.
-      // Mark as landed so downstream topo-sort invariants remain satisfied in chains of 3+ repos.
       if (stage.status === 'partial_landing') {
-        landed.add(stage.repoSlug);
+        partialLanded.add(stage.repoSlug);
         continue;
       }
 
@@ -236,10 +246,13 @@ export class CrossRepoCoordinator {
           // Block subsequent consumer stages until this PR is merged.
           await this._waitForMerge(stage, this.abortSignal);
 
+          // PR has merged; consumer gates are now running. This distinct status
+          // lets operators distinguish "waiting for GitHub merge" from "merge
+          // complete, cross-repo validation in progress".
+          stage.status = 'merged_gating';
+
           // story-058-006 seam: run consumer gate AFTER the producer PR merges
           // so the consumer build resolves the producer's landed interface.
-          // `producerStage.status` is still `'awaiting_merge'` at invocation
-          // time (set to 'landed' below only after all gates complete).
           for (const consumer of sorted.filter(s => s.dependsOnRepos.includes(stage.repoSlug))) {
             await this._runConsumerGate(stage, consumer);
           }

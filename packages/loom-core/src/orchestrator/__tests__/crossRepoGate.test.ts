@@ -241,7 +241,7 @@ describe('(2) consumer gate runs after producer PR merges', () => {
     assert.ok(mergeIdx < gateIdx, 'producer merge must precede consumer gate run');
   });
 
-  it('producerStage.status is awaiting_merge when gate is called', async () => {
+  it('producerStage.status is merged_gating when gate is called', async () => {
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
 
@@ -278,7 +278,7 @@ describe('(2) consumer gate runs after producer PR merges', () => {
 
     await coordinator.run(EPIC_ID);
 
-    assert.equal(capturedProducerStatus, 'awaiting_merge');
+    assert.equal(capturedProducerStatus, 'merged_gating');
   });
 });
 
@@ -575,11 +575,12 @@ describe('(4) gate fails → partial_landing, producer intact, consumer blocked'
 
       assert.equal(stageA.status, 'landed', 'A (producer) must remain landed');
       assert.equal(stageB.status, 'partial_landing', 'B (direct consumer of A) must be blocked');
-      // C depends on B. B was skipped via landed.add; C's dep check passes and C proceeds.
-      // Assert C reached a terminal state without the coordinator crashing.
-      assert.ok(
-        stageC.status === 'landed' || stageC.status === 'partial_landing',
-        `C must reach a terminal state without a topo-sort throw; got: ${stageC.status}`,
+      // C depends on B. Since B is partial_landing, C must be transitively blocked
+      // and never run its supervisor or EpicFinalizer.
+      assert.equal(
+        stageC.status,
+        'partial_landing',
+        `C must be transitively blocked when its dependency B is partial_landing`,
       );
     } finally {
       fs.rmSync(repoDirC, { recursive: true, force: true });
@@ -604,7 +605,7 @@ describe('(5) surfacePartialLanding fires all three channels', () => {
 
     await surfacePartialLanding(epicId, producerPrUrl, summary, db, prCommentFn);
 
-    // Channel 1+2: audit entry.
+    // Channel 1: audit entry exists and carries the expected payload.
     const audit = new AuditLog(db);
     const entry = audit.latestActionByCommand(epicId, ['cross_repo.partial_landing']);
     assert.ok(entry, 'audit entry must be written');
@@ -614,9 +615,9 @@ describe('(5) surfacePartialLanding fires all three channels', () => {
     assert.equal(detail.producerPrUrl, producerPrUrl);
     assert.equal(detail.summary, summary);
 
-    // Channel 2: entry is discoverable by the same query loom status uses.
-    const statusEntry = audit.latestActionByCommand(epicId, ['cross_repo.partial_landing']);
-    assert.ok(statusEntry, 'loom status channel: entry must be findable via latestActionByCommand');
+    // Channel 2 (loom status): the audit query loom status uses returns the entry.
+    // `latestActionByCommand` is the exact query path the status command calls;
+    // the entry verified above is the same one that will appear in `loom status`.
 
     // Channel 3: PR comment was posted on the producer PR.
     assert.equal(prCommentCalls.length, 1, 'exactly one PR comment must be posted');
