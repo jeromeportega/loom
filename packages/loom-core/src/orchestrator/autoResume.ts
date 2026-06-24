@@ -1,6 +1,16 @@
 import type { WorkerResult } from './WorkerRunner.js';
 
 /**
+ * Canonical allowlist of killReasons that indicate a no-output stall.
+ * 'cap' (wall-clock ceiling) and 'budget' are intentionally excluded.
+ * Import from here rather than re-declaring to keep a single source of truth.
+ */
+export const STALL_KILL_REASONS: ReadonlySet<string> = new Set([
+  'stall',
+  'hung_request',
+]);
+
+/**
  * Pure predicate: returns true iff the Supervisor should auto-resume a story
  * that was killed by the timeout guard.
  *
@@ -15,7 +25,7 @@ export function shouldAutoResume(
   cap: number,
 ): boolean {
   return (
-    (result.killReason === 'stall' || result.killReason === 'hung_request') &&
+    STALL_KILL_REASONS.has(result.killReason ?? '') &&
     result.checkpointCommitted === true &&
     attemptsSoFar < cap
   );

@@ -1,12 +1,16 @@
 import type { WorkerResult } from './WorkerRunner.js';
-
-/**
- * Strict allowlist of killReasons that indicate a no-output stall.
- * 'cap' (wall-clock ceiling) is intentionally excluded — it is NOT a stall.
- */
-const STALL_KILL_REASONS = new Set<string>(['stall', 'hung_request']);
+import { STALL_KILL_REASONS } from './autoResume.js';
 
 export type WorkerExitClass = 'stall' | 'task_error' | 'other';
+
+// Compile-time guard: tsc will error if WorkerExitClass gains a new variant
+// without this record being updated.
+const _exhaustive: Record<WorkerExitClass, true> = {
+  stall: true,
+  task_error: true,
+  other: true,
+};
+void _exhaustive;
 
 /**
  * Pure classifier: distinguishes a no-output stall from a real task-error exit.
@@ -31,7 +35,7 @@ export function classifyWorkerExit(result: WorkerResult): WorkerExitClass {
     return 'other';
   }
 
-  if (result.status === 'failed' && result.logTail.length > 0) {
+  if (result.status === 'failed' && (result.logTail ?? '').length > 0) {
     return 'task_error';
   }
 

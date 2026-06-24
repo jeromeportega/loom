@@ -111,10 +111,9 @@ describe('classifyWorkerExit — other', () => {
     assert.equal(
       classifyWorkerExit(
         makeResult({
-          killReason: 'budget' as never,
+          killReason: 'budget',
           status: 'failed',
           logTail: 'working...\n',
-          budgetExhausted: true,
         }),
       ),
       'other',
@@ -165,7 +164,7 @@ describe('classifyWorkerExit — negative invariant (no real error → stall)', 
     {
       label: 'killReason budget',
       result: makeResult({
-        killReason: 'budget' as never,
+        killReason: 'budget',
         status: 'failed',
         logTail: 'budget hit\n',
       }),
@@ -200,8 +199,8 @@ describe('classifyWorkerExit — purity', () => {
   });
 
   it('WorkerExitClass type covers exactly the three output values', () => {
-    // Compile-time check: the type is used here to assert exhaustiveness.
-    // If a fourth value were added without updating this test, tsc would catch it.
+    // The production file also holds a compile-time Record<WorkerExitClass, true>
+    // that enforces exhaustiveness at tsc time. This test documents the expected set.
     const values: WorkerExitClass[] = ['stall', 'task_error', 'other'];
     assert.equal(values.length, 3);
   });
