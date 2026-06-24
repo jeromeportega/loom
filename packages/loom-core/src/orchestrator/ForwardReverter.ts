@@ -8,6 +8,7 @@ import type {
   RepoMergeRecord,
   RollbackResult,
 } from './landingTypes.js';
+import { collectSkipped, hasConverged } from './rollbackResume.js';
 
 export interface ForwardReverterOptions {
   projectRoot: string;
@@ -80,14 +81,15 @@ export class ForwardReverter {
     // Repos already at 'reverted' won't appear in pendingReverts (FR-6).
     // Collect them separately so the caller can see what was skipped.
     const { merges: allMerges } = this.store.getAttempt(attemptId);
-    const alreadyReverted = allMerges
-      .filter(m => m.mergeState === 'reverted' && m.mergeCommitSha !== null)
-      .map(m => m.repoSlug);
+    const alreadyReverted = collectSkipped(allMerges);
 
     if (pending.length === 0 && alreadyReverted.length === 0) {
       return { attemptId, status: 'noop', reverted: [], skipped: [] };
     }
-    if (pending.length === 0) {
+    if (hasConverged(allMerges)) {
+      // All repos already reverted — write the converged status durably so a
+      // re-run after a partial failure sees 'rolled_back', not 'failed' (FR-6).
+      this.store.setStatus(attemptId, 'rolled_back');
       return { attemptId, status: 'rolled_back', reverted: [], skipped: alreadyReverted };
     }
 
