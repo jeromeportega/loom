@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
-import { resolveLoomHomePath } from '@loom-ai/core';
+import { resolveLoomHomePath, type ManifestEntry, type WorkspaceManifest } from '@loom-ai/core';
 
 // __dirname = packages/loom-cli/dist/__tests__
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
@@ -24,6 +24,7 @@ function runInit(): { stdout: string; stderr: string; status: number } {
       cwd: projectDir,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30_000,
       env: { ...process.env, LOOM_HOME: path.join(tmpDir, 'machine-loom') },
     });
     return { stdout, stderr: '', status: 0 };
@@ -31,16 +32,6 @@ function runInit(): { stdout: string; stderr: string; status: number } {
     const e = err as { stdout?: string; stderr?: string; status?: number };
     return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', status: e.status ?? 1 };
   }
-}
-
-interface ManifestEntry {
-  slug: string;
-  path: string;
-  remote_url: string | null;
-}
-interface WorkspaceManifest {
-  version: number;
-  repos: ManifestEntry[];
 }
 
 function readManifest(): WorkspaceManifest {
@@ -54,7 +45,7 @@ before(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-manifest-init-'));
   projectDir = path.join(tmpDir, 'project');
   fs.mkdirSync(projectDir);
-  execSync('git init -q', { cwd: projectDir });
+  execSync('git init -q', { cwd: projectDir, timeout: 30_000 });
 
   // Use resolveLoomHomePath directly instead of replicating its algorithm, so
   // the test always looks in the same place loom init writes to.
@@ -107,21 +98,27 @@ describe('loom init — workspace manifest (story-054-003)', () => {
   });
 
   it('re-running loom init is idempotent — still exactly one entry, same slug', () => {
-    const before = readManifest();
-    const slugBefore = before.repos[0].slug;
+    const manifestBefore = readManifest();
+    const slugBefore = manifestBefore.repos[0].slug;
 
-    runInit();
+    const rerun = runInit();
+    assert.equal(rerun.status, 0, `second loom init failed: ${rerun.stderr}`);
 
-    const after = readManifest();
-    assert.equal(after.repos.length, 1, 'idempotent re-init must not create a duplicate entry');
-    assert.equal(after.repos[0].slug, slugBefore, 'slug must be unchanged after re-init');
+    const manifestAfter = readManifest();
+    assert.equal(manifestAfter.repos.length, 1, 'idempotent re-init must not create a duplicate entry');
+    assert.equal(manifestAfter.repos[0].slug, slugBefore, 'slug must be unchanged after re-init');
   });
 
   it('machine-local ProjectRegistry and workspace manifest are written independently', () => {
-    // Both registries must be written. The machine registry is at LOOM_HOME;
-    // the manifest is in the project-level loom-home. Verify both exist.
+    // Both registries must be written. The machine registry writes projects.json
+    // to LOOM_HOME; the workspace manifest writes workspace.yaml to the
+    // project-level loom-home. Assert both specific files exist so a silent
+    // ProjectRegistry failure (e.g. swallowed error after mkdirSync) is caught.
     const machineLoom = path.join(tmpDir, 'machine-loom');
-    assert.ok(fs.existsSync(machineLoom), 'machine-level ~/.loom (LOOM_HOME redirect) must exist');
+    assert.ok(
+      fs.existsSync(path.join(machineLoom, 'projects.json')),
+      'machine-level projects.json (LOOM_HOME redirect) must exist'
+    );
     assert.ok(
       fs.existsSync(path.join(loomHomeDir, 'workspace.yaml')),
       'workspace.yaml must exist independently of the machine registry'
