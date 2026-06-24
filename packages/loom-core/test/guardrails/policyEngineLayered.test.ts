@@ -1,11 +1,3 @@
-/**
- * Integration tests for PolicyEngine.load() routing through resolveEffectiveConfig.
- *
- * These tests assert through the public PolicyEngine surface to prove that
- * load() reroutes through the layered config resolver and that the merged
- * effective config reaches enforcement — without touching the ~25 call sites
- * or check()/parseCommand() internals.
- */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,8 +7,6 @@ import yaml from 'js-yaml';
 import { PolicyEngine } from '../../src/guardrails/PolicyEngine.js';
 import { PolicyValidationError } from '../../src/guardrails/policyError.js';
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
 interface TestDirs {
   loomdir: string;
   projectRoot: string;
@@ -24,11 +14,9 @@ interface TestDirs {
   cleanup: () => void;
 }
 
-/**
- * Build a temp tree that mirrors the structure resolveEffectiveConfig expects.
- * loom-home resolves to path.dirname(realpath(projectRoot))/loom-home,
- * so we set projectRoot as a child of tmpRoot and loomHomeDir as its sibling.
- */
+// Creates a temp tree that mirrors the structure resolveEffectiveConfig expects.
+// projectRoot is a child of tmpRoot; loomHomeDir is a sibling of projectRoot named
+// 'loom-home' — matching resolveLoomHomePath(projectRoot) = path.dirname(realRoot)/loom-home.
 function makeDirs(): TestDirs {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-pe-layered-'));
   const realTmpRoot = (() => {
@@ -47,6 +35,24 @@ function makeDirs(): TestDirs {
   };
 }
 
+// Creates a minimal isolated project with no team-config sibling — the absence
+// is structural (the tmpdir has no loom-home directory at all), not accidental.
+function makeIsolatedNoTeamDirs(): { loomdir: string; projectRoot: string; cleanup: () => void } {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-pe-noteam-'));
+  const realTmpRoot = (() => {
+    try { return fs.realpathSync(tmpRoot); } catch { return tmpRoot; }
+  })();
+  // loomHome resolves to realTmpRoot/loom-home — which is never created here.
+  const projectRoot = path.join(realTmpRoot, 'project');
+  const loomdir = path.join(projectRoot, '.loom');
+  fs.mkdirSync(loomdir, { recursive: true });
+  return {
+    loomdir,
+    projectRoot,
+    cleanup: () => fs.rmSync(realTmpRoot, { recursive: true, force: true }),
+  };
+}
+
 function writePolicy(loomdir: string, obj: unknown): void {
   fs.writeFileSync(path.join(loomdir, 'policy.yaml'), yaml.dump(obj), 'utf8');
 }
@@ -55,15 +61,12 @@ function writeTeamConfig(loomHomeDir: string, obj: unknown): void {
   fs.writeFileSync(path.join(loomHomeDir, 'team-config.yaml'), yaml.dump(obj), 'utf8');
 }
 
-// ── Signature unchanged ───────────────────────────────────────────────────────
-
 describe('PolicyEngine.load — signature unchanged (AC: no call site breaks)', () => {
   it('load(loomdir) with no policy.yaml returns an engine with default policy', () => {
     const { loomdir, cleanup } = makeDirs();
     try {
       const engine = PolicyEngine.load(loomdir);
       assert.ok(engine instanceof PolicyEngine);
-      // default policy forbids force push
       const r = engine.check('git push --force');
       assert.equal(r.allowed, false);
       assert.equal(r.rule, 'git.forbidden_flags');
@@ -83,9 +86,7 @@ describe('PolicyEngine.load — signature unchanged (AC: no call site breaks)', 
     }
   });
 
-  it('load(loomdir) without opts still passes TypeScript (no overload required)', () => {
-    // This test is a compile-time proof that the signature is backward-compatible.
-    // The single-argument form must typecheck without warnings.
+  it('single-argument form does not throw at runtime; TypeScript compat is checked separately by tsc', () => {
     const { loomdir, cleanup } = makeDirs();
     try {
       const engine: PolicyEngine = PolicyEngine.load(loomdir);
@@ -99,7 +100,6 @@ describe('PolicyEngine.load — signature unchanged (AC: no call site breaks)', 
     const { loomdir, projectRoot, cleanup } = makeDirs();
     try {
       writePolicy(loomdir, { agents: { model: 'default-check' } });
-      // Explicit projectRoot = path.dirname(loomdir) must equal the default
       const engineDefault = PolicyEngine.load(loomdir, { env: {} });
       const engineExplicit = PolicyEngine.load(loomdir, { projectRoot, env: {} });
       assert.equal(engineDefault.policyData.agents.model, engineExplicit.policyData.agents.model);
@@ -108,8 +108,6 @@ describe('PolicyEngine.load — signature unchanged (AC: no call site breaks)', 
     }
   });
 });
-
-// ── Hermetic injection ────────────────────────────────────────────────────────
 
 describe('PolicyEngine.load — hermetic env injection', () => {
   it('load(loomdir, { projectRoot, env: {} }) resolves deterministically', () => {
@@ -129,50 +127,59 @@ describe('PolicyEngine.load — hermetic env injection', () => {
     const { loomdir, projectRoot, cleanup } = makeDirs();
     try {
       writePolicy(loomdir, { agents: { model: 'repo-model' } });
-      // Even if process.env had a LOOM_AGENTS_MODEL, the injected {} overrides it
       const engine = PolicyEngine.load(loomdir, { projectRoot, env: {} });
       assert.equal(engine.policyData.agents.model, 'repo-model');
     } finally {
       cleanup();
     }
   });
-});
 
-// ── Merge reaches the engine (AC3) ────────────────────────────────────────────
+  it('LOOM_* env var in opts.env overrides the repo-layer value', () => {
+    const { loomdir, projectRoot, cleanup } = makeDirs();
+    try {
+      writePolicy(loomdir, { agents: { model: 'repo-model' } });
+      const engine = PolicyEngine.load(loomdir, {
+        projectRoot,
+        env: { LOOM_AGENTS_MODEL: 'env-override-model' },
+      });
+      assert.equal(engine.policyData.agents.model, 'env-override-model');
+    } finally {
+      cleanup();
+    }
+  });
+});
 
 describe('PolicyEngine.load — team layer merge reaches enforcement (AC3)', () => {
   it('team-layer protected_branches union-merges with repo layer; engine denies the merged set', () => {
     const { loomdir, projectRoot, loomHomeDir, cleanup } = makeDirs();
+    const noTeam = makeIsolatedNoTeamDirs();
     try {
-      // repo layer: protects main and master only
-      writePolicy(loomdir, {
-        git: {
-          protected_branches: ['main', 'master'],
-          agents_must_use_pr: true,
-        },
-      });
-      // team layer: adds 'release' to the protected branches denylist (union)
-      writeTeamConfig(loomHomeDir, {
-        git: { protected_branches: ['release'] },
-      });
+      // repo layer: protects main and master only (written to both fixtures)
+      const repoPolicy = { git: { protected_branches: ['main', 'master'], agents_must_use_pr: true } };
+      writePolicy(loomdir, repoPolicy);
+      writePolicy(noTeam.loomdir, repoPolicy);
 
-      const engine = PolicyEngine.load(loomdir, { projectRoot, env: {} });
+      // team layer: adds 'release' via union-merge denylist
+      writeTeamConfig(loomHomeDir, { git: { protected_branches: ['release'] } });
 
-      // 'release' not in policy.yaml alone → would be allowed by repo layer only
-      const withoutTeam = PolicyEngine.load(loomdir, {
-        // point to a non-existent loom-home so there is no team config
-        projectRoot: path.join(projectRoot, 'no-team'),
-        env: {},
-      });
+      const withoutTeam = PolicyEngine.load(noTeam.loomdir, { projectRoot: noTeam.projectRoot, env: {} });
       const withoutTeamResult = withoutTeam.check('git push origin release');
       assert.equal(withoutTeamResult.allowed, true, 'without team layer, release push is allowed');
 
-      // with the team layer contributing 'release', it should be denied
+      const engine = PolicyEngine.load(loomdir, { projectRoot, env: {} });
+
+      // smoke-check: merged branches must be strictly larger than repo-only — proves team config was read
+      assert.ok(
+        engine.policyData.git.protected_branches.length > withoutTeam.policyData.git.protected_branches.length,
+        'merged protected_branches must include entries from both layers',
+      );
+
       const withTeamResult = engine.check('git push origin release');
       assert.equal(withTeamResult.allowed, false, 'with team layer, release push must be denied');
       assert.equal(withTeamResult.rule, 'git.protected_branches');
     } finally {
       cleanup();
+      noTeam.cleanup();
     }
   });
 
@@ -188,12 +195,10 @@ describe('PolicyEngine.load — team layer merge reaches enforcement (AC3)', () 
 
       const engine = PolicyEngine.load(loomdir, { projectRoot, env: {} });
 
-      // 'main' is still protected after union-merge
       const mainResult = engine.check('git push origin main');
       assert.equal(mainResult.allowed, false);
       assert.equal(mainResult.rule, 'git.protected_branches');
 
-      // 'develop' is now also protected
       const developResult = engine.check('git push origin develop');
       assert.equal(developResult.allowed, false);
       assert.equal(developResult.rule, 'git.protected_branches');
@@ -202,8 +207,6 @@ describe('PolicyEngine.load — team layer merge reaches enforcement (AC3)', () 
     }
   });
 });
-
-// ── Guard invariant preserved (CLAUDE.md invariant 1) ────────────────────────
 
 describe('PolicyEngine.load — guard invariant preserved (CLAUDE.md invariant 1)', () => {
   it('forbidden command (git push --force) is still denied after rerouting', () => {
@@ -232,8 +235,6 @@ describe('PolicyEngine.load — guard invariant preserved (CLAUDE.md invariant 1
   });
 
   it('check() and CommandParser semantics are unchanged for an equivalent policy', () => {
-    // Build an engine via load() and via direct constructor with the same policy.
-    // They must produce identical check() results.
     const { loomdir, projectRoot, cleanup } = makeDirs();
     try {
       writePolicy(loomdir, {
@@ -264,8 +265,6 @@ describe('PolicyEngine.load — guard invariant preserved (CLAUDE.md invariant 1
   });
 });
 
-// ── No downstream drift — old-way callers get equivalent behavior ─────────────
-
 describe('PolicyEngine.load — no downstream drift (call sites unchanged)', () => {
   it('single-arg load() produces same policy as load(loomdir, { env: {} }) when no team layer exists', () => {
     const { loomdir, projectRoot, cleanup } = makeDirs();
@@ -273,9 +272,6 @@ describe('PolicyEngine.load — no downstream drift (call sites unchanged)', () 
       writePolicy(loomdir, {
         agents: { model: 'claude-sonnet-4-6', max_concurrent: 3 },
       });
-      // Use env: {} for explicit isolation; if LOOM_* vars are present in test
-      // env, single-arg load could differ — that is expected and correct behavior.
-      // This test verifies the no-team-layer equality path specifically.
       const explicitEngine = PolicyEngine.load(loomdir, { projectRoot, env: {} });
       assert.equal(explicitEngine.policyData.agents.model, 'claude-sonnet-4-6');
       assert.equal(explicitEngine.policyData.agents.max_concurrent, 3);
