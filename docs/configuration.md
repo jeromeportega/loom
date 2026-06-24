@@ -22,10 +22,12 @@ Guard fields are the exception: they merge most-restrictively
 | **repo** | `.loom/policy.yaml` | Per-repo overrides; the primary operator config file |
 | **env** | `LOOM_<SECTION>_<KEY>` env variables | CI/CD or per-deployment overrides; highest precedence |
 
-`loom_home` (the path to the team-config directory) is always read from
-`policy.yaml` only — it cannot come from `team-config.yaml` (circular)
-or from an env variable (the env layer loads after `loom_home` is
-resolved). See [repo-only field](#repo-only-field-loom_home) below.
+`loom_home` (the path to the team-config directory) is read for **path
+resolution** from `policy.yaml` only — it cannot come from
+`team-config.yaml` (circular: the team-config file lives inside loom-home)
+and `LOOM_LOOM_HOME` cannot redirect where loom looks for `team-config.yaml`
+(the env layer loads after `loom_home` is already resolved). See
+[repo-only field](#repo-only-field-loom_home) below.
 
 ## Per-type merge semantics
 
@@ -35,7 +37,7 @@ resolved). See [repo-only field](#repo-only-field-loom_home) below.
 | **Object / map** | `deep` | Keys are merged recursively; each nested field follows its own strategy; no layer can remove a key contributed by another |
 | **Guard denylist** (`protected_branches`, `forbidden_flags`, `protected_paths`, `risky_paths`) | `union` | Set union across all layers — adding a layer can only grow the set, never shrink it; precedence-independent |
 | **Guard allowlist** (`allowed_remotes`) | `intersect` | Set intersection across all non-empty layers — the effective set is the tightest cross-layer intersection; precedence-independent |
-| **Guard boolean** (`agents_must_use_pr`) | `and` | `true` wins regardless of which layer sets it; once asserted by any layer it cannot be loosened by a higher layer |
+| **Guard boolean** (`agents_must_use_pr`) | `and` | `true` wins regardless of which layer sets it; once asserted by any layer it cannot be loosened by a higher layer. `false` is only effective when no other layer has set the field to `true`. If no layer sets it, the schema default (`false`) applies. |
 | **Non-guard list** (all other arrays) | `replace` | Higher layer replaces the entire list from a lower layer |
 | **Type conflict** | `ConfigMergeError` | When the same key path carries different structural types across layers (e.g. string in one layer, object in another), the resolver throws `ConfigMergeError` before validation runs |
 
@@ -135,8 +137,8 @@ field name that itself contains underscores, such as
 | `string` / `enum` | Passed through as-is; validated by `PolicySchema` after merge |
 
 Unmappable keys (those that do not match any `PolicySchema` path after
-stripping the prefix) are **silently ignored** with a `console.warn` so a
-misspelled variable does not silently corrupt configuration.
+stripping the prefix) are ignored with a `console.warn` so a misspelled
+variable does not silently corrupt configuration.
 
 ### Secrets are never mapped
 
@@ -163,14 +165,14 @@ has no effect on path resolution, which was already fixed in step 2.
 ```yaml
 # <loom-home>/team-config.yaml
 git:
-  protected_branches: [main, release]   # denylist: always in the union
-  allowed_remotes: ["github.com/acme/*"]  # allowlist: intersect with repo layer
+  protected_branches: [main, release]             # denylist: always in the union
+  allowed_remotes: ["github.com/acme/backend"]    # allowlist: exact-string match with repo layer
 
 # .loom/policy.yaml
-loom_home: ~/loom-home                  # repo-only
+loom_home: ~/loom-home                            # repo-only
 git:
-  protected_branches: [staging]         # denylist: union → [main, release, staging]
-  allowed_remotes: ["github.com/acme/backend"]  # allowlist: intersect → only acme/backend
+  protected_branches: [staging]                   # denylist: union → [main, release, staging]
+  allowed_remotes: ["github.com/acme/backend"]    # allowlist: intersect → only acme/backend
 agents:
   model: claude-opus-4-8
 
@@ -189,3 +191,19 @@ agents:
   model: claude-opus-4-8     # repo wins (env did not set it)
   max_concurrent: 4          # env wins
 ```
+
+## Validating your configuration
+
+After editing any layer, run:
+
+```
+loom guard check <command>
+```
+
+This command evaluates `<command>` against the **fully-resolved** effective
+policy (all three layers merged and validated). It exits non-zero if the
+command is forbidden. This is the structural gate loom enforces at runtime —
+the same one that blocks workers from running unsafe commands. Use it to
+confirm that guard-list changes (new `protected_branches`, updated
+`allowed_remotes`, etc.) took effect exactly as expected before dispatching
+a run.
