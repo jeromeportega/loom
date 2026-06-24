@@ -348,7 +348,7 @@ export function buildProgram(): Command {
     .requiredOption('--path <p>', 'Relative file path within the repository')
     .option('--lines <a:b>', 'Optional line range as <start>:<end> (e.g. "10:50")')
     .action(async (opts: { repo: string; path: string; lines?: string }) => {
-      await runRetrieveRead(opts);
+      await runRetrieveRead({ repo: opts.repo, filePath: opts.path, lines: opts.lines });
     });
 
   // <register additional commands>

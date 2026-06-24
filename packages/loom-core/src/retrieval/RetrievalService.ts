@@ -1,6 +1,6 @@
 import type { Policy } from '../types.js';
 import type { AuditLog } from '../state/AuditLog.js';
-import type { RetrievalRequest, SearchResult, ReadResult } from './types.js';
+import type { RetrievalRequest, SearchResult, ReadResult, ResolvedRepo } from './types.js';
 import { RetrievalRefused, CROSS_REPO_RULES } from './types.js';
 import { resolveRegisteredRepo } from './ManifestResolver.js';
 import { loadSliceBounds } from './SliceBounds.js';
@@ -37,17 +37,10 @@ export class RetrievalService {
       throw refused;
     }
 
-    let result: SearchResult;
+    // Step 1: resolve slug — throws RetrievalRefused(UNREGISTERED) when not found.
+    let repo: ResolvedRepo;
     try {
-      const repo = resolveRegisteredRepo(this.loomHome, req.slug);
-      const bounds = loadSliceBounds(this.policy);
-      result = searchBounded(
-        repo,
-        req.query,
-        req.pathGlob,
-        bounds,
-        this.policy.cross_repo.secret_globs,
-      );
+      repo = resolveRegisteredRepo(this.loomHome, req.slug);
     } catch (err) {
       const refused = err instanceof RetrievalRefused
         ? err
@@ -60,6 +53,34 @@ export class RetrievalService {
         detail: auditDetail,
       });
       throw refused;
+    }
+
+    // Step 2: search — policy violations throw RetrievalRefused with the specific rule;
+    // unexpected errors (I/O, git subprocess) are audited separately and re-thrown as-is
+    // so the caller sees the real error rather than a misleading UNREGISTERED label.
+    let result: SearchResult;
+    try {
+      const bounds = loadSliceBounds(this.policy);
+      result = searchBounded(repo, req.query, req.pathGlob, bounds, this.policy.cross_repo.secret_globs);
+    } catch (err) {
+      if (err instanceof RetrievalRefused) {
+        this.audit.record({
+          action: 'cross_repo_search',
+          command: req.slug,
+          allowed: false,
+          policy_rule: err.rule,
+          detail: auditDetail,
+        });
+        throw err;
+      }
+      this.audit.record({
+        action: 'cross_repo_search',
+        command: req.slug,
+        allowed: false,
+        policy_rule: 'cross_repo.internal_error',
+        detail: { ...auditDetail, error: String(err) },
+      });
+      throw err;
     }
 
     this.audit.record({
@@ -94,17 +115,10 @@ export class RetrievalService {
       throw refused;
     }
 
-    let result: ReadResult;
+    // Step 1: resolve slug — throws RetrievalRefused(UNREGISTERED) when not found.
+    let repo: ResolvedRepo;
     try {
-      const repo = resolveRegisteredRepo(this.loomHome, req.slug);
-      const bounds = loadSliceBounds(this.policy);
-      result = readBounded(
-        repo,
-        req.path,
-        req.lines,
-        bounds,
-        this.policy.cross_repo.secret_globs,
-      );
+      repo = resolveRegisteredRepo(this.loomHome, req.slug);
     } catch (err) {
       const refused = err instanceof RetrievalRefused
         ? err
@@ -117,6 +131,33 @@ export class RetrievalService {
         detail: auditDetail,
       });
       throw refused;
+    }
+
+    // Step 2: read — policy violations throw RetrievalRefused with the specific rule;
+    // unexpected errors are audited separately and re-thrown as-is.
+    let result: ReadResult;
+    try {
+      const bounds = loadSliceBounds(this.policy);
+      result = readBounded(repo, req.path, req.lines, bounds, this.policy.cross_repo.secret_globs);
+    } catch (err) {
+      if (err instanceof RetrievalRefused) {
+        this.audit.record({
+          action: 'cross_repo_read',
+          command: req.slug,
+          allowed: false,
+          policy_rule: err.rule,
+          detail: auditDetail,
+        });
+        throw err;
+      }
+      this.audit.record({
+        action: 'cross_repo_read',
+        command: req.slug,
+        allowed: false,
+        policy_rule: 'cross_repo.internal_error',
+        detail: { ...auditDetail, error: String(err) },
+      });
+      throw err;
     }
 
     this.audit.record({

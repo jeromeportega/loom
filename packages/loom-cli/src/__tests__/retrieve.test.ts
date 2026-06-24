@@ -12,6 +12,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
 import { CommandDescriptionSchema } from '../describe/schema.js';
 import { specSearch, specRead, runRetrieveSearch, runRetrieveRead } from '../commands/retrieve.js';
 import { enumerateRegisteredCommands } from '../describe/registry.js';
@@ -90,12 +91,14 @@ async function capture(fn: () => Promise<void>): Promise<Captured> {
   return { errors, exitCode };
 }
 
+// A pristine temp dir is guaranteed to have no .loom/policy.yaml regardless of
+// where the test suite is run (avoids flakiness when run from a loom-initialized repo).
+const UNINITIALIZED_DIR = os.tmpdir();
+
 describe('retrieve CLI — non-zero exit on missing loom initialization', () => {
   it('runRetrieveSearch exits non-zero when loom is not initialized', async () => {
-    // process.cwd() in this test context won't have a .loom/policy.yaml,
-    // so the command should detect that and exit(1).
     const { exitCode } = await capture(async () => {
-      await runRetrieveSearch({ repo: 'some-repo', query: 'anything' });
+      await runRetrieveSearch({ repo: 'some-repo', query: 'anything', cwd: UNINITIALIZED_DIR });
     });
     // Exit 1 = loom not initialized (or cross-repo refusal)
     assert.ok(exitCode !== null && exitCode !== 0, 'should exit non-zero when loom is not initialized');
@@ -103,17 +106,15 @@ describe('retrieve CLI — non-zero exit on missing loom initialization', () => 
 
   it('runRetrieveRead exits non-zero when loom is not initialized', async () => {
     const { exitCode } = await capture(async () => {
-      await runRetrieveRead({ repo: 'some-repo', path: 'any.ts' });
+      await runRetrieveRead({ repo: 'some-repo', filePath: 'any.ts', cwd: UNINITIALIZED_DIR });
     });
     assert.ok(exitCode !== null && exitCode !== 0, 'should exit non-zero when loom is not initialized');
   });
 
   it('runRetrieveRead exits non-zero when --lines is malformed', async () => {
-    // Can test parseLines validation without needing a real loom env
-    // by passing an invalid lines value (the parse error happens before the fs check).
-    // We pass a bad --lines; the command will exit(1) with a parse error.
+    // parseLines validation fires before the fs check, so no real loom env needed.
     const { exitCode, errors } = await capture(async () => {
-      await runRetrieveRead({ repo: 'some-repo', path: 'any.ts', lines: 'not-valid' });
+      await runRetrieveRead({ repo: 'some-repo', filePath: 'any.ts', lines: 'not-valid', cwd: UNINITIALIZED_DIR });
     });
     assert.ok(exitCode !== null && exitCode !== 0, 'malformed --lines should exit non-zero');
     assert.ok(errors.some(e => e.includes('--lines')), `error message should mention --lines; got: ${errors.join(' | ')}`);

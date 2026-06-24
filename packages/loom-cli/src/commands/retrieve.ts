@@ -1,6 +1,6 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
-import path from 'node:path';
+import nodePath from 'node:path';
 import { AuditLog, PolicyEngine, resolveLoomHomePath, RetrievalService, RetrievalRefused } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
@@ -22,11 +22,10 @@ function parseLines(raw: string): [number, number] {
   return [start, end];
 }
 
-function buildService(projectRoot: string): RetrievalService {
-  const loomDir = path.join(projectRoot, '.loom');
+function buildService(projectRoot: string, db: ReturnType<typeof openProjectDatabase>): RetrievalService {
+  const loomDir = nodePath.join(projectRoot, '.loom');
   const policy = PolicyEngine.load(loomDir).policyData;
   const loomHome = resolveLoomHomePath(projectRoot, policy);
-  const db = openProjectDatabase(projectRoot);
   const audit = new AuditLog(db);
   return new RetrievalService(loomHome, policy, audit);
 }
@@ -37,34 +36,41 @@ export interface RetrieveSearchOptions {
   repo: string;
   query: string;
   glob?: string;
+  /** Override process.cwd(); used by tests to inject a known-clean directory. */
+  cwd?: string;
 }
 
 export async function runRetrieveSearch(opts: RetrieveSearchOptions): Promise<void> {
-  const projectRoot = process.cwd();
-  const loomDir = path.join(projectRoot, '.loom');
-  if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
+  const projectRoot = opts.cwd ?? process.cwd();
+  const loomDir = nodePath.join(projectRoot, '.loom');
+  if (!fs.existsSync(nodePath.join(loomDir, 'policy.yaml'))) {
     process.stderr.write('loom is not initialized in this directory. Run `loom init` first.\n');
     process.exit(1);
   }
 
-  let svc: RetrievalService;
+  const db = openProjectDatabase(projectRoot);
   try {
-    svc = buildService(projectRoot);
-  } catch (err) {
-    process.stderr.write(`Failed to initialize: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  }
-
-  try {
-    const result = svc.search({ kind: 'search', slug: opts.repo, query: opts.query, pathGlob: opts.glob });
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-  } catch (err) {
-    if (err instanceof RetrievalRefused) {
-      process.stderr.write(JSON.stringify({ rule: err.rule, reason: err.reason }) + '\n');
+    let svc: RetrievalService;
+    try {
+      svc = buildService(projectRoot, db);
+    } catch (err) {
+      process.stderr.write(`Failed to initialize: ${err instanceof Error ? err.message : String(err)}\n`);
       process.exit(1);
     }
-    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+
+    try {
+      const result = svc.search({ kind: 'search', slug: opts.repo, query: opts.query, pathGlob: opts.glob });
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    } catch (err) {
+      if (err instanceof RetrievalRefused) {
+        process.stderr.write(JSON.stringify({ rule: err.rule, reason: err.reason }) + '\n');
+        process.exit(1);
+      }
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+  } finally {
+    db.close();
   }
 }
 
@@ -72,8 +78,10 @@ export async function runRetrieveSearch(opts: RetrieveSearchOptions): Promise<vo
 
 export interface RetrieveReadOptions {
   repo: string;
-  path: string;
+  filePath: string;
   lines?: string;
+  /** Override process.cwd(); used by tests to inject a known-clean directory. */
+  cwd?: string;
 }
 
 export async function runRetrieveRead(opts: RetrieveReadOptions): Promise<void> {
@@ -88,31 +96,36 @@ export async function runRetrieveRead(opts: RetrieveReadOptions): Promise<void> 
     }
   }
 
-  const projectRoot = process.cwd();
-  const loomDir = path.join(projectRoot, '.loom');
-  if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
+  const projectRoot = opts.cwd ?? process.cwd();
+  const loomDir = nodePath.join(projectRoot, '.loom');
+  if (!fs.existsSync(nodePath.join(loomDir, 'policy.yaml'))) {
     process.stderr.write('loom is not initialized in this directory. Run `loom init` first.\n');
     process.exit(1);
   }
 
-  let svc: RetrievalService;
+  const db = openProjectDatabase(projectRoot);
   try {
-    svc = buildService(projectRoot);
-  } catch (err) {
-    process.stderr.write(`Failed to initialize: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  }
-
-  try {
-    const result = svc.read({ kind: 'read', slug: opts.repo, path: opts.path, lines });
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-  } catch (err) {
-    if (err instanceof RetrievalRefused) {
-      process.stderr.write(JSON.stringify({ rule: err.rule, reason: err.reason }) + '\n');
+    let svc: RetrievalService;
+    try {
+      svc = buildService(projectRoot, db);
+    } catch (err) {
+      process.stderr.write(`Failed to initialize: ${err instanceof Error ? err.message : String(err)}\n`);
       process.exit(1);
     }
-    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+
+    try {
+      const result = svc.read({ kind: 'read', slug: opts.repo, path: opts.filePath, lines });
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    } catch (err) {
+      if (err instanceof RetrievalRefused) {
+        process.stderr.write(JSON.stringify({ rule: err.rule, reason: err.reason }) + '\n');
+        process.exit(1);
+      }
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+  } finally {
+    db.close();
   }
 }
 
@@ -125,8 +138,8 @@ export const specSearch: CommandDescription = {
   audience: 'internal',
   arguments: [],
   options: [
-    { name: '--repo', type: 'string', description: 'Slug of the registered repository to search', changesOutputShape: false },
-    { name: '--query', type: 'string', description: 'Fixed string to search for (git grep -F)', changesOutputShape: false },
+    { name: '--repo', type: 'string', description: '(required) Slug of the registered repository to search', changesOutputShape: false },
+    { name: '--query', type: 'string', description: '(required) Fixed string to search for (git grep -F)', changesOutputShape: false },
     { name: '--glob', type: 'string', description: 'Optional path glob to restrict the search (e.g. "*.ts")', changesOutputShape: false },
   ],
   output: {
@@ -156,8 +169,8 @@ export const specRead: CommandDescription = {
   audience: 'internal',
   arguments: [],
   options: [
-    { name: '--repo', type: 'string', description: 'Slug of the registered repository to read from', changesOutputShape: false },
-    { name: '--path', type: 'string', description: 'Relative file path within the repository', changesOutputShape: false },
+    { name: '--repo', type: 'string', description: '(required) Slug of the registered repository to read from', changesOutputShape: false },
+    { name: '--path', type: 'string', description: '(required) Relative file path within the repository', changesOutputShape: false },
     { name: '--lines', type: 'string', description: 'Optional line range as <start>:<end> (e.g. "10:50")', changesOutputShape: false },
   ],
   output: {
