@@ -110,3 +110,41 @@ describe('docs/capabilities.md — standalone-story routing (story-047-006)', ()
     );
   });
 });
+
+// ─── Native story-NNN storage identity (epic-059) ────────────────────────────
+
+describe('docs/capabilities.md — native story-NNN storage identity (epic-059)', () => {
+  let body: string;
+
+  before(() => {
+    const p = findCapabilitiesMd();
+    body = fs.readFileSync(p, 'utf8');
+  });
+
+  it('states that story-NNN is the native storage identity (primary key)', () => {
+    assert.ok(
+      /story-NNN.*native storage identity|native storage identity.*story-NNN|primary key.*standalone|standalone.*primary key/i.test(body),
+      'must state that story-NNN is the native storage identity or primary key'
+    );
+  });
+
+  it('states that no internal translation is needed (end-to-end native)', () => {
+    assert.ok(
+      /no internal translation|natively|native.*id|end-to-end/i.test(body),
+      'must state that story-NNN is accepted natively with no translation'
+    );
+  });
+
+  it('lists CLI commands that accept story-NNN directly', () => {
+    const hasCLICommands =
+      /loom run.*loom approve|loom artifacts.*loom traces|loom approve.*loom artifacts/i.test(body);
+    assert.ok(hasCLICommands, 'must list CLI commands that accept story-NNN directly');
+  });
+
+  it('documents migration v26 rewriting existing epic-NNN standalone rows', () => {
+    assert.ok(
+      /[Mm]igration v26|migration.*standalone.*epic-NNN|epic-NNN.*standalone.*story-NNN/i.test(body),
+      'must mention migration v26 repointing existing standalone records'
+    );
+  });
+});
