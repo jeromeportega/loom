@@ -30,6 +30,7 @@ import { spec as describeSpec } from '../commands/describeSpec.js';
 import { spec as releaseSpec } from '../commands/release.js';
 import { spec as publishSpec } from '../commands/publish.js';
 import { spec as weaveSpec } from '../commands/weave.js';
+import { spec as migrateSpec } from '../commands/migrate.js';
 // <command specs>
 
 /**
@@ -73,6 +74,7 @@ export function collectSpecs(): CommandDescription[] {
     releaseSpec,
     publishSpec,
     weaveSpec,
+    migrateSpec,
     // <command specs>
   ];
 }

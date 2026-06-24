@@ -33,6 +33,7 @@ import { runProjects, spec as projectsSpec } from './commands/projects.js';
 import { runPullGuidance, spec as pullGuidanceSpec } from './commands/pullGuidance.js';
 import { runProject, spec as projectSpec } from './commands/project.js';
 import { runWeave, spec as weaveSpec } from './commands/weave.js';
+import { runMigrate, spec as migrateSpec } from './commands/migrate.js';
 import { applySpec } from './describe/applySpec.js';
 import { registerDescribe } from './commands/describe.js';
 import { handleTopLevelError } from './errorHandling.js';
@@ -314,6 +315,12 @@ export function buildProgram(): Command {
   applySpec(program.command('project'), projectSpec)
     .action((projectRoot: string, opts: { json?: boolean }) => {
       runProject(projectRoot, { json: opts.json });
+    });
+
+  // ─── loom migrate ────────────────────────────────────────────────────────────
+  applySpec(program.command('migrate'), migrateSpec)
+    .action((opts: { dryRun?: boolean; relocateCommittedArtifacts?: boolean }) => {
+      runMigrate({ dryRun: opts.dryRun, relocateCommittedArtifacts: opts.relocateCommittedArtifacts });
     });
 
   // <register additional commands>
