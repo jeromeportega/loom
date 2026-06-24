@@ -359,7 +359,10 @@ describe('validateCrossRepoEdges — rejects consumer→producer (cycle) edges',
     );
   });
 
-  it('rejects a three-repo cycle (A→B→C→A)', () => {
+  it('rejects a three-repo cycle (A→C→B→A) and reports all three error pairs', () => {
+    // Integration path: validateCrossRepoEdges → buildRepoDag → findReposInCycles.
+    // Verifies the pipeline marks all three SCC members and emits one error per
+    // directed edge that participates in the cycle.
     const threeRepoManifest = manifest([
       entry('repo-a'), entry('repo-b'), entry('repo-c'),
     ]);
@@ -370,6 +373,19 @@ describe('validateCrossRepoEdges — rejects consumer→producer (cycle) edges',
     ];
     const errors = validateCrossRepoEdges(stories, threeRepoManifest, 'repo-a');
     assert.ok(errors.length > 0, 'expected errors for three-repo cycle');
+    // All three directed edges in the cycle must appear as errors.
+    assert.ok(
+      errors.some(e => e.consumerSlug === 'repo-a' && e.producerSlug === 'repo-c'),
+      'expected edge repo-a→repo-c to be reported',
+    );
+    assert.ok(
+      errors.some(e => e.consumerSlug === 'repo-b' && e.producerSlug === 'repo-a'),
+      'expected edge repo-b→repo-a to be reported',
+    );
+    assert.ok(
+      errors.some(e => e.consumerSlug === 'repo-c' && e.producerSlug === 'repo-b'),
+      'expected edge repo-c→repo-b to be reported',
+    );
   });
 
   it('accepts one valid and one cycled chain independently', () => {
@@ -585,5 +601,20 @@ describe('findReposInCycles — exported function', () => {
     const dag = new Map([['repo-a', ['repo-a']]]);
     const inCycle = findReposInCycles(dag);
     assert.ok(inCycle.has('repo-a'), 'a self-loop makes the node a cycle member');
+  });
+
+  it('marks ALL three nodes in a 3-node cycle A→C→B→A (DFS marks the full SCC)', () => {
+    // Verifies the path-stack DFS marks every node in the SCC, not just one representative.
+    // Cycle: a depends on c, c depends on b, b depends on a → a→c→b→a
+    const dag = new Map([
+      ['repo-a', ['repo-c']],
+      ['repo-c', ['repo-b']],
+      ['repo-b', ['repo-a']],
+    ]);
+    const inCycle = findReposInCycles(dag);
+    assert.ok(inCycle.has('repo-a'), 'repo-a is in the cycle');
+    assert.ok(inCycle.has('repo-b'), 'repo-b is in the cycle');
+    assert.ok(inCycle.has('repo-c'), 'repo-c is in the cycle');
+    assert.equal(inCycle.size, 3, 'exactly three nodes should be marked');
   });
 });

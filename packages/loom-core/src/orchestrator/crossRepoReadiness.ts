@@ -169,7 +169,7 @@ export function validateCrossRepoEdges(
       if (!depStory) continue;
       const depSlug = resolveStoryRepo(depStory, m, primarySlug).slug;
       if (sSlug !== depSlug && reposInCycle.has(depSlug)) {
-        const key = JSON.stringify([sSlug, depSlug]);
+        const key = `${sSlug}\0${depSlug}`;
         if (!seen.has(key)) {
           seen.add(key);
           errors.push({

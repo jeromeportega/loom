@@ -150,10 +150,7 @@ export {
   buildRepoDag,
   isDepReady,
   validateCrossRepoEdges,
-  findReposInCycles,
 } from './crossRepoReadiness.js';
 export type {
-  RepoDag,
   CrossRepoEdgeError,
-  RepoStageStatus,
 } from './crossRepoReadiness.js';
