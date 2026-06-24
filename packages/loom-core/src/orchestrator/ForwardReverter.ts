@@ -8,7 +8,7 @@ import type {
   RepoMergeRecord,
   RollbackResult,
 } from './landingTypes.js';
-import { collectSkipped } from './rollbackResume.js';
+import { collectSkipped, hasConverged } from './rollbackResume.js';
 
 export interface ForwardReverterOptions {
   projectRoot: string;
@@ -86,7 +86,7 @@ export class ForwardReverter {
     if (pending.length === 0 && alreadyReverted.length === 0) {
       return { attemptId, status: 'noop', reverted: [], skipped: [] };
     }
-    if (pending.length === 0) {
+    if (hasConverged(allMerges)) {
       // All repos already reverted — write the converged status durably so a
       // re-run after a partial failure sees 'rolled_back', not 'failed' (FR-6).
       this.store.setStatus(attemptId, 'rolled_back');

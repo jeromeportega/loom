@@ -177,14 +177,14 @@ describe('ForwardReverter idempotency — re-run convergence (AC1)', () => {
 
     const repoRoots = { 'repo-a': '/tmp/repo-a', 'repo-b': '/tmp/repo-b' };
 
-    // First run: repo-b's pr merge throws after repo-a succeeds.
-    let mergeCallCount = 0;
+    // First run: repo-a's pr merge throws after repo-b (consumer) succeeds.
+    // Rollback order is consumer-before-producer: repo-b processes first, then repo-a.
+    // Detect by PR URL so the failure target is independent of traversal order.
     const failingStubs = makeStubs({
       onGhCall: (args) => {
         if (args[0] === 'pr' && args[1] === 'merge') {
-          mergeCallCount++;
-          if (mergeCallCount === 2) {
-            // Second merge (repo-a, after repo-b consumer) fails.
+          const prUrl = args[2] ?? '';
+          if (prUrl.includes('repo-a')) {
             throw new Error('gh: network error (simulated)');
           }
         }
