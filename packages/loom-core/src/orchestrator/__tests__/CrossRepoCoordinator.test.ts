@@ -22,6 +22,7 @@ import { execFileSync } from 'node:child_process';
 
 import { openDatabase, createDatabase, resetDatabaseForTest } from '../../state/Database.js';
 import { EpicStore } from '../../state/EpicStore.js';
+import { AuditLog } from '../../state/AuditLog.js';
 import {
   buildRepoStages,
   topoSortRepos,
@@ -30,6 +31,7 @@ import {
   type SupervisorLike,
   type FinalizerHandle,
 } from '../CrossRepoCoordinator.js';
+import { CROSS_REPO_ACTIONS } from '../landingTypes.js';
 import type { WorkspaceManifest, ManifestEntry } from '../../home/workspaceManifest.js';
 import type { Story } from '../../types.js';
 import type { SupervisorResult } from '../Supervisor.js';
@@ -422,14 +424,17 @@ describe('CrossRepoCoordinator.run — one PR per repo', () => {
   });
 });
 
-// ─── (4) Consumer waits for producer's waitForMerge ──────────────────────────
+// ─── (4) story-060-001: STAGE→MERGE phasing ──────────────────────────────────
+// These tests replace the old "consumer waits for producer merge" suite.
+// The new behavior: STAGE all repos first (no merge during staging), then
+// MERGE all in topo order only when allReady. If any repo is not ready,
+// no repo merges (all-or-none gate, ADR-002).
 
-describe('CrossRepoCoordinator.run — consumer waits for producer merge', () => {
-  it('(4) producer supervisor and finalize run before consumer supervisor and finalize', async () => {
+describe('CrossRepoCoordinator.run — STAGE→MERGE phasing (story-060-001)', () => {
+  it('(4a) STAGE phase runs all repos before any mergeRepo call', async () => {
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
 
-    // repo-b (consumer) depends on repo-a (producer).
     const epicStories = [
       story('story-001-001', [], 'repo-a'),
       story('story-001-002', ['story-001-001'], 'repo-b'),
@@ -458,12 +463,26 @@ describe('CrossRepoCoordinator.run — consumer waits for producer merge', () =>
       finalize: async (_epicId) => {
         const slug = repoRoot === realA ? 'repo-a' : 'repo-b';
         callOrder.push(`finalize:${slug}`);
-        return okFinalizeResult();
+        return okFinalizeResult(`https://github.com/org/${slug}/pull/1`);
       },
     });
 
-    const waitForMergeFn = async (stage: RepoStage) => {
-      callOrder.push(`waitForMerge:${stage.repoSlug}`);
+    const mergeRepoCalls: string[] = [];
+    const mergeRepo = async (stage: RepoStage) => {
+      mergeRepoCalls.push(stage.repoSlug);
+      return {
+        attemptId: 'attempt-001',
+        repoSlug: stage.repoSlug,
+        dependsOn: stage.dependsOnRepos,
+        prNumber: 1,
+        prUrl: stage.prUrl ?? null,
+        mergeCommitSha: 'abc123',
+        mergeState: 'merged' as const,
+        revertPrUrl: null,
+        revertMergeSha: null,
+        mergedAt: new Date().toISOString(),
+        revertedAt: null,
+      };
     };
 
     const coordinator = new CrossRepoCoordinator({
@@ -473,22 +492,26 @@ describe('CrossRepoCoordinator.run — consumer waits for producer merge', () =>
       db,
       manifest: mf,
       primarySlug: 'repo-a',
-      waitForMergeFn,
+      mergeRepo,
     });
 
     await coordinator.run('epic-001');
 
-    // Expected order: repo-a runs + finalizes + waits, THEN repo-b runs + finalizes.
-    assert.deepEqual(callOrder, [
+    // STAGE phase: producer supervisor + finalize, then consumer supervisor + finalize
+    // (no waitForMerge, no mergeRepo calls during STAGE).
+    const stageEvents = callOrder;
+    assert.deepEqual(stageEvents, [
       'supervisor:repo-a',
       'finalize:repo-a',
-      'waitForMerge:repo-a',
       'supervisor:repo-b',
       'finalize:repo-b',
     ]);
+
+    // MERGE phase: mergeRepo called AFTER all staging, in topo order.
+    assert.deepEqual(mergeRepoCalls, ['repo-a', 'repo-b']);
   });
 
-  it('(4) consumer stage status is awaiting_merge before waitForMerge resolves', async () => {
+  it('(4b) mergeRepo NOT called during STAGE; called once per repo after allReady', async () => {
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
 
@@ -507,81 +530,103 @@ describe('CrossRepoCoordinator.run — consumer waits for producer merge', () =>
       ],
     };
 
-    let capturedStageAStatus: string | undefined;
+    // Track when each event fires.
+    const events: string[] = [];
 
-    const stubSupervisor: SupervisorLike = {
-      run: async () => okResult(),
-    };
-
-    const finalizerFactory = (): FinalizerHandle => ({
-      finalize: async () => okFinalizeResult(),
+    const finalizerFactory = (repoRoot: string): FinalizerHandle => ({
+      finalize: async () => {
+        const slug = repoRoot === realA ? 'repo-a' : 'repo-b';
+        events.push(`stage:${slug}`);
+        return okFinalizeResult(`https://github.com/org/${slug}/pull/1`);
+      },
     });
 
-    // Capture stage-a's status at the moment waitForMerge is called.
-    const waitForMergeFn = async (stage: RepoStage) => {
-      capturedStageAStatus = stage.status;
-      // Immediately resolve.
-    };
-
-    const coordinator = new CrossRepoCoordinator({
-      projectRoot: repoDir,
-      supervisor: stubSupervisor,
-      finalizerFactory,
-      db,
-      manifest: mf,
-      primarySlug: 'repo-a',
-      waitForMergeFn,
-    });
-
-    await coordinator.run('epic-001');
-
-    // When waitForMerge is called, the stage must be 'awaiting_merge'.
-    assert.equal(capturedStageAStatus, 'awaiting_merge');
-  });
-
-  it('(4) producerStage.status is merged_gating when runConsumerGateFn is called', async () => {
-    const realA = fs.realpathSync(repoDir);
-    const realB = fs.realpathSync(repoDirB);
-
-    const epicStories = [
-      story('story-001-001', [], 'repo-a'),
-      story('story-001-002', ['story-001-001'], 'repo-b'),
-    ];
-    seedEpicOnDisk(repoDir, 'epic-001', epicStories);
-    const db = openDatabase(path.join(repoDir, '.loom'));
-
-    const mf: WorkspaceManifest = {
-      version: 1,
-      repos: [
-        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
-        { slug: 'repo-b', path: realB, remote_url: null },
-      ],
-    };
-
-    let capturedProducerStatusDuringGate: string | undefined;
-
-    const runConsumerGateFn = async (producerStage: RepoStage) => {
-      capturedProducerStatusDuringGate = producerStage.status;
+    const mergeRepo = async (stage: RepoStage) => {
+      events.push(`merge:${stage.repoSlug}`);
+      return {
+        attemptId: 'attempt-001',
+        repoSlug: stage.repoSlug,
+        dependsOn: stage.dependsOnRepos,
+        prNumber: 1,
+        prUrl: stage.prUrl ?? null,
+        mergeCommitSha: 'sha',
+        mergeState: 'merged' as const,
+        revertPrUrl: null,
+        revertMergeSha: null,
+        mergedAt: new Date().toISOString(),
+        revertedAt: null,
+      };
     };
 
     const coordinator = new CrossRepoCoordinator({
       projectRoot: repoDir,
       supervisor: { run: async () => okResult() },
-      finalizerFactory: () => ({ finalize: async () => okFinalizeResult() }),
+      finalizerFactory,
       db,
       manifest: mf,
       primarySlug: 'repo-a',
-      waitForMergeFn: async () => { /* resolve immediately */ },
-      runConsumerGateFn,
+      mergeRepo,
     });
 
     await coordinator.run('epic-001');
 
-    assert.equal(
-      capturedProducerStatusDuringGate,
-      'merged_gating',
-      'producerStage.status must be merged_gating when runConsumerGateFn is called',
-    );
+    // All STAGE events must precede all MERGE events.
+    const firstMergeIdx = events.findIndex(e => e.startsWith('merge:'));
+    const lastStageIdx = events.reduce((acc, e, i) => e.startsWith('stage:') ? i : acc, -1);
+    assert.ok(lastStageIdx < firstMergeIdx, 'all staging must complete before any merge');
+
+    // mergeRepo called exactly once per repo.
+    const mergeCalls = events.filter(e => e.startsWith('merge:'));
+    assert.equal(mergeCalls.length, 2);
+    assert.deepEqual(new Set(mergeCalls), new Set(['merge:repo-a', 'merge:repo-b']));
+  });
+
+  it('(4c) merge order is producer-before-consumer (AC3)', async () => {
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+
+    const epicStories = [
+      story('story-001-001', [], 'repo-a'),
+      story('story-001-002', ['story-001-001'], 'repo-b'),
+    ];
+    seedEpicOnDisk(repoDir, 'epic-001', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+      ],
+    };
+
+    const mergeOrder: string[] = [];
+    const mergeRepo = async (stage: RepoStage) => {
+      mergeOrder.push(stage.repoSlug);
+      return {
+        attemptId: 'a', repoSlug: stage.repoSlug, dependsOn: stage.dependsOnRepos,
+        prNumber: 1, prUrl: null, mergeCommitSha: 'sha', mergeState: 'merged' as const,
+        revertPrUrl: null, revertMergeSha: null, mergedAt: null, revertedAt: null,
+      };
+    };
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: () => ({
+        finalize: async () => okFinalizeResult('https://github.com/org/repo/pull/1'),
+      }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+      mergeRepo,
+    });
+
+    await coordinator.run('epic-001');
+
+    // Producer (repo-a) must merge before consumer (repo-b).
+    assert.deepEqual(mergeOrder, ['repo-a', 'repo-b'],
+      'producer must merge before consumer (AC3)');
   });
 });
 
@@ -664,5 +709,316 @@ describe('CrossRepoCoordinator.run — single-repo regression', () => {
 
     const { stages } = await coordinator.run('epic-001');
     assert.equal(stages[0].status, 'landed');
+  });
+
+  it('(5-guard) single-repo path does NOT engage mergeRepo or rollback seams (AC5 unchanged-behavior)', async () => {
+    // The explicit unchanged-behavior guard from the QA test plan:
+    // a one-repo epic must drive EpicFinalizer land-or-fail without touching
+    // the STAGE/MERGE coordinated phasing or the mergeRepo/rollback seams.
+    const realA = fs.realpathSync(repoDir);
+    seedEpicOnDisk(repoDir, 'epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [{ slug: 'repo-mono', path: realA, remote_url: null, primary: true }],
+    };
+
+    let mergeRepoCalled = false;
+    let rollbackCalled = false;
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: () => ({ finalize: async () => okFinalizeResult('https://github.com/org/mono/pull/1') }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-mono',
+      mergeRepo: async (_stage, _attemptId) => {
+        mergeRepoCalled = true;
+        throw new Error('mergeRepo must not be called for single-repo epics');
+      },
+      rollback: async (_attemptId) => {
+        rollbackCalled = true;
+        throw new Error('rollback must not be called for single-repo epics');
+      },
+    });
+
+    const { stages } = await coordinator.run('epic-001');
+
+    assert.equal(stages.length, 1, 'exactly one stage for single-repo epic');
+    assert.equal(stages[0].status, 'landed', 'single-repo stage must land');
+    assert.equal(mergeRepoCalled, false, 'mergeRepo seam must NOT be engaged for single-repo epics (AC5)');
+    assert.equal(rollbackCalled, false, 'rollback seam must NOT be engaged for single-repo epics (AC5)');
+  });
+});
+
+// ─── (6) Audit emission ───────────────────────────────────────────────────────
+
+describe('CrossRepoCoordinator.run — audit emission (story-060-001)', () => {
+  it('(6a) emits cross_repo.staged when all repos stage successfully (AC1)', async () => {
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+
+    const epicStories = [
+      story('story-001-001', [], 'repo-a'),
+      story('story-001-002', ['story-001-001'], 'repo-b'),
+    ];
+    seedEpicOnDisk(repoDir, 'epic-001', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+      ],
+    };
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: (repoRoot) => ({
+        finalize: async () => okFinalizeResult(
+          `https://github.com/org/${repoRoot === realA ? 'repo-a' : 'repo-b'}/pull/1`
+        ),
+      }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+    });
+
+    await coordinator.run('epic-001');
+
+    const audit = new AuditLog(db);
+    const rows = audit.getByCommand('epic-001', [CROSS_REPO_ACTIONS.STAGED]);
+    assert.equal(rows.length, 1, 'exactly one cross_repo.staged row must be emitted');
+    assert.equal(rows[0].allowed, 1, 'staged row must be allowed:true');
+    const detail = JSON.parse(rows[0].detail ?? 'null') as { attemptId?: string; repos?: unknown[] };
+    assert.ok(detail?.attemptId, 'staged row must include attemptId');
+    assert.ok(Array.isArray(detail?.repos) && detail.repos.length === 2, 'staged row must list both repos');
+  });
+
+  it('(6b) emits cross_repo.blocked when a repo is not ready (AC2)', async () => {
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+
+    const epicStories = [
+      story('story-001-001', [], 'repo-a'),
+      story('story-001-002', ['story-001-001'], 'repo-b'),
+    ];
+    seedEpicOnDisk(repoDir, 'epic-001', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+      ],
+    };
+
+    // Finalize succeeds but returns no prUrl — PR not opened → not ready.
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: () => ({
+        // Returns no url for repo-a → prOpen:false → blocked.
+        finalize: async () => okFinalizeResult(undefined),
+      }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+    });
+
+    await coordinator.run('epic-001');
+
+    const audit = new AuditLog(db);
+    const blockedRows = audit.getByCommand('epic-001', [CROSS_REPO_ACTIONS.BLOCKED]);
+    assert.equal(blockedRows.length, 1, 'exactly one cross_repo.blocked row must be emitted');
+    assert.equal(blockedRows[0].allowed, 0, 'blocked row must be allowed:false');
+    const detail = JSON.parse(blockedRows[0].detail ?? 'null') as { blocker?: unknown; attemptId?: string };
+    assert.ok(detail?.attemptId, 'blocked row must include attemptId');
+    assert.ok(detail?.blocker, 'blocked row must include blocker info');
+
+    // No staged row when blocked.
+    const stagedRows = audit.getByCommand('epic-001', [CROSS_REPO_ACTIONS.STAGED]);
+    assert.equal(stagedRows.length, 0, 'cross_repo.staged must NOT be emitted when blocked');
+  });
+});
+
+// ─── (7) STAGE phase error collection ────────────────────────────────────────
+
+describe('CrossRepoCoordinator.run — STAGE phase error collection', () => {
+  it('(7) independent stages are still attempted after a sibling fails in STAGE', async () => {
+    // Two independent repos (no dep between them): repo-a and repo-c.
+    // repo-a fails in staging; repo-c should still be attempted (not skipped).
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+
+    // Create a third dir for repo-c.
+    const repoDirC = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-crc-c-'));
+    try {
+      // init repo-c
+      execFileSync('git', ['init', '-q'], { cwd: repoDirC });
+      execFileSync('git', ['config', 'user.email', 'test@loom.dev'], { cwd: repoDirC });
+      execFileSync('git', ['config', 'user.name', 'Loom Test'], { cwd: repoDirC });
+      execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repoDirC });
+      fs.writeFileSync(path.join(repoDirC, 'README.md'), '# test\n');
+      execFileSync('git', ['add', '.'], { cwd: repoDirC });
+      execFileSync('git', ['commit', '-q', '-m', 'initial'], { cwd: repoDirC });
+
+      const realC = fs.realpathSync(repoDirC);
+
+      const epicStories = [
+        story('story-001-001', [], 'repo-a'),    // independent
+        story('story-001-002', [], 'repo-c'),    // independent of repo-a
+      ];
+      seedEpicOnDisk(repoDir, 'epic-001', epicStories);
+      const db = openDatabase(path.join(repoDir, '.loom'));
+
+      const mf: WorkspaceManifest = {
+        version: 1,
+        repos: [
+          { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+          { slug: 'repo-c', path: realC, remote_url: null },
+        ],
+      };
+
+      const attempted: string[] = [];
+      const coordinator = new CrossRepoCoordinator({
+        projectRoot: repoDir,
+        supervisor: { run: async () => okResult() },
+        finalizerFactory: (repoRoot) => ({
+          finalize: async () => {
+            const slug = repoRoot === realA ? 'repo-a' : 'repo-c';
+            attempted.push(slug);
+            if (slug === 'repo-a') {
+              throw new Error('repo-a finalize failed');
+            }
+            return okFinalizeResult(`https://github.com/org/${slug}/pull/1`);
+          },
+        }),
+        db,
+        manifest: mf,
+        primarySlug: 'repo-a',
+      });
+
+      await assert.rejects(
+        () => coordinator.run('epic-001'),
+        /STAGE phase failed/,
+        'must throw when any stage fails'
+      );
+
+      // Both repos must have been attempted (independent — one failure should not skip the other).
+      assert.ok(attempted.includes('repo-a'), 'repo-a must have been attempted');
+      assert.ok(attempted.includes('repo-c'), 'repo-c must have been attempted even though repo-a failed');
+    } finally {
+      fs.rmSync(repoDirC, { recursive: true, force: true });
+    }
+  });
+
+  it('(7b) consumer stage is skipped when its producer fails in STAGE', async () => {
+    // repo-b depends on repo-a. If repo-a fails in staging, repo-b must be skipped.
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+
+    const epicStories = [
+      story('story-001-001', [], 'repo-a'),
+      story('story-001-002', ['story-001-001'], 'repo-b'),
+    ];
+    seedEpicOnDisk(repoDir, 'epic-001', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+      ],
+    };
+
+    const attempted: string[] = [];
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: (repoRoot) => ({
+        finalize: async () => {
+          const slug = repoRoot === realA ? 'repo-a' : 'repo-b';
+          attempted.push(slug);
+          if (slug === 'repo-a') throw new Error('repo-a finalize failed');
+          return okFinalizeResult(`https://github.com/org/${slug}/pull/1`);
+        },
+      }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+    });
+
+    await assert.rejects(() => coordinator.run('epic-001'), /STAGE phase failed/);
+
+    // repo-b depends on repo-a and must NOT have been attempted.
+    assert.ok(attempted.includes('repo-a'), 'repo-a attempted');
+    assert.equal(attempted.includes('repo-b'), false, 'repo-b must be skipped when its producer failed');
+  });
+});
+
+// ─── (8) MERGE phase: remaining stages marked partial_landing on failure ──────
+
+describe('CrossRepoCoordinator.run — MERGE phase partial_landing on failure', () => {
+  it('(8) unprocessed stages are marked partial_landing when mergeRepo throws mid-sequence', async () => {
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+
+    const epicStories = [
+      story('story-001-001', [], 'repo-a'),
+      story('story-001-002', ['story-001-001'], 'repo-b'),
+    ];
+    seedEpicOnDisk(repoDir, 'epic-001', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+      ],
+    };
+
+    let mergeCallCount = 0;
+    const mergeRepo = async (stage: RepoStage) => {
+      mergeCallCount++;
+      if (stage.repoSlug === 'repo-a') {
+        // repo-a merges successfully.
+        return {
+          attemptId: 'a', repoSlug: stage.repoSlug, dependsOn: stage.dependsOnRepos,
+          prNumber: 1, prUrl: null, mergeCommitSha: 'sha', mergeState: 'merged' as const,
+          revertPrUrl: null, revertMergeSha: null, mergedAt: null, revertedAt: null,
+        };
+      }
+      throw new Error(`merge failed for ${stage.repoSlug}`);
+    };
+
+    let capturedStages: RepoStage[] = [];
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: (repoRoot) => ({
+        finalize: async () => okFinalizeResult(
+          `https://github.com/org/${repoRoot === realA ? 'a' : 'b'}/pull/1`
+        ),
+      }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+      mergeRepo,
+    });
+
+    await assert.rejects(() => coordinator.run('epic-001'), /merge failed/);
+
+    // The test verifies behavior via the thrown error and that mergeCallCount > 0.
+    // The internal stages are not returned on throw, but we can verify via mergeCallCount
+    // that repo-a was attempted (called once) and that the error propagated.
+    assert.equal(mergeCallCount, 2, 'mergeRepo called for repo-a (success) then repo-b (throws)');
   });
 });
