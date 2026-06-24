@@ -22,19 +22,31 @@ export function isCrossRepoEdge(
 // ─── Repo-level DAG ──────────────────────────────────────────────────────────
 
 /**
+ * Map<consumerSlug, producerSlug[]> — one entry per repo that appears in the
+ * epic (seeded from stories), with [] for roots (no cross-repo producers).
+ * Same-repo story dependencies are excluded; only cross-repo edges appear here.
+ */
+export type RepoDag = Map<string, string[]>;
+
+/**
  * Builds a repo-level dependency DAG from the story-level dependency graph.
  *
  * Returns: repo-slug → repo-slugs it depends on (i.e. whose PRs must land first).
+ * One entry per repo that participates in this epic (seeded from stories).
  * Same-repo story dependencies are excluded — only cross-repo edges contribute.
+ * N=1 ⇒ a single entry with no edges; N=2 ⇒ a single-edge special case.
+ *
+ * Trade-off (ADR-008): inter-repo edges are inferred from story dependencies.
+ * A missing story dep silently drops a landing-order constraint.
  */
 export function buildRepoDag(
   stories: Story[],
   m: WorkspaceManifest,
   primarySlug: string,
-): Map<string, string[]> {
+): RepoDag {
   const byId = new Map<string, Story>(stories.map(s => [s.id, s]));
 
-  // Seed every repo slug that appears in this epic.
+  // Seed every repo slug that appears in this epic (one node per participating repo).
   const dag = new Map<string, Set<string>>();
   for (const s of stories) {
     const slug = resolveStoryRepo(s, m, primarySlug).slug;
@@ -42,11 +54,13 @@ export function buildRepoDag(
   }
 
   // Lift cross-repo story dependencies to repo-level edges.
+  // Same-repo edges (sSlug === depSlug) are intentionally dropped — they belong
+  // to the story work-queue, not the inter-repo landing order (ADR-008).
   for (const s of stories) {
     const sSlug = resolveStoryRepo(s, m, primarySlug).slug;
     for (const depId of s.dependencies) {
       const depStory = byId.get(depId);
-      if (!depStory) continue;
+      if (!depStory) continue; // missing dep → no edge (ADR-008 inference boundary)
       const depSlug = resolveStoryRepo(depStory, m, primarySlug).slug;
       if (sSlug !== depSlug) {
         dag.get(sSlug)!.add(depSlug);
@@ -54,7 +68,7 @@ export function buildRepoDag(
     }
   }
 
-  const result = new Map<string, string[]>();
+  const result: RepoDag = new Map();
   for (const [slug, deps] of dag) {
     result.set(slug, [...deps]);
   }
@@ -65,13 +79,14 @@ export function buildRepoDag(
 
 /**
  * Repo-stage statuses (mirrors CrossRepoCoordinator.RepoStage.status).
- * Defined here so the readiness predicate has no dependency on the coordinator.
+ * Defined here so the readiness predicate has no circular dependency on the coordinator.
  */
 export type RepoStageStatus =
   | 'pending'
   | 'running'
   | 'finalizing'
   | 'awaiting_merge'
+  | 'merged_gating'
   | 'landed'
   | 'gated'
   | 'partial_landing'
@@ -111,11 +126,11 @@ export function isDepReady(
 // ─── Planner validation ───────────────────────────────────────────────────────
 
 export interface CrossRepoEdgeError {
-  /** Story that declared the bad dependency. */
-  storyId: string;
-  /** Dependency story id. */
-  depId: string;
-  reason: string;
+  /** Repo slug of the consumer (the repo declaring the dependency). */
+  consumerSlug: string;
+  /** Repo slug of the producer (the repo being depended on). */
+  producerSlug: string;
+  reason: string;            // operator-readable
 }
 
 /**
@@ -126,8 +141,10 @@ export interface CrossRepoEdgeError {
  * means the two repos mutually depend on each other, creating a consumer→producer
  * edge that cannot be scheduled.
  *
- * Returns the story-level edges that form or contribute to a cycle. An empty array
- * means all cross-repo edges are valid (producer→consumer only).
+ * Returns repo-level edges that participate in a cycle. One entry per unique
+ * (consumerSlug, producerSlug) pair — duplicates from multiple stories on the
+ * same repo edge are collapsed. An empty array means all cross-repo edges are
+ * valid (producer→consumer only).
  */
 export function validateCrossRepoEdges(
   stories: Story[],
@@ -140,6 +157,7 @@ export function validateCrossRepoEdges(
 
   const byId = new Map<string, Story>(stories.map(s => [s.id, s]));
   const errors: CrossRepoEdgeError[] = [];
+  const seen = new Set<string>();
 
   for (const s of stories) {
     const sSlug = resolveStoryRepo(s, m, primarySlug).slug;
@@ -149,20 +167,24 @@ export function validateCrossRepoEdges(
       if (!depStory) continue;
       const depSlug = resolveStoryRepo(depStory, m, primarySlug).slug;
       if (sSlug !== depSlug && reposInCycle.has(depSlug)) {
-        errors.push({
-          storyId: s.id,
-          depId,
-          reason:
-            `cross-repo dependency creates a cycle between repo "${sSlug}" ` +
-            `and repo "${depSlug}" — only producer→consumer edges are valid`,
-        });
+        const key = `${sSlug}→${depSlug}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          errors.push({
+            consumerSlug: sSlug,
+            producerSlug: depSlug,
+            reason:
+              `cross-repo dependency creates a cycle between repo "${sSlug}" ` +
+              `and repo "${depSlug}" — only producer→consumer edges are valid`,
+          });
+        }
       }
     }
   }
   return errors;
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
+// ─── Cycle detection ──────────────────────────────────────────────────────────
 
 /**
  * Returns the set of repo slugs that participate in at least one cycle in the
@@ -174,7 +196,7 @@ export function validateCrossRepoEdges(
  * is found we walk the stack from the cycle-entry to the current node and mark
  * exactly those nodes.
  */
-function findReposInCycles(dag: Map<string, string[]>): Set<string> {
+export function findReposInCycles(dag: RepoDag): Set<string> {
   const WHITE = 0, GRAY = 1, BLACK = 2;
   const colors = new Map<string, number>();
   const inCycle = new Set<string>();
