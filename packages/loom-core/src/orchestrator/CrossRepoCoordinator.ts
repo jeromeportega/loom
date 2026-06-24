@@ -104,18 +104,17 @@ export function buildRepoStages(
 
 /**
  * Topologically orders `RepoStage`s so every producer stage appears before
- * its consumer stages. Uses Kahn's algorithm; falls back to input order on
- * a cycle (validated separately by `validateCrossRepoEdges`).
+ * its consumer stages. Uses Kahn's algorithm; throws on a cycle (cycles are
+ * validated upstream by `validateCrossRepoEdges` — this is a defence-in-depth
+ * guard so a bypassed or diverged DAG fails loudly rather than silently).
  */
 export function topoSortRepos(stages: RepoStage[]): RepoStage[] {
   const bySlug = new Map<string, RepoStage>(stages.map(s => [s.repoSlug, s]));
   const inDegree = new Map<string, number>(stages.map(s => [s.repoSlug, 0]));
 
   for (const s of stages) {
-    for (const dep of s.dependsOnRepos) {
-      // dep must land before s → s's in-degree increases.
-      inDegree.set(s.repoSlug, (inDegree.get(s.repoSlug) ?? 0) + 1);
-    }
+    // Each entry in dependsOnRepos increases this stage's in-degree by one.
+    inDegree.set(s.repoSlug, (inDegree.get(s.repoSlug) ?? 0) + s.dependsOnRepos.length);
   }
 
   const queue: RepoStage[] = stages.filter(s => inDegree.get(s.repoSlug) === 0);
@@ -133,8 +132,13 @@ export function topoSortRepos(stages: RepoStage[]): RepoStage[] {
     }
   }
 
-  // Cycle guard: return input order if topo sort couldn't place every stage.
-  return result.length === stages.length ? result : [...stages];
+  if (result.length < stages.length) {
+    const inCycle = stages.filter(s => !result.includes(s)).map(s => s.repoSlug);
+    throw new Error(
+      `CrossRepoCoordinator: cycle detected among repo stages: ${inCycle.join(', ')}`,
+    );
+  }
+  return result;
 }
 
 // ─── Coordinator ──────────────────────────────────────────────────────────────
@@ -188,29 +192,44 @@ export class CrossRepoCoordinator {
     const landed = new Set<string>();
 
     for (const stage of sorted) {
-      // Run this repo's stories via the repoFilter seam (story-058-002).
-      stage.status = 'running';
-      await this.supervisor.run({ epicId, repoFilter: stage.repoSlug });
-
-      // Finalize: build one PR scoped to this repo (EpicFinalizer unchanged).
-      stage.status = 'finalizing';
-      const result = await this.finalizerFactory(stage.repoRoot).finalize(epicId);
-      if (result.url) stage.prUrl = result.url;
-
-      if (hasConsumers(stage.repoSlug)) {
-        // story-058-006 seam: run consumer gate before blocking on merge.
-        // Currently a no-op; story-058-006 will wire `runConsumerGateFn`.
-        for (const consumer of sorted.filter(s => s.dependsOnRepos.includes(stage.repoSlug))) {
-          await this._runConsumerGate(stage, consumer);
-        }
-
-        // Block subsequent consumer stages until this PR is merged.
-        stage.status = 'awaiting_merge';
-        await this._waitForMerge(stage);
+      // Runtime topo-sort invariant: all declared producer deps must be landed
+      // before this stage executes. topoSortRepos guarantees this; this
+      // assertion catches any future regression at the call site.
+      if (!stage.dependsOnRepos.every(dep => landed.has(dep))) {
+        throw new Error(
+          `CrossRepoCoordinator: topo-sort invariant violated — deps not yet landed for ${stage.repoSlug}`,
+        );
       }
 
-      stage.status = 'landed';
-      landed.add(stage.repoSlug);
+      try {
+        // Run this repo's stories via the repoFilter seam (story-058-002).
+        stage.status = 'running';
+        await this.supervisor.run({ epicId, repoFilter: stage.repoSlug });
+
+        // Finalize: build one PR scoped to this repo (EpicFinalizer unchanged).
+        stage.status = 'finalizing';
+        const result = await this.finalizerFactory(stage.repoRoot).finalize(epicId);
+        if (result.url) stage.prUrl = result.url;
+
+        if (hasConsumers(stage.repoSlug)) {
+          // story-058-006 seam: run consumer gate before blocking on merge.
+          // `producerStage.status` is `'awaiting_merge'` at invocation time.
+          // Currently a no-op; story-058-006 will wire `runConsumerGateFn`.
+          for (const consumer of sorted.filter(s => s.dependsOnRepos.includes(stage.repoSlug))) {
+            await this._runConsumerGate(stage, consumer);
+          }
+
+          // Block subsequent consumer stages until this PR is merged.
+          stage.status = 'awaiting_merge';
+          await this._waitForMerge(stage);
+        }
+
+        stage.status = 'landed';
+        landed.add(stage.repoSlug);
+      } catch (err) {
+        stage.status = 'failed';
+        throw err;
+      }
     }
 
     return { stages: sorted };
@@ -223,31 +242,51 @@ export class CrossRepoCoordinator {
       throw new Error(`CrossRepoCoordinator: epic "${epicId}" has no yaml_path`);
     }
     const file = path.join(this.projectRoot, epic.yaml_path);
-    if (!fs.existsSync(file)) {
-      throw new Error(`CrossRepoCoordinator: epic YAML not found at ${file}`);
+    // Prevent path traversal: yaml_path must not escape the project root.
+    const resolvedFile = path.resolve(file);
+    const resolvedRoot = path.resolve(this.projectRoot);
+    if (!resolvedFile.startsWith(resolvedRoot + path.sep)) {
+      throw new Error(`CrossRepoCoordinator: yaml_path escapes project root`);
     }
-    return EpicYamlSchema.parse(yaml.load(fs.readFileSync(file, 'utf8'))).stories;
+    if (!fs.existsSync(resolvedFile)) {
+      throw new Error(`CrossRepoCoordinator: epic YAML not found at ${resolvedFile}`);
+    }
+    return EpicYamlSchema.parse(yaml.load(fs.readFileSync(resolvedFile, 'utf8'))).stories;
   }
 }
 
 // ─── Default implementations ──────────────────────────────────────────────────
 
 async function defaultWaitForMerge(stage: RepoStage): Promise<void> {
-  if (!stage.prUrl) return;
-  const { execFileSync } = await import('node:child_process');
+  if (!stage.prUrl) {
+    throw new Error(
+      `CrossRepoCoordinator: producer stage '${stage.repoSlug}' has no prUrl — cannot wait for merge`,
+    );
+  }
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const execFileAsync = promisify(execFile);
   const pollMs = 30_000;
+  let consecutiveErrors = 0;
   for (;;) {
     let state: string;
     try {
-      state = execFileSync(
+      const { stdout } = await execFileAsync(
         'gh',
         ['pr', 'view', stage.prUrl, '--json', 'state', '--jq', '.state'],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-      ).trim();
-    } catch (err) {
-      throw new Error(
-        `CrossRepoCoordinator.waitForMerge: gh poll failed for ${stage.prUrl}: ${(err as Error).message}`,
+        { encoding: 'utf8' },
       );
+      state = stdout.trim();
+      consecutiveErrors = 0;
+    } catch (err) {
+      consecutiveErrors++;
+      if (consecutiveErrors >= 3) {
+        throw new Error(
+          `CrossRepoCoordinator.waitForMerge: gh poll failed 3 consecutive times for ${stage.prUrl}: ${(err as Error).message}`,
+        );
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, pollMs));
+      continue;
     }
     if (state === 'MERGED') return;
     if (state === 'CLOSED') {

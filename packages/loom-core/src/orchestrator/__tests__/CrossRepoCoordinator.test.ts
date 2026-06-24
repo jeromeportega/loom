@@ -239,6 +239,30 @@ describe('topoSortRepos — producer before consumer', () => {
     const slugs = sorted.map(s => s.repoSlug).sort();
     assert.deepEqual(slugs, ['repo-api', 'repo-frontend']);
   });
+
+  it('throws when a cycle is detected instead of silently returning input order', () => {
+    // Manually construct a cyclic stage graph (A depends on B, B depends on A).
+    const cycleStages: RepoStage[] = [
+      {
+        repoSlug: 'repo-a',
+        repoRoot: '/repos/repo-a',
+        storyIds: ['s1'],
+        dependsOnRepos: ['repo-b'],
+        status: 'pending',
+      },
+      {
+        repoSlug: 'repo-b',
+        repoRoot: '/repos/repo-b',
+        storyIds: ['s2'],
+        dependsOnRepos: ['repo-a'],
+        status: 'pending',
+      },
+    ];
+    assert.throws(
+      () => topoSortRepos(cycleStages),
+      /cycle detected among repo stages/,
+    );
+  });
 });
 
 // ─── Integration: CrossRepoCoordinator.run ────────────────────────────────────
@@ -453,7 +477,6 @@ describe('CrossRepoCoordinator.run — consumer waits for producer merge', () =>
     };
 
     let capturedStageAStatus: string | undefined;
-    let resolveWait!: () => void;
 
     const stubSupervisor: SupervisorLike = {
       run: async () => okResult(),
