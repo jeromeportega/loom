@@ -60,9 +60,7 @@ import { investigateAndRoute } from '../failure/investigateAndRoute.js';
 import { computeHeuristics, buildStorySignals } from './signalLedger.js';
 import { SignalLedger } from './signalStore.js';
 import { redactSecrets } from '../util/redact.js';
-import { AutoResumeCounter } from './AutoResumeCounter.js';
 import { StoryRetryService } from './StoryRetryService.js';
-import { shouldAutoResume } from './autoResume.js';
 import { recordStallKill, recordAutoRecovery } from './StallKillAudit.js';
 import { classifyWorkerExit } from './classifyWorkerExit.js';
 
@@ -386,8 +384,6 @@ export class Supervisor {
   private logBytes = new Map<string, number>();
   /** Maps agentId → storyId so flushTails can look up the log_bytes offset. */
   private agentToStory = new Map<string, string>();
-  /** Run-scoped auto-resume attempt counter, keyed per story (story-032-001). */
-  private autoResumeCounter = new AutoResumeCounter();
   /** Shared retry-preparation path for auto-resume (story-032-002). */
   private retryService!: StoryRetryService;
   /** Durable per-story clean-retry budget store (story-061-001). */
@@ -2566,19 +2562,23 @@ export class Supervisor {
     // from a checkpoint — it always starts a fresh worktree + branch.
     const exitClass = classifyWorkerExit(result);
     if (exitClass === 'stall') {
-      const attempt = this.autoResumeCounter.attemptsFor(task.story.id);
+      // Read durable count before any mutation so recordStallKill carries the
+      // pre-retry value and the audit-first invariant is preserved throughout.
+      const currentCount = this.recoveryStore.getRecoveryCount(task.story.id);
       recordStallKill(this.audit, {
         agentId: task.agentId,
         storyId: task.story.id,
         result,
-        resumeAttempt: attempt,
+        resumeAttempt: currentCount,
       });
       const budget = this.opts.stallRecoveryBudget ?? 2;
-      const currentCount = this.recoveryStore.getRecoveryCount(task.story.id);
       if (currentCount < budget) {
         const prep = this.cleanRetryService.prepare(task.story.id);
         if (prep.status === 'ready') {
-          const newCount = this.recoveryStore.incrementRecoveryCount(task.story.id);
+          const newCount = currentCount + 1;
+          // Audit-first: persist the recovery row before mutating the durable
+          // budget counter. A crash between these two synchronous SQLite writes
+          // would leave the audit reconstructable; the inverse would not.
           recordAutoRecovery(this.audit, {
             agentId: task.agentId,
             storyId: task.story.id,
@@ -2589,6 +2589,7 @@ export class Supervisor {
               reset_stories: prep.resetStories,
             },
           });
+          this.recoveryStore.incrementRecoveryCount(task.story.id);
           task.status = 'pending';
           return;
         }

@@ -472,6 +472,8 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
         : policy.agents.model,
     // epic-030: auto-resume cap (raw count, not ms; story-030-003 consumes)
     autoResumeAttempts: policy.agents.auto_resume_attempts,
+    // epic-061: durable per-story clean-retry budget on stall
+    stallRecoveryBudget: policy.agents.stall_recovery_budget,
   };
 
   const supervisor = new Supervisor(supervisorOpts);
