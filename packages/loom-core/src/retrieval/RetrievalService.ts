@@ -108,7 +108,7 @@ export class RetrievalService {
     } catch (err) {
       const refused = err instanceof RetrievalRefused
         ? err
-        : new RetrievalRefused(CROSS_REPO_RULES.STALE_PATH, String(err));
+        : new RetrievalRefused(CROSS_REPO_RULES.UNREGISTERED, String(err));
       this.audit.record({
         action: 'cross_repo_read',
         command: req.slug,

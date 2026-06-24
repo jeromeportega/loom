@@ -11,9 +11,12 @@ function parseLines(raw: string): [number, number] {
   if (parts.length !== 2) {
     throw new Error(`--lines must be in the format <start>:<end>, got: ${raw}`);
   }
+  if (!/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) {
+    throw new Error(`--lines values must be integers, got: ${raw}`);
+  }
   const start = parseInt(parts[0], 10);
   const end = parseInt(parts[1], 10);
-  if (isNaN(start) || isNaN(end) || start < 1 || end < start) {
+  if (start < 1 || end < start) {
     throw new Error(`--lines values must be positive integers with start <= end, got: ${raw}`);
   }
   return [start, end];
