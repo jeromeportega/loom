@@ -257,7 +257,9 @@ describe('ADR-003 — registry coverage: every guard-shaped field in PolicySchem
       fieldName.endsWith('_paths') ||
       fieldName.startsWith('allowed_') ||
       fieldName.startsWith('forbidden_') ||
-      fieldName.startsWith('risky_')
+      fieldName.startsWith('risky_') ||
+      // Guard booleans where `true` wins regardless of precedence (ADR-004).
+      fieldName === 'agents_must_use_pr'
     );
   }
 

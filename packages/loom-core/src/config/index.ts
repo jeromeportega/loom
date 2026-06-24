@@ -20,7 +20,6 @@ export { mergeLayers } from './mergeLayers.js';
 // Resolver
 export { resolveEffectiveConfig } from './resolveEffectiveConfig.js';
 
-// Re-exports from story-055-001
 export {
   loadTeamConfigLayer,
   TeamConfigSchema,
@@ -28,5 +27,4 @@ export {
 } from './teamConfig.js';
 export type { TeamConfig } from './teamConfig.js';
 
-// Re-exports from story-055-003
 export { loadEnvLayer } from './envLayer.js';

@@ -460,6 +460,31 @@ describe('provenance — audit trail', () => {
     const { provenance } = mergeLayers(layers, MERGE_STRATEGY);
     assert.equal(provenance['agents.model'], 'env');
   });
+
+  it('and strategy: provenance records the first layer that asserted true', () => {
+    // team=true is decisive even though env=false is higher
+    const layers = [
+      layer('team', { git: { agents_must_use_pr: true } }),
+      layer('repo', { git: { agents_must_use_pr: false } }),
+      layer('env',  { git: { agents_must_use_pr: false } }),
+    ];
+    const { provenance } = mergeLayers(layers, MERGE_STRATEGY);
+    assert.equal(
+      provenance['git.agents_must_use_pr'],
+      'team',
+      'provenance must point to team — the decisive layer that asserted true',
+    );
+  });
+
+  it('and strategy: when all false, provenance records the last present layer', () => {
+    const layers = [
+      layer('team', { git: { agents_must_use_pr: false } }),
+      layer('repo', { git: { agents_must_use_pr: false } }),
+      layer('env',  {}),
+    ];
+    const { provenance } = mergeLayers(layers, MERGE_STRATEGY);
+    assert.equal(provenance['git.agents_must_use_pr'], 'repo');
+  });
 });
 
 // ── Empty layers / edge cases ─────────────────────────────────────────────────
@@ -491,5 +516,30 @@ describe('edge cases', () => {
     const { tree } = mergeLayers(layers, MERGE_STRATEGY);
     assert.equal(get(tree, 'git'), undefined);
     assert.equal(get(tree, 'filesystem'), undefined);
+  });
+
+  it('prototype pollution: __proto__ key in config does not poison Object prototype', () => {
+    // A malicious team-config.yaml could contain a __proto__ key.
+    // The merge must silently skip it rather than mutating Object.prototype.
+    const malicious = JSON.parse('{"__proto__": {"injected": true}}');
+    const layers = [
+      layer('team', malicious),
+      layer('repo', { agents: { model: 'safe' } }),
+      layer('env',  {}),
+    ];
+    const { tree } = mergeLayers(layers, MERGE_STRATEGY);
+    // __proto__ must not appear as an own property on the result.
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(tree, '__proto__'),
+      '__proto__ must not be an own property of the merged tree',
+    );
+    // Object.prototype must not have been mutated.
+    assert.equal(
+      (Object.prototype as Record<string, unknown>)['injected'],
+      undefined,
+      'Object.prototype must not be poisoned',
+    );
+    // Legitimate keys must still merge normally.
+    assert.equal(get(tree, 'agents.model'), 'safe');
   });
 });

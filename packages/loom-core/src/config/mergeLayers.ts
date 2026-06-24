@@ -70,6 +70,8 @@ function mergeAtPath(
       }
       const result: Record<string, unknown> = {};
       for (const k of allKeys) {
+        // Guard against prototype pollution from untrusted config files.
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
         const childPath = dotPath ? `${dotPath}.${k}` : k;
         const childLayers: LayerValue[] = layers.map(l => ({
           name: l.name,
@@ -83,6 +85,8 @@ function mergeAtPath(
           result[k] = merged;
         }
       }
+      // Provenance for a map node approximates by recording the last present (highest)
+      // layer — multiple layers may contribute distinct keys and no single winner exists.
       if (dotPath) provenance[dotPath] = present[present.length - 1].name;
       return Object.keys(result).length > 0 ? result : undefined;
     }
@@ -90,6 +94,8 @@ function mergeAtPath(
     case 'union': {
       // Denylist: union of all present layer values (ADR-004).
       // No layer can remove an entry contributed by another layer.
+      // Elements must be JSON-primitive — Set deduplication uses reference equality.
+      // Provenance records the last present layer as a context marker (all layers contribute equally).
       const all = present.flatMap(l => l.value as unknown[]);
       provenance[dotPath] = present[present.length - 1].name;
       return [...new Set(all)];
@@ -99,6 +105,9 @@ function mergeAtPath(
       // Allowlist: intersection of all present layer values (ADR-004).
       // No layer can add an entry that another layer does not also permit.
       // Absent layers are ignored — they do not collapse the result to [].
+      // Elements must be JSON-primitive — reference equality is used for inclusion tests.
+      // Result preserves the ordering of the lowest present layer (sets[0]).
+      // Provenance records the last present layer as a context marker (all layers contribute).
       const sets = present.map(l => l.value as unknown[]);
       const intersected = sets.slice(1).reduce(
         (acc, arr) => acc.filter(v => arr.includes(v)),
@@ -110,9 +119,17 @@ function mergeAtPath(
 
     case 'and': {
       // Guard boolean: `true` wins regardless of which layer sets it (ADR-004).
+      // Provenance records the first layer that asserted `true` (the decisive layer).
       const hasTrue = present.some(l => l.value === true);
-      provenance[dotPath] = present[present.length - 1].name;
+      provenance[dotPath] = hasTrue
+        ? present.find(l => l.value === true)!.name
+        : present[present.length - 1].name;
       return hasTrue ? true : present[present.length - 1].value;
+    }
+
+    default: {
+      const _exhaustive: never = strategy;
+      throw new Error(`Unknown merge strategy: ${_exhaustive}`);
     }
   }
 }
@@ -121,6 +138,9 @@ function mergeAtPath(
  * Merge raw layers ordered low→high. Operates on `unknown` trees (no zod mid-merge).
  * Detects scalar-vs-map / scalar-vs-list conflicts and throws ConfigMergeError.
  * Does NOT call PolicySchema.parse() — callers apply defaults exactly once (ADR-007).
+ *
+ * null is treated as absent (not as an override sentinel): a higher-precedence layer
+ * cannot use null to explicitly clear a value contributed by a lower layer.
  */
 export function mergeLayers(
   layers: ConfigLayer[],

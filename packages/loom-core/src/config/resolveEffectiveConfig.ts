@@ -31,6 +31,14 @@ export function resolveEffectiveConfig(opts: ResolveOptions): EffectiveConfig {
   let repoTree: unknown = {};
   if (fs.existsSync(policyPath)) {
     const raw = yaml.load(fs.readFileSync(policyPath, 'utf8')) as unknown;
+    if (raw !== null && raw !== undefined && (typeof raw !== 'object' || Array.isArray(raw))) {
+      throw new PolicyValidationError(policyPath, [{
+        fieldPath: '',
+        received: Array.isArray(raw) ? 'sequence' : typeof raw,
+        constraint: 'YAML mapping (object)',
+        hint: 'policy.yaml root must be a YAML mapping, not a scalar or sequence',
+      }]);
+    }
     repoTree = raw ?? {};
   }
   const repoLayer: ConfigLayer = { name: 'repo', tree: repoTree };

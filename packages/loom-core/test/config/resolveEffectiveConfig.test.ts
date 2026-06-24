@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { resolveEffectiveConfig } from '../../src/config/resolveEffectiveConfig.js';
+import { PolicyValidationError } from '../../src/guardrails/policyError.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -40,6 +41,47 @@ function writePolicy(loomdir: string, obj: unknown): void {
 function writeTeamConfig(loomHomeDir: string, obj: unknown): void {
   fs.writeFileSync(path.join(loomHomeDir, 'team-config.yaml'), yaml.dump(obj), 'utf8');
 }
+
+// ── Non-object YAML root ──────────────────────────────────────────────────────
+
+describe('resolveEffectiveConfig — non-object policy.yaml root', () => {
+  it('bare scalar root throws PolicyValidationError with actionable message', () => {
+    const { loomdir, projectRoot, cleanup } = makeDirs();
+    try {
+      fs.writeFileSync(path.join(loomdir, 'policy.yaml'), '42', 'utf8');
+      assert.throws(
+        () => resolveEffectiveConfig({ loomdir, projectRoot, env: {} }),
+        (err: unknown) => {
+          assert.ok(err instanceof PolicyValidationError, `expected PolicyValidationError, got ${err}`);
+          assert.ok(
+            err.message.includes('YAML mapping'),
+            `error message must mention 'YAML mapping': ${err.message}`,
+          );
+          return true;
+        },
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('bare sequence root throws PolicyValidationError', () => {
+    const { loomdir, projectRoot, cleanup } = makeDirs();
+    try {
+      fs.writeFileSync(path.join(loomdir, 'policy.yaml'), '- item1\n- item2\n', 'utf8');
+      assert.throws(
+        () => resolveEffectiveConfig({ loomdir, projectRoot, env: {} }),
+        (err: unknown) => {
+          assert.ok(err instanceof PolicyValidationError);
+          assert.ok(err.message.includes('sequence'));
+          return true;
+        },
+      );
+    } finally {
+      cleanup();
+    }
+  });
+});
 
 // ── Precedence — team ◁ repo ◁ env ───────────────────────────────────────────
 
@@ -262,8 +304,9 @@ describe('resolveEffectiveConfig — missing or empty files', () => {
     const { loomdir, projectRoot, cleanup } = makeDirs();
     try {
       const result = resolveEffectiveConfig({ loomdir, projectRoot, env: {} });
-      const defaultPolicy = resolveEffectiveConfig({ loomdir, projectRoot, env: {} });
-      assert.deepEqual(result.policy, defaultPolicy.policy);
+      assert.deepEqual(result.policy.git.protected_branches, ['main', 'master']);
+      assert.equal(result.policy.agents.max_concurrent, 5);
+      assert.equal(result.policy.git.agents_must_use_pr, true);
     } finally {
       cleanup();
     }
