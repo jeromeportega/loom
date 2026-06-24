@@ -19,6 +19,7 @@ import {
   STANDALONE_KIND,
   type IntakeVerdict,
 } from '@loom-ai/core';
+import { resolveEpicRow } from './resolveEpicRow.js';
 import type {
   EpicStatus,
   AgentSummary,
@@ -189,7 +190,7 @@ export function createApp(opts: CreateAppOptions): Express {
         ? ([epicStore, agentStore, currentProjectRoot, () => {}, auditLog] as const)
         : openPeer(peer);
     try {
-      const epic = scopedEpics.get(req.params.id);
+      const epic = resolveEpicRow(scopedEpics, req.params.id);
       if (!epic) {
         res.status(404).json({ error: 'epic not found' });
         return;
@@ -199,9 +200,18 @@ export function createApp(opts: CreateAppOptions): Express {
       // story state, not "blocked attempt + done attempt = 2 stories."
       const agents = scopedAgents.listLatestByEpic(epic.id);
       const counts = countByStatus(agents);
+      // Standalone containers are surfaced with story framing (id=story-NNN,
+      // story title) — consistent with the list, never as the epic-NNN container.
+      const isStandalone = epic.kind === STANDALONE_KIND;
+      const framedId = isStandalone
+        ? (agents.length > 0 ? agents[0].story_id : epic.id.replace(/^epic-/, 'story-'))
+        : epic.id;
+      const framedTitle = isStandalone && agents.length > 0
+        ? (agents[0].story_title ?? epic.title)
+        : epic.title;
       const detail: EpicDetail = {
-        id: epic.id,
-        title: epic.title,
+        id: framedId,
+        title: framedTitle,
         status: epic.status,
         planning_phase: (epic.planning_phase ?? null) as EpicDetail['planning_phase'],
         brief_path: epic.brief_path,
@@ -243,7 +253,7 @@ export function createApp(opts: CreateAppOptions): Express {
         ? ([epicStore, agentStore, currentProjectRoot, () => {}] as const)
         : openPeer(peer);
     try {
-      const epic = scopedEpics.get(req.params.id);
+      const epic = resolveEpicRow(scopedEpics, req.params.id);
       if (!epic) {
         res.status(404).json({ error: 'epic not found' });
         return;
@@ -485,7 +495,7 @@ export function createApp(opts: CreateAppOptions): Express {
 
   // ─── GET /api/epics/:id/traces — whole-epic reasoning timeline ──────────
   app.get('/api/epics/:id/traces', (req, res) => {
-    const epic = epicStore.get(req.params.id);
+    const epic = resolveEpicRow(epicStore, req.params.id);
     if (!epic) {
       res.status(404).json({ error: 'epic not found' });
       return;
@@ -509,7 +519,7 @@ export function createApp(opts: CreateAppOptions): Express {
         ? ([epicStore, agentStore, currentProjectRoot, () => {}, auditLog] as const)
         : openPeer(peer);
     try {
-      const epic = scopedEpics.get(req.params.id);
+      const epic = resolveEpicRow(scopedEpics, req.params.id);
       if (!epic) {
         res.status(404).json({ error: 'epic not found' });
         return;
