@@ -34,6 +34,7 @@ import { runPullGuidance, spec as pullGuidanceSpec } from './commands/pullGuidan
 import { runProject, spec as projectSpec } from './commands/project.js';
 import { runWeave, spec as weaveSpec } from './commands/weave.js';
 import { runMigrate, spec as migrateSpec } from './commands/migrate.js';
+import { runRetrieveSearch, runRetrieveRead, specSearch as retrieveSearchSpec, specRead as retrieveReadSpec } from './commands/retrieve.js';
 import { applySpec } from './describe/applySpec.js';
 import { registerDescribe } from './commands/describe.js';
 import { handleTopLevelError } from './errorHandling.js';
@@ -321,6 +322,33 @@ export function buildProgram(): Command {
   applySpec(program.command('migrate'), migrateSpec)
     .action((opts: { dryRun?: boolean; relocateCommittedArtifacts?: boolean }) => {
       runMigrate({ dryRun: opts.dryRun, relocateCommittedArtifacts: opts.relocateCommittedArtifacts });
+    });
+
+  // ─── loom retrieve ─────────────────────────────────────────────────────────
+  const retrieve = program
+    .command('retrieve')
+    .description('Cross-repo read-only retrieval (requires cross_repo.enabled=true in policy.yaml)');
+
+  // Bespoke wiring (no applySpec) so we can declare required options; the spec
+  // is registered separately in collectSpecs() for completeness coverage.
+  retrieve
+    .command('search')
+    .description(retrieveSearchSpec.summary)
+    .requiredOption('--repo <slug>', 'Slug of the registered repository to search')
+    .requiredOption('--query <q>', 'Fixed string to search for (git grep -F)')
+    .option('--glob <g>', 'Optional path glob to restrict the search (e.g. "*.ts")')
+    .action(async (opts: { repo: string; query: string; glob?: string }) => {
+      await runRetrieveSearch(opts);
+    });
+
+  retrieve
+    .command('read')
+    .description(retrieveReadSpec.summary)
+    .requiredOption('--repo <slug>', 'Slug of the registered repository to read from')
+    .requiredOption('--path <p>', 'Relative file path within the repository')
+    .option('--lines <a:b>', 'Optional line range as <start>:<end> (e.g. "10:50")')
+    .action(async (opts: { repo: string; path: string; lines?: string }) => {
+      await runRetrieveRead(opts);
     });
 
   // <register additional commands>
