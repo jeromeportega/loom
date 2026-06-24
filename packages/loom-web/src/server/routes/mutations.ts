@@ -21,7 +21,6 @@ import type { Express } from 'express';
 import type Database from 'better-sqlite3';
 import { ControlStore, StoryRetryService, PolicyEngine, reopenOpportunityForRejectedEpic } from '@loom-ai/core';
 import type { ResolveProjectDb } from '../resolveProjectDb.js';
-import { resolveEpicRow } from '../resolveEpicRow.js';
 
 export interface MutationDeps {
   db: Database.Database;
@@ -49,7 +48,7 @@ export function registerMutationRoutes(app: Express, deps: MutationDeps): void {
       return;
     }
     try {
-      const epic = resolveEpicRow(resolved.epicStore, req.params.id);
+      const epic = resolved.epicStore.get(req.params.id);
       if (!epic) {
         res.status(404).json({ error: 'epic not found' });
         return;
@@ -107,7 +106,7 @@ export function registerMutationRoutes(app: Express, deps: MutationDeps): void {
       return;
     }
     try {
-      const epic = resolveEpicRow(resolved.epicStore, req.params.id);
+      const epic = resolved.epicStore.get(req.params.id);
       if (!epic) {
         res.status(404).json({ error: 'epic not found' });
         return;
@@ -230,7 +229,7 @@ export function registerMutationRoutes(app: Express, deps: MutationDeps): void {
       return;
     }
     try {
-      const epic = resolveEpicRow(resolved.epicStore, req.params.id);
+      const epic = resolved.epicStore.get(req.params.id);
       if (!epic) {
         res.status(404).json({ error: 'epic not found' });
         return;
