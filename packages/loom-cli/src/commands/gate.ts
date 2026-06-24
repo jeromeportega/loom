@@ -1,34 +1,24 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EpicStore, PolicyEngine, STANDALONE_KIND } from '@loom-ai/core';
+import { EpicStore, PolicyEngine } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 import { printOverlapAdvisory as defaultPrintOverlapAdvisory } from '../crossEpicOverlap.js';
 import { runRun as defaultRunRun, type RunOptions } from './run.js';
 
 /**
- * Resolves a user-provided id to the internal epic-NNN container id.
+ * Resolves a user-provided id to its DB primary key and display form.
  *
- * When the operator types `story-049`, the DB stores the container as
- * `epic-049` (kind='standalone'). This helper translates the user-facing
- * story-NNN id to the internal epic-NNN id so gate lookups and updates use
- * the correct primary key. A plain `epic-NNN` id passes through unchanged.
- * Returns `undefined` when the translated `epic-NNN` does not exist as a
- * standalone container — the caller treats this as not-found.
+ * After story-059-002, standalone stories are stored with id='story-NNN'
+ * (PK = story-NNN, no epic-NNN container). Both story-NNN and epic-NNN ids
+ * resolve via direct DB lookup — no prefix translation is needed.
+ * Returns `undefined` when the id does not exist in the DB.
  */
 function resolveToInternalEpicId(
   store: EpicStore,
   id: string
 ): { internalId: string; displayId: string } | undefined {
-  if (/^story-\d+$/.test(id)) {
-    const containerEpicId = id.replace(/^story-/, 'epic-');
-    if (!store.isStandalone(containerEpicId)) return undefined;
-    return { internalId: containerEpicId, displayId: id };
-  }
-  // Plain epic-NNN: display as story-NNN if the row is standalone.
-  if (store.isStandalone(id)) {
-    return { internalId: id, displayId: id.replace(/^epic-/, 'story-') };
-  }
+  if (!store.get(id)) return undefined;
   return { internalId: id, displayId: id };
 }
 
@@ -101,9 +91,9 @@ export async function runApprove(
   const store = new EpicStore(db);
 
   if (epicId) {
-    // Resolve story-NNN (user-facing) to epic-NNN (internal) for standalone stories.
-    // Plain epic-NNN ids pass through unchanged. If story-NNN does not resolve to a
-    // known standalone container the caller gets a "not found" error below.
+    // After story-059-002, standalone rows have id='story-NNN' directly — direct lookup.
+    // Plain epic-NNN ids also pass through unchanged. If the id does not exist in the
+    // DB, resolved is undefined and the caller gets a "not found" error below.
     const resolved = resolveToInternalEpicId(store, epicId);
     const internalId = resolved?.internalId ?? epicId;
     const displayId = resolved?.displayId ?? epicId;
@@ -161,10 +151,8 @@ export async function runApprove(
   for (const epic of planned) {
     persistPolicySnapshot(store, loomDir, epic.id);
     store.updateStatus(epic.id, 'approved');
-    // Show story-NNN for standalone containers in the per-item approval line.
-    const itemDisplayId =
-      epic.kind === STANDALONE_KIND ? epic.id.replace(/^epic-/, 'story-') : epic.id;
-    console.log(`  approved  ${itemDisplayId}: ${epic.title}`);
+    // After story-059-002, standalone rows have id='story-NNN' directly.
+    console.log(`  approved  ${epic.id}: ${epic.title}`);
     // Advisory only — never blocks the bulk approval.
     printOverlapAdvisory(projectRoot, epic.id);
   }

@@ -4,7 +4,7 @@ import type Database from 'better-sqlite3';
 import { EpicStore, AgentStore, AuditLog } from '../state/index.js';
 import type { Story } from '../types.js';
 import type { AutoRetrospective } from './AutoRetrospective.js';
-import { EpicYamlSchema, STANDALONE_KIND } from '../types.js';
+import { EpicYamlSchema } from '../types.js';
 import { gitSafe, defaultRemote, remoteUrl } from './git.js';
 import { WorktreeManager } from './WorktreeManager.js';
 import { IntegrationGate } from './IntegrationGate.js';
@@ -708,10 +708,8 @@ export class EpicFinalizer {
     }
 
     epicStore.updateFinalizePhase(epicId, 'opening_pr');
-    // Standalone stories use story-NNN framing in the PR title so the operator
-    // sees the same id they approved and dispatched, not the internal container id.
-    const prPrefix = epic.kind === STANDALONE_KIND ? epicId.replace(/^epic-/, 'story-') : epicId;
-    const title = `${prPrefix}: ${epic.title}`;
+    // epic.id IS story-NNN for standalone rows (story-059-002); no derivation needed.
+    const title = `${epicId}: ${epic.title}`;
     let prUrl: string | undefined;
     try {
       prUrl = this.opts.openPr
