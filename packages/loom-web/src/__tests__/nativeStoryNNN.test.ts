@@ -81,6 +81,7 @@ describe('rollupEpics (GET /api/status) — native story-NNN id', () => {
   it('standalone story with dispatched agent still emits epic.id verbatim (no agent.story_id derivation)', async () => {
     const store = new EpicStore(db);
     store.createStandalone('story-060', 'Another task');
+    store.updateStatus('story-060', 'approved');
     new AgentStore(db).create('story-060', 'story-060', 'Another task');
 
     const res = await fetch(`${baseUrl}/api/status`, { headers: HEADERS });
@@ -90,6 +91,8 @@ describe('rollupEpics (GET /api/status) — native story-NNN id', () => {
     assert.ok(standalone);
     assert.equal(standalone.id, 'story-060', 'must emit stored id, not a derived story_id');
     assert.equal(standalone.stories.total, 1, 'must count the single agent');
+    // status comes from the epic row, not the agent row
+    assert.equal(standalone.status, 'approved', 'status must reflect the stored epic row status');
   });
 
   it('no epic-NNN id leaks into the list for a standalone story', async () => {
@@ -198,10 +201,34 @@ describe('POST /api/epics/:id/approve — story-NNN mutation', () => {
     assert.equal(res.status, 404);
   });
 
-  it('returns 409 when story is not in planned status', async () => {
+  it('returns 409 when story is not in planned status (in_progress)', async () => {
     const store = new EpicStore(db);
     store.createStandalone('story-059', 'Already running');
     store.updateStatus('story-059', 'in_progress');
+
+    const res = await fetch(`${baseUrl}/api/epics/story-059/approve`, {
+      method: 'POST',
+      headers: HEADERS,
+    });
+    assert.equal(res.status, 409);
+  });
+
+  it('returns 409 when story is in done status', async () => {
+    const store = new EpicStore(db);
+    store.createStandalone('story-059', 'Already done');
+    store.updateStatus('story-059', 'done');
+
+    const res = await fetch(`${baseUrl}/api/epics/story-059/approve`, {
+      method: 'POST',
+      headers: HEADERS,
+    });
+    assert.equal(res.status, 409);
+  });
+
+  it('returns 409 when story is in failed status', async () => {
+    const store = new EpicStore(db);
+    store.createStandalone('story-059', 'Already failed');
+    store.updateStatus('story-059', 'failed');
 
     const res = await fetch(`${baseUrl}/api/epics/story-059/approve`, {
       method: 'POST',
@@ -223,12 +250,55 @@ describe('POST /api/epics/:id/approve — story-NNN mutation', () => {
   });
 });
 
+// ─── POST /api/epics/:id/reject — mutation via direct PK lookup ───────────────
+
+describe('POST /api/epics/:id/reject — story-NNN mutation', () => {
+  it('rejects a planned standalone story by direct story-NNN lookup', async () => {
+    new EpicStore(db).createStandalone('story-059', 'Fix the widget');
+
+    const res = await fetch(`${baseUrl}/api/epics/story-059/reject`, {
+      method: 'POST',
+      headers: { ...HEADERS, 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'not needed' }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { status: string; epic_id: string };
+    assert.equal(body.status, 'rejected');
+    assert.equal(body.epic_id, 'story-059', 'rejected epic_id must be the story-NNN id');
+
+    const row = new EpicStore(db).get('story-059');
+    assert.ok(row);
+    assert.equal(row.status, 'rejected');
+  });
+
+  it('returns 404 for POST /api/epics/epic-NNN/reject when no epic-NNN row exists', async () => {
+    const res = await fetch(`${baseUrl}/api/epics/epic-059/reject`, {
+      method: 'POST',
+      headers: HEADERS,
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('returns 409 when story is not in planned status (in_progress)', async () => {
+    const store = new EpicStore(db);
+    store.createStandalone('story-059', 'Already running');
+    store.updateStatus('story-059', 'in_progress');
+
+    const res = await fetch(`${baseUrl}/api/epics/story-059/reject`, {
+      method: 'POST',
+      headers: HEADERS,
+    });
+    assert.equal(res.status, 409);
+  });
+});
+
 // ─── Shim removal: resolveEpicRow.ts is deleted ──────────────────────────────
 
 describe('resolveEpicRow shim removal', () => {
   it('resolveEpicRow.ts does not exist in the source server directory', () => {
-    // __dirname in compiled output is dist/__tests__/; src is two levels up then into src/server/
-    const srcShimPath = path.join(__dirname, '../../src/server/resolveEpicRow.ts');
+    // Resolve from process.cwd() (packages/loom-web/) so the path is stable
+    // regardless of whether tests run from compiled dist/ or via ts-node.
+    const srcShimPath = path.resolve(process.cwd(), 'src/server/resolveEpicRow.ts');
     assert.ok(
       !fs.existsSync(srcShimPath),
       `resolveEpicRow.ts must be deleted (found at ${srcShimPath})`
@@ -236,8 +306,8 @@ describe('resolveEpicRow shim removal', () => {
   });
 
   it('resolveEpicRow.js does not exist in the dist server directory', () => {
-    // __dirname in compiled output is dist/__tests__/; compiled server is ../server/
-    const distShimPath = path.join(__dirname, '../server/resolveEpicRow.js');
+    // Resolve from process.cwd() (packages/loom-web/) — stable across run modes.
+    const distShimPath = path.resolve(process.cwd(), 'dist/server/resolveEpicRow.js');
     assert.ok(
       !fs.existsSync(distShimPath),
       `resolveEpicRow.js must not exist in dist (found at ${distShimPath})`
