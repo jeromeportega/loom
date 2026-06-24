@@ -25,6 +25,11 @@ function unwrapZod(schema: z.ZodTypeAny): z.ZodTypeAny {
 // Built once on first use.
 let _pathCache: Map<string, z.ZodTypeAny> | null = null;
 
+/** Exposed for tests that inject a modified PolicySchema. Never call in production. */
+export function _resetPathCacheForTesting(): void {
+  _pathCache = null;
+}
+
 function schemaPathMap(): Map<string, z.ZodTypeAny> {
   if (_pathCache) return _pathCache;
   const result = new Map<string, z.ZodTypeAny>();
@@ -78,11 +83,12 @@ function resolveSchemaPath(
   }
 
   // Also try the full suffix as a top-level key (e.g. LOOM_LOOM_HOME → loom_home).
-  const topSchema = paths.get(suffix);
-  if (topSchema !== undefined) {
-    const topLen = suffix.length;
-    if (!best || topLen > best.fieldLen) {
-      best = { path: suffix, schema: topSchema, fieldLen: topLen };
+  // section.field candidates always win over top-level when both match (ADR-008):
+  // a nested path is more specific than a coincidental top-level name.
+  if (!best) {
+    const topSchema = paths.get(suffix);
+    if (topSchema !== undefined) {
+      best = { path: suffix, schema: topSchema, fieldLen: suffix.length };
     }
   }
 
@@ -121,7 +127,7 @@ function coerceValue(raw: string, schema: z.ZodTypeAny): unknown {
         // fall through to comma-split
       }
     }
-    return raw.split(',').map(s => s.trim());
+    return raw.split(',').map(s => s.trim()).filter(s => s.length > 0);
   }
 
   // String, enum, and any other type: return as-is and let PolicySchema.parse
@@ -130,6 +136,8 @@ function coerceValue(raw: string, schema: z.ZodTypeAny): unknown {
 }
 
 // ── Sparse tree helpers ───────────────────────────────────────────────────────
+
+const PROTOTYPE_POISON = new Set(['__proto__', 'constructor', 'prototype']);
 
 function setAtPath(
   obj: Record<string, unknown>,
@@ -140,10 +148,13 @@ function setAtPath(
   let cur = obj;
   for (let i = 0; i < parts.length - 1; i++) {
     const k = parts[i];
+    if (PROTOTYPE_POISON.has(k)) return;
     if (typeof cur[k] !== 'object' || cur[k] === null) cur[k] = {};
     cur = cur[k] as Record<string, unknown>;
   }
-  cur[parts[parts.length - 1]] = value;
+  const last = parts[parts.length - 1];
+  if (PROTOTYPE_POISON.has(last)) return;
+  cur[last] = value;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -184,8 +195,9 @@ export function loadEnvLayer(env: NodeJS.ProcessEnv): ConfigLayer {
     try {
       coerced = coerceValue(value, resolved.schema);
     } catch (err) {
+      // Omit the raw value from the warning to avoid leaking misrouted secrets.
       console.warn(
-        `[loom] loadEnvLayer: cannot coerce "${key}=${value}": ${(err as Error).message} — ignoring`,
+        `[loom] loadEnvLayer: cannot coerce "${key}" (type mismatch: ${(err as Error).message}) — ignoring`,
       );
       continue;
     }

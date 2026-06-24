@@ -28,6 +28,17 @@ function makeTmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'loom-secret-confinement-'));
 }
 
+/** Walk up from startDir until a directory containing package.json is found. */
+function findPackageRoot(startDir: string): string {
+  let dir = startDir;
+  while (true) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) throw new Error(`package.json not found above ${startDir}`);
+    dir = parent;
+  }
+}
+
 // ── T2-A: loadEnvLayer never maps ANTHROPIC_* ────────────────────────────────
 
 describe('secretConfinement — loadEnvLayer never maps ANTHROPIC_* (T2-A)', () => {
@@ -155,11 +166,9 @@ describe('secretConfinement — worker_auth precedent: secrets flow only via wor
   // test confirms the existing pattern is intact.
 
   it('BaseCliWorker.ts still reads process.env directly in workerEnv()', () => {
-    // __dirname is dist-test/test/config/ → three levels up is the package root
-    const srcPath = path.resolve(
-      __dirname,
-      '../../../src/orchestrator/BaseCliWorker.ts',
-    );
+    // Walk up from __dirname to find the package root regardless of outDir.
+    const pkgRoot = findPackageRoot(__dirname);
+    const srcPath = path.join(pkgRoot, 'src', 'orchestrator', 'BaseCliWorker.ts');
     const src = fs.readFileSync(srcPath, 'utf8');
 
     // The method must exist and read process.env

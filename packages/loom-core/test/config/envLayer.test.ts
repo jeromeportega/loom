@@ -129,9 +129,10 @@ describe('loadEnvLayer — coercion against target zod field', () => {
     assert.equal(typeof get(tree, 'agents.max_concurrent'), 'number');
   });
 
-  it('number field: "1.5" → 1.5 (float)', () => {
-    const { tree } = loadEnvLayer({ LOOM_AGENTS_STORY_STALL_MINUTES: '1.5' });
-    assert.equal(get(tree, 'agents.story_stall_minutes'), 1.5);
+  it('number field: "1.5" → 1.5 (float, using a non-int field)', () => {
+    // budget_tokens_per_story is z.number().optional() — accepts floats.
+    const { tree } = loadEnvLayer({ LOOM_AGENTS_BUDGET_TOKENS_PER_STORY: '1.5' });
+    assert.equal(get(tree, 'agents.budget_tokens_per_story'), 1.5);
   });
 
   it('number field: non-numeric → ignored with warning, key absent', () => {
