@@ -4,6 +4,7 @@ import yaml from 'js-yaml';
 import { z } from 'zod';
 import { PolicySchema } from '../types.js';
 import { describePolicyIssues, PolicyValidationError } from '../guardrails/policyError.js';
+import type { ConfigLayer } from './types.js';
 
 export const TEAM_CONFIG_FILENAME = 'team-config.yaml';
 
@@ -11,14 +12,6 @@ export const TEAM_CONFIG_FILENAME = 'team-config.yaml';
 // PolicySchema so it can never drift from the canonical policy shape.
 export const TeamConfigSchema = PolicySchema.deepPartial();
 export type TeamConfig = z.infer<typeof TeamConfigSchema>;
-
-// Matches the ConfigLayer interface in config/types.ts (owned by story-055-002).
-// Defined locally so this module compiles standalone; structural compatibility
-// is guaranteed because the shape is identical.
-interface ConfigLayer {
-  name: 'team' | 'repo' | 'env';
-  tree: unknown;
-}
 
 /**
  * Reads <loomHomeDir>/team-config.yaml and validates against TeamConfigSchema.
@@ -35,7 +28,10 @@ export function loadTeamConfigLayer(loomHomeDir: string): ConfigLayer {
   }
 
   const content = fs.readFileSync(filePath, 'utf8');
-  const raw = yaml.load(content) as unknown;
+  // yaml.JSON_SCHEMA restricts the parser to JSON-compatible types, preventing
+  // non-scalar YAML tags (!!timestamp, !!binary, !!merge) from injecting typed
+  // values into the pre-validation merge tree.
+  const raw = yaml.load(content, { schema: yaml.JSON_SCHEMA }) as unknown;
 
   // js-yaml returns null for empty or comment-only files.
   if (raw === null || raw === undefined) {

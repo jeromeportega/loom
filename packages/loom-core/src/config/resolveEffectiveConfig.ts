@@ -30,7 +30,9 @@ export function resolveEffectiveConfig(opts: ResolveOptions): EffectiveConfig {
   const policyPath = path.join(opts.loomdir, 'policy.yaml');
   let repoTree: unknown = {};
   if (fs.existsSync(policyPath)) {
-    const raw = yaml.load(fs.readFileSync(policyPath, 'utf8')) as unknown;
+    // yaml.JSON_SCHEMA restricts the parser to JSON-compatible types, preventing
+    // non-scalar YAML tags from injecting typed values into the pre-validation tree.
+    const raw = yaml.load(fs.readFileSync(policyPath, 'utf8'), { schema: yaml.JSON_SCHEMA }) as unknown;
     if (raw !== null && raw !== undefined && (typeof raw !== 'object' || Array.isArray(raw))) {
       throw new PolicyValidationError(policyPath, [{
         fieldPath: '',
@@ -46,9 +48,12 @@ export function resolveEffectiveConfig(opts: ResolveOptions): EffectiveConfig {
   // Step 2: Derive loom-home from the repo layer ONLY (ADR-006).
   // Team-config lives under loom-home, so loom-home must be resolved before
   // team-config is loaded — it cannot itself come from team-config.
+  // Extract loom_home with a runtime type guard to avoid silent misuse when
+  // policy.yaml contains `loom_home: 123` or `loom_home: ["/path"]`.
+  const rawLoomHome = (repoTree as Record<string, unknown>)?.['loom_home'];
   const loomHome = resolveLoomHomePath(
     opts.projectRoot,
-    repoTree as { loom_home?: string },
+    { loom_home: typeof rawLoomHome === 'string' ? rawLoomHome : undefined },
   );
 
   // Step 3: Team layer.

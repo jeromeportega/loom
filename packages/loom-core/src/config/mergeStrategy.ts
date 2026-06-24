@@ -25,8 +25,13 @@ export const MERGE_STRATEGY: Record<string, MergeStrategy> = {
   // The effective set is the tightest intersection across all present layers.
   'git.allowed_remotes':           'intersect',
 
-  // allowed_write_root is a scalar string (not a list), but its name starts with
-  // 'allowed_' so the registry-coverage test requires an explicit entry here.
+  // allowed_write_root is a scalar path string (not a list), so it cannot use
+  // intersect/union semantics. It uses 'scalar' (higher layer wins), which is a
+  // deliberate operator-level escape hatch: an env var can override a team-config
+  // restriction. This is documented as an intentional design trade-off — env-layer
+  // overrides of allowed_write_root are operator-controlled, not agent-controlled.
+  // Its name starts with 'allowed_' so the registry-coverage test requires an
+  // explicit entry here; the 'scalar' strategy is the intentional choice.
   'filesystem.allowed_write_root': 'scalar',
 
   // ── Guard boolean — true wins regardless of precedence (ADR-004) ──

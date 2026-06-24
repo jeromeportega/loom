@@ -1,12 +1,6 @@
 import { z } from 'zod';
 import { PolicySchema } from '../types.js';
-
-// ConfigLayer interface — mirrors types.ts (story-055-002). Defined locally so
-// this module compiles standalone; the shape is identical to the shared type.
-interface ConfigLayer {
-  name: 'team' | 'repo' | 'env';
-  tree: unknown;
-}
+import type { ConfigLayer } from './types.js';
 
 const ENV_PREFIX = 'LOOM_';
 
@@ -27,8 +21,14 @@ function unwrapZod(schema: z.ZodTypeAny): z.ZodTypeAny {
 // ── Schema path map ───────────────────────────────────────────────────────────
 
 // Maps "section.field" (or top-level "field") → the unwrapped ZodTypeAny.
-// Built once on first use.
+// Built once on first use; reset via _resetEnvLayerCacheForTesting() in tests.
 let _pathCache: Map<string, z.ZodTypeAny> | null = null;
+
+/** For testing only: reset the path cache so tests that modify PolicySchema
+ *  don't see stale entries from a previous test in the same process. */
+export function _resetEnvLayerCacheForTesting(): void {
+  _pathCache = null;
+}
 
 function schemaPathMap(): Map<string, z.ZodTypeAny> {
   if (_pathCache) return _pathCache;
@@ -184,8 +184,11 @@ export function loadEnvLayer(env: NodeJS.ProcessEnv): ConfigLayer {
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) continue;
 
-    // FR-5 / ADR-005: ANTHROPIC_* are secrets, not config.  They are read only
-    // by BaseCliWorker.workerEnv() from process.env — never here.
+    // FR-5 / ADR-005: ANTHROPIC_* are secrets, not config. Redundant by design —
+    // no ANTHROPIC_* key can start with LOOM_ and would be filtered below anyway,
+    // but this guard makes the exclusion explicit and prevents future refactoring
+    // from accidentally closing the gap. Secrets flow only through
+    // BaseCliWorker.workerEnv() from process.env — never through this layer.
     if (key.startsWith('ANTHROPIC_')) continue;
 
     if (!key.startsWith(ENV_PREFIX)) continue;

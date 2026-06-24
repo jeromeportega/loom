@@ -17,19 +17,24 @@ interface TestDirs {
 }
 
 function makeDirs(): TestDirs {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-resolve-eff-'));
-  const loomdir = path.join(root, '.loom');
-  // resolveLoomHomePath defaults to sibling 'loom-home' of projectRoot.
-  const loomHomeDir = path.join(path.dirname(root), 'loom-home');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-resolve-eff-'));
+  // Resolve symlinks (macOS /tmp → /private/tmp) so resolveLoomHomePath's
+  // fs.realpathSync and our loomHomeDir computation agree on the same path.
+  const realTmpRoot = (() => { try { return fs.realpathSync(tmpRoot); } catch { return tmpRoot; } })();
+  // projectRoot is a CHILD of realTmpRoot so that resolveLoomHomePath's sibling
+  // computation (path.dirname(realpath(projectRoot)) + '/loom-home') resolves to
+  // realTmpRoot/loom-home — which is exactly where writeTeamConfig writes.
+  const projectRoot = path.join(realTmpRoot, 'project');
+  const loomdir = path.join(projectRoot, '.loom');
+  const loomHomeDir = path.join(realTmpRoot, 'loom-home');
   fs.mkdirSync(loomdir, { recursive: true });
   fs.mkdirSync(loomHomeDir, { recursive: true });
   return {
     loomdir,
-    projectRoot: root,
+    projectRoot,
     loomHomeDir,
     cleanup: () => {
-      fs.rmSync(root, { recursive: true, force: true });
-      fs.rmSync(loomHomeDir, { recursive: true, force: true });
+      fs.rmSync(realTmpRoot, { recursive: true, force: true });
     },
   };
 }

@@ -104,11 +104,19 @@ function mergeAtPath(
     case 'intersect': {
       // Allowlist: intersection of all present layer values (ADR-004).
       // No layer can add an entry that another layer does not also permit.
-      // Absent layers are ignored — they do not collapse the result to [].
+      // Absent layers AND empty-array layers are ignored — an empty array (e.g.
+      // from `LOOM_GIT_ALLOWED_REMOTES=` comma-split) means "no opinion", not
+      // "lock down to nothing". This prevents a misconfigured env var from
+      // silently collapsing the allowlist and blocking all git operations.
       // Elements must be JSON-primitive — reference equality is used for inclusion tests.
-      // Result preserves the ordering of the lowest present layer (sets[0]).
-      // Provenance records the last present layer as a context marker (all layers contribute).
-      const sets = present.map(l => l.value as unknown[]);
+      // Result preserves the ordering of the lowest non-empty layer.
+      // Provenance records the last present layer as a context marker.
+      const sets = present.map(l => l.value as unknown[]).filter(a => a.length > 0);
+      if (sets.length === 0) {
+        // All present layers are empty arrays — treat as absent.
+        provenance[dotPath] = present[present.length - 1].name;
+        return undefined;
+      }
       const intersected = sets.slice(1).reduce(
         (acc, arr) => acc.filter(v => arr.includes(v)),
         [...sets[0]],
@@ -119,10 +127,13 @@ function mergeAtPath(
 
     case 'and': {
       // Guard boolean: `true` wins regardless of which layer sets it (ADR-004).
-      // Provenance records the first layer that asserted `true` (the decisive layer).
-      const hasTrue = present.some(l => l.value === true);
+      // Normalize integer 1 to true so a YAML `agents_must_use_pr: 1` in a
+      // misconfigured team-config.yaml activates the guard correctly.
+      // Provenance records the first layer that asserted true (the decisive layer).
+      const isTruthy = (v: unknown) => v === true || v === 1;
+      const hasTrue = present.some(l => isTruthy(l.value));
       provenance[dotPath] = hasTrue
-        ? present.find(l => l.value === true)!.name
+        ? present.find(l => isTruthy(l.value))!.name
         : present[present.length - 1].name;
       return hasTrue ? true : present[present.length - 1].value;
     }
