@@ -6,10 +6,14 @@
  *  (2) mergeRepo NOT called during assessment (assessLandingReadiness itself
  *      never merges — asserted by verifying no merge-like side effects)
  *  (3) producer gate red ⇒ allReady:false, blocker.repoSlug = producer (AC2)
- *  (4) consumer gate red ⇒ allReady:false, blocker.repoSlug = consumer (AC2)
+ *  (4) consumer integration gate red ⇒ allReady:false, blocker.repoSlug = consumer,
+ *      blocker.check = 'integration_gate' (consumer's own suite; NOT 'consumer_gate',
+ *      which is reserved for the cross-repo compatibility check wired by 058-006)
  *  (5) guardrails: no policy override flag introduced; PolicyEngine path unchanged
  *  (6) empty stages ⇒ allReady:true (boundary)
  *  (7) stage with no prUrl (PR not open) ⇒ allReady:false, blocker = that stage
+ *  (8) producer blockedRecord sets consumerGateGreen:true (producer has no consumer gate)
+ *  (9) gate assessment runs stages in parallel (independent checks)
  */
 
 import { describe, it } from 'node:test';
@@ -94,10 +98,10 @@ function makeGate(outcomes: Record<string, boolean | undefined>, defaultOk = tru
   };
 }
 
-// Stub finalizer that sets the prUrl on the stage when called.
+// Stub finalizer: accepts (epicId, repoRoot) matching the FinalizerStageDep interface.
 function makeFinalizer(url: string) {
   return {
-    stageForLanding: async (_epicId: string): Promise<FinalizeResult> =>
+    stageForLanding: async (_epicId: string, _repoRoot: string): Promise<FinalizeResult> =>
       makeFinalizeResult(url),
   };
 }
@@ -142,12 +146,29 @@ describe('assessLandingReadiness — happy path (AC1)', () => {
     assert.equal(result.repos[0].consumerGateGreen, true,
       'producer stage consumerGateGreen must be true (not a consumer)');
   });
+
+  it('consumer stage with gate-green has consumerGateGreen=true (stub; real check is 058-006)', async () => {
+    const producerStage = makeStage('repo-a', [], 'https://github.com/org/repo-a/pull/1');
+    const consumerStage = makeStage('repo-b', ['repo-a'], 'https://github.com/org/repo-b/pull/2');
+    const { store } = makeStore();
+    const gate = makeGate({}, true);
+
+    const result = await assessLandingReadiness('epic-001', [producerStage, consumerStage], {
+      integrationGate: gate,
+      finalizer: makeFinalizer('unused'),
+      store,
+    });
+
+    const consumerReadiness = result.repos.find(r => r.repoSlug === 'repo-b')!;
+    assert.equal(consumerReadiness.consumerGateGreen, true,
+      'consumer consumerGateGreen is true when PR is open (stub for 058-006)');
+  });
 });
 
 // ─── (3) Blocked-producer: producer gate red ──────────────────────────────────
 
 describe('assessLandingReadiness — blocked producer (AC2)', () => {
-  it('producer IntegrationGate red ⇒ allReady:false, blocker.repoSlug = producer', async () => {
+  it('producer IntegrationGate red ⇒ allReady:false, blocker.repoSlug = producer, check = integration_gate', async () => {
     const producerStage = makeStage('repo-a', [], 'https://github.com/org/repo-a/pull/1');
     const consumerStage = makeStage('repo-b', ['repo-a'], 'https://github.com/org/repo-b/pull/2');
 
@@ -194,10 +215,12 @@ describe('assessLandingReadiness — blocked producer (AC2)', () => {
   });
 });
 
-// ─── (4) Blocked-consumer: consumer gate red ─────────────────────────────────
+// ─── (4) Blocked-consumer: consumer integration gate red ─────────────────────
+// Note: blocker.check = 'integration_gate' (consumer's own suite), NOT 'consumer_gate'.
+// 'consumer_gate' is reserved for the cross-repo compatibility check (story-058-006).
 
 describe('assessLandingReadiness — blocked consumer (AC2)', () => {
-  it('consumer gate red ⇒ allReady:false, blocker.repoSlug = consumer', async () => {
+  it('consumer integration gate red ⇒ allReady:false, blocker = consumer, check = integration_gate', async () => {
     const producerStage = makeStage('repo-a', [], 'https://github.com/org/repo-a/pull/1');
     const consumerStage = makeStage('repo-b', ['repo-a'], 'https://github.com/org/repo-b/pull/2');
 
@@ -214,12 +237,17 @@ describe('assessLandingReadiness — blocked consumer (AC2)', () => {
     assert.equal(result.allReady, false, 'allReady must be false when consumer gate fails');
     assert.ok(result.blocker, 'blocker must be set');
     assert.equal(result.blocker!.repoSlug, 'repo-b', 'blocker must name the consumer');
-    assert.equal(result.blocker!.check, 'consumer_gate', 'check must be consumer_gate');
+    // Consumer's own integration gate failed → 'integration_gate', not 'consumer_gate'.
+    // 'consumer_gate' is reserved for the cross-repo compatibility check (story-058-006).
+    assert.equal(result.blocker!.check, 'integration_gate',
+      'consumer own-suite failure must report integration_gate, not consumer_gate');
 
     const consumerReadiness = result.repos.find(r => r.repoSlug === 'repo-b')!;
-    assert.equal(consumerReadiness.consumerGateGreen, false,
-      'consumerGateGreen must be false when consumer gate fails');
-    assert.equal(consumerReadiness.ready, false);
+    // consumerGateGreen is the cross-repo stub (true when PR is open); gate.ok tracks the suite.
+    assert.equal(consumerReadiness.gate.ok, false, 'consumer integration gate must be false');
+    assert.equal(consumerReadiness.consumerGateGreen, true,
+      'consumerGateGreen remains true (cross-repo stub; not wired until 058-006)');
+    assert.equal(consumerReadiness.ready, false, 'consumer must not be ready when gate fails');
 
     // Producer is still ready.
     const producerReadiness = result.repos.find(r => r.repoSlug === 'repo-a')!;
@@ -272,7 +300,7 @@ describe('assessLandingReadiness — boundary cases', () => {
     const result = await assessLandingReadiness('epic-001', [stage], {
       integrationGate: gate,
       // Finalizer returns no URL (simulates stageForLanding returning 'gated').
-      finalizer: { stageForLanding: async () => makeFinalizeResult(undefined) },
+      finalizer: { stageForLanding: async (_epicId: string, _repoRoot: string) => makeFinalizeResult(undefined) },
       store,
     });
 
@@ -291,7 +319,7 @@ describe('assessLandingReadiness — boundary cases', () => {
 
     let finalizerCallCount = 0;
     const finalizer = {
-      stageForLanding: async () => {
+      stageForLanding: async (_epicId: string, _repoRoot: string) => {
         finalizerCallCount++;
         return makeFinalizeResult('https://unused.example.com/pull/99');
       },
@@ -304,5 +332,93 @@ describe('assessLandingReadiness — boundary cases', () => {
     });
 
     assert.equal(finalizerCallCount, 0, 'finalizer must not be called when prUrl is already set');
+  });
+
+  it('stageForLanding receives the stage repoRoot so the finalizer can target the right repo', async () => {
+    // Regression guard: each stage's stageForLanding call must receive the stage's repoRoot,
+    // not a shared context. This prevents a single finalizer instance from ambiguously
+    // staging the wrong repo when two stages lack prUrls.
+    const stageA = makeStage('repo-a', []);  // no prUrl → will call stageForLanding
+    const stageB = makeStage('repo-b', ['repo-a']);  // no prUrl → will call stageForLanding
+    const { store } = makeStore();
+    const gate = makeGate({}, true);
+
+    const receivedRoots: string[] = [];
+    const finalizer = {
+      stageForLanding: async (_epicId: string, repoRoot: string) => {
+        receivedRoots.push(repoRoot);
+        return makeFinalizeResult(`https://github.com/org/pr/${receivedRoots.length}`);
+      },
+    };
+
+    await assessLandingReadiness('epic-001', [stageA, stageB], {
+      integrationGate: gate,
+      finalizer,
+      store,
+    });
+
+    // Each call must have received the stage's own repoRoot.
+    assert.ok(receivedRoots.includes('/repos/repo-a'), 'repo-a repoRoot must be passed');
+    assert.ok(receivedRoots.includes('/repos/repo-b'), 'repo-b repoRoot must be passed');
+  });
+});
+
+// ─── (8) blockedRecord producer vs consumer consumerGateGreen ────────────────
+
+describe('assessLandingReadiness — blockedRecord producer-awareness', () => {
+  it('producer stage that fails to open its PR has consumerGateGreen:true (no consumer gate for producers)', async () => {
+    // A producer that can't open its PR should not report consumerGateGreen:false,
+    // because producers don't have a consumer gate — they ARE the producer.
+    const producerStage = makeStage('repo-a', []);  // no prUrl, is a producer (no deps)
+    const { store } = makeStore();
+    const gate = makeGate({}, true);
+
+    const result = await assessLandingReadiness('epic-001', [producerStage], {
+      integrationGate: gate,
+      finalizer: { stageForLanding: async () => makeFinalizeResult(undefined) },
+      store,
+    });
+
+    const producerReadiness = result.repos.find(r => r.repoSlug === 'repo-a')!;
+    assert.equal(producerReadiness.prOpen, false);
+    assert.equal(producerReadiness.consumerGateGreen, true,
+      'producer with failed PR open must have consumerGateGreen:true (not a consumer)');
+    assert.equal(result.blocker!.check, 'pr_open');
+  });
+});
+
+// ─── (9) Parallel gate assessment ────────────────────────────────────────────
+
+describe('assessLandingReadiness — parallel gate assessment', () => {
+  it('gate checks run concurrently — completion order does not affect result', async () => {
+    // Simulate gates with different latencies. If run sequentially, the slow gate
+    // would delay the fast one. With Promise.all, both complete in parallel.
+    // We verify correctness by checking both repos are assessed regardless of order.
+    const producerStage = makeStage('repo-a', [], 'https://github.com/org/repo-a/pull/1');
+    const consumerStage = makeStage('repo-b', ['repo-a'], 'https://github.com/org/repo-b/pull/2');
+    const { store } = makeStore();
+
+    const assessedRoots: string[] = [];
+    const gate = {
+      run: async (input: { projectRoot: string }): Promise<GateOutcome> => {
+        assessedRoots.push(input.projectRoot);
+        return makeGateOutcome(true);
+      },
+    };
+
+    const result = await assessLandingReadiness('epic-001', [producerStage, consumerStage], {
+      integrationGate: gate,
+      finalizer: makeFinalizer('unused'),
+      store,
+    });
+
+    // Both repos were assessed.
+    assert.equal(assessedRoots.length, 2);
+    assert.ok(assessedRoots.includes('/repos/repo-a'));
+    assert.ok(assessedRoots.includes('/repos/repo-b'));
+    // Result order is preserved (repo-a first as passed to stages array).
+    assert.equal(result.repos[0].repoSlug, 'repo-a');
+    assert.equal(result.repos[1].repoSlug, 'repo-b');
+    assert.equal(result.allReady, true);
   });
 });

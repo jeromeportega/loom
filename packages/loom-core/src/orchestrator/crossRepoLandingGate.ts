@@ -17,9 +17,13 @@ export type { GateRunner };
  * Minimal interface for the finalizer used in assessLandingReadiness.
  * EpicFinalizer satisfies this structurally via stageForLanding().
  * Tests stub it with a plain object.
+ *
+ * The repoRoot param lets a single finalizer instance know which repo to stage
+ * when called for multiple stages without per-stage context. In normal coordinator
+ * usage, prUrl is pre-populated by the STAGE loop so this is never called.
  */
 export interface FinalizerStageDep {
-  stageForLanding(epicId: string): Promise<FinalizeResult>;
+  stageForLanding(epicId: string, repoRoot: string): Promise<FinalizeResult>;
 }
 
 // ─── assessLandingReadiness ───────────────────────────────────────────────────
@@ -31,18 +35,19 @@ export interface FinalizerStageDep {
  * gate against the producer's staged change is green.
  *
  * For each stage:
- *   1. If stage.prUrl is not yet set, calls finalizer.stageForLanding(epicId) to
+ *   1. If stage.prUrl is not yet set, calls finalizer.stageForLanding(epicId, repoRoot) to
  *      open the PR and run the per-repo gate (unit-test path).
  *   2. Runs deps.integrationGate.run() on the stage's repo root — the per-repo
  *      integration gate (covers amputation + test-suite regression).
- *   3. For consumer stages (dependsOnRepos non-empty), consumerGateGreen is
- *      derived from the gate outcome of the consumer's own suite: if the consumer's
- *      test suite passes against its current branch (which was staged against the
- *      producer's PR branch), the cross-repo compatibility check passes.
- *      When the gate is green for the consumer it means the consumer compiles and
- *      tests against the producer's staged change — this is the "consumer gate
- *      against the producer change" check.
+ *   3. consumerGateGreen is a forward stub (always true for now). The real cross-repo
+ *      compatibility check — consumer compiled + tested against producer's staged branch —
+ *      is wired by story-058-006 via assessLandingReadiness's deps. Until then, a consumer
+ *      that fails its own integration gate is reported as check:'integration_gate', not
+ *      check:'consumer_gate'. 'consumer_gate' is reserved for the cross-repo check.
  *   4. Builds a RepoReadiness record per stage and determines allReady.
+ *
+ * Gate assessment runs in parallel across stages (independent checks; no data dependency).
+ * Results are returned in the original stage order.
  *
  * No merge is performed here — the MERGE phase is exclusively owned by
  * CrossRepoCoordinator._runCrossRepo after this function returns allReady:true.
@@ -67,20 +72,19 @@ export async function assessLandingReadiness(
     return { epicId, attemptId, allReady: true, repos: [] };
   }
 
-  const repos: RepoReadiness[] = [];
-
-  for (const stage of stages) {
+  // Run all stages in parallel — gate checks are independent per-repo.
+  // Results are collected in the original stage order via Promise.all index.
+  const repos: RepoReadiness[] = await Promise.all(stages.map(async (stage) => {
     // If the STAGE phase hasn't opened the PR yet, open it now.
     // In normal coordinator usage, prUrl is already set by _runCrossRepo's STAGE loop.
     // In unit tests of assessLandingReadiness itself, stages have no prUrl yet.
     if (!stage.prUrl) {
       try {
-        const result = await deps.finalizer.stageForLanding(epicId);
+        const result = await deps.finalizer.stageForLanding(epicId, stage.repoRoot);
         if (result.url) stage.prUrl = result.url;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
-        repos.push(blockedRecord(stage, `stageForLanding failed: ${reason}`, 'pr_open'));
-        continue;
+        return blockedRecord(stage, `stageForLanding failed: ${reason}`, 'pr_open');
       }
     }
 
@@ -101,21 +105,16 @@ export async function assessLandingReadiness(
       }
     }
 
-    // Consumer cross-repo gate: for consumer stages (repos that depend on a producer),
-    // consumerGateGreen reflects whether the consumer's suite passes against the
-    // producer's staged change. We run the same integrationGate on the consumer's
-    // own root — if the consumer already staged (prUrl set) and its gate passes,
-    // the consumer is compatible with the producer's change.
+    // consumerGateGreen is a forward stub for the cross-repo compatibility check
+    // (consumer compiled + tested against producer's staged branch, story-058-006).
+    // It is intentionally kept separate from gate.ok so that:
+    //   - 'integration_gate' check = consumer's own test suite failed
+    //   - 'consumer_gate' check = cross-repo compatibility failed (reserved for 058-006)
     // For non-consumer stages, consumerGateGreen is vacuously true.
     const isConsumer = stage.dependsOnRepos.length > 0;
-    let consumerGateGreen = true;
-    if (isConsumer && prOpen) {
-      // Re-use the gate outcome from above — the consumer's own integration gate
-      // run against its staged branch constitutes the cross-repo compatibility check.
-      consumerGateGreen = gate.ok;
-    } else if (isConsumer && !prOpen) {
-      consumerGateGreen = false;
-    }
+    const consumerGateGreen = isConsumer
+      ? (prOpen ? true : false)  // stub: true when PR is open; real check wired by 058-006
+      : true;
 
     const ready = prOpen && gate.ok && consumerGateGreen;
     const reason = !prOpen
@@ -135,19 +134,23 @@ export async function assessLandingReadiness(
       ready,
     };
     if (reason !== undefined) record.reason = reason;
-    repos.push(record);
-  }
+    return record;
+  }));
 
   const allReady = repos.every(r => r.ready);
   const blockerRepo = repos.find(r => !r.ready);
+  // Blocker check precedence (explicit ordering prevents misclassification):
+  //   1. pr_open — the PR was never opened; gate couldn't run at all
+  //   2. integration_gate — the repo's own build/test suite failed
+  //   3. consumer_gate — cross-repo compatibility check failed (stub; wired by 058-006)
   const blocker: LandingBlocker | undefined = blockerRepo
     ? {
         repoSlug: blockerRepo.repoSlug,
         check: !blockerRepo.prOpen
           ? 'pr_open'
-          : !blockerRepo.consumerGateGreen
-          ? 'consumer_gate'
-          : 'integration_gate',
+          : !blockerRepo.gate.ok
+          ? 'integration_gate'
+          : 'consumer_gate',
         reason: blockerRepo.reason ?? `${blockerRepo.repoSlug} is not ready`,
       }
     : undefined;
@@ -170,12 +173,16 @@ function blockedRecord(
   reason: string,
   check: LandingBlocker['check'],
 ): RepoReadiness {
+  // Producers have no consumer gate (they don't depend on anyone), so their
+  // consumerGateGreen defaults to true. Consumer stages that fail to open a PR
+  // can't run the consumer gate either — default to false (unknown/not-run).
+  const isConsumer = stage.dependsOnRepos.length > 0;
   return {
     repoSlug: stage.repoSlug,
     prUrl: undefined,
     prOpen: false,
     gate: failedGateOutcome(stage.repoSlug, reason),
-    consumerGateGreen: false,
+    consumerGateGreen: !isConsumer,
     ready: false,
     reason,
   };

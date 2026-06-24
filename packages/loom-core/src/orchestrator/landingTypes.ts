@@ -30,7 +30,12 @@ export interface RepoMergeRecord {
   revertedAt: string | null;
 }
 
-export interface LandingBlocker { repoSlug: string; check: string; reason: string; }
+export interface LandingBlocker {
+  repoSlug: string;
+  /** Discriminated union — callers can switch exhaustively without typo risk. */
+  check: 'pr_open' | 'integration_gate' | 'consumer_gate';
+  reason: string;
+}
 
 // ── Readiness gate (story-060-001) ───────────────────────────────────────────
 import type { GateOutcome } from './IntegrationGate.js';
@@ -97,6 +102,7 @@ export const CROSS_REPO_ACTIONS = {
   MERGED:           'cross_repo.merged',
   BLOCKED:          'cross_repo.blocked',
   ROLLBACK_STARTED: 'cross_repo.rollback_started',
+  ROLLBACK_FAILED:  'cross_repo.rollback_failed',
   REVERTED:         'cross_repo.reverted',
   ROLLED_BACK:      'cross_repo.rolled_back',
   STRANDED:         'cross_repo.stranded',

@@ -2,13 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import type Database from 'better-sqlite3';
-import { EpicStore } from '../state/index.js';
+import { EpicStore, AuditLog } from '../state/index.js';
 import { EpicYamlSchema, type Story } from '../types.js';
 import type { WorkspaceManifest } from '../home/workspaceManifest.js';
 import { resolveStoryRepo } from './resolveStoryRepo.js';
 import { buildRepoDag } from './crossRepoReadiness.js';
 import type { FinalizeResult } from './EpicFinalizer.js';
 import type { SupervisorResult } from './Supervisor.js';
+import { CROSS_REPO_ACTIONS } from './landingTypes.js';
 import type { MergeRepoFn, RollbackFn, LandingStorePort } from './landingTypes.js';
 import { assessLandingReadiness } from './crossRepoLandingGate.js';
 import { IntegrationGate } from './IntegrationGate.js';
@@ -79,9 +80,11 @@ export interface CrossRepoCoordinatorOptions {
    */
   abortSignal?: AbortSignal;
   /**
-   * story-058-006 seam: runs a cross-repo gate after the producer stage lands
-   * and before the consumer stage finalizes. Defaults to a no-op until
-   * story-058-006 is implemented.
+   * @deprecated No-op in the story-060-001 STAGE→MERGE flow.
+   * The consumer gate is now handled inside `assessLandingReadiness` as part of
+   * the all-or-none readiness check. story-058-006 should wire the cross-repo
+   * compatibility check through `assessLandingReadiness`'s deps instead of this
+   * option. This field is kept for API compatibility but is never called.
    */
   runConsumerGateFn?: (producerStage: RepoStage, consumerStage: RepoStage) => Promise<void>;
   // story-060-002 seam: merges one repo's PR after all repos are gate-green.
@@ -182,10 +185,6 @@ export class CrossRepoCoordinator {
   private readonly primarySlug: string;
   private readonly _waitForMerge: (stage: RepoStage, signal?: AbortSignal) => Promise<void>;
   private readonly abortSignal?: AbortSignal;
-  private readonly _runConsumerGate: (
-    producerStage: RepoStage,
-    consumerStage: RepoStage,
-  ) => Promise<void>;
   private readonly _mergeRepo?: MergeRepoFn;
   private readonly _rollback?: RollbackFn;
   private readonly _store?: LandingStorePort;
@@ -198,11 +197,12 @@ export class CrossRepoCoordinator {
     this.manifest = opts.manifest;
     this.primarySlug = opts.primarySlug;
     this._waitForMerge = opts.waitForMergeFn ?? defaultWaitForMerge;
-    this._runConsumerGate = opts.runConsumerGateFn ?? noopConsumerGate;
     this.abortSignal = opts.abortSignal;
     this._mergeRepo = opts.mergeRepo;
     this._rollback = opts.rollback;
     this._store = opts.store;
+    // runConsumerGateFn is intentionally not stored — it is deprecated and
+    // the consumer gate is now handled by assessLandingReadiness (story-060-001).
   }
 
   /**
@@ -262,17 +262,36 @@ export class CrossRepoCoordinator {
    * Cross-repo path — STAGE → MERGE phases (story-060-001).
    *
    * STAGE: for each repo in topo order, run workers and open the PR + gate
-   *        (stageForLanding). No merge happens here.
+   *        (stageForLanding). No merge happens here. Errors are collected
+   *        across all independent stages before aborting — a failure in
+   *        repo-a does not prevent independent repo-c from attempting staging.
+   *        Stages that depend on a failed producer are skipped (partial_landing).
    * Assess: call assessLandingReadiness to get an all-or-none verdict.
+   *         Emits STAGED (success) or BLOCKED (not ready) to the audit log.
    * MERGE: if allReady, merge each repo in topo order via the mergeRepo seam.
    *        If not allReady, mark all stages blocked and return.
+   *        On mid-sequence merge failure, remaining un-merged stages are marked
+   *        partial_landing before the rollback seam fires.
    */
   private async _runCrossRepo(
     epicId: string,
     sorted: RepoStage[],
   ): Promise<{ stages: RepoStage[] }> {
+    const audit = new AuditLog(this.db);
+
     // ── STAGE phase ───────────────────────────────────────────────────────────
+    // Collect errors across all stages rather than aborting on the first failure.
+    // Stages whose producer failed are skipped (marked partial_landing) so
+    // independent repos still attempt staging even if a sibling fails.
+    const stageErrors: Array<{ stage: RepoStage; error: unknown }> = [];
+    const failedSlugs = new Set<string>();
+
     for (const stage of sorted) {
+      // Skip if any producer failed — this stage can't succeed without its dep.
+      if (stage.dependsOnRepos.some(dep => failedSlugs.has(dep))) {
+        stage.status = 'partial_landing';
+        continue;
+      }
       try {
         stage.status = 'running';
         await this.supervisor.run({ epicId, repoFilter: stage.repoSlug });
@@ -286,23 +305,33 @@ export class CrossRepoCoordinator {
         if (result.url) stage.prUrl = result.url;
       } catch (err) {
         stage.status = 'failed';
-        throw err;
+        failedSlugs.add(stage.repoSlug);
+        stageErrors.push({ stage, error: err });
       }
     }
 
+    if (stageErrors.length > 0) {
+      const messages = stageErrors.map(
+        e => `${e.stage.repoSlug}: ${e.error instanceof Error ? e.error.message : String(e.error)}`
+      );
+      throw new Error(
+        `CrossRepoCoordinator: STAGE phase failed for ${stageErrors.length} repo(s):\n${messages.join('\n')}`
+      );
+    }
+
     // ── Assess readiness (all-or-none gate) ──────────────────────────────────
-    // Build a finalizer adapter: since each stage's prUrl is already populated
-    // by the STAGE phase above, assessLandingReadiness won't call stageForLanding
-    // again. The adapter is passed purely to satisfy the injectable seam for tests
-    // that want to exercise assessLandingReadiness independently.
+    // The STAGE loop pre-populated every stage.prUrl. The finalizer adapter below
+    // is passed purely to satisfy the injectable seam for assessLandingReadiness;
+    // it should never be called since all stages already have prUrls. If it IS
+    // called, a stage slipped through without a prUrl — throw to surface the bug
+    // rather than silently reporting pr_open:false.
     const finalizerAdapter = {
-      stageForLanding: async (_epicId: string) => ({
-        status: 'skipped' as const,
-        conflicted: [],
-        merged: [],
-        cleaned: [],
-        note: 'stageForLanding already called in STAGE phase',
-      }),
+      stageForLanding: async (_epicId: string, repoRoot: string): Promise<FinalizeResult> => {
+        throw new Error(
+          `CrossRepoCoordinator: stage for ${repoRoot} has no prUrl after STAGE phase — ` +
+          'stageForLanding must not be called during readiness assessment when all stages are pre-staged'
+        );
+      },
     };
 
     const readiness = await assessLandingReadiness(epicId, sorted, {
@@ -315,8 +344,28 @@ export class CrossRepoCoordinator {
       for (const stage of sorted) {
         if (stage.status !== 'failed') stage.status = 'partial_landing';
       }
+      audit.record({
+        action: CROSS_REPO_ACTIONS.BLOCKED,
+        command: epicId,
+        allowed: false,
+        detail: {
+          attemptId: readiness.attemptId,
+          blocker: readiness.blocker,
+          repos: sorted.map(s => ({ repoSlug: s.repoSlug, prUrl: s.prUrl ?? null })),
+        },
+      });
       return { stages: sorted };
     }
+
+    audit.record({
+      action: CROSS_REPO_ACTIONS.STAGED,
+      command: epicId,
+      allowed: true,
+      detail: {
+        attemptId: readiness.attemptId,
+        repos: sorted.map(s => ({ repoSlug: s.repoSlug, prUrl: s.prUrl ?? null })),
+      },
+    });
 
     // ── MERGE phase ───────────────────────────────────────────────────────────
     // mergeRepo seam: story-060-002 wires the anchoring merger.
@@ -330,14 +379,29 @@ export class CrossRepoCoordinator {
         stage.status = 'landed';
       } catch (err) {
         stage.status = 'failed';
+        // Mark remaining un-merged stages so callers can distinguish
+        // "not yet attempted" from "stuck in staging" or "failed".
+        for (const s of sorted) {
+          if (s.status === 'finalizing') s.status = 'partial_landing';
+        }
         // Rollback seam (story-060-003): if provided, attempt to revert
         // already-merged repos. A missing rollback seam means partial landing
         // (already-merged repos stay merged) — this is surfaced to the caller.
         if (this._rollback) {
           try {
             await this._rollback(readiness.attemptId);
-          } catch {
-            // Rollback failure is observable but must not shadow the original error.
+          } catch (rollbackErr) {
+            // Rollback failure must not shadow the original merge error,
+            // but it must be observable — emit an audit row before rethrowing.
+            audit.record({
+              action: CROSS_REPO_ACTIONS.ROLLBACK_FAILED,
+              command: epicId,
+              allowed: false,
+              detail: {
+                attemptId: readiness.attemptId,
+                error: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+              },
+            });
           }
         }
         throw err;
@@ -441,15 +505,6 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-async function noopConsumerGate(
-  _producerStage: RepoStage,
-  _consumerStage: RepoStage,
-): Promise<void> {
-  // Placeholder for the story-058-006 cross-repo gate seam.
-}
-
-// ─── No-op LandingStorePort (used when story-060-002 hasn't wired a real store) ─
-
 // ─── Default merge no-op (used until story-060-002 wires the real merger) ────
 
 async function defaultNoopMerge(
@@ -463,7 +518,9 @@ async function defaultNoopMerge(
     prNumber: null,
     prUrl: _stage.prUrl ?? null,
     mergeCommitSha: null,
-    mergeState: 'pending',
+    // 'merged' matches the 'landed' status the coordinator sets immediately
+    // after this call, keeping the invariant mergeState:'merged' ↔ stage.status:'landed'.
+    mergeState: 'merged',
     revertPrUrl: null,
     revertMergeSha: null,
     mergedAt: null,
