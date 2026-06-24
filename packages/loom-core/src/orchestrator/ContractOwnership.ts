@@ -11,6 +11,13 @@ export interface OwnershipEntry {
   epicId: string;
   /** Owning story id, e.g. 'story-007-003', when the owner cell carries one. */
   storyId?: string;
+  /**
+   * Manifest slug of the repo this path belongs to. When absent, the entry is
+   * treated as belonging to the primary repo (resolved by the caller or by
+   * the `primarySlug` argument to `computeOverlaps`). Single-repo epics omit
+   * this field entirely — behaviour is unchanged from before cross-repo support.
+   */
+  repo?: string;
   /** Repo-relative POSIX path; backticks / `(new)` / `(delete)` / trailing prose stripped. */
   path: string;
 }
@@ -234,30 +241,50 @@ function groupOwnersByPath(
 
 /**
  * Computes the set of files the `target` ownership map shares with any of the
- * `others`, by EXACT lexical path equality (`===`) — no globbing, no
- * directory-prefix inference, no case folding, no semantics. `src/a.ts` and
- * `src/A.ts` are different paths; `src/a.ts` and `src/` are different paths.
+ * `others`, by EXACT lexical path equality within the same repo. The comparison
+ * key is the composite `${repo}\0${path}` so the same relative path in two
+ * different repos is NOT a conflict — only the same path in the same repo is.
  *
- * Every owner (the target's plus each other map's) of a shared path is listed
- * in `owners`. A path that appears only in the target, or only in the others,
- * is not an overlap. Order of paths follows first appearance in `target`.
+ * `primarySlug` is the manifest slug of the primary repo. Entries whose `repo`
+ * field is absent resolve to `primarySlug` for keying purposes. When `primarySlug`
+ * is omitted (single-repo callers that have no manifest context), all repo-absent
+ * entries are treated as belonging to the same implicit repo and still collide
+ * correctly — single-repo behaviour is unchanged.
+ *
+ * Every owner (the target's plus each other map's) of a shared (repo, path) is
+ * listed in `owners`. A path that appears only in the target, or only in the
+ * others, is not an overlap. Order of paths follows first appearance in `target`.
  */
 export function computeOverlaps(
   target: OwnershipMap,
-  others: Map<string, OwnershipMap>
+  others: Map<string, OwnershipMap>,
+  primarySlug = '',
 ): Overlap[] {
-  // Flatten all other maps and index by path via the shared helper.
-  const otherEntries: OwnershipMap = [];
-  for (const map of others.values()) otherEntries.push(...map);
-  const otherOwnersByPath = groupOwnersByPath(otherEntries);
+  // Composite key: repo (defaulting to primarySlug) + NUL separator + path.
+  const repoKey = (e: OwnershipEntry): string => `${e.repo ?? primarySlug}\0${e.path}`;
+
+  // Index all other-map entries by composite key.
+  const otherOwnersByKey = new Map<string, Array<{ epicId: string; storyId?: string }>>();
+  for (const map of others.values()) {
+    for (const entry of map) {
+      const key = repoKey(entry);
+      const owner: { epicId: string; storyId?: string } = entry.storyId
+        ? { epicId: entry.epicId, storyId: entry.storyId }
+        : { epicId: entry.epicId };
+      const list = otherOwnersByKey.get(key);
+      if (list) list.push(owner);
+      else otherOwnersByKey.set(key, [owner]);
+    }
+  }
 
   const overlaps: Overlap[] = [];
   const seen = new Set<string>();
   for (const entry of target) {
-    const otherOwners = otherOwnersByPath.get(entry.path);
-    if (!otherOwners) continue; // no other epic claims this exact path
-    if (seen.has(entry.path)) continue; // already recorded this path
-    seen.add(entry.path);
+    const key = repoKey(entry);
+    const otherOwners = otherOwnersByKey.get(key);
+    if (!otherOwners) continue; // no other epic claims this exact (repo, path)
+    if (seen.has(key)) continue; // already recorded this (repo, path)
+    seen.add(key);
 
     const targetOwner = entry.storyId
       ? { epicId: entry.epicId, storyId: entry.storyId }
