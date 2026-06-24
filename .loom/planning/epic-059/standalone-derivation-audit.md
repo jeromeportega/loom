@@ -2,7 +2,8 @@
 
 **Story:** story-059-001  
 **Status:** Complete — gates stories 059-003 (migration) and 059-006 (shim removal)  
-**Method:** Two independent searches (A: string-pattern grep; B: call-graph) confirmed against each other. Every hit from both passes is mapped below.
+**Audit commit:** 85f91ce  
+**Method:** Two independent searches (A: string-pattern grep; B: call-graph) confirmed against each other, plus a Search C pass for non-replace derivation forms. Every hit from all three passes is mapped below.
 
 ---
 
@@ -15,7 +16,13 @@ Scope: `packages/loom-core/src`, `packages/loom-web/src`, `packages/loom-cli/src
 
 Callers of: `EpicStore.get` (standalone-specific paths), `createStandalone`, `isStandalone`, `resolveEpicRow`, `resolveToInternalEpicId`, `epicNumber`.
 
-Both passes produced the same hit set. Gaps are noted explicitly.
+## Search C — Non-replace derivation forms
+
+Patterns: `` `story-${`` (template literals), `'story-' +` (concatenation), `.slice(4)`, `.slice(5)`, `.slice(6)` near id variables.  
+Scope: same as Search A (non-test files).  
+Result: **Zero additional derivation sites.** The two `.slice(5)` hits found were: (a) `PMAgent.ts:106` — LLM prompt text constructing example story-id strings from `firstId` (an `epic-NNN` planning id, never a standalone id); (b) `ClaudeCodeWorker.ts:497` — MCP tool name parsing (`name.slice(5)` where `name` starts with `'mcp__'`, unrelated to epic/story ids). Neither is a derivation site.
+
+All three passes produced the same derivation hit set. Gaps are noted explicitly.
 
 ---
 
@@ -70,9 +77,9 @@ export function standaloneStoryId(containerEpicId: string): string {
   return containerEpicId.replace(/^epic-/, 'story-');
 }
 ```
-**Problem:** Re-exported by `@loom-ai/core` (`src/index.ts:17`). **The code comment in `routing.ts` saying "called ONCE in Planner.runStandalone" is stale and incorrect.** `Planner.ts` imports only `type { EffectiveRouting }` from routing.ts (a type-only import, never a value import); the planner uses its own private alias `const standaloneStoryId = _plannerStandaloneStoryId` defined at `Planner.ts:42`. Grep (`grep -rn 'standaloneStoryId' packages/ --include='*.ts' | grep -v '_plannerStandaloneStoryId' | grep -v '\.test\.'`) returns **zero production callers** of the routing.ts function. It is already dead code in production; only tests import it (`physicalSeparation.test.ts`, `standaloneRouting.test.ts`, `StandaloneDispatch.test.ts`). After story-059-002 removes `_plannerStandaloneStoryId`, the routing.ts copy becomes the sole remaining definition and should be deleted in the same change set.  
+**Problem:** Re-exported by `@loom-ai/core` (`src/index.ts:17`). **The code comment in `routing.ts:34` reads: `"Producer: called ONCE in Planner.runStandalone at planning time."` This is stale and incorrect.** `Planner.ts` imports only `type { EffectiveRouting }` from routing.ts (a type-only import, never a value import); the planner uses its own private alias `const standaloneStoryId = _plannerStandaloneStoryId` defined at `Planner.ts:42`. The comment's claim of "called ONCE" is what the zero-caller grep refutes. Grep (`grep -rn 'standaloneStoryId' packages/ --include='*.ts' | grep -v '_plannerStandaloneStoryId' | grep -v '\.test\.'`) returns **zero production callers** of the routing.ts function. It is already dead code in production; only tests import it (`physicalSeparation.test.ts`, `standaloneRouting.test.ts`, `StandaloneDispatch.test.ts`). After story-059-002 removes `_plannerStandaloneStoryId`, the routing.ts copy becomes the sole remaining definition and should be deleted in the same change set.  
 **Required change:** Delete this function in story-059-002's change set (same owner as `_plannerStandaloneStoryId` removal). Update or delete the tests that import it directly.  
-**Semver note:** Deletion of this export requires a **semver-major version bump** on `@loom-ai/core` since it is part of the package's public API surface (re-exported via `src/index.ts`). If the export is marked `@internal` or the package is pre-release / not yet published externally, document that evidence and cite it in the -002 PR; otherwise treat deletion as a breaking change. Assigned to story-059-002 alongside `_plannerStandaloneStoryId` removal — see Gating Verdict for the merge-hold condition.
+**Semver note:** Deletion of this export **requires a semver-major version bump on `@loom-ai/core`**. Verified: the package is at version `5.41.0` (released, non-pre-release). No `@internal` JSDoc annotation is present on the function or on the `export * from './intake/routing.js'` re-export in `src/index.ts`. This is a public breaking change. Story-059-002's acceptance criteria must include: bump `@loom-ai/core` to `v6.0.0`, update `CHANGELOG.md` with the breaking change note, and publish before any downstream consumer updates. Assigned to story-059-002 alongside `_plannerStandaloneStoryId` removal — see Gating Verdict for the merge-hold condition.
 
 ---
 
@@ -151,7 +158,7 @@ const itemDisplayId = epic.kind === STANDALONE_KIND ? epic.id.replace(/^epic-/, 
 
 ---
 
-### Site 9 — `cli/commands/run.ts:217` — PR URL label (named site, part of standalone dispatch)
+### Site 9 — `cli/commands/run.ts:217` — PR URL label (NOT in named set)
 
 **File:** `packages/loom-cli/src/commands/run.ts`  
 **Line:** 217  
@@ -246,7 +253,7 @@ const storyId = agents.length > 0
   : epic.id.replace(/^epic-/, 'story-');
 ```
 **Problem:** Pre-dispatch standalone (no agent) derives story id from `epic.id`. After migration, `epic.id` IS `story-NNN`.  
-**Required change:** Replace with `const storyId = agents.length > 0 ? agents[0].story_id : epic.id`. The fallback becomes `epic.id` (already `story-NNN`). The `agents[0].story_id` branch is redundant post-migration (both values are `story-NNN`) but kept for clarity.
+**Required change:** Replace with `const storyId = epic.id` unconditionally. Post-migration both `agents[0].story_id` and `epic.id` are `story-NNN`, so retaining the ternary is dead code. A conditional that can never diverge misleads future readers into thinking the two values can differ. Remove the `agents[0].story_id` branch entirely.
 
 ---
 
@@ -286,8 +293,8 @@ const prPrefix = epic.kind === STANDALONE_KIND ? epicId.replace(/^epic-/, 'story
 const startNum = epics.length > 0 ? epicNumber(epics[0].epic_id) : 1;
 ```
 **Context:** `epics[0].epic_id` comes from the planner's `EpicYaml.epic_id` field — this is the container run id. For regular evals this is always `epic-NNN`. For standalone evals this would be `story-NNN` after story-059-002, causing `epicNumber` to return 0.  
-**Risk:** Low if evals never run standalone stories; medium if they do. `epicNumber` returning 0 causes `validateEpicSet` to use `startNum=1` which may produce false dependency-validation failures.  
-**Required change:** Replace `epicNumber(epics[0].epic_id)` with `idNumber(epics[0].epic_id)` (from the new paths.ts function). Assigned to story-059-002 (co-located with `idNumber()` introduction). Story-059-003 must not merge until this fix is in place.
+**Risk: CONFIRMED LOW.** EvalRunner.run() always calls `Planner.run()` (full epic planning), which exclusively produces `epic-NNN` container ids. The eval harness never invokes standalone planning. Verified by call-graph: `EvalRunner` has no callers outside its own module and test files; `Planner.runStandalone()` is never invoked by EvalRunner. Evals cannot receive `story-NNN` ids through the current code paths. The fix is still required for forward correctness (if standalone eval support is added later), but it is NOT a hard merge precondition for story-059-003.  
+**Required change:** Replace `epicNumber(epics[0].epic_id)` with `idNumber(epics[0].epic_id)` (from the new paths.ts function). Assigned to story-059-002 (co-located with `idNumber()` introduction).
 
 ---
 
@@ -362,18 +369,23 @@ ADR-006's claim is **confirmed correct** with one clarification:
 
 ## Gating Verdict
 
-Stories 059-003 and 059-006 may proceed to implementation.
+Story-059-003 may proceed to implementation. Story-059-006 may be drafted but must not merge until story-059-002 is merged and deployed.
 
-> **Conditional hold on merge:** Story-059-003 must not merge and Story-059-006 must not merge until `routing.ts:standaloneStoryId` and `EvalRunner.ts:98` ownership gaps are assigned and their fixes are included in epic-059. These are not cosmetic: `routing.ts` exports a public symbol from `@loom-ai/core` (semver-breaking deletion) and `EvalRunner.ts` causes silent correctness failures for standalone evals. Assign `EvalRunner.ts:98` to story-059-002 (co-located with `idNumber()` introduction in `paths.ts`). Assign `routing.ts:standaloneStoryId` deletion to story-059-002 as well (co-located with `_plannerStandaloneStoryId` removal).
+> **Conditional hold on merge:** Story-059-003 must not merge until the `routing.ts:standaloneStoryId` and `EvalRunner.ts:98` ownership gaps are assigned and their fixes are included in epic-059. `routing.ts` exports a public symbol from `@loom-ai/core` (semver-breaking deletion requiring a v6.0.0 bump); this must be resolved before the epic closes. `EvalRunner.ts:98` is assigned to story-059-002 as a forward-correctness fix (risk: confirmed low — see Site 17); it is NOT a hard merge gate for 059-003 but must ship within 059-002's change set.
+>
+> Story-059-006 must not merge until: (a) story-059-002 is merged and deployed with `EpicStore.get` and `isStandalone` updated to resolve `story-NNN` PKs natively; (b) story-059-003 migration has run and all standalone rows carry `story-NNN` PKs; and (c) the ownership gaps above (`routing.ts`, `EvalRunner.ts:98`) are resolved. The dependency chain is -002 → -003 → -006; skipping any step causes live queries against `story-NNN` ids to return 404.
+>
+> Assign `routing.ts:standaloneStoryId` deletion and `EvalRunner.ts:98` fix both to story-059-002 (co-located with `_plannerStandaloneStoryId` removal and `idNumber()` introduction respectively).
 
 **Preconditions for story-059-003:**
 
 0. **Capture migrated id set first** — at transaction start, before any UPDATE, create a temp table:
    ```sql
+   DROP TABLE IF EXISTS _migrated_standalone_ids;
    CREATE TEMP TABLE _migrated_standalone_ids AS
      SELECT id FROM epics WHERE kind = 'standalone' AND id LIKE 'epic-%';
    ```
-   All subsequent WHERE clauses reference this table. If this step is skipped and `epics.id` is updated first, the source list is gone and `audit_log.command` rows cannot be safely identified.
+   The `DROP TABLE IF EXISTS` is required for idempotency: SQLite TEMP tables are connection-scoped, not transaction-scoped — a rollback does not drop them. If the migration is retried on the same connection (e.g., after a caught error), the bare `CREATE` would fail with "table already exists". Prepending the `DROP TABLE IF EXISTS` makes the sequence safe to re-run. All subsequent WHERE clauses reference this table. If this step is skipped and `epics.id` is updated first, the source list is gone and `audit_log.command` rows cannot be safely identified.
 
 1. All sites in the "already story-framed" column list above are confirmed untouched by the migration.
 
@@ -382,13 +394,13 @@ Stories 059-003 and 059-006 may proceed to implementation.
    UPDATE audit_log SET command = 'story-' || substr(command, 6)
      WHERE command IN (SELECT id FROM _migrated_standalone_ids);
    ```
-   Do NOT use `LIKE 'epic-%'` or any prefix pattern — story-level `audit_log` rows carry `story-NNN` and are safe only because the IN predicate guards against them. A bulk prefix match would be harmless in practice (no `story-NNN` entry starts with `epic-`), but the explicit guard is required for correctness auditability.
+   Do NOT use `LIKE` or any prefix pattern on `audit_log.command` (unlike the `epics` capture in precondition 0, `audit_log` has no `kind` column to narrow scope — a LIKE match could incorrectly touch story-level rows). Story-level `audit_log` rows carry `story-NNN` and are safe only because the IN predicate guards against them. A bulk prefix match would be harmless in practice (no `story-NNN` entry starts with `epic-`), but the explicit IN guard is required for correctness auditability.
 
-3. `PRAGMA defer_foreign_keys = ON` must be issued on the **same `better-sqlite3` Database instance**, inside the **same `db.transaction()` callback**, before any UPDATE that temporarily violates the `epics.id → agents.epic_id` FK. In better-sqlite3, this pragma applies per-connection and only for the active transaction — opening a second connection or committing in batches voids the deferral for the remaining rows.
+3. `PRAGMA foreign_keys = ON` must be set on the connection **before** `PRAGMA defer_foreign_keys = ON`. SQLite disables FK constraint enforcement by default per-connection — without `foreign_keys = ON` first, `defer_foreign_keys` has no effect and the interim FK violation during the `epics.id` rename goes undetected rather than being deferred to commit-time. Both pragmas must be issued on the **same `better-sqlite3` Database instance**, inside the **same `db.transaction()` callback**, before any UPDATE that temporarily violates the `epics.id → agents.epic_id` FK. In better-sqlite3, these pragmas apply per-connection and only for the active transaction — opening a second connection or committing in batches voids the deferral for the remaining rows.
 
 **Preconditions for story-059-006:**
-1. Story-059-003 migration has run (standalone rows have `story-NNN` PKs).
-2. **Explicit dependency on story-059-002:** Story-059-006 must not proceed until story-059-002 is **merged and deployed** with `EpicStore.get` and `isStandalone` updated to resolve `story-NNN` PKs natively. Merging the shim removal (-006) before -002 ships causes live queries against `story-NNN` ids to fail. This dependency must appear in the epic dependency graph.
+0. **Story-059-003 migration has run and all standalone rows carry `story-NNN` PKs.** Story-059-006 must not merge until story-059-003 is merged and the migration has executed. Deleting the `resolveEpicRow` shim before the data migration runs means `store.get('story-NNN')` returns `undefined` for all pre-migration standalone rows — every web route touching standalone epics returns 404. This is the primary hard gate.
+1. **Story-059-002 is merged and deployed** with `EpicStore.get` and `isStandalone` updated to resolve `story-NNN` PKs natively. Story-059-006 must not merge until this ships. The dependency chain is -002 → -003 → -006; all three must land in order.
 
 **Ownership assignments needed before epic-059 can close:**
 
