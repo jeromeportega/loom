@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -183,6 +183,40 @@ CREATE TABLE IF NOT EXISTS lessons (
 
 CREATE INDEX IF NOT EXISTS idx_lessons_epic     ON lessons(epic_id);
 CREATE INDEX IF NOT EXISTS idx_lessons_category ON lessons(category);
+
+-- v27: coordinated cross-repo landing ledger (epic-060 story-060-002).
+-- landing_attempts: one row per coordinated landing initiated by loom.
+-- repo_merges: one row per repo per attempt — the revert anchor (FR-5).
+-- Only loom-performed merges get a repo_merges row; concurrent human merges
+-- are structurally absent from rollback (AC3).
+CREATE TABLE IF NOT EXISTS landing_attempts (
+  id         TEXT PRIMARY KEY,
+  epic_id    TEXT NOT NULL REFERENCES epics(id),
+  status     TEXT NOT NULL CHECK(status IN ('staging','merging','blocked','landed','rolling_back','rolled_back','failed')),
+  base_shas  TEXT NOT NULL DEFAULT '{}',
+  blocker    TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS repo_merges (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id       TEXT NOT NULL REFERENCES landing_attempts(id),
+  repo_slug        TEXT NOT NULL,
+  depends_on       TEXT,
+  pr_number        INTEGER,
+  pr_url           TEXT,
+  merge_commit_sha TEXT,
+  merge_state      TEXT NOT NULL DEFAULT 'pending' CHECK(merge_state IN ('pending','merged','revert_pending','reverted')),
+  revert_pr_url    TEXT,
+  revert_merge_sha TEXT,
+  merged_at        DATETIME,
+  reverted_at      DATETIME,
+  UNIQUE (attempt_id, repo_slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repo_merges_attempt ON repo_merges(attempt_id);
+CREATE INDEX IF NOT EXISTS idx_landing_attempts_epic ON landing_attempts(epic_id);
 `;
 
 let _db: Database.Database | null = null;
