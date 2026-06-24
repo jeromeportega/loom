@@ -245,6 +245,29 @@ describe('LandingStore.recordMerge', () => {
   });
 });
 
+// ─── recordMerge error cases ──────────────────────────────────────────────────
+
+describe('LandingStore.recordMerge — error paths', () => {
+  it('throws when (attempt_id, repo_slug) row does not exist (changes !== 1)', () => {
+    const db = makeDb('record-merge-missing.db');
+    seedEpic(db);
+    const store = new LandingStore(db);
+    // beginAttempt NOT called for 'nonexistent-repo'
+    const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
+    assert.throws(
+      () => store.recordMerge(id, {
+        repoSlug: 'nonexistent-repo',
+        prNumber: 99,
+        prUrl: 'https://github.com/org/repo/pull/99',
+        mergeCommitSha: 'sha-xyz',
+      }),
+      /no row found.*nonexistent-repo/,
+      'must throw when no matching repo_merges row exists',
+    );
+    db.close();
+  });
+});
+
 // ─── Uniqueness boundary test ─────────────────────────────────────────────────
 
 describe('repo_merges uniqueness boundary', () => {
@@ -334,6 +357,35 @@ describe('LandingStore.pendingReverts — anchoring boundary (AC3)', () => {
     // Consumer must come before producer on rollback
     assert.equal(pending[0].repoSlug, 'consumer', 'consumer reverted first');
     assert.equal(pending[1].repoSlug, 'producer', 'producer reverted second');
+    db.close();
+  });
+
+  it('correctly orders a 3-node chain (A→B→C) — topological sort, not pairwise (C first, then B, then A)', () => {
+    const db = makeDb('anchoring-order-3node.db');
+    seedEpic(db);
+    const store = new LandingStore(db);
+    // A is the root producer, B depends on A, C depends on B
+    const id = store.beginAttempt('epic-test', [
+      makeStage('repo-a', '/tmp'),
+      makeStage('repo-b', '/tmp', ['repo-a']),
+      makeStage('repo-c', '/tmp', ['repo-b']),
+    ]);
+
+    for (const slug of ['repo-a', 'repo-b', 'repo-c']) {
+      store.recordMerge(id, {
+        repoSlug: slug,
+        prNumber: 1,
+        prUrl: 'https://github.com/org/repo/pull/1',
+        mergeCommitSha: `sha-${slug}`,
+      });
+    }
+
+    const pending = store.pendingReverts(id);
+    assert.equal(pending.length, 3);
+    // Rollback must be C → B → A (leaf consumer first, root producer last)
+    assert.equal(pending[0].repoSlug, 'repo-c', 'repo-c (leaf consumer) reverted first');
+    assert.equal(pending[1].repoSlug, 'repo-b', 'repo-b (mid node) reverted second');
+    assert.equal(pending[2].repoSlug, 'repo-a', 'repo-a (root producer) reverted last');
     db.close();
   });
 });
@@ -498,6 +550,64 @@ describe('makeAnchoringMerger — ADR-004: active gh pr merge with SHA capture',
       /has no prUrl/,
       'missing prUrl must reject',
     );
+    db.close();
+  });
+
+  it('throws when prUrl is not a valid GitHub PR URL (argument-confusion guard)', async () => {
+    const db = makeDb('anchoring-merger-bad-url.db');
+    seedEpic(db);
+    const store = new LandingStore(db);
+    const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
+
+    const merger = makeAnchoringMerger(store, {
+      policy: {} as PolicyEngine,
+      _ghMerge: () => ({ number: 1, mergeCommitSha: 'sha' }),
+    });
+
+    const stage: RepoStage = {
+      repoSlug: 'repo-a',
+      repoRoot: '/tmp',
+      storyIds: ['story-001'],
+      dependsOnRepos: [],
+      status: 'finalizing',
+      prUrl: '--some-flag',  // argument confusion injection attempt
+    };
+
+    await assert.rejects(
+      () => merger(stage, id),
+      /not a valid GitHub PR URL/,
+      'invalid prUrl must reject before execFileSync is called',
+    );
+    db.close();
+  });
+
+  it('mergedAt in returned record matches the DB persisted value (no JS/SQLite clock mismatch)', async () => {
+    const db = makeDb('anchoring-merger-mergedat.db');
+    seedEpic(db);
+    const store = new LandingStore(db);
+    const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
+
+    const merger = makeAnchoringMerger(store, {
+      policy: {} as PolicyEngine,
+      _ghMerge: () => ({ number: 7, mergeCommitSha: 'sha-clock-test' }),
+    });
+
+    const stage: RepoStage = {
+      repoSlug: 'repo-a',
+      repoRoot: '/tmp',
+      storyIds: ['story-001'],
+      dependsOnRepos: [],
+      status: 'finalizing',
+      prUrl: 'https://github.com/org/repo/pull/7',
+    };
+
+    const record = await merger(stage, id);
+
+    // The returned record comes from the DB — its mergedAt must equal the persisted value
+    const { merges } = store.getAttempt(id);
+    const stored = merges.find(m => m.repoSlug === 'repo-a')!;
+    assert.equal(record.mergedAt, stored.mergedAt, 'returned mergedAt matches DB-persisted mergedAt');
+    assert.ok(record.mergedAt !== null, 'mergedAt is populated');
     db.close();
   });
 });

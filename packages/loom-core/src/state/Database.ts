@@ -192,7 +192,7 @@ CREATE INDEX IF NOT EXISTS idx_lessons_category ON lessons(category);
 CREATE TABLE IF NOT EXISTS landing_attempts (
   id         TEXT PRIMARY KEY,
   epic_id    TEXT NOT NULL REFERENCES epics(id),
-  status     TEXT NOT NULL,
+  status     TEXT NOT NULL CHECK(status IN ('staging','merging','blocked','landed','rolling_back','rolled_back','failed')),
   base_shas  TEXT,
   blocker    TEXT,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -207,7 +207,7 @@ CREATE TABLE IF NOT EXISTS repo_merges (
   pr_number        INTEGER,
   pr_url           TEXT,
   merge_commit_sha TEXT,
-  merge_state      TEXT NOT NULL DEFAULT 'pending',
+  merge_state      TEXT NOT NULL DEFAULT 'pending' CHECK(merge_state IN ('pending','merged','revert_pending','reverted')),
   revert_pr_url    TEXT,
   revert_merge_sha TEXT,
   merged_at        DATETIME,

@@ -16,22 +16,40 @@ import type { PolicyEngine } from '../guardrails/PolicyEngine.js';
 // ─── Row mappers ──────────────────────────────────────────────────────────────
 
 function rowToAttempt(row: Record<string, unknown>): LandingAttempt {
+  let baseShas: Record<string, string>;
+  let blocker: LandingBlocker | null;
+  try {
+    baseShas = JSON.parse((row.base_shas as string | null) ?? '{}') as Record<string, string>;
+  } catch (e) {
+    throw new Error(`LandingStore: failed to parse base_shas for attempt '${row.id as string}': ${(e as Error).message}`);
+  }
+  try {
+    blocker = row.blocker ? (JSON.parse(row.blocker as string) as LandingBlocker) : null;
+  } catch (e) {
+    throw new Error(`LandingStore: failed to parse blocker for attempt '${row.id as string}': ${(e as Error).message}`);
+  }
   return {
     id: row.id as string,
     epicId: row.epic_id as string,
     status: row.status as LandingAttemptStatus,
-    baseShas: JSON.parse((row.base_shas as string | null) ?? '{}') as Record<string, string>,
-    blocker: row.blocker ? (JSON.parse(row.blocker as string) as LandingBlocker) : null,
+    baseShas,
+    blocker,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
 }
 
 function rowToMerge(row: Record<string, unknown>): RepoMergeRecord {
+  let dependsOn: string[];
+  try {
+    dependsOn = JSON.parse((row.depends_on as string | null) ?? '[]') as string[];
+  } catch (e) {
+    throw new Error(`LandingStore: failed to parse depends_on for repo_merge id=${row.id as string}: ${(e as Error).message}`);
+  }
   return {
     attemptId: row.attempt_id as string,
     repoSlug: row.repo_slug as string,
-    dependsOn: JSON.parse((row.depends_on as string | null) ?? '[]') as string[],
+    dependsOn,
     prNumber: (row.pr_number as number | null) ?? null,
     prUrl: (row.pr_url as string | null) ?? null,
     mergeCommitSha: (row.merge_commit_sha as string | null) ?? null,
@@ -49,32 +67,35 @@ export class LandingStore implements LandingStorePort {
   constructor(private readonly db: Database.Database) {}
 
   beginAttempt(epicId: string, stages: RepoStage[]): string {
-    const { cnt } = this.db
-      .prepare('SELECT COUNT(*) as cnt FROM landing_attempts WHERE epic_id = ?')
-      .get(epicId) as { cnt: number };
-    const attemptId = `landing-${epicId}-${cnt}`;
-
-    // Capture pre-landing HEAD SHA for each repo (best-effort — empty string on git failure)
+    // Capture SHA outside the transaction — I/O ops must not run inside SQLite transactions.
     const baseShas: Record<string, string> = {};
     for (const stage of stages) {
       const res = gitSafe(stage.repoRoot, ['rev-parse', 'HEAD']);
       baseShas[stage.repoSlug] = res.ok ? res.output : '';
     }
 
-    this.db
-      .prepare(
-        `INSERT INTO landing_attempts (id, epic_id, status, base_shas, blocker)
-         VALUES (?, ?, 'staging', ?, NULL)`,
-      )
-      .run(attemptId, epicId, JSON.stringify(baseShas));
-
+    const insertAttempt = this.db.prepare(
+      `INSERT INTO landing_attempts (id, epic_id, status, base_shas, blocker)
+       VALUES (?, ?, 'staging', ?, NULL)`,
+    );
     const insertMerge = this.db.prepare(
       `INSERT INTO repo_merges (attempt_id, repo_slug, depends_on, merge_state)
        VALUES (?, ?, ?, 'pending')`,
     );
-    for (const stage of stages) {
-      insertMerge.run(attemptId, stage.repoSlug, JSON.stringify(stage.dependsOnRepos));
-    }
+
+    let attemptId!: string;
+
+    this.db.transaction(() => {
+      const { cnt } = this.db
+        .prepare('SELECT COUNT(*) as cnt FROM landing_attempts WHERE epic_id = ?')
+        .get(epicId) as { cnt: number };
+      attemptId = `landing-${epicId}-${cnt}`;
+
+      insertAttempt.run(attemptId, epicId, JSON.stringify(baseShas));
+      for (const stage of stages) {
+        insertMerge.run(attemptId, stage.repoSlug, JSON.stringify(stage.dependsOnRepos));
+      }
+    })();
 
     return attemptId;
   }
@@ -83,7 +104,7 @@ export class LandingStore implements LandingStorePort {
     attemptId: string,
     m: { repoSlug: string; prNumber: number; prUrl: string; mergeCommitSha: string },
   ): void {
-    this.db
+    const result = this.db
       .prepare(
         `UPDATE repo_merges
          SET merge_commit_sha = ?,
@@ -94,6 +115,11 @@ export class LandingStore implements LandingStorePort {
          WHERE attempt_id = ? AND repo_slug = ?`,
       )
       .run(m.mergeCommitSha, m.prNumber, m.prUrl, attemptId, m.repoSlug);
+    if (result.changes !== 1) {
+      throw new Error(
+        `LandingStore.recordMerge: no row found for attempt '${attemptId}' repo '${m.repoSlug}' — call beginAttempt first`,
+      );
+    }
   }
 
   markRevertPending(attemptId: string, repoSlug: string, revertPrUrl: string): void {
@@ -128,13 +154,9 @@ export class LandingStore implements LandingStorePort {
 
     const records = rows.map(rowToMerge);
 
-    // Reverse dependency order: consumers before producers (ADR-005).
-    // a.dependsOn.includes(b.repoSlug) → a depends on b → a is consumer → a comes first.
-    return records.sort((a, b) => {
-      if (a.dependsOn.includes(b.repoSlug)) return -1;
-      if (b.dependsOn.includes(a.repoSlug)) return 1;
-      return 0;
-    });
+    // Topological sort (Kahn's BFS) then reverse for consumer-before-producer rollback order
+    // (ADR-005). A pairwise comparator is incorrect for chains of 3+ nodes.
+    return topoSortReversed(records);
   }
 
   getAttempt(attemptId: string): { attempt: LandingAttempt; merges: RepoMergeRecord[] } {
@@ -171,7 +193,61 @@ export class LandingStore implements LandingStorePort {
   }
 }
 
+// ─── Topological sort (Kahn's BFS) ───────────────────────────────────────────
+
+/**
+ * Sorts records in forward topological order (producers before consumers) using
+ * Kahn's BFS algorithm, then reverses for consumer-before-producer rollback order
+ * (ADR-005). Correct for dependency chains of any length — a pairwise comparator
+ * is only correct for a single producer/consumer pair.
+ */
+function topoSortReversed(records: RepoMergeRecord[]): RepoMergeRecord[] {
+  if (records.length <= 1) return records;
+
+  const bySlug = new Map(records.map(r => [r.repoSlug, r]));
+  const slugSet = new Set(bySlug.keys());
+
+  // Build adjacency (producer → consumers) and in-degree within this record set.
+  const adj = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  for (const r of records) {
+    adj.set(r.repoSlug, []);
+    inDegree.set(r.repoSlug, 0);
+  }
+  for (const r of records) {
+    for (const dep of r.dependsOn) {
+      if (slugSet.has(dep)) {
+        adj.get(dep)!.push(r.repoSlug);
+        inDegree.set(r.repoSlug, (inDegree.get(r.repoSlug) ?? 0) + 1);
+      }
+    }
+  }
+
+  // BFS from zero-in-degree nodes (pure producers first).
+  const queue: string[] = [];
+  for (const [slug, deg] of inDegree) {
+    if (deg === 0) queue.push(slug);
+  }
+
+  const topo: RepoMergeRecord[] = [];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    topo.push(bySlug.get(cur)!);
+    for (const neighbor of adj.get(cur) ?? []) {
+      const newDeg = (inDegree.get(neighbor) ?? 0) - 1;
+      inDegree.set(neighbor, newDeg);
+      if (newDeg === 0) queue.push(neighbor);
+    }
+  }
+
+  // Reverse: consumers-first for rollback.
+  topo.reverse();
+  return topo;
+}
+
 // ─── makeAnchoringMerger ──────────────────────────────────────────────────────
+
+const GITHUB_PR_URL_RE = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/;
 
 export interface AnchoringMergerDeps {
   policy: PolicyEngine;
@@ -204,6 +280,12 @@ export function makeAnchoringMerger(
       );
     }
 
+    if (!GITHUB_PR_URL_RE.test(stage.prUrl)) {
+      throw new Error(
+        `makeAnchoringMerger: prUrl '${stage.prUrl}' is not a valid GitHub PR URL`,
+      );
+    }
+
     let prNumber: number;
     let mergeCommitSha: string;
 
@@ -214,12 +296,34 @@ export function makeAnchoringMerger(
     } else {
       // Active merge via `gh pr merge --squash --json` — SHA is captured from the
       // command result, not polled afterwards (ADR-004). Matches git.ts/execFileSync pattern.
-      const raw = execFileSync(
-        'gh',
-        ['pr', 'merge', stage.prUrl, '--squash', '--json', 'number,mergeCommit'],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      ).trim();
-      const parsed = JSON.parse(raw) as { number: number; mergeCommit: { oid: string } };
+      let raw: string;
+      try {
+        raw = execFileSync(
+          'gh',
+          ['pr', 'merge', stage.prUrl, '--squash', '--json', 'number,mergeCommit'],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+        ).trim();
+      } catch (err) {
+        throw new Error(
+          `makeAnchoringMerger: gh pr merge failed for '${stage.repoSlug}': ${(err as Error).message}`,
+        );
+      }
+
+      let parsed: { number: number; mergeCommit: { oid: string } | null };
+      try {
+        parsed = JSON.parse(raw) as { number: number; mergeCommit: { oid: string } | null };
+      } catch (err) {
+        throw new Error(
+          `makeAnchoringMerger: failed to parse gh pr merge output for '${stage.repoSlug}'`,
+        );
+      }
+
+      if (!parsed.mergeCommit?.oid) {
+        throw new Error(
+          `makeAnchoringMerger: gh pr merge returned no mergeCommit.oid for '${stage.repoSlug}' — merge may be pending or failed`,
+        );
+      }
+
       prNumber = parsed.number;
       mergeCommitSha = parsed.mergeCommit.oid;
     }
@@ -231,18 +335,15 @@ export function makeAnchoringMerger(
       mergeCommitSha,
     });
 
-    return {
-      attemptId,
-      repoSlug: stage.repoSlug,
-      dependsOn: stage.dependsOnRepos,
-      prNumber,
-      prUrl: stage.prUrl,
-      mergeCommitSha,
-      mergeState: 'merged',
-      revertPrUrl: null,
-      revertMergeSha: null,
-      mergedAt: new Date().toISOString(),
-      revertedAt: null,
-    };
+    // Return the canonically persisted record so mergedAt reflects the DB clock,
+    // not a JS Date that diverges in format from SQLite's CURRENT_TIMESTAMP.
+    const { merges } = store.getAttempt(attemptId);
+    const persisted = merges.find(m => m.repoSlug === stage.repoSlug);
+    if (!persisted) {
+      throw new Error(
+        `makeAnchoringMerger: could not retrieve persisted merge record for '${stage.repoSlug}' in attempt '${attemptId}'`,
+      );
+    }
+    return persisted;
   };
 }
