@@ -208,6 +208,13 @@ export function loadEnvLayer(env: NodeJS.ProcessEnv): ConfigLayer {
     // BaseCliWorker.workerEnv() from process.env — never through this layer.
     if (key.startsWith('ANTHROPIC_')) continue;
 
+    // LOOM_HOME is the reserved loom-home path override, read directly by
+    // resolveLoomHomePath — it is NOT a config-layer key. Without this skip it
+    // parses as LOOM_ + "home", maps to nothing, and emits a spurious "does not
+    // map" warning that pollutes machine-readable command output (broke the
+    // guard-check JSON and the alias-advisory assertions).
+    if (key === 'LOOM_HOME') continue;
+
     if (!key.startsWith(ENV_PREFIX)) continue;
 
     const suffix = key.slice(ENV_PREFIX.length).toLowerCase();
