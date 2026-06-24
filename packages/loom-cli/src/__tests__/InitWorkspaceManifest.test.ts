@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
+import { resolveLoomHomePath } from '@loom-ai/core';
 
 // __dirname = packages/loom-cli/dist/__tests__
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
@@ -55,27 +56,21 @@ before(() => {
   fs.mkdirSync(projectDir);
   execSync('git init -q', { cwd: projectDir });
 
-  // resolveLoomHomePath resolves symlinks before computing the sibling path;
-  // mirror that here so we look in the right place.
-  const realProject = (() => {
-    try { return fs.realpathSync(projectDir); } catch { return projectDir; }
-  })();
-  loomHomeDir = path.join(path.dirname(realProject), 'loom-home');
+  // Use resolveLoomHomePath directly instead of replicating its algorithm, so
+  // the test always looks in the same place loom init writes to.
+  loomHomeDir = resolveLoomHomePath(projectDir, {});
+
+  // Run loom init once for all tests. Asserting exit 0 here avoids an implicit
+  // ordering dependency on the first it() block.
+  const result = runInit();
+  assert.equal(result.status, 0, `loom init failed: ${result.stderr}`);
 });
 
 after(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
-  if (fs.existsSync(loomHomeDir)) {
-    fs.rmSync(loomHomeDir, { recursive: true, force: true });
-  }
 });
 
 describe('loom init — workspace manifest (story-054-003)', () => {
-  it('loom init exits 0', () => {
-    const result = runInit();
-    assert.equal(result.status, 0, `loom init failed: ${result.stderr}`);
-  });
-
   it('workspace.yaml exists in loom-home after loom init', () => {
     assert.ok(
       fs.existsSync(path.join(loomHomeDir, 'workspace.yaml')),

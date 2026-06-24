@@ -71,8 +71,13 @@ export function runInit(options: { cursor?: boolean; yes?: boolean }): void {
 
   // ─── workspace manifest (committed source of truth) ──────────────────────
   // Distinct from the machine-local ProjectRegistry (ADR-005). registerRepo is
-  // idempotent — re-running loom init is a no-op.
-  registerRepo(resolveLoomHomePath(projectRoot, initPolicy), projectRoot);
+  // idempotent — re-running loom init is a no-op. A failure here must not fail
+  // `loom init` (same defensive pattern as ProjectRegistry above).
+  try {
+    registerRepo(resolveLoomHomePath(projectRoot, initPolicy), projectRoot);
+  } catch (err) {
+    console.log(`  (skipped workspace manifest: ${(err as Error).message})`);
+  }
 
   // ─── .gitignore additions ─────────────────────────────────────────────────
   ensureGitignore(projectRoot);
