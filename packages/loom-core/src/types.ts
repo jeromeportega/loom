@@ -614,31 +614,6 @@ export const PolicySchema = z.object({
       registry: z.string().optional(),
     })
     .default({}),
-  cross_repo: z
-    .object({
-      // Opt-in; single-repo workspaces never enter the cross-repo path.
-      enabled: z.boolean().default(false),
-      bounds: z
-        .object({
-          max_line_window: z.number().int().min(1).default(200),
-          max_file_bytes: z.number().int().min(1).default(262144),
-          max_files: z.number().int().min(1).default(20),
-          max_matches_per_file: z.number().int().min(1).default(10),
-        })
-        .default({}),
-      secret_globs: z
-        .array(z.string())
-        .default([
-          '**/.env',
-          '**/.env.*',
-          '**/*.pem',
-          '**/*.key',
-          '**/id_rsa*',
-          '**/secrets/**',
-          '**/*.tfstate',
-        ]),
-    })
-    .default({}),
   // Absolute or ~-expandable path to the loom-home repository. Omit to use
   // the default sibling directory (parent of projectRoot + '/loom-home').
   loom_home: z.string().optional(),
