@@ -308,6 +308,8 @@ const delay = (ms: number): Promise<void> =>
 export class Supervisor {
   /** One WorktreeManager per resolved repo slug — lazily populated at dispatch. */
   private wtByRepo: Map<string, WorktreeManager>;
+  /** Expected repo root per slug — guards against a slug being registered with two different roots. */
+  private rootBySlug: Map<string, string>;
   /** Cached manifest context (manifest + primary slug) — resolved once on first use. */
   private _manifestCtx?: { manifest: WorkspaceManifest; primarySlug: string };
   private integration: IntegrationBranch;
@@ -435,6 +437,7 @@ export class Supervisor {
 
   constructor(private opts: SupervisorOptions) {
     this.wtByRepo = new Map();
+    this.rootBySlug = new Map();
     this.workerLogs = new WorkerLogStore(path.join(opts.projectRoot, '.loom'));
     this.integration = new IntegrationBranch(opts.projectRoot);
     if (opts.integrationBranch === 'rolling' && opts.integrator === 'on') {
@@ -464,10 +467,10 @@ export class Supervisor {
   /**
    * Dispatches approved epics. Accepts either:
    *  - `string[]` (legacy): list of epic IDs, or undefined for all approved epics.
-   *  - `{ epicIds?, epicId?, repoFilter? }` (new seam, consumed by CrossRepoCoordinator):
+   *  - `{ epicIds?, epicId?, repoFilter? }` (new seam for per-repo partitioning):
    *    optionally scope to a single epicId/array and filter dispatched stories to
    *    those resolving to `repoFilter` slug so one supervisor handles one repo
-   *    partition of a cross-repo epic.
+   *    partition of a cross-repo epic. Planned consumer: CrossRepoCoordinator.
    */
   async run(
     epicIdsOrOpts?: string[] | { epicId?: string; epicIds?: string[]; repoFilter?: string }
@@ -578,7 +581,11 @@ export class Supervisor {
             const { slug } = resolveStoryRepo(story, mf, ps);
             if (slug !== repoFilter) continue;
           } catch {
-            // Resolution failure: include the story; dispatch will fail it cleanly.
+            // Resolution failure: skip from this partition. Including an
+            // unresolvable story in every partition would cause it to fail
+            // in each one, multiplying failures and corrupting per-story
+            // state if the store is shared. One supervisor owns the failure.
+            continue;
           }
         }
         tasks.set(story.id, this.taskFor(epicId, story));
@@ -654,6 +661,20 @@ export class Supervisor {
           // No finalizer wired: there is no per-epic PR flow, so the epic-PR
           // gate doesn't apply — preserve the legacy "all stories done ⇒ done".
           this.epics.updateStatus(epicId, 'done');
+        }
+      }
+
+      // Ensure the primary repo's WorktreeManager is always in wtByRepo so
+      // WorktreeJanitor can prune orphans from prior crashed runs even when no
+      // stories were dispatched this run (e.g. all stories already completed on
+      // a resume). Before this change `this.wt` was unconditionally constructed,
+      // giving the janitor a manager to iterate; wtByRepo starts empty and is
+      // only populated by dispatch, so we seed it here if still empty.
+      {
+        const { manifest: mf, primarySlug: ps } = this.manifestContext();
+        const primaryEntry = mf.repos.find((r) => r.slug === ps);
+        if (primaryEntry && !this.wtByRepo.has(ps)) {
+          this.worktreeFor(ps, primaryEntry.path);
         }
       }
 
@@ -1412,12 +1433,28 @@ export class Supervisor {
    * creating a new one rooted at `root` on the first call. Subsequent calls
    * with the same slug return the cached instance so worktrees in the same
    * repo share a single manager — exactly one manager per repo per run.
+   *
+   * Invariant: callers must guarantee that the same slug always maps to the
+   * same root. A mismatch indicates that `resolveStoryRepo` returned
+   * inconsistent roots for the same slug (e.g. before vs. after a
+   * symlink-normalization fix), which would silently root later stories in
+   * the wrong location. We detect and throw rather than silently ignoring.
    */
   private worktreeFor(slug: string, root: string): WorktreeManager {
     const existing = this.wtByRepo.get(slug);
-    if (existing) return existing;
+    if (existing) {
+      const registeredRoot = this.rootBySlug.get(slug);
+      if (registeredRoot !== undefined && registeredRoot !== root) {
+        throw new Error(
+          `Supervisor: slug "${slug}" was registered with root "${registeredRoot}" ` +
+          `but now called with root "${root}" — slug↔root must be bijective.`
+        );
+      }
+      return existing;
+    }
     const mgr = new WorktreeManager(root);
     this.wtByRepo.set(slug, mgr);
+    this.rootBySlug.set(slug, root);
     return mgr;
   }
 

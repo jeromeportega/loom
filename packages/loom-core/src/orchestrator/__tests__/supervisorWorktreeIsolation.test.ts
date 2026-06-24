@@ -282,13 +282,14 @@ describe('Supervisor.dispatch — WorkerAssignment comes from resolveStoryRepo',
     const a = captured[0];
 
     assert.equal(a.projectRoot, realRootB, 'projectRoot must be repo-b root');
-    assert.equal(
-      a.worktreePath,
-      path.join(realRootB, '.loom', 'worktrees', 'story-001-001'),
-      'worktreePath must be under repo-b'
+    // Assert repo boundary without coupling to WorktreeManager's internal layout.
+    assert.ok(
+      a.worktreePath.startsWith(path.join(realRootB, '.loom')),
+      `worktreePath must be under repo-b's .loom dir, got: ${a.worktreePath}`
     );
     assert.equal(a.branchName, 'story/story-001-001', 'branchName unchanged');
     assert.equal(a.worktreeContext?.repoSlug, 'repo-b');
+    // Consistency: worktreeContext.worktreePath mirrors the assignment field.
     assert.equal(a.worktreeContext?.worktreePath, a.worktreePath);
   });
 });
