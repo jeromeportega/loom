@@ -684,6 +684,8 @@ export const StorySchema = z.object({
   acceptance_criteria: z.array(z.string()).min(1),
   estimated_complexity: z.enum(['trivial', 'small', 'medium', 'large']),
   dependencies: z.array(z.string()),
+  /** Registered manifest slug for the target repo; absent → resolves to the epic's primary repo. */
+  repo: z.string().optional(),
   tech_notes: z.string().optional(),
   test_plan: z.string().optional(),
   /**

@@ -59,6 +59,9 @@ definitions:
       estimated_complexity:
         type: string
         enum: [trivial, small, medium, large]
+      repo:
+        type: string
+        description: "Optional registered manifest slug for the target repo; absent → resolves to the epic's primary repo"
       dependencies:
         type: array
         items:
