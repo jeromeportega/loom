@@ -52,8 +52,30 @@ export function epicId(num: number): string {
   return `epic-${String(num).padStart(3, '0')}`;
 }
 
-/** Parses an epic id back to its number, e.g. "epic-003" -> 3. Returns 0 if unparseable. */
-export function epicNumber(id: string): number {
-  const m = id.match(/^epic-(\d+)$/);
+/** Formats a story number as a zero-padded standalone id, e.g. 3 -> "story-003". */
+export function storyId(num: number): string {
+  return `story-${String(num).padStart(3, '0')}`;
+}
+
+/**
+ * Parses either an epic id ("epic-NNN") or a standalone story id ("story-NNN")
+ * back to its number. Returns 0 for any other input (never throws).
+ * This is the load-bearing counter parse for the shared global sequence —
+ * both prefixes must be visible so a story-NNN row can never be reused by a
+ * future epic-NNN (NFR-4).
+ */
+export function idNumber(id: string | null | undefined): number {
+  if (!id) return 0;
+  const m = id.match(/^(?:epic|story)-(\d+)$/);
   return m ? parseInt(m[1], 10) : 0;
+}
+
+/**
+ * Parses an epic id back to its number, e.g. "epic-003" -> 3.
+ * Returns 0 if unparseable or if the id is not epic-prefixed.
+ * Back-compat: delegates to idNumber() for the epic- prefix only,
+ * so story-NNN ids are NOT counted here (use idNumber() directly for that).
+ */
+export function epicNumber(id: string): number {
+  return id.startsWith('epic-') ? idNumber(id) : 0;
 }

@@ -28,19 +28,42 @@ export class EpicStore {
   }
 
   /**
-   * Inserts an internal container row for a standalone story (v24, epic-047).
-   * The row has kind='standalone' so list() and presentation sites can exclude
-   * or render it separately. The FK agents.epic_id points to this container id,
-   * keeping the agents schema unchanged (ADR-002).
+   * Reserves a standalone story row at the START of planning so observers can
+   * see it immediately. Analogous to `beginPlanning` for the epic path.
+   * Uses INSERT OR IGNORE so callers that race to reserve the same id are safe —
+   * the second call is a no-op rather than a UNIQUE constraint violation.
    */
-  createStandalone(epicId: string, title: string): void {
+  beginStandalonePlanning(storyId: string, userBrief: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO epics
+           (id, title, status, kind, planning_phase, user_brief, created_at, updated_at)
+         VALUES (?, '(planning…)', 'planning', ?, 'analyst', ?, ?, ?)`
+      )
+      .run(storyId, STANDALONE_KIND, userBrief, now, now);
+  }
+
+  /**
+   * Finalises a standalone story row with its title and status='planned'.
+   * Uses ON CONFLICT DO UPDATE so this is safe whether the row was
+   * pre-reserved via `beginStandalonePlanning` or is being created for the
+   * first time (e.g. in the self-allocating / test path).
+   * The row's PK `id` IS `storyId` ('story-NNN'); no epic-NNN container.
+   */
+  createStandalone(storyId: string, title: string): void {
     const now = new Date().toISOString();
     this.db
       .prepare(
         `INSERT INTO epics (id, title, status, kind, created_at, updated_at)
-         VALUES (?, ?, 'planned', ?, ?, ?)`
+         VALUES (?, ?, 'planned', ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           title      = excluded.title,
+           status     = 'planned',
+           kind       = excluded.kind,
+           updated_at = excluded.updated_at`
       )
-      .run(epicId, title, STANDALONE_KIND, now, now);
+      .run(storyId, title, STANDALONE_KIND, now, now);
   }
 
   /** Returns true iff the given epic row is a standalone story container. */
