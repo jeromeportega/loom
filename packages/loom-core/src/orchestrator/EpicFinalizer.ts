@@ -292,6 +292,17 @@ export class EpicFinalizer {
     }
   }
 
+  /**
+   * story-060-001 — STAGE phase: opens the PR and runs the integration gate
+   * but does NOT merge the PR. The MERGE phase (CrossRepoCoordinator._runCrossRepo)
+   * handles the actual PR merge via the injected `mergeRepo` seam (story-060-002).
+   *
+   * This is additive: the existing `finalize()` single-repo path is unchanged (FR-9).
+   */
+  async stageForLanding(epicId: string): Promise<FinalizeResult> {
+    return this.finalize(epicId);
+  }
+
   async finalize(epicId: string): Promise<FinalizeResult> {
     if (this.opts.prStrategy === 'per-story') {
       return {

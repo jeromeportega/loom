@@ -422,14 +422,17 @@ describe('CrossRepoCoordinator.run — one PR per repo', () => {
   });
 });
 
-// ─── (4) Consumer waits for producer's waitForMerge ──────────────────────────
+// ─── (4) story-060-001: STAGE→MERGE phasing ──────────────────────────────────
+// These tests replace the old "consumer waits for producer merge" suite.
+// The new behavior: STAGE all repos first (no merge during staging), then
+// MERGE all in topo order only when allReady. If any repo is not ready,
+// no repo merges (all-or-none gate, ADR-002).
 
-describe('CrossRepoCoordinator.run — consumer waits for producer merge', () => {
-  it('(4) producer supervisor and finalize run before consumer supervisor and finalize', async () => {
+describe('CrossRepoCoordinator.run — STAGE→MERGE phasing (story-060-001)', () => {
+  it('(4a) STAGE phase runs all repos before any mergeRepo call', async () => {
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
 
-    // repo-b (consumer) depends on repo-a (producer).
     const epicStories = [
       story('story-001-001', [], 'repo-a'),
       story('story-001-002', ['story-001-001'], 'repo-b'),
@@ -458,12 +461,26 @@ describe('CrossRepoCoordinator.run — consumer waits for producer merge', () =>
       finalize: async (_epicId) => {
         const slug = repoRoot === realA ? 'repo-a' : 'repo-b';
         callOrder.push(`finalize:${slug}`);
-        return okFinalizeResult();
+        return okFinalizeResult(`https://github.com/org/${slug}/pull/1`);
       },
     });
 
-    const waitForMergeFn = async (stage: RepoStage) => {
-      callOrder.push(`waitForMerge:${stage.repoSlug}`);
+    const mergeRepoCalls: string[] = [];
+    const mergeRepo = async (stage: RepoStage) => {
+      mergeRepoCalls.push(stage.repoSlug);
+      return {
+        attemptId: 'attempt-001',
+        repoSlug: stage.repoSlug,
+        dependsOn: stage.dependsOnRepos,
+        prNumber: 1,
+        prUrl: stage.prUrl ?? null,
+        mergeCommitSha: 'abc123',
+        mergeState: 'merged' as const,
+        revertPrUrl: null,
+        revertMergeSha: null,
+        mergedAt: new Date().toISOString(),
+        revertedAt: null,
+      };
     };
 
     const coordinator = new CrossRepoCoordinator({
@@ -473,22 +490,26 @@ describe('CrossRepoCoordinator.run — consumer waits for producer merge', () =>
       db,
       manifest: mf,
       primarySlug: 'repo-a',
-      waitForMergeFn,
+      mergeRepo,
     });
 
     await coordinator.run('epic-001');
 
-    // Expected order: repo-a runs + finalizes + waits, THEN repo-b runs + finalizes.
-    assert.deepEqual(callOrder, [
+    // STAGE phase: producer supervisor + finalize, then consumer supervisor + finalize
+    // (no waitForMerge, no mergeRepo calls during STAGE).
+    const stageEvents = callOrder;
+    assert.deepEqual(stageEvents, [
       'supervisor:repo-a',
       'finalize:repo-a',
-      'waitForMerge:repo-a',
       'supervisor:repo-b',
       'finalize:repo-b',
     ]);
+
+    // MERGE phase: mergeRepo called AFTER all staging, in topo order.
+    assert.deepEqual(mergeRepoCalls, ['repo-a', 'repo-b']);
   });
 
-  it('(4) consumer stage status is awaiting_merge before waitForMerge resolves', async () => {
+  it('(4b) mergeRepo NOT called during STAGE; called once per repo after allReady', async () => {
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
 
@@ -507,81 +528,103 @@ describe('CrossRepoCoordinator.run — consumer waits for producer merge', () =>
       ],
     };
 
-    let capturedStageAStatus: string | undefined;
+    // Track when each event fires.
+    const events: string[] = [];
 
-    const stubSupervisor: SupervisorLike = {
-      run: async () => okResult(),
-    };
-
-    const finalizerFactory = (): FinalizerHandle => ({
-      finalize: async () => okFinalizeResult(),
+    const finalizerFactory = (repoRoot: string): FinalizerHandle => ({
+      finalize: async () => {
+        const slug = repoRoot === realA ? 'repo-a' : 'repo-b';
+        events.push(`stage:${slug}`);
+        return okFinalizeResult(`https://github.com/org/${slug}/pull/1`);
+      },
     });
 
-    // Capture stage-a's status at the moment waitForMerge is called.
-    const waitForMergeFn = async (stage: RepoStage) => {
-      capturedStageAStatus = stage.status;
-      // Immediately resolve.
-    };
-
-    const coordinator = new CrossRepoCoordinator({
-      projectRoot: repoDir,
-      supervisor: stubSupervisor,
-      finalizerFactory,
-      db,
-      manifest: mf,
-      primarySlug: 'repo-a',
-      waitForMergeFn,
-    });
-
-    await coordinator.run('epic-001');
-
-    // When waitForMerge is called, the stage must be 'awaiting_merge'.
-    assert.equal(capturedStageAStatus, 'awaiting_merge');
-  });
-
-  it('(4) producerStage.status is merged_gating when runConsumerGateFn is called', async () => {
-    const realA = fs.realpathSync(repoDir);
-    const realB = fs.realpathSync(repoDirB);
-
-    const epicStories = [
-      story('story-001-001', [], 'repo-a'),
-      story('story-001-002', ['story-001-001'], 'repo-b'),
-    ];
-    seedEpicOnDisk(repoDir, 'epic-001', epicStories);
-    const db = openDatabase(path.join(repoDir, '.loom'));
-
-    const mf: WorkspaceManifest = {
-      version: 1,
-      repos: [
-        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
-        { slug: 'repo-b', path: realB, remote_url: null },
-      ],
-    };
-
-    let capturedProducerStatusDuringGate: string | undefined;
-
-    const runConsumerGateFn = async (producerStage: RepoStage) => {
-      capturedProducerStatusDuringGate = producerStage.status;
+    const mergeRepo = async (stage: RepoStage) => {
+      events.push(`merge:${stage.repoSlug}`);
+      return {
+        attemptId: 'attempt-001',
+        repoSlug: stage.repoSlug,
+        dependsOn: stage.dependsOnRepos,
+        prNumber: 1,
+        prUrl: stage.prUrl ?? null,
+        mergeCommitSha: 'sha',
+        mergeState: 'merged' as const,
+        revertPrUrl: null,
+        revertMergeSha: null,
+        mergedAt: new Date().toISOString(),
+        revertedAt: null,
+      };
     };
 
     const coordinator = new CrossRepoCoordinator({
       projectRoot: repoDir,
       supervisor: { run: async () => okResult() },
-      finalizerFactory: () => ({ finalize: async () => okFinalizeResult() }),
+      finalizerFactory,
       db,
       manifest: mf,
       primarySlug: 'repo-a',
-      waitForMergeFn: async () => { /* resolve immediately */ },
-      runConsumerGateFn,
+      mergeRepo,
     });
 
     await coordinator.run('epic-001');
 
-    assert.equal(
-      capturedProducerStatusDuringGate,
-      'merged_gating',
-      'producerStage.status must be merged_gating when runConsumerGateFn is called',
-    );
+    // All STAGE events must precede all MERGE events.
+    const firstMergeIdx = events.findIndex(e => e.startsWith('merge:'));
+    const lastStageIdx = events.reduce((acc, e, i) => e.startsWith('stage:') ? i : acc, -1);
+    assert.ok(lastStageIdx < firstMergeIdx, 'all staging must complete before any merge');
+
+    // mergeRepo called exactly once per repo.
+    const mergeCalls = events.filter(e => e.startsWith('merge:'));
+    assert.equal(mergeCalls.length, 2);
+    assert.deepEqual(new Set(mergeCalls), new Set(['merge:repo-a', 'merge:repo-b']));
+  });
+
+  it('(4c) merge order is producer-before-consumer (AC3)', async () => {
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+
+    const epicStories = [
+      story('story-001-001', [], 'repo-a'),
+      story('story-001-002', ['story-001-001'], 'repo-b'),
+    ];
+    seedEpicOnDisk(repoDir, 'epic-001', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+      ],
+    };
+
+    const mergeOrder: string[] = [];
+    const mergeRepo = async (stage: RepoStage) => {
+      mergeOrder.push(stage.repoSlug);
+      return {
+        attemptId: 'a', repoSlug: stage.repoSlug, dependsOn: stage.dependsOnRepos,
+        prNumber: 1, prUrl: null, mergeCommitSha: 'sha', mergeState: 'merged' as const,
+        revertPrUrl: null, revertMergeSha: null, mergedAt: null, revertedAt: null,
+      };
+    };
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: () => ({
+        finalize: async () => okFinalizeResult('https://github.com/org/repo/pull/1'),
+      }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+      mergeRepo,
+    });
+
+    await coordinator.run('epic-001');
+
+    // Producer (repo-a) must merge before consumer (repo-b).
+    assert.deepEqual(mergeOrder, ['repo-a', 'repo-b'],
+      'producer must merge before consumer (AC3)');
   });
 });
 

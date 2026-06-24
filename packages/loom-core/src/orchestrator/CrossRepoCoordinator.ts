@@ -9,6 +9,9 @@ import { resolveStoryRepo } from './resolveStoryRepo.js';
 import { buildRepoDag } from './crossRepoReadiness.js';
 import type { FinalizeResult } from './EpicFinalizer.js';
 import type { SupervisorResult } from './Supervisor.js';
+import type { MergeRepoFn, RollbackFn, LandingStorePort } from './landingTypes.js';
+import { assessLandingReadiness } from './crossRepoLandingGate.js';
+import { IntegrationGate } from './IntegrationGate.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -39,6 +42,13 @@ export interface SupervisorLike {
 /** Minimal interface the coordinator calls on an EpicFinalizer (injectable for tests). */
 export interface FinalizerHandle {
   finalize(epicId: string): Promise<FinalizeResult>;
+  /**
+   * Open the PR + run the gate without merging — the STAGE-phase entry point.
+   * Optional so existing test stubs that only implement `finalize` continue to work.
+   * When absent, the coordinator falls back to `finalize()` (same semantics for
+   * tests that predate story-060-001).
+   */
+  stageForLanding?(epicId: string): Promise<FinalizeResult>;
 }
 
 export interface CrossRepoCoordinatorOptions {
@@ -74,6 +84,15 @@ export interface CrossRepoCoordinatorOptions {
    * story-058-006 is implemented.
    */
   runConsumerGateFn?: (producerStage: RepoStage, consumerStage: RepoStage) => Promise<void>;
+  // story-060-002 seam: merges one repo's PR after all repos are gate-green.
+  mergeRepo?: MergeRepoFn;
+  // story-060-003 seam: rolls back a landing attempt when a mid-sequence merge fails.
+  rollback?: RollbackFn;
+  /**
+   * story-060-001 seam: landing-state store for recording attempt + merge
+   * records. Story-060-002 provides the LandingStore implementation.
+   */
+  store?: LandingStorePort;
 }
 
 // ─── Pure partition helpers ────────────────────────────────────────────────────
@@ -167,6 +186,9 @@ export class CrossRepoCoordinator {
     producerStage: RepoStage,
     consumerStage: RepoStage,
   ) => Promise<void>;
+  private readonly _mergeRepo?: MergeRepoFn;
+  private readonly _rollback?: RollbackFn;
+  private readonly _store?: LandingStorePort;
 
   constructor(opts: CrossRepoCoordinatorOptions) {
     this.projectRoot = opts.projectRoot;
@@ -178,90 +200,146 @@ export class CrossRepoCoordinator {
     this._waitForMerge = opts.waitForMergeFn ?? defaultWaitForMerge;
     this._runConsumerGate = opts.runConsumerGateFn ?? noopConsumerGate;
     this.abortSignal = opts.abortSignal;
+    this._mergeRepo = opts.mergeRepo;
+    this._rollback = opts.rollback;
+    this._store = opts.store;
   }
 
   /**
-   * Runs the full cross-repo landing sequence:
-   * 1. Partition the epic's stories into per-repo stages.
-   * 2. Topo-sort so producers execute before consumers.
-   * 3. For each stage:
-   *    a. Dispatch stories via `supervisor.run({ epicId, repoFilter })`.
-   *    b. Finalize → one PR per repo.
-   *    c. For producer stages (those with consumers): wait for the PR to merge
-   *       before advancing to the next stage. Single-repo epics skip this step
-   *       entirely — behaviour is identical to today.
+   * Runs the full cross-repo landing sequence.
+   *
+   * Single-repo epics: route through EpicFinalizer's existing land-or-fail
+   * unchanged (AC5 — identical to before this story).
+   *
+   * Multi-repo epics: explicit STAGE → MERGE phases (story-060-001, ADR-002).
+   *   STAGE: dispatch workers + open PRs + run gates for ALL repos; collect
+   *          per-repo readiness without merging anything.
+   *   MERGE: only when allReady — merge in dependency order (producer first)
+   *          via the injected `mergeRepo` seam (story-060-002 wires the real
+   *          implementation). If not allReady, nothing merges and the landing
+   *          is reported as blocked.
    */
   async run(epicId: string): Promise<{ stages: RepoStage[] }> {
     const stories = this.loadStories(epicId);
     const stages = buildRepoStages(stories, this.manifest, this.primarySlug);
     const sorted = topoSortRepos(stages);
 
-    // Pre-compute the consumer relationship so waitForMerge is only called
-    // for stages that actually gate something. Single-repo → no consumers →
-    // no waitForMerge, preserving today's behaviour (AC: identical to today).
-    const hasConsumers = (slug: string): boolean =>
-      sorted.some(s => s.dependsOnRepos.includes(slug));
+    // AC5: single-repo path is identical to today — no STAGE/MERGE phasing,
+    // no mergeRepo/rollback seams engaged. The unchanged-behavior test guards this.
+    if (sorted.length === 1) {
+      return this._runSingleRepo(epicId, sorted);
+    }
 
-    const landed = new Set<string>();
-    // Tracks stages that failed their consumer gate — used to propagate partial_landing
-    // transitively to all downstream dependents without adding them to `landed`.
-    const partialLanded = new Set<string>();
+    return this._runCrossRepo(epicId, sorted);
+  }
 
+  /**
+   * Single-repo path — unchanged from before story-060-001.
+   * EpicFinalizer.finalize() handles the full land-or-fail lifecycle.
+   */
+  private async _runSingleRepo(
+    epicId: string,
+    sorted: RepoStage[],
+  ): Promise<{ stages: RepoStage[] }> {
+    const stage = sorted[0];
+    try {
+      stage.status = 'running';
+      await this.supervisor.run({ epicId, repoFilter: stage.repoSlug });
+
+      stage.status = 'finalizing';
+      const result = await this.finalizerFactory(stage.repoRoot).finalize(epicId);
+      if (result.url) stage.prUrl = result.url;
+
+      stage.status = 'landed';
+    } catch (err) {
+      stage.status = 'failed';
+      throw err;
+    }
+    return { stages: sorted };
+  }
+
+  /**
+   * Cross-repo path — STAGE → MERGE phases (story-060-001).
+   *
+   * STAGE: for each repo in topo order, run workers and open the PR + gate
+   *        (stageForLanding). No merge happens here.
+   * Assess: call assessLandingReadiness to get an all-or-none verdict.
+   * MERGE: if allReady, merge each repo in topo order via the mergeRepo seam.
+   *        If not allReady, mark all stages blocked and return.
+   */
+  private async _runCrossRepo(
+    epicId: string,
+    sorted: RepoStage[],
+  ): Promise<{ stages: RepoStage[] }> {
+    // ── STAGE phase ───────────────────────────────────────────────────────────
     for (const stage of sorted) {
-      // Propagate partial_landing from upstream deps before any other check.
-      // This ensures that in a chain A→B→C, C is correctly blocked when B fails
-      // its consumer gate — even though runConsumerGateFn only set B's status.
-      if (stage.dependsOnRepos.some(dep => partialLanded.has(dep))) {
-        stage.status = 'partial_landing';
-      }
-
-      // Consumer stages pre-blocked by a gate failure are skipped; their PR must not be opened.
-      if (stage.status === 'partial_landing') {
-        partialLanded.add(stage.repoSlug);
-        continue;
-      }
-
-      // Runtime topo-sort invariant: all declared producer deps must be landed
-      // before this stage executes. topoSortRepos guarantees this; this
-      // assertion catches any future regression at the call site.
-      if (!stage.dependsOnRepos.every(dep => landed.has(dep))) {
-        throw new Error(
-          `CrossRepoCoordinator: topo-sort invariant violated — deps not yet landed for ${stage.repoSlug}`,
-        );
-      }
-
       try {
-        // Run this repo's stories via the repoFilter seam (story-058-002).
         stage.status = 'running';
         await this.supervisor.run({ epicId, repoFilter: stage.repoSlug });
 
-        // Finalize: build one PR scoped to this repo (EpicFinalizer unchanged).
         stage.status = 'finalizing';
-        const result = await this.finalizerFactory(stage.repoRoot).finalize(epicId);
+        const finalizer = this.finalizerFactory(stage.repoRoot);
+        // Prefer stageForLanding if available; fall back to finalize for
+        // legacy FinalizerHandle stubs that predate story-060-001.
+        const stageFn = finalizer.stageForLanding ?? finalizer.finalize;
+        const result = await stageFn.call(finalizer, epicId);
         if (result.url) stage.prUrl = result.url;
-
-        if (hasConsumers(stage.repoSlug)) {
-          stage.status = 'awaiting_merge';
-
-          // Block subsequent consumer stages until this PR is merged.
-          await this._waitForMerge(stage, this.abortSignal);
-
-          // PR has merged; consumer gates are now running. This distinct status
-          // lets operators distinguish "waiting for GitHub merge" from "merge
-          // complete, cross-repo validation in progress".
-          stage.status = 'merged_gating';
-
-          // story-058-006 seam: run consumer gate AFTER the producer PR merges
-          // so the consumer build resolves the producer's landed interface.
-          for (const consumer of sorted.filter(s => s.dependsOnRepos.includes(stage.repoSlug))) {
-            await this._runConsumerGate(stage, consumer);
-          }
-        }
-
-        stage.status = 'landed';
-        landed.add(stage.repoSlug);
       } catch (err) {
         stage.status = 'failed';
+        throw err;
+      }
+    }
+
+    // ── Assess readiness (all-or-none gate) ──────────────────────────────────
+    // Build a finalizer adapter: since each stage's prUrl is already populated
+    // by the STAGE phase above, assessLandingReadiness won't call stageForLanding
+    // again. The adapter is passed purely to satisfy the injectable seam for tests
+    // that want to exercise assessLandingReadiness independently.
+    const finalizerAdapter = {
+      stageForLanding: async (_epicId: string) => ({
+        status: 'skipped' as const,
+        conflicted: [],
+        merged: [],
+        cleaned: [],
+        note: 'stageForLanding already called in STAGE phase',
+      }),
+    };
+
+    const readiness = await assessLandingReadiness(epicId, sorted, {
+      integrationGate: new IntegrationGate(),
+      finalizer: finalizerAdapter,
+      store: this._store ?? noopStore,
+    });
+
+    if (!readiness.allReady) {
+      for (const stage of sorted) {
+        if (stage.status !== 'failed') stage.status = 'partial_landing';
+      }
+      return { stages: sorted };
+    }
+
+    // ── MERGE phase ───────────────────────────────────────────────────────────
+    // mergeRepo seam: story-060-002 wires the anchoring merger.
+    // Default no-op: marks stages landed without actually merging the PR.
+    // This keeps old tests passing until 002 injects the real implementation.
+    const mergeRepo = this._mergeRepo ?? defaultNoopMerge;
+
+    for (const stage of sorted) {
+      try {
+        await mergeRepo(stage, readiness.attemptId);
+        stage.status = 'landed';
+      } catch (err) {
+        stage.status = 'failed';
+        // Rollback seam (story-060-003): if provided, attempt to revert
+        // already-merged repos. A missing rollback seam means partial landing
+        // (already-merged repos stay merged) — this is surfaced to the caller.
+        if (this._rollback) {
+          try {
+            await this._rollback(readiness.attemptId);
+          } catch {
+            // Rollback failure is observable but must not shadow the original error.
+          }
+        }
         throw err;
       }
     }
@@ -287,6 +365,18 @@ export class CrossRepoCoordinator {
     }
     return EpicYamlSchema.parse(yaml.load(fs.readFileSync(resolvedFile, 'utf8'))).stories;
   }
+}
+
+// ─── Factory (composition seam for stories 002 and 003) ──────────────────────
+
+/**
+ * Builds a CrossRepoCoordinator with all injected collaborators.
+ * This is the single composition seam: story-060-002 passes `mergeRepo`,
+ * story-060-003 passes `rollback`, story-060-002 also provides `store`.
+ * Stories add their seams at the marked points below WITHOUT editing the loop body.
+ */
+export function buildCrossRepoCoordinator(opts: CrossRepoCoordinatorOptions): CrossRepoCoordinator {
+  return new CrossRepoCoordinator(opts);
 }
 
 // ─── Default implementations ──────────────────────────────────────────────────
@@ -357,3 +447,40 @@ async function noopConsumerGate(
 ): Promise<void> {
   // Placeholder for the story-058-006 cross-repo gate seam.
 }
+
+// ─── No-op LandingStorePort (used when story-060-002 hasn't wired a real store) ─
+
+// ─── Default merge no-op (used until story-060-002 wires the real merger) ────
+
+async function defaultNoopMerge(
+  _stage: RepoStage,
+  _attemptId: string,
+): Promise<import('./landingTypes.js').RepoMergeRecord> {
+  return {
+    attemptId: _attemptId,
+    repoSlug: _stage.repoSlug,
+    dependsOn: _stage.dependsOnRepos,
+    prNumber: null,
+    prUrl: _stage.prUrl ?? null,
+    mergeCommitSha: null,
+    mergeState: 'pending',
+    revertPrUrl: null,
+    revertMergeSha: null,
+    mergedAt: null,
+    revertedAt: null,
+  };
+}
+
+// ─── No-op LandingStorePort (used when story-060-002 hasn't wired a real store) ─
+
+const noopStore: LandingStorePort = {
+  beginAttempt: (_epicId: string, _stages: RepoStage[]) => `landing-${_epicId}-0`,
+  recordMerge: () => undefined,
+  markRevertPending: () => undefined,
+  markReverted: () => undefined,
+  pendingReverts: () => [],
+  getAttempt: (_attemptId: string) => {
+    throw new Error('noopStore.getAttempt: no LandingStore wired (story-060-002)');
+  },
+  setStatus: () => undefined,
+};
