@@ -61,10 +61,11 @@ describe('withDirLock — stale lock reclaim', () => {
     try {
       const lockDir = path.join(dir, '.stale.lock');
       fs.mkdirSync(lockDir);
-      // Use a PID within the valid OS range (macOS max is 99998) but extremely
-      // unlikely to be running. isLockStale also treats EINVAL (out-of-range PID
-      // on macOS) as dead, so any value works after the EINVAL fix.
-      const stalePid = (Number.MAX_SAFE_INTEGER % 99998) + 2; // in [2, 99999]
+      // Number.MAX_SAFE_INTEGER exceeds the OS PID ceiling on all supported
+      // platforms (macOS: 99998, Linux: 4194304). process.kill throws EINVAL,
+      // which isLockStale already treats as dead — guaranteeing reclaim without
+      // risking collision with a live process on any platform.
+      const stalePid = Number.MAX_SAFE_INTEGER;
       const fakeOwner = {
         pid: stalePid,
         hostname: os.hostname(),

@@ -173,7 +173,10 @@ describe('registerRepo — new entry', () => {
 describe('registerRepo — identity by inspection', () => {
   it('workspaceManifest.ts imports computeRepoSlug from repoSlug and uses no second identity scheme', () => {
     // Resolve source file relative to compiled test at dist/__tests__/WorkspaceManifest.test.js.
-    // Source files must be present (they are in this repo — not an npm-dist-only environment).
+    // This path assumes tsconfig outDir is 'dist' (two levels below 'src/'):
+    //   dist/__tests__/ → ../../src/home/workspaceManifest.ts
+    // If tsconfig outDir changes (e.g. to 'build/'), update this path accordingly.
+    // The assert.ok guard below produces a descriptive ENOENT on path mismatch.
     const srcFile = path.resolve(__dirname, '../../src/home/workspaceManifest.ts');
     assert.ok(
       fs.existsSync(srcFile),
