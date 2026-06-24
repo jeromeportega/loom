@@ -272,9 +272,8 @@ function collectJsonEpics(
         // the internal container epic id. If no agent exists yet (pre-dispatch),
         // emit a minimal entry using the container status.
         if (latest.length === 0) {
-          const storyId = epic.id.replace(/^epic-/, 'story-');
           out.push({
-            id: storyId,
+            id: epic.id,
             title: epic.title,
             status: epic.status,
             kind: 'standalone',
