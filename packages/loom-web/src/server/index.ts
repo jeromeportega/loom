@@ -19,7 +19,6 @@ import {
   STANDALONE_KIND,
   type IntakeVerdict,
 } from '@loom-ai/core';
-import { resolveEpicRow } from './resolveEpicRow.js';
 import type {
   EpicStatus,
   AgentSummary,
@@ -190,7 +189,7 @@ export function createApp(opts: CreateAppOptions): Express {
         ? ([epicStore, agentStore, currentProjectRoot, () => {}, auditLog] as const)
         : openPeer(peer);
     try {
-      const epic = resolveEpicRow(scopedEpics, req.params.id);
+      const epic = scopedEpics.get(req.params.id);
       if (!epic) {
         res.status(404).json({ error: 'epic not found' });
         return;
@@ -200,19 +199,11 @@ export function createApp(opts: CreateAppOptions): Express {
       // story state, not "blocked attempt + done attempt = 2 stories."
       const agents = scopedAgents.listLatestByEpic(epic.id);
       const counts = countByStatus(agents);
-      // Standalone containers are surfaced with story framing (id=story-NNN,
-      // story title) — consistent with the list, never as the epic-NNN container.
-      const isStandalone = epic.kind === STANDALONE_KIND;
-      const framedId = isStandalone
-        ? (agents.length > 0 ? agents[0].story_id : epic.id.replace(/^epic-/, 'story-'))
-        : epic.id;
-      const framedTitle = isStandalone && agents.length > 0
-        ? (agents[0].story_title ?? epic.title)
-        : epic.title;
       const detail: EpicDetail = {
-        id: framedId,
-        title: framedTitle,
+        id: epic.id,
+        title: epic.title,
         status: epic.status,
+        ...(epic.kind === STANDALONE_KIND ? { kind: 'standalone' as const } : {}),
         planning_phase: (epic.planning_phase ?? null) as EpicDetail['planning_phase'],
         brief_path: epic.brief_path,
         prd_path: epic.prd_path,
@@ -253,7 +244,7 @@ export function createApp(opts: CreateAppOptions): Express {
         ? ([epicStore, agentStore, currentProjectRoot, () => {}] as const)
         : openPeer(peer);
     try {
-      const epic = resolveEpicRow(scopedEpics, req.params.id);
+      const epic = scopedEpics.get(req.params.id);
       if (!epic) {
         res.status(404).json({ error: 'epic not found' });
         return;
@@ -495,7 +486,7 @@ export function createApp(opts: CreateAppOptions): Express {
 
   // ─── GET /api/epics/:id/traces — whole-epic reasoning timeline ──────────
   app.get('/api/epics/:id/traces', (req, res) => {
-    const epic = resolveEpicRow(epicStore, req.params.id);
+    const epic = epicStore.get(req.params.id);
     if (!epic) {
       res.status(404).json({ error: 'epic not found' });
       return;
@@ -519,7 +510,7 @@ export function createApp(opts: CreateAppOptions): Express {
         ? ([epicStore, agentStore, currentProjectRoot, () => {}, auditLog] as const)
         : openPeer(peer);
     try {
-      const epic = resolveEpicRow(scopedEpics, req.params.id);
+      const epic = scopedEpics.get(req.params.id);
       if (!epic) {
         res.status(404).json({ error: 'epic not found' });
         return;
@@ -588,9 +579,8 @@ export function createApp(opts: CreateAppOptions): Express {
  * the project attribution. Shared by the current-project pass and every
  * federated peer pass in /api/status.
  *
- * Standalone containers (kind='standalone') are surfaced as their single story
- * with story framing — id=story_id, kind='standalone' — never as "epic-NNN".
- * Normal epics are returned unchanged.
+ * Standalone stories (kind='standalone') are emitted with their stored id
+ * verbatim (story-NNN). Normal epics are returned unchanged.
  */
 function rollupEpics(
   epicStore: EpicStore,
@@ -605,40 +595,11 @@ function rollupEpics(
   const result: EpicStatus[] = [];
 
   for (const epic of allRows) {
-    if (epic.kind === STANDALONE_KIND) {
-      // Standalone — surface the story id with story framing.
-      const agents = agentStore.listLatestByEpic(epic.id);
-      // When an agent exists, read the persisted story_id (story-NNN). For
-      // pre-dispatch containers (no agent yet), fall back to deriving the
-      // story id from the container id so the container id never leaks as a
-      // top-level entry.
-      const storyId = agents.length > 0
-        ? agents[0].story_id
-        : epic.id.replace(/^epic-/, 'story-');
-      const storyTitle = agents.length > 0 ? (agents[0].story_title ?? epic.title) : epic.title;
-      const storyStatus = agents.length > 0 ? (agents[0].status as EpicStatus['status']) : epic.status;
-      result.push({
-        id: storyId,
-        title: storyTitle,
-        status: storyStatus,
-        kind: 'standalone',
-        planning_phase: (epic.planning_phase ?? null) as EpicStatus['planning_phase'],
-        stories: countByStatus(agents),
-        updated_at: epic.updated_at,
-        project_name: path.basename(projectRoot),
-        project_root: projectRoot,
-        is_current_project: isCurrent,
-        archived: epic.archived_at != null,
-        ...(deriveBlocked(epic) ?? {}),
-        intake_verdict: verdicts.get(epic.id) ?? null,
-      });
-      continue;
-    }
-
     result.push({
       id: epic.id,
       title: epic.title,
-      status: epic.status,
+      status: epic.status as EpicStatus['status'],
+      ...(epic.kind === STANDALONE_KIND ? { kind: 'standalone' as const } : {}),
       planning_phase: (epic.planning_phase ?? null) as EpicStatus['planning_phase'],
       // Per-story dedup so the list-view counts match the detail view: a
       // retried-blocked-now-done story counts as 1 done, not 1 blocked + 1 done.
