@@ -9,8 +9,9 @@ import type { ResolvedRepo, SliceBounds, SearchResult, RetrievalMatch } from './
  *  - `query` is always a fixed-string literal — passed via -F -e, never interpolated
  *    (ADR-005 / T7). -F prevents regex amplification or exit-2 errors via crafted queries.
  *  - `cwd: repo.root` confines the search; git cannot cross sibling repo boundaries.
- *  - `-z` makes git NUL-delimit all output fields (path\0lineno\0content\n) so paths or
- *    excerpts containing ':' parse correctly on any filesystem.
+ *  - `-z` makes git NUL-delimit all output fields: format is `path\0lineno\0content\n`
+ *    (verified empirically — both the path/lineno and lineno/content separators are NUL).
+ *    Lines without two NULs (e.g. binary-file summary lines) are silently skipped.
  *
  * Bounds come from the same SliceBounds as RepoReader (story-057-002) — maxFiles
  * caps the number of distinct matched files, maxMatchesPerFile caps per-file hits.
@@ -32,18 +33,25 @@ export function searchBounded(
   // -c color.grep=never: suppress ANSI codes even when the user's git config sets color.ui=always.
   // -F: fixed-string (literal) matching — enforces the literal-match contract and prevents regex
   //     amplification or exit-2 errors via BRE metacharacters in the query.
-  // -z: NUL-delimit all fields in output ("path\0lineno\0content\n") so paths and excerpts
-  //     containing ':' (exotic FSes) parse unambiguously.
+  // -z: NUL-delimit all output fields: "path\0lineno\0content\n" (two NULs per line).
   // -e: pass query as an explicit pattern argument, safe even when query starts with '-'.
   const args = ['-c', 'color.grep=never', 'grep', '--line-number', '-z', '-F', '-e', query];
   if (pathGlob !== undefined) {
+    // Reject git pathspec magic prefixes (e.g. ":(exclude)pattern") — those modify search
+    // behavior at the git layer and cannot be used for confinement bypass, but rejecting them
+    // keeps the contract simple: pathGlob is always a plain glob, never a pathspec directive.
+    if (pathGlob.startsWith(':(')) {
+      throw new Error(`pathGlob must be a plain glob, not a git pathspec magic prefix: ${pathGlob}`);
+    }
     // '--' separates the pattern from pathspecs so git doesn't confuse them with revisions.
     args.push('--', pathGlob);
   }
 
-  // Set maxBuffer proportional to bounds so the buffer cannot be exhausted before our
-  // post-processing cap kicks in, with a 16 MiB floor for safety.
-  const maxBuffer = Math.max(bounds.maxFiles * bounds.maxMatchesPerFile * 4096, 16 * 1024 * 1024);
+  // Cap maxBuffer: floor at 16 MiB, ceiling at 64 MiB to prevent OOM with liberal policy bounds.
+  const maxBuffer = Math.min(
+    Math.max(bounds.maxFiles * bounds.maxMatchesPerFile * 4096, 16 * 1024 * 1024),
+    64 * 1024 * 1024,
+  );
 
   let rawOutput: string;
   try {
@@ -64,9 +72,8 @@ export function searchBounded(
     throw new Error(`git grep failed in repo "${repo.slug}": ${detail}`);
   }
 
-  // Parse NUL-terminated output: with -z and --line-number, each match line is
-  // "<filepath>\0<lineno>\0<content>\n" — all three fields separated by NUL, not ':'.
-  // This is unambiguous regardless of characters in filenames or content.
+  // Parse output: with -z and --line-number, each match line is
+  // "<filepath>\0<lineno>\0<content>\n" — both separators are NUL (verified empirically).
   // Lines with fewer than 2 NULs (e.g. binary-file summary lines) are silently skipped.
   const byFile = new Map<string, Array<{ line: number; excerpt: string }>>();
   for (const rawLine of rawOutput.split('\n')) {
