@@ -30,6 +30,9 @@ import {
 import { enforceCursorMcpAllowlist } from './CursorMcpEnforcer.js';
 import { WorktreeManager } from './WorktreeManager.js';
 import { WorktreeJanitor } from './WorktreeJanitor.js';
+import type { WorkspaceManifest } from '../home/workspaceManifest.js';
+import { resolvePrimaryRepo } from '../home/primaryRepo.js';
+import { resolveStoryRepo } from './resolveStoryRepo.js';
 import { IntegrationBranch } from './IntegrationBranch.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import type {
@@ -204,6 +207,19 @@ export interface SupervisorOptions {
    */
   handoffMode?: 'off' | 'telemetry' | 'summarized';
   /**
+   * Workspace manifest for multi-repo dispatch. When set, each story's worktree
+   * is created in the repo its `story.repo` field resolves to (falling back to
+   * `primarySlug`). When absent, a synthetic single-entry manifest is derived
+   * from `projectRoot` so single-repo behavior is byte-identical to pre-change.
+   */
+  manifest?: WorkspaceManifest;
+  /**
+   * Primary repo slug — required when `manifest` is provided and contains
+   * multiple entries without a `primary: true` flag. Stories that don't declare
+   * a `repo` field resolve to this slug. Ignored when `manifest` is absent.
+   */
+  primarySlug?: string;
+  /**
    * Per-epic dispatch lease. ON by default: each epic is leased for the
    * duration of its dispatch so a second supervisor (a concurrent `loom run`,
    * an MCP retry racing a live run) cannot double-dispatch the same story into
@@ -290,7 +306,10 @@ const delay = (ms: number): Promise<void> =>
  * `run()` is resumable: stories already completed in a prior run are skipped.
  */
 export class Supervisor {
-  private wt: WorktreeManager;
+  /** One WorktreeManager per resolved repo slug — lazily populated at dispatch. */
+  private wtByRepo: Map<string, WorktreeManager>;
+  /** Cached manifest context (manifest + primary slug) — resolved once on first use. */
+  private _manifestCtx?: { manifest: WorkspaceManifest; primarySlug: string };
   private integration: IntegrationBranch;
   /** Gate the integrator re-runs after resolving a conflict; built only when on. */
   private integratorGate?: IntegrationGate;
@@ -415,7 +434,7 @@ export class Supervisor {
   }
 
   constructor(private opts: SupervisorOptions) {
-    this.wt = new WorktreeManager(opts.projectRoot);
+    this.wtByRepo = new Map();
     this.workerLogs = new WorkerLogStore(path.join(opts.projectRoot, '.loom'));
     this.integration = new IntegrationBranch(opts.projectRoot);
     if (opts.integrationBranch === 'rolling' && opts.integrator === 'on') {
@@ -442,7 +461,28 @@ export class Supervisor {
     });
   }
 
-  async run(epicIds?: string[]): Promise<SupervisorResult> {
+  /**
+   * Dispatches approved epics. Accepts either:
+   *  - `string[]` (legacy): list of epic IDs, or undefined for all approved epics.
+   *  - `{ epicIds?, epicId?, repoFilter? }` (new seam, consumed by CrossRepoCoordinator):
+   *    optionally scope to a single epicId/array and filter dispatched stories to
+   *    those resolving to `repoFilter` slug so one supervisor handles one repo
+   *    partition of a cross-repo epic.
+   */
+  async run(
+    epicIdsOrOpts?: string[] | { epicId?: string; epicIds?: string[]; repoFilter?: string }
+  ): Promise<SupervisorResult> {
+    // Normalize the two call forms into epicIds + optional repoFilter.
+    let epicIds: string[] | undefined;
+    let repoFilter: string | undefined;
+    if (Array.isArray(epicIdsOrOpts) || epicIdsOrOpts === undefined) {
+      epicIds = epicIdsOrOpts;
+    } else {
+      const singleId = epicIdsOrOpts.epicId;
+      epicIds = singleId !== undefined ? [singleId] : epicIdsOrOpts.epicIds;
+      repoFilter = epicIdsOrOpts.repoFilter;
+    }
+
     this.skillGenPromises = [];
     this.outputTails.clear();
     this.logBytes.clear();
@@ -528,7 +568,19 @@ export class Supervisor {
       // taskFor would treat them as not-SUCCESS and dispatch a fresh worker
       // — duplicating work whose merge may already be on epic/<id>.
       if (this.rolling) this.reconcileIntegratingAgents(epicId);
+      const { manifest: mf, primarySlug: ps } = this.manifestContext();
       for (const story of this.loadStories(epicId)) {
+        // When repoFilter is set, skip stories that belong to a different repo.
+        // This is the seam consumed by CrossRepoCoordinator (story-058-005) to
+        // dispatch one repo partition at a time.
+        if (repoFilter !== undefined) {
+          try {
+            const { slug } = resolveStoryRepo(story, mf, ps);
+            if (slug !== repoFilter) continue;
+          } catch {
+            // Resolution failure: include the story; dispatch will fail it cleanly.
+          }
+        }
         tasks.set(story.id, this.taskFor(epicId, story));
       }
     }
@@ -613,16 +665,19 @@ export class Supervisor {
       // Best effort — never let cleanup crash a completed run.
       if (this.opts.pruneOrphans !== false) {
         try {
-          const pruned = new WorktreeJanitor(this.wt, this.agents).prune({
-            reasons: ['no-agent'],
-          });
-          if (pruned.length > 0) {
+          // Prune orphans across every repo whose worktrees this run touched.
+          const allPruned: Array<{ storyId: string; reason: string }> = [];
+          for (const [, mgr] of this.wtByRepo) {
+            const pruned = new WorktreeJanitor(mgr, this.agents).prune({ reasons: ['no-agent'] });
+            for (const p of pruned) allPruned.push({ storyId: p.storyId, reason: p.reason });
+          }
+          if (allPruned.length > 0) {
             this.audit.record({
               action: 'worktrees_pruned',
               command: leased.join(','),
               detail: {
-                count: pruned.length,
-                worktrees: pruned.map((p) => ({ story: p.storyId, reason: p.reason })),
+                count: allPruned.length,
+                worktrees: allPruned.map((p) => ({ story: p.storyId, reason: p.reason })),
               },
             });
           }
@@ -1353,6 +1408,52 @@ export class Supervisor {
   }
 
   /**
+   * Lazily returns (and caches) the WorktreeManager for a given repo slug,
+   * creating a new one rooted at `root` on the first call. Subsequent calls
+   * with the same slug return the cached instance so worktrees in the same
+   * repo share a single manager — exactly one manager per repo per run.
+   */
+  private worktreeFor(slug: string, root: string): WorktreeManager {
+    const existing = this.wtByRepo.get(slug);
+    if (existing) return existing;
+    const mgr = new WorktreeManager(root);
+    this.wtByRepo.set(slug, mgr);
+    return mgr;
+  }
+
+  /**
+   * Resolves (and caches) the manifest + primary slug used to map story.repo
+   * fields to real filesystem roots. When `opts.manifest` is supplied by the
+   * caller, uses that; otherwise builds a synthetic single-entry manifest from
+   * `opts.projectRoot` so existing single-repo tests and CLI callers are
+   * byte-identical to the pre-change behavior (NFR-2 regression obligation).
+   */
+  private manifestContext(): { manifest: WorkspaceManifest; primarySlug: string } {
+    if (this._manifestCtx) return this._manifestCtx;
+
+    if (this.opts.manifest) {
+      const primarySlug =
+        this.opts.primarySlug ?? resolvePrimaryRepo(this.opts.manifest);
+      this._manifestCtx = { manifest: this.opts.manifest, primarySlug };
+      return this._manifestCtx;
+    }
+
+    // Fallback: derive a single-entry manifest from projectRoot. This keeps
+    // single-repo behavior unchanged — the WorktreeManager ends up rooted at
+    // the same canonical path it always was.
+    const realRoot = (() => {
+      try { return fs.realpathSync(this.opts.projectRoot); }
+      catch { return this.opts.projectRoot; }
+    })();
+    const fallbackManifest: WorkspaceManifest = {
+      version: 1,
+      repos: [{ slug: 'primary', path: realRoot, remote_url: null, primary: true }],
+    };
+    this._manifestCtx = { manifest: fallbackManifest, primarySlug: 'primary' };
+    return this._manifestCtx;
+  }
+
+  /**
    * Resolves the worker-MCP context from policy at dispatch time: the
    * worker backend (`policy.agents.worker_backend`) and the approved-MCP
    * registry (`policy.mcp.registry`, resolved relative to projectRoot; null
@@ -1428,7 +1529,11 @@ export class Supervisor {
       : firstDep
         ? `story/${firstDep}`
         : undefined;
-    const wt = this.wt.create(task.story.id, fromBranch ? { fromBranch } : {});
+    // Resolve the story's target repo and get (or lazily create) its WorktreeManager.
+    const { manifest: mf, primarySlug: ps } = this.manifestContext();
+    const { slug: repoSlug, root: repoRoot } = resolveStoryRepo(task.story, mf, ps);
+    const mgr = this.worktreeFor(repoSlug, repoRoot);
+    const wt = mgr.create(task.story.id, fromBranch ? { fromBranch } : {});
     // Remember the branch point so a handoff/retry can scope to this worker's
     // own commits (`baseSha..HEAD`).
     this.storyBaseSha.set(task.story.id, wt.baseSha);
@@ -1618,10 +1723,11 @@ export class Supervisor {
       worktreePath: wt.path,
       branchName: wt.branch,
       baseSha: wt.baseSha,
-      projectRoot: this.opts.projectRoot,
+      projectRoot: repoRoot,
       integrationBranch: this.opts.integrationBranch ?? 'off',
       hasDependents: this.storiesWithDependents.has(task.story.id),
       skills: this.selectSkills(task.story, task.agentId),
+      worktreeContext: { repoSlug, worktreePath: wt.path },
       onOutput,
       onPid,
       onTrace,
