@@ -287,6 +287,8 @@ interface StoryTask {
   story: Story;
   agentId: string;
   status: AgentStatus;
+  /** Cached result of resolveStoryRepo — populated during the repoFilter pass to avoid a second resolution at dispatch time. */
+  resolvedRepo?: { slug: string; root: string };
 }
 
 const SUCCESS: ReadonlySet<AgentStatus> = new Set(['done', 'pr_open']);
@@ -481,6 +483,9 @@ export class Supervisor {
     if (Array.isArray(epicIdsOrOpts) || epicIdsOrOpts === undefined) {
       epicIds = epicIdsOrOpts;
     } else {
+      if (epicIdsOrOpts.epicId !== undefined && epicIdsOrOpts.epicIds !== undefined) {
+        throw new Error('run(): pass either epicId or epicIds, not both');
+      }
       const singleId = epicIdsOrOpts.epicId;
       epicIds = singleId !== undefined ? [singleId] : epicIdsOrOpts.epicIds;
       repoFilter = epicIdsOrOpts.repoFilter;
@@ -577,18 +582,35 @@ export class Supervisor {
         // This is the seam consumed by CrossRepoCoordinator (story-058-005) to
         // dispatch one repo partition at a time.
         if (repoFilter !== undefined) {
+          let resolved: { slug: string; root: string };
           try {
-            const { slug } = resolveStoryRepo(story, mf, ps);
-            if (slug !== repoFilter) continue;
-          } catch {
-            // Resolution failure: skip from this partition. Including an
-            // unresolvable story in every partition would cause it to fail
-            // in each one, multiplying failures and corrupting per-story
-            // state if the store is shared. One supervisor owns the failure.
+            resolved = resolveStoryRepo(story, mf, ps);
+          } catch (e) {
+            // Resolution failure: write an audit record so the drop is visible
+            // via `loom status`, then skip from this partition. Including an
+            // unresolvable story in every partition would cause it to fail in
+            // each one, multiplying failures and corrupting per-story state if
+            // the store is shared. Logging here makes zero-partition coverage
+            // observable rather than a silent vanish.
+            this.audit.record({
+              action: 'story_skipped',
+              command: epicId,
+              detail: {
+                storyId: story.id,
+                reason: 'repo_unresolvable',
+                repoFilter,
+                error: e instanceof Error ? e.message : String(e),
+              },
+            });
             continue;
           }
+          if (resolved.slug !== repoFilter) continue;
+          const task = this.taskFor(epicId, story);
+          task.resolvedRepo = resolved;
+          tasks.set(story.id, task);
+        } else {
+          tasks.set(story.id, this.taskFor(epicId, story));
         }
-        tasks.set(story.id, this.taskFor(epicId, story));
       }
     }
     // Build the dependents index from the full DAG up front — only the
@@ -664,20 +686,6 @@ export class Supervisor {
         }
       }
 
-      // Ensure the primary repo's WorktreeManager is always in wtByRepo so
-      // WorktreeJanitor can prune orphans from prior crashed runs even when no
-      // stories were dispatched this run (e.g. all stories already completed on
-      // a resume). Before this change `this.wt` was unconditionally constructed,
-      // giving the janitor a manager to iterate; wtByRepo starts empty and is
-      // only populated by dispatch, so we seed it here if still empty.
-      {
-        const { manifest: mf, primarySlug: ps } = this.manifestContext();
-        const primaryEntry = mf.repos.find((r) => r.slug === ps);
-        if (primaryEntry && !this.wtByRepo.has(ps)) {
-          this.worktreeFor(ps, primaryEntry.path);
-        }
-      }
-
       // Auto-prune orphaned worktrees. Restricted to `no-agent` dirs (a
       // worktree with no DB record at all): `completed` worktrees are left to
       // the EpicFinalizer, which deletes them only after a successful merge —
@@ -686,6 +694,17 @@ export class Supervisor {
       // Best effort — never let cleanup crash a completed run.
       if (this.opts.pruneOrphans !== false) {
         try {
+          // Ensure the primary repo's WorktreeManager is always in wtByRepo so
+          // WorktreeJanitor can prune orphans from prior crashed runs even when
+          // no stories were dispatched this run (e.g. all stories already
+          // completed on a resume). wtByRepo is only populated by dispatch, so
+          // we seed it here if still empty. Guarded inside pruneOrphans so a
+          // non-existent primary path never aborts a completed run.
+          const { manifest: mf, primarySlug: ps } = this.manifestContext();
+          const primaryEntry = mf.repos.find((r) => r.slug === ps);
+          if (primaryEntry && !this.wtByRepo.has(ps)) {
+            this.worktreeFor(ps, primaryEntry.path);
+          }
           // Prune orphans across every repo whose worktrees this run touched.
           const allPruned: Array<{ storyId: string; reason: string }> = [];
           for (const [, mgr] of this.wtByRepo) {
@@ -1444,7 +1463,16 @@ export class Supervisor {
     const existing = this.wtByRepo.get(slug);
     if (existing) {
       const registeredRoot = this.rootBySlug.get(slug);
-      if (registeredRoot !== undefined && registeredRoot !== root) {
+      // wtByRepo and rootBySlug are always set atomically — if existing is
+      // truthy, registeredRoot must be defined. Assert to catch any future
+      // refactor that breaks this invariant rather than silently skipping the
+      // mismatch check.
+      if (registeredRoot === undefined) {
+        throw new Error(
+          `Supervisor invariant violated: slug "${slug}" present in wtByRepo but absent from rootBySlug`
+        );
+      }
+      if (registeredRoot !== root) {
         throw new Error(
           `Supervisor: slug "${slug}" was registered with root "${registeredRoot}" ` +
           `but now called with root "${root}" — slug↔root must be bijective.`
@@ -1566,11 +1594,44 @@ export class Supervisor {
       : firstDep
         ? `story/${firstDep}`
         : undefined;
-    // Resolve the story's target repo and get (or lazily create) its WorktreeManager.
+    // Resolve the story's target repo and create its worktree. Use the cached
+    // result from the repoFilter pass when available to avoid a second resolution.
     const { manifest: mf, primarySlug: ps } = this.manifestContext();
-    const { slug: repoSlug, root: repoRoot } = resolveStoryRepo(task.story, mf, ps);
-    const mgr = this.worktreeFor(repoSlug, repoRoot);
-    const wt = mgr.create(task.story.id, fromBranch ? { fromBranch } : {});
+    let repoSetupErr: unknown;
+    const repoSetup = (() => {
+      try {
+        const { slug, root } = task.resolvedRepo ?? resolveStoryRepo(task.story, mf, ps);
+        const mgr = this.worktreeFor(slug, root);
+        const worktree = mgr.create(task.story.id, fromBranch ? { fromBranch } : {});
+        return { repoSlug: slug, repoRoot: root, wt: worktree };
+      } catch (e) {
+        repoSetupErr = e;
+        return null;
+      }
+    })();
+    if (repoSetup === null) {
+      // Repo resolution or worktree creation failed. Record an audit entry so
+      // the story surfaces as failed in `loom status` rather than crashing the
+      // entire run. Matches the observable outcome of the repoFilter catch path.
+      this.audit.record({
+        action: 'story_setup_failed',
+        command: task.story.id,
+        detail: {
+          reason: 'repo_unresolvable',
+          error: repoSetupErr instanceof Error ? repoSetupErr.message : String(repoSetupErr),
+        },
+      });
+      return Promise.resolve({
+        storyId: task.story.id,
+        result: {
+          status: 'failed' as const,
+          commitCount: 0,
+          summary: `Repo setup failed: ${repoSetupErr instanceof Error ? repoSetupErr.message : String(repoSetupErr)}`,
+          logTail: '',
+        },
+      });
+    }
+    const { repoSlug, repoRoot, wt } = repoSetup;
     // Remember the branch point so a handoff/retry can scope to this worker's
     // own commits (`baseSha..HEAD`).
     this.storyBaseSha.set(task.story.id, wt.baseSha);

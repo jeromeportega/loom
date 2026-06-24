@@ -22,6 +22,7 @@ import { openDatabase, resetDatabaseForTest } from '../../state/Database.js';
 import { EpicStore } from '../../state/EpicStore.js';
 import { Supervisor } from '../Supervisor.js';
 import { MockWorkerRunner } from '../MockWorkerRunner.js';
+import { WorktreeManager } from '../WorktreeManager.js';
 import type { WorkspaceManifest } from '../../home/workspaceManifest.js';
 import type { Story } from '../../types.js';
 
@@ -90,7 +91,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetDatabaseForTest();
   fs.rmSync(repoA, { recursive: true, force: true });
   fs.rmSync(repoB, { recursive: true, force: true });
 });
@@ -367,5 +367,59 @@ describe('Single-repo regression (NFR-2)', () => {
     assert.equal(a.branchName, 'story/story-002-001');
     assert.equal(a.projectRoot, realRoot);
     assert.equal(a.worktreeContext?.repoSlug, 'my-repo');
+  });
+});
+
+// ─── (5) Multi-repo janitor: orphan in repo-b is pruned ──────────────────────
+
+describe('Supervisor — multi-repo janitor prunes orphans across both repos', () => {
+  it('prunes a stale no-agent worktree in repo-b during the end-of-run janitor pass', async () => {
+    const realRootA = fs.realpathSync(repoA);
+    const realRootB = fs.realpathSync(repoB);
+
+    // Seed an epic with two stories: one targeting repo-a (primary), one repo-b.
+    const epicStories = [
+      story('story-001-001'),           // no repo → resolves to primary (repo-a)
+      story('story-001-002', 'repo-b'), // explicit repo-b
+    ];
+    seedEpic(repoA, 'epic-001', epicStories);
+    const db = openDatabase(path.join(repoA, '.loom'));
+
+    // Create a stale worktree in repo-b directly — no agent record will exist,
+    // so the janitor should classify it as 'no-agent' and prune it.
+    const staleMgr = new WorktreeManager(realRootB);
+    staleMgr.create('stale-orphan', {});
+    const staleWtPath = path.join(realRootB, '.loom', 'worktrees', 'stale-orphan');
+    assert.ok(fs.existsSync(staleWtPath), 'stale worktree must exist before the run');
+
+    const manifest: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realRootA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realRootB, remote_url: null },
+      ],
+    };
+
+    const worker = new MockWorkerRunner(() =>
+      Promise.resolve({ status: 'done' as const, commitCount: 0, summary: 'ok', logTail: '' })
+    );
+
+    await new Supervisor({
+      projectRoot: repoA,
+      db,
+      worker,
+      maxConcurrent: 2,
+      lease: false,
+      manifest,
+      primarySlug: 'repo-a',
+    }).run(['epic-001']);
+
+    // Dispatching story-001-002 to repo-b caused worktreeFor('repo-b') to be
+    // called, adding repo-b's manager to wtByRepo. The janitor then iterates
+    // over both managers and finds stale-orphan (no agent record) → prunes it.
+    assert.ok(
+      !fs.existsSync(staleWtPath),
+      'stale-orphan worktree in repo-b must be pruned by the multi-repo janitor'
+    );
   });
 });

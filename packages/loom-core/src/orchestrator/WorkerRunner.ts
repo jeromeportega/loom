@@ -135,6 +135,7 @@ export interface WorkerAssignment {
    * can enforce that writes stay within the story's own worktree and repo.
    * Consumed by story-058-007's repoConfinement guard; optional so existing
    * mock/bench workers that don't inspect it are unaffected.
+   * TODO(story-058-007): remove this field if the repoConfinement guard is not landed.
    */
   worktreeContext?: { repoSlug: string; worktreePath: string };
   /**
