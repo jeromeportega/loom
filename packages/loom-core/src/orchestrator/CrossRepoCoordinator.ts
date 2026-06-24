@@ -373,7 +373,22 @@ export class CrossRepoCoordinator {
     // This keeps old tests passing until 002 injects the real implementation.
     const mergeRepo = this._mergeRepo ?? defaultNoopMerge;
 
+    // FR-3 fan-in lookup: used in the loop below to assert all deps reached
+    // 'landed' before a consumer merges (defence-in-depth — topo sort already
+    // guarantees order, but an explicit check catches sort invariant breaks).
+    const stageBySlug = new Map(sorted.map(s => [s.repoSlug, s]));
+
     for (const stage of sorted) {
+      // Fan-in gate: every producer repo must be 'landed' before this consumer merges.
+      const notLanded = stage.dependsOnRepos.filter(
+        dep => stageBySlug.get(dep)?.status !== 'landed',
+      );
+      if (notLanded.length > 0) {
+        throw new Error(
+          `CrossRepoCoordinator: fan-in constraint violated for '${stage.repoSlug}' — ` +
+          `producer repo(s) not yet landed: ${notLanded.join(', ')}`,
+        );
+      }
       try {
         await mergeRepo(stage, readiness.attemptId);
         stage.status = 'landed';
