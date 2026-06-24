@@ -17,7 +17,9 @@ export class PolicyEngine {
     opts?: { projectRoot?: string; env?: NodeJS.ProcessEnv },
   ): PolicyEngine {
     const projectRoot = opts?.projectRoot ?? path.dirname(loomdir);
-    const { policy } = resolveEffectiveConfig({ loomdir, projectRoot, env: opts?.env });
+    // env defaults to process.env so existing single-arg call sites inherit
+    // real env vars; pass opts.env: {} for hermetic tests.
+    const { policy } = resolveEffectiveConfig({ loomdir, projectRoot, env: opts?.env ?? process.env });
     return new PolicyEngine(policy);
   }
 
@@ -229,7 +231,7 @@ export class PolicyEngine {
         allowed: false,
         rule: 'git.allowed_remotes',
         reason:
-          'No allowed_remotes configured in policy.yaml — all remote pushes are blocked',
+          'No allowed_remotes configured in the effective policy — all remote pushes are blocked',
       };
     }
     for (const pattern of allowed_remotes) {

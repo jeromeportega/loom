@@ -15,12 +15,18 @@ interface TestDirs {
 }
 
 // Creates a temp tree that mirrors the structure resolveEffectiveConfig expects.
-// projectRoot is a child of tmpRoot; loomHomeDir is a sibling of projectRoot named
-// 'loom-home' — matching resolveLoomHomePath(projectRoot) = path.dirname(realRoot)/loom-home.
+// loomHomeDir is placed where resolveLoomHomePath(projectRoot) points
+// (sibling of projectRoot named 'loom-home'). Tests that use the team layer
+// write explicit `loom_home: loomHomeDir` into policy.yaml so the test does NOT
+// rely on resolveLoomHomePath's algorithm — the path is always injected directly.
 function makeDirs(): TestDirs {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-pe-layered-'));
   const realTmpRoot = (() => {
-    try { return fs.realpathSync(tmpRoot); } catch { return tmpRoot; }
+    try { return fs.realpathSync(tmpRoot); }
+    catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e;
+      return tmpRoot;
+    }
   })();
   const projectRoot = path.join(realTmpRoot, 'project');
   const loomdir = path.join(projectRoot, '.loom');
@@ -35,14 +41,19 @@ function makeDirs(): TestDirs {
   };
 }
 
-// Creates a minimal isolated project with no team-config sibling — the absence
-// is structural (the tmpdir has no loom-home directory at all), not accidental.
+// Creates a minimal isolated project. Tests using this fixture write a
+// policy.yaml with an explicit loom_home pointing to a nonexistent path so
+// resolveEffectiveConfig can never find a team-config.yaml, regardless of what
+// resolveLoomHomePath would compute from the projectRoot heuristic.
 function makeIsolatedNoTeamDirs(): { loomdir: string; projectRoot: string; cleanup: () => void } {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-pe-noteam-'));
   const realTmpRoot = (() => {
-    try { return fs.realpathSync(tmpRoot); } catch { return tmpRoot; }
+    try { return fs.realpathSync(tmpRoot); }
+    catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') throw e;
+      return tmpRoot;
+    }
   })();
-  // loomHome resolves to realTmpRoot/loom-home — which is never created here.
   const projectRoot = path.join(realTmpRoot, 'project');
   const loomdir = path.join(projectRoot, '.loom');
   fs.mkdirSync(loomdir, { recursive: true });
@@ -79,7 +90,9 @@ describe('PolicyEngine.load — signature unchanged (AC: no call site breaks)', 
     const { loomdir, cleanup } = makeDirs();
     try {
       writePolicy(loomdir, { agents: { model: 'claude-opus-4' } });
-      const engine = PolicyEngine.load(loomdir);
+      // Use hermetic env to prevent LOOM_AGENTS_MODEL in process.env from
+      // overriding the repo-layer value we are asserting on.
+      const engine = PolicyEngine.load(loomdir, { env: {} });
       assert.equal(engine.policyData.agents.model, 'claude-opus-4');
     } finally {
       cleanup();
@@ -154,10 +167,15 @@ describe('PolicyEngine.load — team layer merge reaches enforcement (AC3)', () 
     const { loomdir, projectRoot, loomHomeDir, cleanup } = makeDirs();
     const noTeam = makeIsolatedNoTeamDirs();
     try {
-      // repo layer: protects main and master only (written to both fixtures)
       const repoPolicy = { git: { protected_branches: ['main', 'master'], agents_must_use_pr: true } };
-      writePolicy(loomdir, repoPolicy);
-      writePolicy(noTeam.loomdir, repoPolicy);
+
+      // repo layer: protects main and master only.
+      // loom_home is explicit so the test does not rely on resolveLoomHomePath's heuristic.
+      writePolicy(loomdir, { ...repoPolicy, loom_home: loomHomeDir });
+
+      // no-team fixture: point loom_home at a path that is guaranteed not to exist.
+      const noTeamLoomHome = path.join(noTeam.projectRoot, 'nonexistent-loom-home');
+      writePolicy(noTeam.loomdir, { ...repoPolicy, loom_home: noTeamLoomHome });
 
       // team layer: adds 'release' via union-merge denylist
       writeTeamConfig(loomHomeDir, { git: { protected_branches: ['release'] } });
@@ -186,8 +204,10 @@ describe('PolicyEngine.load — team layer merge reaches enforcement (AC3)', () 
   it('team-layer guard tightening does not loosen existing repo protections', () => {
     const { loomdir, projectRoot, loomHomeDir, cleanup } = makeDirs();
     try {
+      // loom_home is explicit so the test does not rely on resolveLoomHomePath's heuristic.
       writePolicy(loomdir, {
         git: { protected_branches: ['main'], agents_must_use_pr: true },
+        loom_home: loomHomeDir,
       });
       writeTeamConfig(loomHomeDir, {
         git: { protected_branches: ['develop'] },
@@ -272,6 +292,11 @@ describe('PolicyEngine.load — no downstream drift (call sites unchanged)', () 
       writePolicy(loomdir, {
         agents: { model: 'claude-sonnet-4-6', max_concurrent: 3 },
       });
+      // Verify the single-arg form loads without error and returns an engine.
+      // (Single-arg inherits process.env; value assertions use the explicit form.)
+      const singleArgEngine = PolicyEngine.load(loomdir);
+      assert.ok(singleArgEngine instanceof PolicyEngine);
+
       const explicitEngine = PolicyEngine.load(loomdir, { projectRoot, env: {} });
       assert.equal(explicitEngine.policyData.agents.model, 'claude-sonnet-4-6');
       assert.equal(explicitEngine.policyData.agents.max_concurrent, 3);
