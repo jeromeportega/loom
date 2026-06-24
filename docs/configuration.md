@@ -58,9 +58,19 @@ does not collapse the allowlist to nothing. Only layers that supply at
 least one element are included in the intersection.
 
 If the intersection produces an empty result across two or more non-empty
-layers, loom emits a warning (`[loom] mergeLayers: intersect at "..."
-produced an empty allowlist`) because this almost certainly indicates a
-misconfiguration.
+layers, loom emits a warning:
+
+```
+[loom] mergeLayers: intersect at "git.allowed_remotes" produced an empty allowlist —
+no element is permitted by all configured layers. All operations restricted by this
+field will be blocked. Check that every layer's value for "git.allowed_remotes"
+shares at least one common entry.
+```
+
+An empty effective `allowed_remotes` list means **all remote pushes are blocked** —
+the guard engine treats it as a full deny (no remote is whitelisted). This is the
+most-restrictive outcome and is almost certainly a misconfiguration when it arises
+from a non-empty intersection collapsing to zero.
 
 ### Type conflict error
 
@@ -85,6 +95,11 @@ per-layer — absent fields receive defaults only at the final parse step.
 This means a layer that sets a field to `null` or omits it entirely does
 not force the default into the merged tree; the default is applied only
 when no layer contributed a value.
+
+A layer that sets a field to `null` is treated as **absent** — it neither
+forces the default into the merged tree nor clears a value contributed by a
+lower-precedence layer. `null` cannot be used as an override sentinel to
+remove a lower-layer value; it is simply ignored during the merge.
 
 ## Env variable naming convention
 
@@ -131,11 +146,17 @@ excluded from the env layer. API credentials flow exclusively through
 
 ## Repo-only field: `loom_home`
 
-`loom_home` is read exclusively from `.loom/policy.yaml` (the repo
-layer). It cannot be set via `team-config.yaml` (circular dependency —
-the team-config file lives inside loom-home) or via a `LOOM_LOOM_HOME`
-env variable (the env layer is loaded after `loom_home` is resolved). A
-`LOOM_LOOM_HOME` variable is silently ignored by the env layer.
+`loom_home` **path resolution** uses only the repo layer. The resolver
+reads `loom_home` from `.loom/policy.yaml` in step 2 of
+`resolveEffectiveConfig`, before the team layer or env layer is loaded,
+so neither `team-config.yaml` (circular dependency) nor a
+`LOOM_LOOM_HOME` env variable can redirect where loom looks for
+`team-config.yaml`.
+
+Note: `LOOM_LOOM_HOME` is a valid `LOOM_*` key — the env layer maps it
+to `loom_home` in the merged policy tree (`policy.loom_home`) just like
+any other env override. The value lands in the final policy object but
+has no effect on path resolution, which was already fixed in step 2.
 
 ## Putting it together
 
