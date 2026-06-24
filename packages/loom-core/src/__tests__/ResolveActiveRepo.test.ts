@@ -97,6 +97,8 @@ describe('resolveActiveRepo — match by slug, not by stored path', () => {
       const { slug, remoteUrl } = computeRepoSlug(repo);
 
       // Pre-seed a manifest entry with a stale/different stored path but matching slug.
+      // We must write raw YAML here because there is no public API to create an entry
+      // with an arbitrary path (registerRepo always uses realpathSync(projectRoot)).
       const staleEntry: ManifestEntry = {
         slug,
         path: '/some/stale/path/that/no/longer/exists',
@@ -104,6 +106,13 @@ describe('resolveActiveRepo — match by slug, not by stored path', () => {
       };
       const existingManifest = { version: 1 as const, repos: [staleEntry] };
       fs.writeFileSync(manifestPath(home), yaml.dump(existingManifest), 'utf8');
+
+      // Guard against format drift: if readManifest can't parse what we wrote,
+      // the test would silently produce a false-negative (registerRepo would fire
+      // instead of finding the existing entry). Fail loudly instead.
+      const seeded = readManifest(home);
+      assert.equal(seeded.repos.length, 1, 'precondition: seeded manifest must parse to exactly one entry');
+      assert.equal(seeded.repos[0].slug, slug, 'precondition: seeded slug must match computeRepoSlug().slug');
 
       // resolveActiveRepo must match by slug (not path) and return the stale entry.
       const resolved = resolveActiveRepo(home, repo);

@@ -6,6 +6,11 @@ import { readManifest, registerRepo, type ManifestEntry } from './workspaceManif
  * against entry.slug. Auto-registers (delegates to registerRepo) when the invoked
  * repo is absent. Pure observe-and-record: never throws on the happy path, never
  * alters command behavior.
+ *
+ * NOTE: The returned `entry.path` is advisory metadata — it reflects the filesystem
+ * path at registration time and may be stale after a repo move. Callers must not
+ * rely on `entry.path` for filesystem access; use `resolveRepoStatePaths(projectRoot)`
+ * to obtain current, verified paths.
  */
 export function resolveActiveRepo(loomHome: string, projectRoot: string): ManifestEntry {
   const { slug } = computeRepoSlug(projectRoot);

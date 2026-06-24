@@ -141,9 +141,11 @@ export function prepareRepoState(
   const loomHome = resolveLoomHomePath(projectRoot, policy);
   ensureLoomHome(loomHome);
 
-  // Observe-and-record: register this repo in the workspace manifest on first use
-  // (ADR-003 seam — every repo-scoped command gets first-use registration here).
-  resolveActiveRepo(loomHome, projectRoot);
+  // Observe-and-record: register this repo in the workspace manifest on first use.
+  // Must never throw — filesystem or manifest errors must not affect command behavior.
+  try {
+    resolveActiveRepo(loomHome, projectRoot);
+  } catch { /* observe-and-record must not block repo-scoped commands */ }
 
   // 2. Resolve namespace paths.
   const paths = resolveRepoStatePaths(projectRoot, policy);
