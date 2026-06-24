@@ -49,13 +49,17 @@ afterEach(() => {
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
-/** Capture console.log output from a synchronous function. */
+/** Capture console.log / console.error / process.stdout.write output from a
+ *  synchronous function. All four commands tested here (runStatus, runArtifacts,
+ *  runTraces, runAudit) are synchronous; this helper is intentionally sync-only. */
 function capture(fn: () => void): { stdout: string; stderr: string; exitCode: number | null } {
   const logs: string[] = [];
+  const writes: string[] = [];
   const errors: string[] = [];
   let exitCode: number | null = null;
   const origLog = console.log;
   const origErr = console.error;
+  const origWrite = process.stdout.write.bind(process.stdout);
   const origExit = process.exit as (code?: number) => never;
   const origExitCode = process.exitCode;
   process.exitCode = undefined;
@@ -65,6 +69,14 @@ function capture(fn: () => void): { stdout: string; stderr: string; exitCode: nu
   };
   console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
   console.error = (...args: unknown[]) => errors.push(args.map(String).join(' '));
+  process.stdout.write = function (
+    chunk: string | Uint8Array,
+    _encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+    _cb?: (err?: Error | null) => void
+  ): boolean {
+    writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+    return true;
+  } as typeof process.stdout.write;
   try {
     fn();
   } catch (e) {
@@ -73,12 +85,13 @@ function capture(fn: () => void): { stdout: string; stderr: string; exitCode: nu
     (process as NodeJS.Process & { exit: (code?: number) => never }).exit = origExit;
     console.log = origLog;
     console.error = origErr;
+    process.stdout.write = origWrite;
   }
   if (exitCode === null && typeof process.exitCode === 'number') {
     exitCode = process.exitCode;
   }
   process.exitCode = origExitCode;
-  return { stdout: logs.join('\n'), stderr: errors.join('\n'), exitCode };
+  return { stdout: [...logs, ...writes].join('\n'), stderr: errors.join('\n'), exitCode };
 }
 
 // ─── AC1 + AC3: loom status — direct story-NNN lookup, no epic-NNN leak ──────
@@ -93,6 +106,7 @@ describe('loom status — standalone story-NNN direct lookup (story-059-004 AC1+
 
     const { stdout } = capture(() => runStatus({ json: true, projectRoot: repo }));
     const payload = JSON.parse(stdout) as { epics: Array<{ id: string; kind?: string }> };
+    assert.ok(Array.isArray(payload?.epics), 'Expected epics array in JSON output');
     const entry = payload.epics.find((e) => e.kind === 'standalone');
     assert.ok(entry, 'Standalone entry must appear with kind=standalone');
     assert.equal(entry.id, 'story-059', 'id must be story-059 (direct PK, no .replace)');
@@ -114,6 +128,7 @@ describe('loom status — standalone story-NNN direct lookup (story-059-004 AC1+
     const payload = JSON.parse(stdout) as {
       epics: Array<{ id: string; kind?: string; stories: Array<{ id: string }> }>;
     };
+    assert.ok(Array.isArray(payload?.epics), 'Expected epics array in JSON output');
     const entry = payload.epics.find((e) => e.kind === 'standalone');
     assert.ok(entry, 'Standalone entry must appear');
     assert.equal(entry.id, 'story-059', 'top-level id must be story-059');
@@ -152,6 +167,7 @@ describe('loom status — standalone story-NNN direct lookup (story-059-004 AC1+
 
     const { stdout: json } = capture(() => runStatus({ json: true, projectRoot: repo }));
     const payload = JSON.parse(json) as { epics: Array<{ id: string; kind?: string }> };
+    assert.ok(Array.isArray(payload?.epics), 'Expected epics array in JSON output');
     const epic = payload.epics.find((e) => e.id === 'epic-001');
     assert.ok(epic, 'epic-001 must appear in JSON');
     assert.equal(epic.kind, undefined, 'Normal epic must not have kind=standalone');
@@ -210,7 +226,10 @@ describe('loom artifacts — standalone story-NNN direct lookup (story-059-004 A
 // ─── AC2: loom traces — direct story-NNN scope via --epic ─────────────────────
 
 describe('loom traces — standalone story-NNN direct lookup (story-059-004 AC2)', () => {
-  it('--epic story-NNN returns traces for the standalone story', () => {
+  it('--epic story-NNN queries by epic_id column which stores story-NNN for standalone rows', () => {
+    // For standalone stories, decision_traces.epic_id = 'story-059' (set by the worker).
+    // DecisionTraceStore.getByEpic('story-059') queries that column directly —
+    // this test exercises that path independently from the --story path below.
     const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
     new EpicStore(db).createStandalone('story-059', 'Trace task');
     const agentStore = new AgentStore(db);
@@ -253,6 +272,7 @@ describe('loom traces — standalone story-NNN direct lookup (story-059-004 AC2)
     const { stdout, exitCode } = capture(() => runTraces({ epic: 'story-059', json: true }));
     assert.equal(exitCode, null, 'runTraces JSON must not exit with error');
     const payload = JSON.parse(stdout) as { traces: Array<{ story_id: string; epic_id: string }> };
+    assert.ok(Array.isArray(payload?.traces), 'Expected traces array in JSON output');
     assert.ok(payload.traces.length > 0, 'Must return at least one trace');
     assert.equal(payload.traces[0].story_id, 'story-059', 'story_id must be story-059');
     assert.ok(
@@ -319,6 +339,7 @@ describe('loom audit — standalone story-NNN direct lookup (story-059-004 AC2)'
     const { stdout, exitCode } = capture(() => runAudit({ story: 'story-059', json: true }));
     assert.equal(exitCode, null, 'runAudit JSON must not exit with error');
     const payload = JSON.parse(stdout) as { entries: Array<{ action: string; command?: string }> };
+    assert.ok(Array.isArray(payload?.entries), 'Expected entries array in JSON output');
     assert.ok(payload.entries.length > 0, 'Must return at least one audit entry');
     assert.ok(
       payload.entries.some((e) => e.action === 'worker_done'),
@@ -337,6 +358,7 @@ describe('loom audit — standalone story-NNN direct lookup (story-059-004 AC2)'
     const { stdout, exitCode } = capture(() => runAudit({ story: 'story-999', json: true }));
     assert.equal(exitCode, null, 'runAudit must not exit for unknown story-NNN');
     const payload = JSON.parse(stdout) as { entries: unknown[] };
+    assert.ok(Array.isArray(payload?.entries), 'Expected entries array in JSON output');
     assert.equal(payload.entries.length, 0, 'Unknown story-NNN must yield empty entries, not a fallback');
   });
 
