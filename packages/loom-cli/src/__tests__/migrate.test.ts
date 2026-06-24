@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
-import { resolveLoomHomePath } from '@loom-ai/core';
+import { resolveLoomHomePath, resolveRepoStatePaths } from '@loom-ai/core';
 
 // __dirname = packages/loom-cli/dist/__tests__
 // CLI entry = packages/loom-cli/dist/index.js
@@ -155,13 +155,19 @@ describe('loom migrate — state DB migration', () => {
   after(() => suite._teardown());
 
   it('detects legacy .loom/loom.db and reports migration (or skips if not a valid DB)', () => {
-    // The migration function may or may not succeed with an empty file (not a valid SQLite DB).
-    // What we care about: loom migrate exits 0 and the output mentions state db.
+    // A zero-byte file is a valid empty SQLite database; better-sqlite3 opens it
+    // successfully and migration moves it to the destination.
     const result = suite.loom('migrate');
     assert.equal(result.status, 0, `exit 0 expected; stderr: ${result.stderr}`);
     assert.ok(
       result.stdout.includes('state db'),
       `output should mention state db; got: ${result.stdout}`
+    );
+    // The destination DB must exist after migration — not just mentioned in output.
+    const dbPaths = resolveRepoStatePaths(suite.projectDir(), {});
+    assert.ok(
+      fs.existsSync(dbPaths.dbPath),
+      `destination DB must exist at ${dbPaths.dbPath} after migration`
     );
   });
 });
@@ -170,12 +176,26 @@ describe('loom migrate — state DB migration', () => {
 
 describe('loom migrate — idempotent no-op re-run', () => {
   const suite = makeSuite();
+  // Captured in before() after the initial migration; used by the commit-count
+  // test so that prior it()-block migrate calls do not pollute the snapshot.
+  let logBeforeNoop = '';
 
   before(() => {
     suite._setup('loom-migrate-noop-');
     // Run once to migrate
     const first = suite.loom('migrate');
     assert.equal(first.status, 0, `first run must succeed; stderr: ${first.stderr}`);
+    // Snapshot git log immediately after the initial migration, before any
+    // subsequent it()-block invocations, so the before/after comparison is clean.
+    try {
+      logBeforeNoop = execFileSync('git', ['log', '--oneline'], {
+        cwd: suite.loomHomeDir(),
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      logBeforeNoop = ''; // empty repo (no commits yet) — git log exits non-zero
+    }
   });
 
   after(() => suite._teardown());
@@ -202,16 +222,19 @@ describe('loom migrate — idempotent no-op re-run', () => {
   });
 
   it('does not create a new commit in loom-home on second run', () => {
-    const logBefore = execSync('git log --oneline 2>/dev/null || true', {
-      cwd: suite.loomHomeDir(),
-      encoding: 'utf8',
-    }).trim();
+    // logBeforeNoop was captured in before() right after the initial migration.
     suite.loom('migrate');
-    const logAfter = execSync('git log --oneline 2>/dev/null || true', {
-      cwd: suite.loomHomeDir(),
-      encoding: 'utf8',
-    }).trim();
-    assert.equal(logBefore, logAfter, 'loom-home git log must be unchanged on re-run');
+    let logAfter = '';
+    try {
+      logAfter = execFileSync('git', ['log', '--oneline'], {
+        cwd: suite.loomHomeDir(),
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      logAfter = '';
+    }
+    assert.equal(logBeforeNoop, logAfter, 'loom-home git log must be unchanged on re-run');
   });
 });
 
@@ -332,6 +355,8 @@ describe('loom migrate --relocate-committed-artifacts', () => {
   let shaBeforeReloc = '';
   let shaAfterReloc = '';
   let priorCommitShas: string[] = [];
+  // Captured in before() so tests can assert on the first (real) relocation run's output.
+  let relocFirstRunStdout = '';
 
   before(() => {
     suite._setup('loom-migrate-reloc-');
@@ -358,11 +383,12 @@ describe('loom migrate --relocate-committed-artifacts', () => {
 
     shaBeforeReloc = priorCommitShas[0];
 
-    // Run migration with relocation
+    // Run migration with relocation and capture output for assertions below.
     const result = suite.loom('migrate', '--relocate-committed-artifacts');
     if (result.status !== 0) {
       throw new Error('setup: loom migrate --relocate-committed-artifacts failed: ' + result.stderr);
     }
+    relocFirstRunStdout = result.stdout;
 
     shaAfterReloc = execSync('git rev-parse HEAD', {
       cwd: projectDir,
@@ -442,16 +468,21 @@ describe('loom migrate --relocate-committed-artifacts', () => {
     );
   });
 
-  it('output mentions the relocation and forward commit', () => {
-    // Run again (idempotent — nothing to relocate on second run)
+  it('first run output reports the relocation of artifacts', () => {
+    // relocFirstRunStdout was captured in before() during the actual relocation run.
+    assert.ok(
+      relocFirstRunStdout.includes('relocated'),
+      `first run output should mention 'relocated'; got: ${relocFirstRunStdout}`
+    );
+  });
+
+  it('second run with --relocate-committed-artifacts reports no artifacts (idempotent)', () => {
     const resultAgain = suite.loom('migrate', '--relocate-committed-artifacts');
-    // First run output was captured in before(); check that the flow completed
-    // by verifying idempotency on second run
     assert.equal(resultAgain.status, 0);
     assert.ok(
       resultAgain.stdout.includes('no committed .loom_outputs') ||
       resultAgain.stdout.includes('nothing'),
-      'second run should report no artifacts to relocate'
+      `second run should report no artifacts to relocate; got: ${resultAgain.stdout}`
     );
   });
 });

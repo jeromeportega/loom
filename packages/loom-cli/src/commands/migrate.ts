@@ -14,7 +14,11 @@ import {
 function loadPolicy(loomDir: string): { loom_home?: string } {
   try {
     return PolicyEngine.load(loomDir).policyData;
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    // Non-ENOENT (parse failure, validation error): warn but proceed with defaults
+    // so migrate does not silently use a wrong loom_home path.
+    process.stderr.write(`warning: failed to load policy.yaml: ${(err as Error).message}\n`);
     return {};
   }
 }
@@ -37,24 +41,34 @@ function detectLoomHomeStatus(loomHomePath: string): LoomHomeStatus {
 /**
  * Count untracked planning entries that would be migrated.
  * Mirrors the detection logic in migratePlanningScratch — skip git-tracked entries
- * and entries already present at the destination.
+ * and entries already present at the destination. Uses a single git ls-files call
+ * (matching the CWD used by migratePlanningScratch's isGitTrackedEntry) rather
+ * than one subprocess per entry.
  */
 function countMigrableEntries(scratchSrcRoot: string, planningRoot: string): number {
   if (!fs.existsSync(scratchSrcRoot)) return 0;
   const entries = fs.readdirSync(scratchSrcRoot);
   if (entries.length === 0) return 0;
+
+  // Single git ls-files call — same CWD as migratePlanningScratch's isGitTrackedEntry.
+  let trackedEntries: Set<string>;
+  try {
+    const result = execFileSync('git', ['ls-files', ...entries], {
+      cwd: scratchSrcRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    // Extract top-level names from the returned paths (handles nested paths).
+    trackedEntries = new Set(
+      result.trim().split('\n').filter(Boolean).map(p => p.split('/')[0])
+    );
+  } catch {
+    trackedEntries = new Set(); // git unavailable or not a git repo — treat all as untracked
+  }
+
   let count = 0;
   for (const entry of entries) {
-    try {
-      const result = execFileSync('git', ['ls-files', entry], {
-        cwd: scratchSrcRoot,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      if (result.trim()) continue; // git-tracked — migratePlanningScratch skips these
-    } catch {
-      // not in a git repo or git unavailable — treat as untracked
-    }
+    if (trackedEntries.has(entry)) continue; // git-tracked — migratePlanningScratch skips these
     if (fs.existsSync(path.join(planningRoot, entry))) continue; // already at destination
     count++;
   }
@@ -224,8 +238,8 @@ export function runMigrate(opts: {
       if (committedOutputs.length === 0) {
         console.log(`  artifacts  no committed .loom_outputs to relocate`);
       } else if (!workingTreeClean) {
-        console.log(`  artifacts  ERROR: working tree is dirty — cannot relocate committed artifacts`);
-        console.log(`             (commit or stash your changes first)`);
+        console.log(`  artifacts  WARN: working tree is dirty — would refuse to relocate committed artifacts`);
+        console.log(`             (commit or stash your changes first, then re-run without --dry-run)`);
       } else {
         const dst = path.join(dbPaths.namespaceDir, 'loom_outputs');
         console.log(`  artifacts  would relocate ${committedOutputs.length} file(s) → ${dst}`);
@@ -301,15 +315,16 @@ export function runMigrate(opts: {
       });
 
       // Create a single forward commit (no history rewrite).
-      // -c commit.gpgsign=false: suppress GPG signing for this loom-internal commit.
       // -c user.{email,name}: supply a fallback identity via flag (not written to
       //   .git/config) when the repo has no configured git identity.
+      // Signing policy is deliberately NOT overridden — the repo's own signing
+      // config applies, honouring any branch-protection requirement (AC: no
+      // guardrail weakened).
       const commitMessage =
         `loom migrate: relocate .loom_outputs artifacts to loom-home\n\n` +
         `Moved ${committedOutputs.length} file(s) to ${loomOutputsDst}.\n` +
         `This is a forward commit — no prior commits are rewritten.`;
       const commitArgs = [
-        '-c', 'commit.gpgsign=false',
         ...(!hasGitIdentity(projectRoot)
           ? ['-c', 'user.email=loom@loom.local', '-c', 'user.name=loom']
           : []),
@@ -321,18 +336,21 @@ export function runMigrate(opts: {
           stdio: ['ignore', 'pipe', 'pipe'],
         });
       } catch (commitErr) {
-        // git rm staged the deletions but the commit failed. Unstage them so the
-        // repo is left in a clean state and the user can diagnose and retry.
+        // git rm -r already deleted working-tree files and staged the deletions.
+        // Restore both the index and working tree to HEAD so the repo is left in a
+        // clean, recoverable state. Artifacts are still safe in loom-home.
         try {
-          execFileSync('git', ['rm', '--cached', '-r', '.loom_outputs'], {
-            cwd: projectRoot,
-            stdio: 'ignore',
-          });
-        } catch { /* best-effort unstage */ }
+          execFileSync(
+            'git',
+            ['restore', '--source=HEAD', '--staged', '--worktree', '.loom_outputs'],
+            { cwd: projectRoot, stdio: 'ignore' }
+          );
+        } catch { /* best-effort restore */ }
         throw new Error(
-          `failed to commit artifact relocation (staged deletions have been unstaged); ` +
-          `re-run loom migrate --relocate-committed-artifacts to retry: ` +
-          `${(commitErr as Error).message}`
+          `failed to commit artifact relocation — working-tree and index restored to HEAD. ` +
+          `Artifacts are intact in loom-home at ${loomOutputsDst}. ` +
+          `Re-run loom migrate --relocate-committed-artifacts to retry. ` +
+          `Cause: ${(commitErr as Error).message}`
         );
       }
 
