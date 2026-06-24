@@ -145,3 +145,12 @@ export type {
   RollbackResult,
 } from './landingTypes.js';
 export { CROSS_REPO_ACTIONS } from './landingTypes.js';
+export {
+  isCrossRepoEdge,
+  buildRepoDag,
+  isDepReady,
+  validateCrossRepoEdges,
+} from './crossRepoReadiness.js';
+export type {
+  CrossRepoEdgeError,
+} from './crossRepoReadiness.js';
