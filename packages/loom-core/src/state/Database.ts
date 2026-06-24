@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -210,6 +210,46 @@ export function openDatabase(loomdir: string): Database.Database {
   return _db;
 }
 
+/**
+ * Migration v26 — repoints existing epic-NNN standalone containers to story-NNN.
+ * No schema change (no ALTER TABLE). Idempotent: the predicate
+ * `kind='standalone' AND id LIKE 'epic-%'` matches nothing on re-run because
+ * migrated rows already have a 'story-' prefix. Runs inside one transaction
+ * with PRAGMA defer_foreign_keys=ON so the FK on agents.epic_id is checked only
+ * at COMMIT — order-independent, all-or-nothing.
+ */
+function repointStandaloneIds(db: Database.Database): void {
+  // Snapshot ids to repoint BEFORE any mutations (idempotency predicate).
+  const toRepoint = db
+    .prepare("SELECT id FROM epics WHERE kind = 'standalone' AND id LIKE 'epic-%'")
+    .all() as { id: string }[];
+
+  if (toRepoint.length === 0) return;
+
+  const updateEpic   = db.prepare('UPDATE epics           SET id      = ? WHERE id      = ?');
+  const updateAgents = db.prepare('UPDATE agents          SET epic_id = ? WHERE epic_id = ?');
+  const updateTraces = db.prepare('UPDATE decision_traces SET epic_id = ? WHERE epic_id = ?');
+  const updateAudit  = db.prepare('UPDATE audit_log       SET command = ? WHERE command = ?');
+
+  const deferFk = db.prepare('PRAGMA defer_foreign_keys = ON');
+
+  const migrate = db.transaction(() => {
+    // Defer FK check (agents.epic_id REFERENCES epics.id) to COMMIT so the
+    // UPDATE epics order doesn't matter — checked all-or-nothing at COMMIT.
+    deferFk.run();
+    for (const { id: oldId } of toRepoint) {
+      // substr(id,6) in SQL === .slice(5) in JS: 'epic-047' -> '047'
+      const newId = 'story-' + oldId.slice(5);
+      updateEpic.run(newId, oldId);
+      updateAgents.run(newId, oldId);
+      updateTraces.run(newId, oldId);
+      updateAudit.run(newId, oldId);
+    }
+  });
+
+  migrate();
+}
+
 export function runMigrations(db: Database.Database): void {
   db.exec(DDL);
 
@@ -401,6 +441,9 @@ export function runMigrations(db: Database.Database): void {
   if (!epicCols.some((c) => c.name === 'loom_home_sha')) {
     db.exec('ALTER TABLE epics ADD COLUMN loom_home_sha TEXT');
   }
+
+  // v26: repoint epic-NNN standalone ids to story-NNN (no schema change).
+  repointStandaloneIds(db);
 
   const row = db
     .prepare('SELECT version FROM schema_version LIMIT 1')
