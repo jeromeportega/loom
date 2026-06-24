@@ -204,6 +204,11 @@ export class CrossRepoCoordinator {
     const landed = new Set<string>();
 
     for (const stage of sorted) {
+      // A consumer gate failure (story-058-006) sets the consumer stage to
+      // 'partial_landing' before the coordinator reaches it. Skip blocked
+      // stages so the consumer PR is never opened.
+      if (stage.status === 'partial_landing') continue;
+
       // Runtime topo-sort invariant: all declared producer deps must be landed
       // before this stage executes. topoSortRepos guarantees this; this
       // assertion catches any future regression at the call site.
@@ -224,19 +229,18 @@ export class CrossRepoCoordinator {
         if (result.url) stage.prUrl = result.url;
 
         if (hasConsumers(stage.repoSlug)) {
-          // Set status before calling _runConsumerGate so story-058-006 sees
-          // the correct state when it reads producerStage.status.
           stage.status = 'awaiting_merge';
-
-          // story-058-006 seam: run consumer gate before blocking on merge.
-          // `producerStage.status` is `'awaiting_merge'` at invocation time.
-          // Currently a no-op; story-058-006 will wire `runConsumerGateFn`.
-          for (const consumer of sorted.filter(s => s.dependsOnRepos.includes(stage.repoSlug))) {
-            await this._runConsumerGate(stage, consumer);
-          }
 
           // Block subsequent consumer stages until this PR is merged.
           await this._waitForMerge(stage, this.abortSignal);
+
+          // story-058-006 seam: run consumer gate AFTER the producer PR merges
+          // so the consumer build resolves the producer's landed interface.
+          // `producerStage.status` is still `'awaiting_merge'` at invocation
+          // time (set to 'landed' below only after all gates complete).
+          for (const consumer of sorted.filter(s => s.dependsOnRepos.includes(stage.repoSlug))) {
+            await this._runConsumerGate(stage, consumer);
+          }
         }
 
         stage.status = 'landed';
