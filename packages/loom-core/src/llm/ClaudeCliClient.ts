@@ -17,7 +17,7 @@ export interface ClaudeCliClientOptions {
   sessionAuth?: boolean;
 }
 
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 6 * 60 * 1000;
 
 /**
  * HTTP status codes the Anthropic API returns when the request is *not* the
@@ -79,7 +79,19 @@ export class ClaudeCliClient implements LLMClient {
         );
       }
       if (proc.timedOut) {
-        throw new Error(`claude CLI timed out after ${this.timeoutMs}ms`);
+        // A hung request (no response → SIGTERM at the timeout) is transient:
+        // a fresh spawn almost always succeeds. Without this retry, one hung
+        // review/judge/planning call hard-fails the gate and wedges the run —
+        // the failure mode has no HTTP status, so the status-based retry below
+        // never catches it.
+        if (attempt < MAX_RETRIES) {
+          const delayMs = BACKOFF_BASE_MS * Math.pow(2, attempt);
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        throw new Error(
+          `claude CLI timed out after ${this.timeoutMs}ms (${MAX_RETRIES} retries exhausted)`
+        );
       }
       if (proc.code !== 0) {
         const status = extractApiErrorStatus(proc.output);
@@ -115,7 +127,19 @@ export class ClaudeCliClient implements LLMClient {
         );
       }
       if (proc.timedOut) {
-        throw new Error(`claude CLI timed out after ${this.timeoutMs}ms`);
+        // A hung request (no response → SIGTERM at the timeout) is transient:
+        // a fresh spawn almost always succeeds. Without this retry, one hung
+        // review/judge/planning call hard-fails the gate and wedges the run —
+        // the failure mode has no HTTP status, so the status-based retry below
+        // never catches it.
+        if (attempt < MAX_RETRIES) {
+          const delayMs = BACKOFF_BASE_MS * Math.pow(2, attempt);
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        throw new Error(
+          `claude CLI timed out after ${this.timeoutMs}ms (${MAX_RETRIES} retries exhausted)`
+        );
       }
       if (!proc.success || proc.code !== 0) {
         const status = extractApiErrorStatus(proc.lastLine ?? '');
