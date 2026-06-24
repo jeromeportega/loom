@@ -193,11 +193,12 @@ properties:
         minimum: 0
         default: 2
         description: |
-          Per-story automatic-resume cap (epic-030). When a worker is killed by
-          the stall or hung-request guard AND it left a checkpoint commit, the
-          supervisor auto-resumes it from the checkpoint up to this many times
-          within one `loom run` (run-scoped, not persisted). 0 disables
-          auto-resume. Cap exhausted or no checkpoint leaves the story failed.
+          DEPRECATED — no longer consumed by the Supervisor. The checkpoint-based
+          auto-resume path (epic-030) was replaced by the durable clean-retry path
+          (stall_recovery_budget, epic-061). Setting this value has no effect.
+          Use stall_recovery_budget: 0 to disable auto-recovery entirely.
+          Kept in the schema for backwards-compatibility; will be removed in a
+          future release.
       stall_recovery_budget:
         type: integer
         minimum: 0

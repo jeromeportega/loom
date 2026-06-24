@@ -576,7 +576,7 @@ describe('autoRecovery — cap (other) exit not auto-retried', () => {
     const worker = new MockWorkerRunner(() =>
       Promise.resolve({
         status: 'failed' as const,
-        killReason: 'cap' as never,
+        killReason: 'cap',
         commitCount: 0,
         summary: 'cap hit',
         logTail: '',

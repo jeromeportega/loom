@@ -11,7 +11,8 @@ export interface StallKillDetail {
   kill_reason: TimeoutKillReason;
   silence_kind: SilenceKind;
   last_stream_event: string;
-  resume_attempt: number;
+  /** Durable per-story recovery count at the time of this kill (pre-increment). */
+  recovery_count: number;
   checkpoint_committed: boolean;
 }
 
@@ -34,10 +35,10 @@ export function recordStallKill(
     agentId: string;
     storyId: string;
     result: WorkerResult;
-    resumeAttempt: number;
+    recoveryCount: number;
   }
 ): void {
-  const { agentId, storyId, result, resumeAttempt } = input;
+  const { agentId, storyId, result, recoveryCount } = input;
   const detail: StallKillDetail = {
     kill_reason: result.killReason!,
     silence_kind:
@@ -45,7 +46,7 @@ export function recordStallKill(
         ? 'hung_request_no_response'
         : 'fully_silent_subprocess',
     last_stream_event: result.lastStreamEvent ?? '(none)',
-    resume_attempt: resumeAttempt,
+    recovery_count: recoveryCount,
     checkpoint_committed: result.checkpointCommitted === true,
   };
   audit.record({

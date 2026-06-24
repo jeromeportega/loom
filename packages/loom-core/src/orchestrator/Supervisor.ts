@@ -256,16 +256,16 @@ export interface SupervisorOptions {
    */
   workerModel?: string;
   /**
-   * Per-story automatic-resume cap (policy.agents.auto_resume_attempts; 0 disables).
-   * When a worker is killed by the stall or hung-request guard AND it left a
-   * checkpoint commit, auto-resume re-dispatches it up to this many times within
-   * one `loom run`. Volatile: counted in-run, not persisted to the DB. Default 0
-   * (disabled) when not provided.
+   * @deprecated No longer consumed. The stall-recovery path was replaced by the
+   * durable clean-retry budget (`stallRecoveryBudget` / `policy.agents.stall_recovery_budget`).
+   * Setting this value has no effect — use `stallRecoveryBudget: 0` to disable
+   * auto-recovery entirely. Kept for API compatibility; will be removed in a future release.
    */
   autoResumeAttempts?: number;
   /**
-   * Injectable StoryRetryService for tests. Defaults to a resume-mode (clean=false)
-   * instance built from projectRoot + db.
+   * @deprecated No longer consumed. The stall recovery path now uses `cleanRetryService`
+   * (a clean=true StoryRetryService). This field is retained for backwards-compatible
+   * call sites but has no effect.
    */
   retryService?: StoryRetryService;
   /**
@@ -384,8 +384,6 @@ export class Supervisor {
   private logBytes = new Map<string, number>();
   /** Maps agentId → storyId so flushTails can look up the log_bytes offset. */
   private agentToStory = new Map<string, string>();
-  /** Shared retry-preparation path for auto-resume (story-032-002). */
-  private retryService!: StoryRetryService;
   /** Durable per-story clean-retry budget store (story-061-001). */
   private recoveryStore!: RecoveryStore;
   /** Clean-retry service (clean=true) for stall auto-recovery (story-061-003). */
@@ -473,11 +471,6 @@ export class Supervisor {
     this.decisionTraces = new DecisionTraceStore(opts.db);
     this.lease = new LeaseStore(opts.db);
     this.signalLedger = new SignalLedger({ db: opts.db, projectRoot: opts.projectRoot });
-    this.retryService = opts.retryService ?? new StoryRetryService({
-      projectRoot: opts.projectRoot,
-      db: opts.db,
-      leaseStore: this.lease,
-    });
     this.recoveryStore = new RecoveryStore(opts.db);
     this.cleanRetryService = opts.cleanRetryService ?? new StoryRetryService({
       projectRoot: opts.projectRoot,
@@ -2569,27 +2562,35 @@ export class Supervisor {
         agentId: task.agentId,
         storyId: task.story.id,
         result,
-        resumeAttempt: currentCount,
+        recoveryCount: currentCount,
       });
       const budget = this.opts.stallRecoveryBudget ?? 2;
       if (currentCount < budget) {
         const prep = this.cleanRetryService.prepare(task.story.id);
         if (prep.status === 'ready') {
           const newCount = currentCount + 1;
-          // Audit-first: persist the recovery row before mutating the durable
-          // budget counter. A crash between these two synchronous SQLite writes
-          // would leave the audit reconstructable; the inverse would not.
-          recordAutoRecovery(this.audit, {
-            agentId: task.agentId,
-            storyId: task.story.id,
-            detail: {
-              recovery_attempt: newCount,
-              budget,
-              kill_reason: result.killReason as 'stall' | 'hung_request',
-              reset_stories: prep.resetStories,
-            },
-          });
-          this.recoveryStore.incrementRecoveryCount(task.story.id);
+          const kr = result.killReason;
+          if (kr !== 'stall' && kr !== 'hung_request') {
+            throw new Error(
+              `classifyWorkerExit returned 'stall' but killReason='${kr}' is not in the stall allowlist`
+            );
+          }
+          // Atomic: both the audit row and the budget counter land in one
+          // SQLite transaction so a crash between them cannot leave the
+          // counter and audit log in a split state.
+          this.opts.db.transaction(() => {
+            recordAutoRecovery(this.audit, {
+              agentId: task.agentId,
+              storyId: task.story.id,
+              detail: {
+                recovery_attempt: newCount,
+                budget,
+                kill_reason: kr,
+                reset_stories: prep.resetStories,
+              },
+            });
+            this.recoveryStore.incrementRecoveryCount(task.story.id);
+          })();
           task.status = 'pending';
           return;
         }

@@ -2740,6 +2740,29 @@ describe('Supervisor — finalizeAndGateDone: publish_pending routing (story-005
 import { AuditLog as AuditLogClass } from '../state/AuditLog.js';
 import type { StoryRetryResult } from '../orchestrator/StoryRetryService.js';
 import { StoryRetryService } from '../orchestrator/StoryRetryService.js';
+import { WORKER_AUTO_RECOVERY_ACTION } from '../orchestrator/StallKillAudit.js';
+
+/** Minimal StoryRetryService double for stall-recovery tests. */
+function makeStallRetryDouble(
+  result: Partial<StoryRetryResult> & Pick<StoryRetryResult, 'status'>
+) {
+  const calls: string[] = [];
+  return {
+    prepare(storyId: string): StoryRetryResult {
+      calls.push(storyId);
+      return {
+        storyId,
+        epicId: 'epic-001',
+        cleaned: result.status === 'ready',
+        resetStories: result.resetStories ?? [storyId],
+        willResume: false,
+        message: 'mock',
+        ...result,
+      };
+    },
+    calls,
+  } as unknown as StoryRetryService & { calls: string[] };
+}
 
 describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
   it('resume-with-checkpoint: stall kill + checkpointCommitted → story re-dispatched and succeeds', async () => {
@@ -2842,12 +2865,15 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
       };
     });
 
+    const cleanSvc = makeStallRetryDouble({ status: 'ready' });
+
     const result = await new Supervisor({
       projectRoot: repo,
       db,
       worker,
       maxConcurrent: 1,
       // stallRecoveryBudget unset → default 2 → two clean retries before failure
+      cleanRetryService: cleanSvc,
     }).run();
 
     assert.equal(result.storiesFailed, 1);
@@ -2855,13 +2881,14 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
     assert.equal(agentStatus('story-001-001'), 'failed');
     // 1 initial + 2 clean retries = 3 dispatches before budget exhausted.
     assert.equal(callCount, 3, 'worker called 3 times (initial + 2 clean retries then budget spent)');
-    // Stall-kill rows for all 3 kills; story_retry rows for the 2 retries.
+    assert.equal(cleanSvc.calls.length, 2, 'prepare() called for each retry (2 retries before budget spent)');
+    // worker_auto_recovery rows for the 2 retries (audit-first).
     const auditLog = new AuditLogClass(db);
     assert.equal(auditLog.getByCommand('story-001-001', ['worker_stall_kill']).length, 3);
     assert.equal(
-      auditLog.getByCommand('story-001-001', ['story_retry']).length,
+      auditLog.getByCommand('story-001-001', [WORKER_AUTO_RECOVERY_ACTION]).length,
       2,
-      'prepare() called for each retry (2 retries before budget spent)',
+      'auto_recovery audit row written per retry',
     );
   });
 
@@ -2884,12 +2911,15 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
       };
     });
 
+    const cleanSvc = makeStallRetryDouble({ status: 'ready' });
+
     const result = await new Supervisor({
       projectRoot: repo,
       db,
       worker,
       maxConcurrent: 1,
       stallRecoveryBudget: 1,  // cap at 1: first kill → clean retry, second kill → failed
+      cleanRetryService: cleanSvc,
     }).run();
 
     assert.equal(result.storiesFailed, 1);
@@ -2897,15 +2927,16 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
     assert.equal(agentStatus('story-001-001'), 'failed');
     // Two dispatches: first (killed + one clean retry) + second (killed, budget spent).
     assert.equal(callCount, 2, 'worker called twice before budget is exhausted');
+    assert.equal(cleanSvc.calls.length, 1, 'prepare() called only for the first kill; budget cap blocks the second');
     // Two stall-kill audit rows (one per kill).
     const auditLog = new AuditLogClass(db);
     const stallRows = auditLog.getByCommand('story-001-001', ['worker_stall_kill']);
     assert.equal(stallRows.length, 2, 'one stall-kill row per kill event');
-    // Only one story_retry row (the second kill hits the budget cap).
+    // Only one auto_recovery row (the second kill hits the budget cap).
     assert.equal(
-      auditLog.getByCommand('story-001-001', ['story_retry']).length,
+      auditLog.getByCommand('story-001-001', [WORKER_AUTO_RECOVERY_ACTION]).length,
       1,
-      'prepare() called only for the first kill; budget cap blocks the second',
+      'auto_recovery row written only for the first retry; budget cap blocks the second',
     );
   });
 

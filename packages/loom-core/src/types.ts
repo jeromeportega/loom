@@ -584,11 +584,11 @@ export const PolicySchema = z.object({
       // the minute-based stall/cap knobs above — intentionally kept in seconds
       // for a finer-grained, sub-minute threshold.
       hung_request_seconds: z.number().int().min(0).default(45),
-      // Per-story automatic-resume cap (epic-030). When a worker is killed by the
-      // stall or hung-request guard AND it left a checkpoint commit, the
-      // supervisor auto-resumes it up to this many times within one `loom run`.
-      // 0 disables auto-resume (today's behavior). Volatile: counted per run,
-      // not persisted to the DB.
+      // @deprecated — no longer consumed. The stall-recovery path was replaced by
+      // the durable clean-retry budget (`stall_recovery_budget`). Setting this
+      // value has no effect. Use `stall_recovery_budget: 0` to disable auto-recovery.
+      // Kept in the schema for operator backwards-compatibility; will be removed
+      // in a future release.
       auto_resume_attempts: z.number().int().min(0).default(2),
       // Per-story budget of automatic clean-retries on a no-output stall
       // (epic-061). When a worker stalls, the supervisor spawns a fresh
