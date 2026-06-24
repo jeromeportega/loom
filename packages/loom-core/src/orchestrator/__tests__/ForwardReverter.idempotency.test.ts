@@ -184,7 +184,7 @@ describe('ForwardReverter idempotency — re-run convergence (AC1)', () => {
         if (args[0] === 'pr' && args[1] === 'merge') {
           mergeCallCount++;
           if (mergeCallCount === 2) {
-            // Second merge (repo-b after repo-a) fails.
+            // Second merge (repo-a, after repo-b consumer) fails.
             throw new Error('gh: network error (simulated)');
           }
         }

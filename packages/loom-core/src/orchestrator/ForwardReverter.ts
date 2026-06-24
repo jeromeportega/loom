@@ -8,7 +8,7 @@ import type {
   RepoMergeRecord,
   RollbackResult,
 } from './landingTypes.js';
-import { collectSkipped, hasConverged } from './rollbackResume.js';
+import { collectSkipped } from './rollbackResume.js';
 
 export interface ForwardReverterOptions {
   projectRoot: string;
