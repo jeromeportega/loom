@@ -119,7 +119,9 @@ export function isDepReady(
     return depStoryStatus === 'done' || depStoryStatus === 'pr_open';
   }
   // Cross-repo: producer repo stage must reach 'landed'.
-  // Individual dep story status is not consulted — the whole producer repo must merge.
+  // 'merged_gating' is intentionally NOT treated as ready — the repo has merged but
+  // landing confirmation is still pending; only 'landed' unlocks consumer dispatch.
+  // Individual dep story status is not consulted — the whole producer repo must land.
   return depRepoStageStatus === 'landed';
 }
 
@@ -167,7 +169,7 @@ export function validateCrossRepoEdges(
       if (!depStory) continue;
       const depSlug = resolveStoryRepo(depStory, m, primarySlug).slug;
       if (sSlug !== depSlug && reposInCycle.has(depSlug)) {
-        const key = `${sSlug}→${depSlug}`;
+        const key = JSON.stringify([sSlug, depSlug]);
         if (!seen.has(key)) {
           seen.add(key);
           errors.push({

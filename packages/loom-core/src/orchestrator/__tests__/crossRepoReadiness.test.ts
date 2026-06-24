@@ -130,6 +130,20 @@ describe('buildRepoDag', () => {
     // Should appear only once even though two story deps both go to repo-api
     assert.deepEqual(dag.get('repo-frontend'), ['repo-api']);
   });
+
+  it('deduplicates repo-level edge when two stories in the same repo both depend on the same producer', () => {
+    // Two different stories in repo-x each independently depend on repo-a.
+    // The repo-level edge repo-x→repo-a should appear exactly once (Set dedup).
+    const m = manifest([entry('repo-a'), entry('repo-x')]);
+    const stories = [
+      story('s-a-001', [], 'repo-a'),
+      story('s-x-001', ['s-a-001'], 'repo-x'),
+      story('s-x-002', ['s-a-001'], 'repo-x'),
+    ];
+    const dag = buildRepoDag(stories, m, 'repo-a');
+    assert.equal(dag.get('repo-x')?.length, 1, 'repo-level edge appears exactly once despite two story deps');
+    assert.deepEqual(dag.get('repo-x'), ['repo-a']);
+  });
 });
 
 // ── 3. isDepReady — same-repo behavior unchanged ──────────────────────────────
@@ -232,7 +246,7 @@ describe('consumer dispatchability vs producer stage', () => {
   const producer = story('story-001-001', [], 'repo-api');
 
   const NOT_LANDED: Array<string | undefined> = [
-    'pending', 'running', 'finalizing', 'awaiting_merge', 'gated', 'partial_landing', 'failed', undefined,
+    'pending', 'running', 'finalizing', 'awaiting_merge', 'merged_gating', 'gated', 'partial_landing', 'failed', undefined,
   ];
 
   for (const stage of NOT_LANDED) {
@@ -333,16 +347,15 @@ describe('validateCrossRepoEdges — rejects consumer→producer (cycle) edges',
       story('story-001-002', ['story-001-001'], 'repo-frontend'),
     ];
     const errors = validateCrossRepoEdges(stories, TWO_REPO_MANIFEST, TWO_REPO_PRIMARY);
-    const consumerSlugs = errors.map(e => e.consumerSlug);
-    const producerSlugs = errors.map(e => e.producerSlug);
-    // Both repos should appear as either consumerSlug or producerSlug
+    // Pin exact direction: repo-api declares a dep on repo-frontend → repo-api is consumer
     assert.ok(
-      consumerSlugs.includes('repo-api') || producerSlugs.includes('repo-api'),
-      'expected repo-api to appear in errors',
+      errors.some(e => e.consumerSlug === 'repo-api' && e.producerSlug === 'repo-frontend'),
+      'expected error with consumerSlug=repo-api, producerSlug=repo-frontend',
     );
+    // Pin exact direction: repo-frontend declares a dep on repo-api → repo-frontend is consumer
     assert.ok(
-      consumerSlugs.includes('repo-frontend') || producerSlugs.includes('repo-frontend'),
-      'expected repo-frontend to appear in errors',
+      errors.some(e => e.consumerSlug === 'repo-frontend' && e.producerSlug === 'repo-api'),
+      'expected error with consumerSlug=repo-frontend, producerSlug=repo-api',
     );
   });
 
@@ -566,5 +579,11 @@ describe('findReposInCycles — exported function', () => {
     assert.ok(!inCycle.has('repo-root'), 'repo-root is an ancestor, not a cycle member');
     assert.ok(inCycle.has('repo-a'), 'repo-a is in the cycle');
     assert.ok(inCycle.has('repo-b'), 'repo-b is in the cycle');
+  });
+
+  it('marks a self-loop as a cycle member', () => {
+    const dag = new Map([['repo-a', ['repo-a']]]);
+    const inCycle = findReposInCycles(dag);
+    assert.ok(inCycle.has('repo-a'), 'a self-loop makes the node a cycle member');
   });
 });
