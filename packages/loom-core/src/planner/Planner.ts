@@ -167,9 +167,16 @@ export class Planner {
       const nextId = Planner.nextEpicId(this.opts.db);
 
       if (isStandalone(this.opts.routing)) {
-        // Standalone path: format the number as story-NNN. The row is created
-        // atomically inside runStandalone — no epic-NNN intermediate row.
+        // Standalone path: format the number as story-NNN. Reserve the row
+        // immediately (before any LLM work) so concurrent planners cannot
+        // allocate the same number (analogous to beginPlanning for epics).
         runId = storyId(idNumber(nextId));
+        if (idNumber(runId) === 0) {
+          throw new Error(
+            `[internal] standalone runId resolved to story-000 — nextEpicId returned unexpected format: ${nextId}`
+          );
+        }
+        epicStore.beginStandalonePlanning(runId, brief);
       } else {
         // Epic path: reserve the row IMMEDIATELY so observers (`loom web`,
         // `loom status`) can see "what kicked off this job?" before the
@@ -182,7 +189,7 @@ export class Planner {
         epicStore.beginPlanning(runId, brief);
       }
     }
-    const startNum = epicNumber(runId);
+    const startNum = idNumber(runId);
 
     // Create a planning output sink that captures streamed text, redacts
     // secrets, and flushes to epics.planning_log_tail on the periodic timer.

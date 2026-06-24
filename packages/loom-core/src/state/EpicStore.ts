@@ -28,17 +28,40 @@ export class EpicStore {
   }
 
   /**
-   * Inserts a standalone story row whose PK `id` IS `storyId` ('story-NNN')
-   * with kind='standalone' and status='planned'. There is no epic-NNN container —
-   * the story-NNN row is the primary identity for both storage and presentation.
-   * The FK agents.epic_id references this row directly (ADR-002).
+   * Reserves a standalone story row at the START of planning so observers can
+   * see it immediately. Analogous to `beginPlanning` for the epic path.
+   * Uses INSERT OR IGNORE so callers that race to reserve the same id are safe —
+   * the second call is a no-op rather than a UNIQUE constraint violation.
+   */
+  beginStandalonePlanning(storyId: string, userBrief: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO epics
+           (id, title, status, kind, planning_phase, user_brief, created_at, updated_at)
+         VALUES (?, '(planning…)', 'planning', ?, 'analyst', ?, ?, ?)`
+      )
+      .run(storyId, STANDALONE_KIND, userBrief, now, now);
+  }
+
+  /**
+   * Finalises a standalone story row with its title and status='planned'.
+   * Uses ON CONFLICT DO UPDATE so this is safe whether the row was
+   * pre-reserved via `beginStandalonePlanning` or is being created for the
+   * first time (e.g. in the self-allocating / test path).
+   * The row's PK `id` IS `storyId` ('story-NNN'); no epic-NNN container.
    */
   createStandalone(storyId: string, title: string): void {
     const now = new Date().toISOString();
     this.db
       .prepare(
         `INSERT INTO epics (id, title, status, kind, created_at, updated_at)
-         VALUES (?, ?, 'planned', ?, ?, ?)`
+         VALUES (?, ?, 'planned', ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           title      = excluded.title,
+           status     = 'planned',
+           kind       = excluded.kind,
+           updated_at = excluded.updated_at`
       )
       .run(storyId, title, STANDALONE_KIND, now, now);
   }

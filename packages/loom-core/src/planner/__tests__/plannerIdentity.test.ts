@@ -153,23 +153,23 @@ describe('epicNumber() — back-compat regression guard (same values as before)'
 
 // ─── Planner.nextEpicId counter (NFR-4) ──────────────────────────────────────
 
-let tmpDir: string;
-
-beforeEach(() => {
-  resetDatabaseForTest();
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-planner-identity-'));
-});
-
-afterEach(() => {
-  resetDatabaseForTest();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
-
-function makeDb() {
-  return openDatabase(path.join(tmpDir, '.loom'));
-}
-
 describe('Planner.nextEpicId — counter uses idNumber across both prefixes (NFR-4)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    resetDatabaseForTest();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-planner-identity-'));
+  });
+
+  afterEach(() => {
+    resetDatabaseForTest();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeDb() {
+    return openDatabase(path.join(tmpDir, '.loom'));
+  }
+
   it('empty DB → first id is epic-001', () => {
     const db = makeDb();
     assert.equal(Planner.nextEpicId(db), 'epic-001');
@@ -209,7 +209,7 @@ describe('Planner.nextEpicId — counter uses idNumber across both prefixes (NFR
     assert.equal(Planner.nextEpicId(db), 'epic-004');
   });
 
-  it('story-003 and epic-003 cannot coexist (same number, different prefix = collision guard)', () => {
+  it('both story-003 and epic-003 present → counter sees max=3 from either, next=epic-004', () => {
     const db = makeDb();
     const store = new EpicStore(db);
     store.create('epic-003', 'Epic');

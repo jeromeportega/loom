@@ -480,17 +480,17 @@ describe('Planner.run — AnalystAgent runs on both paths (AC5)', () => {
 
 // ─── Suite 8: nextEpicId includes standalone containers (correctness guard) ──
 
-describe('Planner.nextEpicId — includes standalone containers to prevent PK conflicts', () => {
-  it('standalone container id is included in the max numbering', () => {
+describe('Planner.nextEpicId — includes standalone story-NNN rows to prevent PK conflicts', () => {
+  it('story-NNN standalone row is included in the max numbering', () => {
     resetDatabaseForTest();
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-nextepic-'));
     try {
       const db = openDatabase(path.join(tmpDir, '.loom'));
       const epicStore = new EpicStore(db);
-      epicStore.createStandalone('epic-003', 'standalone container');
+      epicStore.createStandalone('story-003', 'standalone story');
       const nextId = Planner.nextEpicId(db);
-      // With epic-003 as the only row, next must be epic-004 (not epic-001)
-      assert.equal(nextId, 'epic-004', 'nextEpicId must count standalone containers');
+      // With story-003 as the only row, next must be epic-004 (not epic-001) — NFR-4
+      assert.equal(nextId, 'epic-004', 'nextEpicId must count story-NNN standalone rows');
     } finally {
       resetDatabaseForTest();
       fs.rmSync(tmpDir, { recursive: true, force: true });
