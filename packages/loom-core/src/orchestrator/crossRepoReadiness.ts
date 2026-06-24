@@ -80,30 +80,31 @@ export type RepoStageStatus =
 /**
  * Returns true when a dependency is satisfied for dispatching `story`.
  *
- * - Same-repo edge: satisfied when `depStatus` is in the SUCCESS set
+ * - Same-repo edge: satisfied when `depStoryStatus` is in the SUCCESS set
  *   ('done' | 'pr_open') — today's behaviour, unchanged.
  * - Cross-repo edge: satisfied only when the producer repo stage has reached
  *   'landed'. The individual dep story status is irrelevant for cross-repo edges
  *   because the whole producer repo must land (including its PR merge) before the
  *   consumer can execute against it.
  *
- * @param depStatus      The dep story's current agent status.
+ * @param depStoryStatus      The dep story's current agent status.
  * @param depRepoStageStatus  The dep's repo stage status; required for cross-repo
- *                       edges, ignored for same-repo edges.
+ *                            edges, ignored for same-repo edges.
  */
 export function isDepReady(
   story: Story,
   depStory: Story,
-  depStatus: string,
+  depStoryStatus: string,
   depRepoStageStatus: RepoStageStatus | undefined,
   m: WorkspaceManifest,
   primarySlug: string,
 ): boolean {
   if (!isCrossRepoEdge(story, depStory, m, primarySlug)) {
     // Same-repo: mirror the Supervisor's existing SUCCESS set.
-    return depStatus === 'done' || depStatus === 'pr_open';
+    return depStoryStatus === 'done' || depStoryStatus === 'pr_open';
   }
   // Cross-repo: producer repo stage must reach 'landed'.
+  // Individual dep story status is not consulted — the whole producer repo must merge.
   return depRepoStageStatus === 'landed';
 }
 
@@ -165,32 +166,39 @@ export function validateCrossRepoEdges(
 
 /**
  * Returns the set of repo slugs that participate in at least one cycle in the
- * directed dependency graph (detected via DFS colour-marking).
+ * directed dependency graph (detected via DFS colour-marking with a path stack).
+ *
+ * Only the nodes that form the cycle are marked — ancestors that merely have a
+ * path *into* a cycle are NOT included.  The path-stack approach avoids the
+ * ancestor-contamination bug of the simple propagation form: when a back-edge
+ * is found we walk the stack from the cycle-entry to the current node and mark
+ * exactly those nodes.
  */
 function findReposInCycles(dag: Map<string, string[]>): Set<string> {
   const WHITE = 0, GRAY = 1, BLACK = 2;
   const colors = new Map<string, number>();
   const inCycle = new Set<string>();
+  const pathStack: string[] = [];
 
   for (const node of dag.keys()) colors.set(node, WHITE);
 
-  function dfs(node: string): boolean {
+  function dfs(node: string): void {
     colors.set(node, GRAY);
+    pathStack.push(node);
     for (const dep of dag.get(node) ?? []) {
       if (colors.get(dep) === GRAY) {
-        inCycle.add(node);
-        inCycle.add(dep);
-        return true;
-      }
-      if (colors.get(dep) !== BLACK) {
-        if (dfs(dep)) {
-          inCycle.add(node);
-          return true;
+        // Back-edge found: dep is on the current path stack, so everything
+        // from dep's position to the current node is part of the cycle.
+        const cycleStart = pathStack.indexOf(dep);
+        for (let i = cycleStart; i < pathStack.length; i++) {
+          inCycle.add(pathStack[i]);
         }
+      } else if (colors.get(dep) !== BLACK) {
+        dfs(dep);
       }
     }
+    pathStack.pop();
     colors.set(node, BLACK);
-    return false;
   }
 
   for (const node of dag.keys()) {

@@ -376,4 +376,33 @@ describe('validateCrossRepoEdges — rejects consumer→producer (cycle) edges',
     const involvedRepos = errors.map(e => e.reason).join(' ');
     assert.ok(!involvedRepos.includes('"repo-db"'), 'repo-db should not appear in cycle errors');
   });
+
+  it('does not report ancestor repos that merely have a path into a cycle (hub→api↔frontend)', () => {
+    // hub depends on api; api↔frontend form a cycle; hub is NOT in the cycle.
+    // This is the ancestor-contamination case: a naive DFS propagation would
+    // incorrectly mark hub as a cycle member.
+    const m = manifest([
+      entry('repo-hub'), entry('repo-api'), entry('repo-frontend'),
+    ]);
+    const stories = [
+      story('story-001-001', [], 'repo-api'),
+      story('story-001-002', [], 'repo-frontend'),
+      // hub depends on api (valid, one-way dependency)
+      story('story-001-003', ['story-001-001'], 'repo-hub'),
+      // api ALSO depends on frontend, creating the api↔frontend cycle
+      story('story-001-004', ['story-001-002'], 'repo-api'),
+      // frontend depends on api, completing the cycle
+      story('story-001-005', ['story-001-001'], 'repo-frontend'),
+    ];
+    const errors = validateCrossRepoEdges(stories, m, 'repo-hub');
+    assert.ok(errors.length > 0, 'expected errors for api↔frontend cycle');
+    // repo-hub should NOT appear in errors — it is an ancestor of the cycle, not a member
+    for (const e of errors) {
+      assert.ok(
+        !e.reason.includes('"repo-hub"'),
+        `repo-hub should not appear in cycle error: "${e.reason}"`,
+      );
+      assert.notEqual(e.storyId, 'story-001-003', 'hub story should not be reported');
+    }
+  });
 });
