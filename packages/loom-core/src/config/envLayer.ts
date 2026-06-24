@@ -1,12 +1,6 @@
 import { z } from 'zod';
 import { PolicySchema } from '../types.js';
-
-// ConfigLayer interface — mirrors types.ts (story-055-002). Defined locally so
-// this module compiles standalone; the shape is identical to the shared type.
-interface ConfigLayer {
-  name: 'team' | 'repo' | 'env';
-  tree: unknown;
-}
+import type { ConfigLayer } from './types.js';
 
 const ENV_PREFIX = 'LOOM_';
 
@@ -27,13 +21,26 @@ function unwrapZod(schema: z.ZodTypeAny): z.ZodTypeAny {
 // ── Schema path map ───────────────────────────────────────────────────────────
 
 // Maps "section.field" (or top-level "field") → the unwrapped ZodTypeAny.
-// Built once on first use.
+// Built once on first use; reset via _resetEnvLayerCacheForTesting() in tests.
 let _pathCache: Map<string, z.ZodTypeAny> | null = null;
+
+/** For testing only: reset the path cache so tests that modify PolicySchema
+ *  don't see stale entries from a previous test in the same process. */
+export function _resetEnvLayerCacheForTesting(): void {
+  _pathCache = null;
+}
 
 function schemaPathMap(): Map<string, z.ZodTypeAny> {
   if (_pathCache) return _pathCache;
   const result = new Map<string, z.ZodTypeAny>();
 
+  // NOTE: this walker is intentionally two levels deep (section → field).
+  // PolicySchema is currently flat: every settable field lives at exactly one
+  // level of nesting inside a top-level section object. If a field were ever
+  // added at three or more levels (e.g. PolicySchema.agents.limits.max_cost),
+  // it would be silently unreachable via LOOM_* env vars and the corresponding
+  // LOOM_AGENTS_LIMITS_MAX_COST key would emit an 'unknown config key' warning.
+  // Extend this walker to recurse if PolicySchema gains deeper nesting.
   for (const [sectionKey, sectionSchema] of Object.entries(PolicySchema.shape) as [string, z.ZodTypeAny][]) {
     const inner = unwrapZod(sectionSchema);
     if (inner instanceof z.ZodObject) {
@@ -101,8 +108,9 @@ function resolveSchemaPath(
 /**
  * Coerce a raw env string to the target zod type. Throws on type mismatch so
  * the caller can emit a warning and skip the key.
+ * @param keyForDiag - the original env key name, included in warnings for operator visibility.
  */
-function coerceValue(raw: string, schema: z.ZodTypeAny): unknown {
+function coerceValue(raw: string, schema: z.ZodTypeAny, keyForDiag?: string): unknown {
   const inner = unwrapZod(schema);
 
   if (inner instanceof z.ZodBoolean) {
@@ -127,7 +135,16 @@ function coerceValue(raw: string, schema: z.ZodTypeAny): unknown {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) return parsed;
       } catch {
-        // fall through to comma-split
+        // Value starts with '[' but is not valid JSON (e.g. [main,release] — unquoted).
+        // Strip the brackets and fall back to comma-split so the guard list is not
+        // contaminated with bracket characters. Emit a warning so operators can fix the syntax.
+        const keyDesc = keyForDiag ? `"${keyForDiag}"` : 'a list field';
+        console.warn(
+          `[loom] loadEnvLayer: ${keyDesc} looks like a JSON array but failed to parse; ` +
+          `stripping brackets and falling back to comma-split (tip: use plain "a,b" or valid JSON '["a","b"]')`,
+        );
+        const stripped = trimmed.replace(/^\[/, '').replace(/\]$/, '');
+        return stripped.split(',').map(s => s.trim()).filter(s => s.length > 0);
       }
     }
     return raw.split(',').map(s => s.trim()).filter(s => s.length > 0);
@@ -184,8 +201,11 @@ export function loadEnvLayer(env: NodeJS.ProcessEnv): ConfigLayer {
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) continue;
 
-    // FR-5 / ADR-005: ANTHROPIC_* are secrets, not config.  They are read only
-    // by BaseCliWorker.workerEnv() from process.env — never here.
+    // FR-5 / ADR-005: ANTHROPIC_* are secrets, not config. Redundant by design —
+    // no ANTHROPIC_* key can start with LOOM_ and would be filtered below anyway,
+    // but this guard makes the exclusion explicit and prevents future refactoring
+    // from accidentally closing the gap. Secrets flow only through
+    // BaseCliWorker.workerEnv() from process.env — never through this layer.
     if (key.startsWith('ANTHROPIC_')) continue;
 
     if (!key.startsWith(ENV_PREFIX)) continue;
@@ -201,7 +221,7 @@ export function loadEnvLayer(env: NodeJS.ProcessEnv): ConfigLayer {
 
     let coerced: unknown;
     try {
-      coerced = coerceValue(value, resolved.schema);
+      coerced = coerceValue(value, resolved.schema, key);
     } catch (err) {
       // Omit the raw value from the warning to avoid leaking misrouted secrets.
       console.warn(

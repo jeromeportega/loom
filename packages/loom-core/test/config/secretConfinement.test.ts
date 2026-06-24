@@ -126,15 +126,21 @@ describe('secretConfinement — committed team-config.yaml with planted secret (
     const layer = loadTeamConfigLayer(tmp);
     const tree = layer.tree as Record<string, unknown>;
 
-    // The raw YAML tree may contain 'anthropics_key' — that's OK here because
-    // it is an unknown key and will be stripped by PolicySchema.parse at resolve time.
-    // Crucially, the secret value NEVER appears at a known schema path:
+    // Test sanity: the raw YAML tree DOES contain the planted value at the root-level
+    // 'anthropics_key' key — confirms the test is wired up correctly.
     assert.ok(
-      !(tree['agents'] as Record<string, unknown>)?.['anthropics_key'],
-      'secret must not be nested under a valid schema section',
+      deepContains(tree, 'sk-ant-planted'),
+      'test setup: planted secret must be present in the raw YAML tree at the root level',
     );
 
-    // Confirm PolicySchema.parse over the raw tree strips the planted key.
+    // The secret is an unknown root key — it must NOT appear nested under any valid
+    // schema section (like 'agents') where PolicySchema would include it in output.
+    assert.ok(
+      !(tree['agents'] as Record<string, unknown>)?.['anthropics_key'],
+      'secret must not be nested under the agents section where PolicySchema would include it',
+    );
+
+    // Confirm PolicySchema.parse strips the unknown root key and its value.
     const parsed = PolicySchema.parse(tree);
     const parsedJson = JSON.stringify(parsed);
     assert.ok(!parsedJson.includes('sk-ant-planted'), 'PolicySchema.parse must strip the planted secret');
