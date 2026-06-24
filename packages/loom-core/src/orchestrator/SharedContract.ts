@@ -14,6 +14,13 @@ import path from 'node:path';
  * worker-prompt builder can read it by `epicId` at dispatch with no extra
  * threading. Gated end-to-end (policy.agents.shared_contract) so the worker
  * prompt is byte-identical to the bench baseline when off.
+ *
+ * File-ownership table format (cross-repo epics): the architect emits a `| Repo |`
+ * column between the Story and Owns columns to identify which registered manifest
+ * slug each story targets. Single-repo epics omit the column — the parser in
+ * ContractOwnership.ts handles both layouts. The content is injected verbatim
+ * into every parallel worker prompt so producer and consumer stories receive
+ * identical repo-identity context.
  */
 export class SharedContract {
   /** Path where an epic's shared contract is materialized. */

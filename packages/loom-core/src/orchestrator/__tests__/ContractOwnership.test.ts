@@ -608,3 +608,296 @@ describe('computeWithinEpicOverlaps — no-drift: computeOverlaps unchanged afte
     assert.deepEqual(computeOverlaps(target, others), []);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-repo interface contract (story-058-004)
+//
+// computeOverlaps is re-keyed from `path` to `${repo}\0${path}` so the same
+// relative path in two different repos is NOT a false conflict, while the same
+// path in the same repo IS still detected.
+// ---------------------------------------------------------------------------
+
+/** Build a minimal OwnershipEntry with an explicit repo. */
+function repoEntry(epicId: string, storyId: string, repo: string, filePath: string): OwnershipEntry {
+  return { epicId, storyId, repo, path: filePath };
+}
+
+describe('computeOverlaps — cross-repo keying (story-058-004) [AC1]', () => {
+  it('same relative path in two DIFFERENT repos is NOT reported as a conflict', () => {
+    // Producer: src/shared.ts in repo-a
+    const target: OwnershipMap = [
+      repoEntry('epic-058', 'story-058-004', 'repo-a', 'src/shared.ts'),
+    ];
+    // Consumer: same path but in repo-b
+    const others = new Map<string, OwnershipMap>([
+      ['epic-058', [repoEntry('epic-058', 'story-058-005', 'repo-b', 'src/shared.ts')]],
+    ]);
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 0, 'cross-repo same-path must not be flagged as an overlap');
+  });
+
+  it('same relative path in the SAME repo IS reported as a conflict [AC2]', () => {
+    const target: OwnershipMap = [
+      repoEntry('epic-001', 'story-001-001', 'repo-a', 'src/shared.ts'),
+    ];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [repoEntry('epic-002', 'story-002-001', 'repo-a', 'src/shared.ts')]],
+    ]);
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 1, 'same-repo same-path must still be flagged');
+    assert.equal(overlaps[0].path, 'src/shared.ts');
+    assert.ok(overlaps[0].owners.length >= 2);
+  });
+
+  it('multiple paths — only same-repo conflicts surfaced', () => {
+    const target: OwnershipMap = [
+      repoEntry('epic-001', 'story-001-001', 'repo-a', 'src/foo.ts'), // same-repo conflict
+      repoEntry('epic-001', 'story-001-002', 'repo-a', 'src/bar.ts'), // unique path
+      repoEntry('epic-001', 'story-001-003', 'repo-b', 'src/baz.ts'), // cross-repo, no conflict
+    ];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [
+        repoEntry('epic-002', 'story-002-001', 'repo-a', 'src/foo.ts'), // same repo → conflict
+        repoEntry('epic-002', 'story-002-002', 'repo-a', 'src/baz.ts'), // different path than repo-b entry
+      ]],
+    ]);
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 1, 'only the same-repo same-path pair is a conflict');
+    assert.equal(overlaps[0].path, 'src/foo.ts');
+  });
+});
+
+describe('computeOverlaps — omitted repo defaults to primarySlug [AC3]', () => {
+  it('two entries with repo omitted and same path collide (both resolve to primarySlug)', () => {
+    const target: OwnershipMap = [
+      { epicId: 'epic-001', storyId: 'story-001-001', path: 'src/shared.ts' }, // no repo
+    ];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [{ epicId: 'epic-002', storyId: 'story-002-001', path: 'src/shared.ts' }]],
+    ]);
+    const overlaps = computeOverlaps(target, others, 'primary-repo');
+    assert.equal(overlaps.length, 1, 'omitted-repo entries on the same path must still collide');
+    assert.equal(overlaps[0].path, 'src/shared.ts');
+  });
+
+  it('entry with repo omitted does NOT conflict with same path in a DIFFERENT explicit repo', () => {
+    // omitted-repo → primary ('repo-a'); explicit repo-b entry → no conflict
+    const target: OwnershipMap = [
+      { epicId: 'epic-001', storyId: 'story-001-001', path: 'src/shared.ts' }, // repo = 'repo-a' (primary)
+    ];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [repoEntry('epic-002', 'story-002-001', 'repo-b', 'src/shared.ts')]],
+    ]);
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 0, 'omitted-repo (primary) vs explicit-different-repo must not conflict');
+  });
+
+  it('entry with repo omitted DOES conflict with same path in the SAME explicit primary repo', () => {
+    const target: OwnershipMap = [
+      { epicId: 'epic-001', storyId: 'story-001-001', path: 'src/shared.ts' }, // repo = undefined → 'repo-a'
+    ];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [repoEntry('epic-002', 'story-002-001', 'repo-a', 'src/shared.ts')]], // explicit primary
+    ]);
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 1, 'omitted-repo vs same explicit primary repo is a conflict');
+  });
+});
+
+describe('computeOverlaps — single-repo regression [AC5]', () => {
+  it('when every entry omits repo, behaviour is byte-for-byte identical to pre-change', () => {
+    // Simulate a pre-existing single-repo scenario — no repo field on any entry.
+    const targetMd =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n' +
+      '| --- | --- |\n' +
+      '| story-007-001 | packages/loom-core/src/real.ts |\n';
+    const otherMd =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n' +
+      '| --- | --- |\n' +
+      '| story-008-001 | packages/loom-core/src/real.ts |\n';
+    const target = parseOwnershipMap(targetMd, 'epic-007');
+    const others = new Map([['epic-008', parseOwnershipMap(otherMd, 'epic-008')]]);
+    // Calling without primarySlug (backward-compat) or with one — same path still collides.
+    const withoutSlug = computeOverlaps(target, others);
+    const withSlug = computeOverlaps(target, others, 'loom');
+    assert.equal(withoutSlug.length, 1, 'no primarySlug: same path must still conflict');
+    assert.equal(withSlug.length, 1, 'with primarySlug: same path must still conflict');
+    assert.equal(withoutSlug[0].path, 'packages/loom-core/src/real.ts');
+    assert.equal(withSlug[0].path, 'packages/loom-core/src/real.ts');
+  });
+
+  it('single-repo: disjoint paths across epics produce no overlaps', () => {
+    const target = parseOwnershipMap(fixture('epic-001'), 'epic-001');
+    const others = new Map([['epic-002', parseOwnershipMap(fixture('epic-002'), 'epic-002')]]);
+    assert.deepEqual(computeOverlaps(target, others), []);
+    assert.deepEqual(computeOverlaps(target, others, 'loom'), []);
+  });
+});
+
+describe('parseOwnershipMap — repo column round-trip [blocker fix]', () => {
+  const mdWithRepoCol =
+    '## File & module ownership map\n\n' +
+    '| Story | Repo | Owns |\n' +
+    '|---|---|---|\n' +
+    '| story-058-004 | producer-svc | `packages/loom-core/src/orchestrator/ContractOwnership.ts` |\n' +
+    '| story-058-005 | consumer-svc | `packages/loom-core/src/orchestrator/CrossRepoCoordinator.ts` |\n';
+
+  it('populates entry.repo from the Repo column', () => {
+    const map = parseOwnershipMap(mdWithRepoCol, 'epic-058');
+    assert.equal(map.length, 2);
+    assert.equal(map[0].repo, 'producer-svc');
+    assert.equal(map[0].path, 'packages/loom-core/src/orchestrator/ContractOwnership.ts');
+    assert.equal(map[1].repo, 'consumer-svc');
+    assert.equal(map[1].path, 'packages/loom-core/src/orchestrator/CrossRepoCoordinator.ts');
+  });
+
+  it('entries from a two-column table (no Repo column) still have repo: undefined', () => {
+    const md =
+      '## File & module ownership map\n' +
+      '| Story | Owns |\n' +
+      '| --- | --- |\n' +
+      '| story-007-001 | `src/foo.ts` |\n';
+    const map = parseOwnershipMap(md, 'epic-007');
+    assert.equal(map.length, 1);
+    assert.equal(map[0].repo, undefined, 'single-repo table must not produce a repo field');
+  });
+
+  it('parsed cross-repo entries with the same path in different repos do NOT conflict', () => {
+    const mdA =
+      '## File & module ownership map\n' +
+      '| Story | Repo | Owns |\n' +
+      '|---|---|---|\n' +
+      '| story-058-001 | repo-a | `src/shared.ts` |\n';
+    const mdB =
+      '## File & module ownership map\n' +
+      '| Story | Repo | Owns |\n' +
+      '|---|---|---|\n' +
+      '| story-058-002 | repo-b | `src/shared.ts` |\n';
+    const target = parseOwnershipMap(mdA, 'epic-058');
+    const others = new Map([['epic-058-b', parseOwnershipMap(mdB, 'epic-058')]]);
+    assert.equal(target[0].repo, 'repo-a', 'parseOwnershipMap must set repo from the Repo column');
+    assert.equal(parseOwnershipMap(mdB, 'epic-058')[0].repo, 'repo-b');
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 0, 'cross-repo same-path must NOT conflict after repo column is parsed');
+  });
+
+  it('parsed entries with the same path in the SAME repo still conflict', () => {
+    const mdSameRepo =
+      '## File & module ownership map\n' +
+      '| Story | Repo | Owns |\n' +
+      '|---|---|---|\n' +
+      '| story-001-001 | repo-a | `src/shared.ts` |\n';
+    const mdSameRepo2 =
+      '## File & module ownership map\n' +
+      '| Story | Repo | Owns |\n' +
+      '|---|---|---|\n' +
+      '| story-002-001 | repo-a | `src/shared.ts` |\n';
+    const target = parseOwnershipMap(mdSameRepo, 'epic-001');
+    const others = new Map([['epic-002', parseOwnershipMap(mdSameRepo2, 'epic-002')]]);
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 1, 'same-repo same-path must still be flagged after repo column is parsed');
+    assert.equal(overlaps[0].path, 'src/shared.ts');
+  });
+});
+
+describe('computeOverlaps — Overlap.repo field [medium fix]', () => {
+  it('Overlap.repo is populated from entry.repo when present', () => {
+    const target: OwnershipMap = [repoEntry('epic-001', 'story-001-001', 'repo-a', 'src/shared.ts')];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [repoEntry('epic-002', 'story-002-001', 'repo-a', 'src/shared.ts')]],
+    ]);
+    const overlaps = computeOverlaps(target, others, 'repo-a');
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].repo, 'repo-a', 'Overlap.repo must be populated from the entry repo');
+  });
+
+  it('Overlap.repo falls back to primarySlug when entry.repo is absent', () => {
+    const target: OwnershipMap = [
+      { epicId: 'epic-001', storyId: 'story-001-001', path: 'src/shared.ts' },
+    ];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [{ epicId: 'epic-002', storyId: 'story-002-001', path: 'src/shared.ts' }]],
+    ]);
+    const overlaps = computeOverlaps(target, others, 'loom');
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].repo, 'loom', 'Overlap.repo must fall back to primarySlug');
+  });
+
+  it('Overlap.repo is absent when primarySlug is empty (single-repo callers that pass no slug)', () => {
+    const target: OwnershipMap = [
+      { epicId: 'epic-001', storyId: 'story-001-001', path: 'src/shared.ts' },
+    ];
+    const others = new Map<string, OwnershipMap>([
+      ['epic-002', [{ epicId: 'epic-002', storyId: 'story-002-001', path: 'src/shared.ts' }]],
+    ]);
+    const overlaps = computeOverlaps(target, others); // no primarySlug
+    assert.equal(overlaps.length, 1);
+    assert.equal(overlaps[0].repo, undefined, 'Overlap.repo must be absent when no primarySlug given');
+  });
+});
+
+// SharedContract — repo column passthrough tests are in SharedContract.test.ts
+
+// ---------------------------------------------------------------------------
+// computeWithinEpicOverlaps — cross-repo within-epic (story-058-004)
+//
+// When two stories in the SAME epic target DIFFERENT repos, the same relative
+// path is NOT a within-epic conflict. Only the same path in the SAME repo is.
+// ---------------------------------------------------------------------------
+
+describe('computeWithinEpicOverlaps — cross-repo same-epic paths [story-058-004]', () => {
+  it('same relative path in two DIFFERENT repos within one epic is NOT a conflict', () => {
+    // Both stories belong to epic-058 but target different repos.
+    const map: OwnershipMap = [
+      { epicId: 'epic-058', storyId: 'story-058-004', repo: 'repo-a', path: 'src/index.ts' },
+      { epicId: 'epic-058', storyId: 'story-058-005', repo: 'repo-b', path: 'src/index.ts' },
+    ];
+    const overlaps = computeWithinEpicOverlaps(map, 'repo-a');
+    assert.equal(overlaps.length, 0, 'cross-repo same-path within one epic must NOT be a conflict');
+  });
+
+  it('same relative path in the SAME repo within one epic IS a conflict (regression)', () => {
+    const map: OwnershipMap = [
+      { epicId: 'epic-058', storyId: 'story-058-001', repo: 'repo-a', path: 'src/index.ts' },
+      { epicId: 'epic-058', storyId: 'story-058-002', repo: 'repo-a', path: 'src/index.ts' },
+    ];
+    const overlaps = computeWithinEpicOverlaps(map, 'repo-a');
+    assert.equal(overlaps.length, 1, 'same-repo same-path within one epic must still be a conflict');
+    assert.equal(overlaps[0].path, 'src/index.ts');
+    const storyIds = overlaps[0].owners.map((o) => o.storyId).sort();
+    assert.deepEqual(storyIds, ['story-058-001', 'story-058-002']);
+  });
+
+  it('omitted repo defaults to primarySlug — two omitted-repo entries on same path collide', () => {
+    const map: OwnershipMap = [
+      { epicId: 'epic-058', storyId: 'story-058-001', path: 'src/index.ts' }, // repo → 'primary'
+      { epicId: 'epic-058', storyId: 'story-058-002', path: 'src/index.ts' }, // repo → 'primary'
+    ];
+    const overlaps = computeWithinEpicOverlaps(map, 'primary');
+    assert.equal(overlaps.length, 1, 'two omitted-repo entries on same path must still collide');
+  });
+
+  it('omitted-repo entry does NOT conflict with same path in an explicit different repo', () => {
+    const map: OwnershipMap = [
+      { epicId: 'epic-058', storyId: 'story-058-001', path: 'src/index.ts' },       // → primary
+      { epicId: 'epic-058', storyId: 'story-058-002', repo: 'repo-b', path: 'src/index.ts' }, // → repo-b
+    ];
+    // primarySlug = 'repo-a' (different from repo-b), so no conflict
+    const overlaps = computeWithinEpicOverlaps(map, 'repo-a');
+    assert.equal(overlaps.length, 0, 'omitted-repo (primary=repo-a) vs repo-b same-path is NOT a conflict');
+  });
+
+  it('single-repo regression: when every entry omits repo, behaviour is unchanged', () => {
+    // Pre-existing single-repo scenario with no repo fields.
+    const map: OwnershipMap = [
+      { epicId: 'epic-028', storyId: 'story-028-001', path: 'src/shared.ts' },
+      { epicId: 'epic-028', storyId: 'story-028-002', path: 'src/shared.ts' },
+    ];
+    // Without primarySlug: should still detect the overlap.
+    const overlaps = computeWithinEpicOverlaps(map);
+    assert.equal(overlaps.length, 1, 'single-repo entries must still overlap when they share a path');
+    assert.equal(overlaps[0].path, 'src/shared.ts');
+  });
+});
