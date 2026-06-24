@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -217,6 +217,15 @@ CREATE TABLE IF NOT EXISTS repo_merges (
 
 CREATE INDEX IF NOT EXISTS idx_repo_merges_attempt ON repo_merges(attempt_id);
 CREATE INDEX IF NOT EXISTS idx_landing_attempts_epic ON landing_attempts(epic_id);
+
+-- v28: durable per-story auto-recovery counter (epic-061 story-061-001).
+-- Keyed by story_id (not agent/attempt) so the retry budget survives process
+-- restarts and spans all attempts for a story. Updated atomically via UPSERT.
+CREATE TABLE IF NOT EXISTS story_recovery (
+  story_id        TEXT PRIMARY KEY,
+  recovery_count  INTEGER NOT NULL DEFAULT 0,
+  updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 let _db: Database.Database | null = null;
