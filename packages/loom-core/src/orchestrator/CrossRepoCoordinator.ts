@@ -24,6 +24,7 @@ export interface RepoStage {
     | 'running'
     | 'finalizing'
     | 'awaiting_merge'
+    | 'merged_gating'
     | 'landed'
     | 'gated'
     | 'partial_landing'
@@ -202,8 +203,24 @@ export class CrossRepoCoordinator {
       sorted.some(s => s.dependsOnRepos.includes(slug));
 
     const landed = new Set<string>();
+    // Tracks stages that failed their consumer gate — used to propagate partial_landing
+    // transitively to all downstream dependents without adding them to `landed`.
+    const partialLanded = new Set<string>();
 
     for (const stage of sorted) {
+      // Propagate partial_landing from upstream deps before any other check.
+      // This ensures that in a chain A→B→C, C is correctly blocked when B fails
+      // its consumer gate — even though runConsumerGateFn only set B's status.
+      if (stage.dependsOnRepos.some(dep => partialLanded.has(dep))) {
+        stage.status = 'partial_landing';
+      }
+
+      // Consumer stages pre-blocked by a gate failure are skipped; their PR must not be opened.
+      if (stage.status === 'partial_landing') {
+        partialLanded.add(stage.repoSlug);
+        continue;
+      }
+
       // Runtime topo-sort invariant: all declared producer deps must be landed
       // before this stage executes. topoSortRepos guarantees this; this
       // assertion catches any future regression at the call site.
@@ -224,19 +241,21 @@ export class CrossRepoCoordinator {
         if (result.url) stage.prUrl = result.url;
 
         if (hasConsumers(stage.repoSlug)) {
-          // Set status before calling _runConsumerGate so story-058-006 sees
-          // the correct state when it reads producerStage.status.
           stage.status = 'awaiting_merge';
-
-          // story-058-006 seam: run consumer gate before blocking on merge.
-          // `producerStage.status` is `'awaiting_merge'` at invocation time.
-          // Currently a no-op; story-058-006 will wire `runConsumerGateFn`.
-          for (const consumer of sorted.filter(s => s.dependsOnRepos.includes(stage.repoSlug))) {
-            await this._runConsumerGate(stage, consumer);
-          }
 
           // Block subsequent consumer stages until this PR is merged.
           await this._waitForMerge(stage, this.abortSignal);
+
+          // PR has merged; consumer gates are now running. This distinct status
+          // lets operators distinguish "waiting for GitHub merge" from "merge
+          // complete, cross-repo validation in progress".
+          stage.status = 'merged_gating';
+
+          // story-058-006 seam: run consumer gate AFTER the producer PR merges
+          // so the consumer build resolves the producer's landed interface.
+          for (const consumer of sorted.filter(s => s.dependsOnRepos.includes(stage.repoSlug))) {
+            await this._runConsumerGate(stage, consumer);
+          }
         }
 
         stage.status = 'landed';

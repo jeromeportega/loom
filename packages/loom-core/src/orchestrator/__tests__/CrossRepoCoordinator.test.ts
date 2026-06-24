@@ -539,7 +539,7 @@ describe('CrossRepoCoordinator.run — consumer waits for producer merge', () =>
     assert.equal(capturedStageAStatus, 'awaiting_merge');
   });
 
-  it('(4) producerStage.status is awaiting_merge when runConsumerGateFn is called', async () => {
+  it('(4) producerStage.status is merged_gating when runConsumerGateFn is called', async () => {
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
 
@@ -579,8 +579,8 @@ describe('CrossRepoCoordinator.run — consumer waits for producer merge', () =>
 
     assert.equal(
       capturedProducerStatusDuringGate,
-      'awaiting_merge',
-      'producerStage.status must be awaiting_merge when runConsumerGateFn is called',
+      'merged_gating',
+      'producerStage.status must be merged_gating when runConsumerGateFn is called',
     );
   });
 });
