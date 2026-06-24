@@ -712,7 +712,8 @@ export const StorySchema = z.object({
 export type Story = z.infer<typeof StorySchema>;
 
 export const EpicYamlSchema = z.object({
-  epic_id: z.string().regex(/^epic-\d{3}$/),
+  // Accepts both epic-NNN (regular) and story-NNN (standalone after story-059-002).
+  epic_id: z.string().regex(/^(?:epic|story)-\d{3}$/),
   title: z.string().min(5).max(100),
   // Plan-time status. The DB epics table is the source of truth for runtime
   // status; this field defaults to 'planned' when the PM agent omits it.
