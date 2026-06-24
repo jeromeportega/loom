@@ -187,10 +187,14 @@ describe('(1) each repo gates its own PR', () => {
   });
 });
 
-// ─── (2) Consumer gate runs only after producer PR merges ─────────────────────
+// ─── (2) STAGE phase: all repos stage before any merge (story-060-001) ────────
+// The old "consumer gate runs after producer PR merges" suite tested the
+// sequential STAGE=MERGE flow. Story-060-001 restructures the coordinator into
+// an explicit STAGE→MERGE phasing: all repos stage (open PRs) first, then
+// merge only when allReady. These tests verify the new phasing.
 
-describe('(2) consumer gate runs after producer PR merges', () => {
-  it('waitForMerge is called before runConsumerGateFn is invoked', async () => {
+describe('(2) STAGE phase: all repos open PRs before any merge', () => {
+  it('both repos are staged (finalized) before mergeRepo is called for either', async () => {
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
 
@@ -209,39 +213,46 @@ describe('(2) consumer gate runs after producer PR merges', () => {
       ],
     };
 
-    // Track order of events.
     const callOrder: string[] = [];
 
-    const waitForMergeFn = async (stage: RepoStage) => {
-      callOrder.push(`merge:${stage.repoSlug}`);
-    };
+    const finalizerFactory = (repoRoot: string): FinalizerHandle => ({
+      finalize: async () => {
+        callOrder.push(`stage:${repoRoot === realA ? 'repo-a' : 'repo-b'}`);
+        return okFinalizeResult('https://github.com/org/repo/pull/1');
+      },
+    });
 
-    const runConsumerGateFn = async (_producerStage: RepoStage, consumerStage: RepoStage) => {
-      callOrder.push(`gate:${consumerStage.repoSlug}`);
+    const mergeRepo = async (stage: RepoStage) => {
+      callOrder.push(`merge:${stage.repoSlug}`);
+      return {
+        attemptId: 'a', repoSlug: stage.repoSlug, dependsOn: stage.dependsOnRepos,
+        prNumber: 1, prUrl: null, mergeCommitSha: 'sha', mergeState: 'merged' as const,
+        revertPrUrl: null, revertMergeSha: null, mergedAt: null, revertedAt: null,
+      };
     };
 
     const coordinator = new CrossRepoCoordinator({
       projectRoot: repoDir,
       supervisor: { run: async () => okResult() },
-      finalizerFactory: () => ({ finalize: async () => okFinalizeResult('https://github.com/org/repo/pull/1') }),
+      finalizerFactory,
       db,
       manifest: mf,
       primarySlug: TWO_REPO_PRIMARY,
-      waitForMergeFn,
-      runConsumerGateFn,
+      mergeRepo,
     });
 
     await coordinator.run(EPIC_ID);
 
-    // merge must come before gate.
-    const mergeIdx = callOrder.indexOf('merge:repo-a');
-    const gateIdx = callOrder.indexOf('gate:repo-b');
-    assert.ok(mergeIdx >= 0, 'waitForMerge must be called');
-    assert.ok(gateIdx >= 0, 'runConsumerGateFn must be called');
-    assert.ok(mergeIdx < gateIdx, 'producer merge must precede consumer gate run');
+    // All staging must come before any merge.
+    const firstMergeIdx = callOrder.findIndex(e => e.startsWith('merge:'));
+    const lastStageIdx = callOrder.reduce((acc, e, i) => e.startsWith('stage:') ? i : acc, -1);
+    assert.ok(lastStageIdx >= 0, 'both repos must be staged');
+    assert.ok(firstMergeIdx >= 0, 'mergeRepo must be called after staging');
+    assert.ok(lastStageIdx < firstMergeIdx,
+      'all staging must complete before any merge (STAGE before MERGE)');
   });
 
-  it('producerStage.status is merged_gating when gate is called', async () => {
+  it('stage statuses go finalizing→landed (no awaiting_merge in new design)', async () => {
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
 
@@ -260,25 +271,24 @@ describe('(2) consumer gate runs after producer PR merges', () => {
       ],
     };
 
-    let capturedProducerStatus: string | undefined;
-    const runConsumerGateFn = async (producerStage: RepoStage) => {
-      capturedProducerStatus = producerStage.status;
-    };
-
     const coordinator = new CrossRepoCoordinator({
       projectRoot: repoDir,
       supervisor: { run: async () => okResult() },
-      finalizerFactory: () => ({ finalize: async () => okFinalizeResult('https://github.com/org/repo/pull/1') }),
+      finalizerFactory: () => ({
+        finalize: async () => okFinalizeResult('https://github.com/org/repo/pull/1'),
+      }),
       db,
       manifest: mf,
       primarySlug: TWO_REPO_PRIMARY,
-      waitForMergeFn: async () => { /* resolve immediately */ },
-      runConsumerGateFn,
     });
 
-    await coordinator.run(EPIC_ID);
+    const { stages } = await coordinator.run(EPIC_ID);
 
-    assert.equal(capturedProducerStatus, 'merged_gating');
+    // Both stages reach 'landed' via the new STAGE→MERGE path.
+    for (const stage of stages) {
+      assert.equal(stage.status, 'landed',
+        `${stage.repoSlug} must reach landed in the new STAGE→MERGE design`);
+    }
   });
 });
 
@@ -352,10 +362,13 @@ describe('(3) gate passes → consumer stage reaches landed', () => {
   });
 });
 
-// ─── (4) gate.ok === false → partial_landing ─────────────────────────────────
+// ─── (4) gate fails → all-or-none blocked (story-060-001 STAGE→MERGE) ────────
+// story-060-001 changed partial_landing semantics: when any repo's gate fails,
+// NO repo merges (AC2). Both PRs are open (STAGE completed), but the MERGE phase
+// is skipped. All stages end as partial_landing.
 
-describe('(4) gate fails → partial_landing, producer intact, consumer blocked', () => {
-  it('consumer stage becomes partial_landing and is not run', async () => {
+describe('(4) gate fails → all-or-none blocked, no repo merges (AC2)', () => {
+  it('both stages become partial_landing when consumer stageForLanding fails to open PR (AC2)', async () => {
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
 
@@ -374,139 +387,90 @@ describe('(4) gate fails → partial_landing, producer intact, consumer blocked'
       ],
     };
 
-    // Failing gate (ok = false). testCommand forces resolution so the runner IS called.
-    const failGate = new IntegrationGate({
-      testCommand: 'npm test',
-      runner: async () => ({ exitCode: 1, output: 'build failed', timedOut: false, durationMs: 100 }),
-    });
-
-    const prCommentCalls: string[] = [];
-    const runConsumerGateFn = async (producerStage: RepoStage, consumerStage: RepoStage) => {
-      const outcome = await runConsumerGate({
-        consumerRoot: consumerStage.repoRoot,
-        conflicted: [],
-        gate: failGate,
-      });
-      if (!outcome.ok) {
-        consumerStage.status = 'partial_landing';
-        await surfacePartialLanding(EPIC_ID, producerStage.prUrl!, outcome.summary, db, async (prUrl) => {
-          prCommentCalls.push(prUrl);
-        });
-      }
-    };
-
-    // Track supervisor and finalize calls to prove consumer was NOT run.
+    // Both repos stage successfully (PRs open). But because the coordinator's
+    // assessLandingReadiness uses the default IntegrationGate with no test command
+    // detected, the gate is ok=true (no-command fallback = passes). Both land.
+    // To test blocked path: consumer PR does NOT open (stageForLanding returns no url).
     const supervisorCalls: string[] = [];
     const finalizeCalls: string[] = [];
 
-    const stubSupervisor: SupervisorLike = {
-      run: async (opts) => {
-        supervisorCalls.push(opts.repoFilter ?? '');
-        return okResult();
-      },
-    };
-    const finalizerFactory = (repoRoot: string): FinalizerHandle => ({
-      finalize: async () => {
-        finalizeCalls.push(repoRoot === realA ? 'repo-a' : 'repo-b');
-        return okFinalizeResult('https://github.com/org/repo/pull/1');
-      },
-    });
-
     const coordinator = new CrossRepoCoordinator({
       projectRoot: repoDir,
-      supervisor: stubSupervisor,
-      finalizerFactory,
+      supervisor: {
+        run: async (opts) => {
+          supervisorCalls.push(opts.repoFilter ?? '');
+          return okResult();
+        },
+      },
+      finalizerFactory: (repoRoot: string): FinalizerHandle => ({
+        finalize: async () => {
+          const slug = repoRoot === realA ? 'repo-a' : 'repo-b';
+          finalizeCalls.push(slug);
+          // Consumer (repo-b) stageForLanding doesn't return a prUrl → prOpen:false → blocked.
+          if (repoRoot === realB) {
+            return { url: undefined, status: 'gated', conflicted: [], merged: [], cleaned: [], note: 'gated' };
+          }
+          return okFinalizeResult('https://github.com/org/repo-a/pull/1');
+        },
+      }),
       db,
       manifest: mf,
       primarySlug: TWO_REPO_PRIMARY,
-      waitForMergeFn: async () => { /* resolve immediately */ },
-      runConsumerGateFn,
     });
 
-    const { stages } = await coordinator.run(EPIC_ID);
+    const mergeRepoCalled: string[] = [];
+    // Inject a mergeRepo spy — it should NOT be called.
+    const coordinatorWithSpy = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: {
+        run: async (opts) => {
+          supervisorCalls.push(opts.repoFilter ?? '');
+          return okResult();
+        },
+      },
+      finalizerFactory: (repoRoot: string): FinalizerHandle => ({
+        finalize: async () => {
+          const slug = repoRoot === realA ? 'repo-a' : 'repo-b';
+          finalizeCalls.push(slug);
+          if (repoRoot === realB) {
+            return { url: undefined, status: 'gated', conflicted: [], merged: [], cleaned: [], note: 'gated' };
+          }
+          return okFinalizeResult('https://github.com/org/repo-a/pull/1');
+        },
+      }),
+      db,
+      manifest: mf,
+      primarySlug: TWO_REPO_PRIMARY,
+      mergeRepo: async (stage) => {
+        mergeRepoCalled.push(stage.repoSlug);
+        return {
+          attemptId: 'a', repoSlug: stage.repoSlug, dependsOn: stage.dependsOnRepos,
+          prNumber: 1, prUrl: null, mergeCommitSha: 'sha', mergeState: 'merged' as const,
+          revertPrUrl: null, revertMergeSha: null, mergedAt: null, revertedAt: null,
+        };
+      },
+    });
+
+    const { stages } = await coordinatorWithSpy.run(EPIC_ID);
 
     const consumer = stages.find(s => s.repoSlug === 'repo-b')!;
     const producer = stages.find(s => s.repoSlug === 'repo-a')!;
 
-    // Consumer is partial_landing.
-    assert.equal(consumer.status, 'partial_landing');
+    // All stages are partial_landing (AC2: neither repo merges).
+    assert.equal(consumer.status, 'partial_landing', 'consumer must be partial_landing');
+    assert.equal(producer.status, 'partial_landing', 'producer must also be partial_landing (nothing merged)');
 
-    // Producer is landed — no rollback.
-    assert.equal(producer.status, 'landed', 'producer must remain landed (no rollback)');
+    // mergeRepo must NEVER be called when not allReady (AC2).
+    assert.equal(mergeRepoCalled.length, 0, 'mergeRepo must not be called when gate fails (AC2)');
 
-    // Consumer supervisor was NOT called (consumer stories never ran).
-    assert.ok(!supervisorCalls.includes('repo-b'), 'consumer supervisor must not run');
-    // Consumer finalize was NOT called (no consumer PR opened).
-    assert.ok(!finalizeCalls.includes('repo-b'), 'consumer finalize must not run');
-
-    // Producer was not rolled back (still in stages as landed, finalize was called once for producer).
-    assert.ok(supervisorCalls.includes('repo-a'), 'producer supervisor must have run');
-    assert.ok(finalizeCalls.includes('repo-a'), 'producer finalize must have run');
+    // Both supervisor + finalize DID run (STAGE phase is complete; MERGE is blocked).
+    assert.ok(supervisorCalls.includes('repo-a'), 'producer supervisor must run in STAGE');
+    assert.ok(supervisorCalls.includes('repo-b'), 'consumer supervisor must run in STAGE');
+    assert.ok(finalizeCalls.includes('repo-a'), 'producer finalize must run in STAGE');
+    assert.ok(finalizeCalls.includes('repo-b'), 'consumer finalize must run in STAGE');
   });
 
-  it('no rollback function is called when gate fails', async () => {
-    // This test asserts the ABSENCE of a rollback call — the producer PR is
-    // left merged per ADR-007; there is no revert mechanism wired here.
-    const realA = fs.realpathSync(repoDir);
-    const realB = fs.realpathSync(repoDirB);
-
-    const epicStories = [
-      story('story-001-001', [], 'repo-a'),
-      story('story-001-002', ['story-001-001'], 'repo-b'),
-    ];
-    seedEpicOnDisk(repoDir, EPIC_ID, epicStories);
-    const db = openDatabase(path.join(repoDir, '.loom'));
-
-    const mf: WorkspaceManifest = {
-      version: 1,
-      repos: [
-        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
-        { slug: 'repo-b', path: realB, remote_url: null },
-      ],
-    };
-
-    const failGate = new IntegrationGate({
-      testCommand: 'npm test',
-      runner: async () => ({ exitCode: 1, output: 'broken', timedOut: false, durationMs: 10 }),
-    });
-
-    let rollbackCalled = false;
-    const runConsumerGateFn = async (producerStage: RepoStage, consumerStage: RepoStage) => {
-      const outcome = await runConsumerGate({
-        consumerRoot: consumerStage.repoRoot,
-        conflicted: [],
-        gate: failGate,
-      });
-      if (!outcome.ok) {
-        // surfacePartialLanding is responsible for surfacing; rollback is
-        // never called — this lambda must NOT call any revert function.
-        consumerStage.status = 'partial_landing';
-        await surfacePartialLanding(EPIC_ID, producerStage.prUrl!, outcome.summary, db, async () => { /* noop comment */ });
-        // If rollback were expected, rollbackCalled would be set here.
-      }
-    };
-
-    const coordinator = new CrossRepoCoordinator({
-      projectRoot: repoDir,
-      supervisor: { run: async () => okResult() },
-      finalizerFactory: () => ({ finalize: async () => okFinalizeResult('https://github.com/org/repo/pull/99') }),
-      db,
-      manifest: mf,
-      primarySlug: TWO_REPO_PRIMARY,
-      waitForMergeFn: async () => { /* resolve immediately */ },
-      runConsumerGateFn,
-    });
-
-    const { stages } = await coordinator.run(EPIC_ID);
-
-    assert.equal(rollbackCalled, false, 'rollback must never be called');
-    const producer = stages.find(s => s.repoSlug === 'repo-a')!;
-    assert.equal(producer.status, 'landed', 'producer must remain landed');
-  });
-
-  it('3-repo chain: partial_landing on B does not throw the topo-sort invariant', async () => {
-    // Regression test for the 3+ repo chain bug: in A→B→C, when B is set to partial_landing
-    // the coordinator must NOT throw "topo-sort invariant violated" for C.
+  it('3-repo chain: all stages partial_landing when any gate fails (no topo-sort throw)', async () => {
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
     const repoDirC = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-gate-c-'));
@@ -531,39 +495,21 @@ describe('(4) gate fails → partial_landing, producer intact, consumer blocked'
         ],
       };
 
-      const failGate = new IntegrationGate({
-        testCommand: 'npm test',
-        runner: async () => ({ exitCode: 1, output: 'build failed', timedOut: false, durationMs: 50 }),
-      });
-
-      // When A merges, B's gate fails → B becomes partial_landing.
-      // B→C gate is never invoked (B never merges).
-      const runConsumerGateFn = async (producerStage: RepoStage, consumerStage: RepoStage) => {
-        if (producerStage.repoSlug === 'repo-a') {
-          const outcome = await runConsumerGate({
-            consumerRoot: consumerStage.repoRoot,
-            conflicted: [],
-            gate: failGate,
-          });
-          if (!outcome.ok) {
-            consumerStage.status = 'partial_landing';
-            await surfacePartialLanding(
-              EPIC_ID, producerStage.prUrl!, outcome.summary, db,
-              async () => { /* noop comment */ },
-            );
-          }
-        }
-      };
-
+      // B fails to open its PR (gated) → allReady:false → all blocked.
       const coordinator = new CrossRepoCoordinator({
         projectRoot: repoDir,
         supervisor: { run: async () => okResult() },
-        finalizerFactory: () => ({ finalize: async () => okFinalizeResult('https://github.com/org/repo/pull/1') }),
+        finalizerFactory: (repoRoot: string): FinalizerHandle => ({
+          finalize: async () => {
+            if (repoRoot === realB) {
+              return { url: undefined, status: 'gated', conflicted: [], merged: [], cleaned: [], note: 'b gated' };
+            }
+            return okFinalizeResult('https://github.com/org/repo/pull/1');
+          },
+        }),
         db,
         manifest: mf,
         primarySlug: 'repo-a',
-        waitForMergeFn: async () => { /* resolve immediately */ },
-        runConsumerGateFn,
       });
 
       // Must NOT throw "topo-sort invariant violated" for stage C.
@@ -573,15 +519,10 @@ describe('(4) gate fails → partial_landing, producer intact, consumer blocked'
       const stageB = stages.find(s => s.repoSlug === 'repo-b')!;
       const stageC = stages.find(s => s.repoSlug === 'repo-c')!;
 
-      assert.equal(stageA.status, 'landed', 'A (producer) must remain landed');
-      assert.equal(stageB.status, 'partial_landing', 'B (direct consumer of A) must be blocked');
-      // C depends on B. Since B is partial_landing, C must be transitively blocked
-      // and never run its supervisor or EpicFinalizer.
-      assert.equal(
-        stageC.status,
-        'partial_landing',
-        `C must be transitively blocked when its dependency B is partial_landing`,
-      );
+      // In the new all-or-none design, ALL repos are partial_landing when any is blocked.
+      assert.equal(stageA.status, 'partial_landing', 'A must be partial_landing (all-or-none)');
+      assert.equal(stageB.status, 'partial_landing', 'B (gated) must be partial_landing');
+      assert.equal(stageC.status, 'partial_landing', 'C must be partial_landing (all-or-none)');
     } finally {
       fs.rmSync(repoDirC, { recursive: true, force: true });
     }
@@ -632,7 +573,12 @@ describe('(5) surfacePartialLanding fires all three channels', () => {
     );
   });
 
-  it('surfacePartialLanding fires all three channels from within the coordinator flow', async () => {
+  it('coordinator blocked state: both stages partial_landing and prUrl set when gate fails', async () => {
+    // story-060-001: surfacePartialLanding is no longer called from within the
+    // coordinator flow (the old sequential design called it via runConsumerGateFn).
+    // Instead, both PRs are open (STAGE completed), all stages are partial_landing
+    // (MERGE blocked), and the blocker is recorded in assessLandingReadiness.
+    // This test verifies the new coordinator blocked state is observable.
     const realA = fs.realpathSync(repoDir);
     const realB = fs.realpathSync(repoDirB);
 
@@ -651,69 +597,38 @@ describe('(5) surfacePartialLanding fires all three channels', () => {
       ],
     };
 
-    const failGate = new IntegrationGate({
-      testCommand: 'npm test',
-      runner: async () => ({ exitCode: 1, output: 'tests failed', timedOut: false, durationMs: 50 }),
-    });
-
-    const prCommentCalls: Array<{ prUrl: string; body: string }> = [];
-
-    const runConsumerGateFn = async (producerStage: RepoStage, consumerStage: RepoStage) => {
-      const outcome = await runConsumerGate({
-        consumerRoot: consumerStage.repoRoot,
-        conflicted: [],
-        gate: failGate,
-      });
-      if (!outcome.ok) {
-        consumerStage.status = 'partial_landing';
-        await surfacePartialLanding(
-          EPIC_ID,
-          producerStage.prUrl!,
-          outcome.summary,
-          db,
-          async (prUrl, body) => {
-            prCommentCalls.push({ prUrl, body });
-          },
-        );
-      }
-    };
-
     const PRODUCER_PR = 'https://github.com/org/repo-a/pull/5';
+    const CONSUMER_PR = 'https://github.com/org/repo-b/pull/6';
 
     const coordinator = new CrossRepoCoordinator({
       projectRoot: repoDir,
       supervisor: { run: async () => okResult() },
       finalizerFactory: (repoRoot) => ({
-        finalize: async () => okFinalizeResult(repoRoot === realA ? PRODUCER_PR : 'https://github.com/org/repo-b/pull/1'),
+        finalize: async () => {
+          // Consumer PR fails to open (gated).
+          if (repoRoot === realB) {
+            return { url: undefined, status: 'gated', conflicted: [], merged: [], cleaned: [], note: 'gated' };
+          }
+          return okFinalizeResult(PRODUCER_PR);
+        },
       }),
       db,
       manifest: mf,
       primarySlug: TWO_REPO_PRIMARY,
-      waitForMergeFn: async () => { /* resolve immediately */ },
-      runConsumerGateFn,
     });
 
     const { stages } = await coordinator.run(EPIC_ID);
 
-    // Channel 1+2: audit entry exists.
-    const audit = new AuditLog(db);
-    const entry = audit.latestActionByCommand(EPIC_ID, ['cross_repo.partial_landing']);
-    assert.ok(entry, 'audit entry must exist');
-    assert.equal(entry!.action, 'cross_repo.partial_landing');
-    const detail = JSON.parse(entry!.detail as string);
-    assert.equal(detail.producerPrUrl, PRODUCER_PR);
-
-    // Channel 3: PR comment posted on the PRODUCER PR.
-    assert.equal(prCommentCalls.length, 1);
-    assert.equal(prCommentCalls[0].prUrl, PRODUCER_PR, 'comment must be on producer PR');
-
-    // Consumer is partial_landing; producer is landed.
+    // Both stages are partial_landing (all-or-none).
     const consumer = stages.find(s => s.repoSlug === 'repo-b')!;
     const producer = stages.find(s => s.repoSlug === 'repo-a')!;
-    assert.ok(producer.prUrl, 'producer stage must have a prUrl');
-    assert.equal(producer.prUrl, PRODUCER_PR, 'producer prUrl must match the fixture');
-    assert.equal(consumer.status, 'partial_landing');
-    assert.equal(producer.status, 'landed');
+    assert.equal(consumer.status, 'partial_landing', 'consumer must be partial_landing');
+    assert.equal(producer.status, 'partial_landing', 'producer must also be partial_landing (AC2)');
+
+    // Producer PR was staged (prUrl set).
+    assert.equal(producer.prUrl, PRODUCER_PR, 'producer prUrl must be set from STAGE phase');
+    // Consumer PR was not opened (gated).
+    assert.equal(consumer.prUrl, undefined, 'consumer prUrl must be unset when gated');
   });
 });
 

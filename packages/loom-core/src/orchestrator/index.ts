@@ -129,3 +129,19 @@ export { SignalLedger } from './signalStore.js';
 export { renderBuildSignalAnalysis } from './signalRender.js';
 export type { SignalRenderInput } from './signalRender.js';
 export { oneLine, displayModel } from './renderUtils.js';
+export { ForwardReverter } from './ForwardReverter.js';
+export type { ForwardReverterOptions } from './ForwardReverter.js';
+export { landingReport } from './landingReport.js';
+export type {
+  LandingReport,
+  LandingAttempt,
+  LandingAttemptStatus,
+  LandingBlocker,
+  MergeState,
+  RepoMergeRecord,
+  LandingStorePort,
+  LandingReadiness,
+  RepoReadiness,
+  RollbackResult,
+} from './landingTypes.js';
+export { CROSS_REPO_ACTIONS } from './landingTypes.js';

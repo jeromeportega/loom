@@ -292,6 +292,28 @@ export class EpicFinalizer {
     }
   }
 
+  /**
+   * story-060-001 — STAGE phase: opens the epic PR and runs the integration gate
+   * but does NOT merge the GitHub PR. The MERGE phase in CrossRepoCoordinator
+   * handles the actual GitHub PR merge via the injected `mergeRepo` seam (story-060-002).
+   *
+   * Safety analysis — why delegating to finalize() is safe for STAGE:
+   *   finalize() does LOCAL git merges (story branches → epic/<id>) and calls
+   *   `gh pr create` to OPEN a PR. It never calls `gh pr merge`. The returned
+   *   status 'merged'/'partial' refers to the local epic-branch assembly state,
+   *   not the GitHub PR merge state. Current prStrategy variants:
+   *     - 'per-story': returns 'skipped' immediately — no PR opened, no merge
+   *     - 'epic' (default): opens a GitHub PR; never auto-merges it
+   *   If a future prStrategy variant adds auto-merge behaviour (i.e. calls
+   *   `gh pr merge` or equivalent), this delegation MUST be updated to guard
+   *   against it — the STAGE phase must never merge the GitHub PR (ADR-002).
+   *
+   * This is additive: the existing `finalize()` single-repo path is unchanged (FR-9).
+   */
+  async stageForLanding(epicId: string): Promise<FinalizeResult> {
+    return this.finalize(epicId);
+  }
+
   async finalize(epicId: string): Promise<FinalizeResult> {
     if (this.opts.prStrategy === 'per-story') {
       return {

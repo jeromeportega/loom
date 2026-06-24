@@ -1,4 +1,6 @@
 export { openDatabase, createDatabase, resetDatabaseForTest, SCHEMA_VERSION } from './Database.js';
+export { LandingStore, makeAnchoringMerger } from './LandingStore.js';
+export type { AnchoringMergerDeps } from './LandingStore.js';
 export { WorkerLogStore } from './WorkerLogStore.js';
 export { LessonStore } from './LessonStore.js';
 export { EpicStore } from './EpicStore.js';
