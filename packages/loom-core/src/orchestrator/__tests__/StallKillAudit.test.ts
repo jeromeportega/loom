@@ -45,7 +45,7 @@ describe('StallKillAudit — silence_kind derivation (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'hung_request', lastStreamEvent: 'assistant/delta' }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
     assert.equal(detail.silence_kind, 'hung_request_no_response');
@@ -57,7 +57,7 @@ describe('StallKillAudit — silence_kind derivation (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'hung_request', lastStreamEvent: '(none)' }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
     assert.equal(detail.silence_kind, 'hung_request_no_response');
@@ -69,7 +69,7 @@ describe('StallKillAudit — silence_kind derivation (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', lastStreamEvent: '(none)' }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
     assert.equal(detail.silence_kind, 'fully_silent_subprocess');
@@ -81,7 +81,7 @@ describe('StallKillAudit — silence_kind derivation (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', lastStreamEvent: 'assistant/delta' }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
     assert.equal(detail.silence_kind, 'fully_silent_subprocess');
@@ -97,7 +97,7 @@ describe('StallKillAudit — last_stream_event field (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', lastStreamEvent: 'system/status:requesting' }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
     assert.equal(detail.last_stream_event, 'system/status:requesting');
@@ -110,7 +110,7 @@ describe('StallKillAudit — last_stream_event field (unit)', () => {
         agentId: 'agent-story-001-001-aabbccdd',
         storyId: 'story-001-001',
         result: makeResult({ killReason: 'stall' }),
-        resumeAttempt: 0,
+        recoveryCount: 0,
       });
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
@@ -123,38 +123,38 @@ describe('StallKillAudit — last_stream_event field (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'hung_request' }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
     assert.equal(detail.last_stream_event, '(none)');
   });
 });
 
-// ── Unit: resume_attempt field ───────────────────────────────────────────────
+// ── Unit: recovery_count field ───────────────────────────────────────────────
 
-describe('StallKillAudit — resume_attempt field (unit)', () => {
-  it('resume_attempt is 0 on the first kill (counter reading before any increment)', () => {
+describe('StallKillAudit — recovery_count field (unit)', () => {
+  it('recovery_count is 0 on the first kill (durable counter reading before any increment)', () => {
     const { audit, calls } = makeAuditStub();
     recordStallKill(audit, {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', checkpointCommitted: true }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
-    assert.equal(detail.resume_attempt, 0);
+    assert.equal(detail.recovery_count, 0);
   });
 
-  it('resume_attempt reflects the counter value passed in, not a hardcoded constant', () => {
+  it('recovery_count reflects the durable counter value passed in, not a hardcoded constant', () => {
     const { audit, calls } = makeAuditStub();
     recordStallKill(audit, {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', checkpointCommitted: true }),
-      resumeAttempt: 2,
+      recoveryCount: 2,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
-    assert.equal(detail.resume_attempt, 2);
+    assert.equal(detail.recovery_count, 2);
   });
 });
 
@@ -167,7 +167,7 @@ describe('StallKillAudit — checkpoint_committed field (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', checkpointCommitted: true }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
     assert.equal(detail.checkpoint_committed, true);
@@ -179,7 +179,7 @@ describe('StallKillAudit — checkpoint_committed field (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', checkpointCommitted: false }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
     assert.equal(detail.checkpoint_committed, false);
@@ -191,7 +191,7 @@ describe('StallKillAudit — checkpoint_committed field (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall' }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
     assert.equal(detail.checkpoint_committed, false);
@@ -207,7 +207,7 @@ describe('StallKillAudit — row shape (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', checkpointCommitted: true }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     assert.equal(calls[0].action, STALL_KILL_ACTION);
     assert.equal(STALL_KILL_ACTION, 'worker_stall_kill');
@@ -219,7 +219,7 @@ describe('StallKillAudit — row shape (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', checkpointCommitted: true }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     assert.equal(calls[0].command, 'story-001-001');
   });
@@ -230,12 +230,12 @@ describe('StallKillAudit — row shape (unit)', () => {
       agentId: 'agent-story-001-001-aabbccdd',
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', checkpointCommitted: true }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     assert.equal(calls[0].agent_id, 'agent-story-001-001-aabbccdd');
   });
 
-  it('detail carries all FR-7 fields: kill_reason, silence_kind, last_stream_event, resume_attempt, checkpoint_committed', () => {
+  it('detail carries all FR-7 fields: kill_reason, silence_kind, last_stream_event, recovery_count, checkpoint_committed', () => {
     const { audit, calls } = makeAuditStub();
     recordStallKill(audit, {
       agentId: 'agent-story-001-001-aabbccdd',
@@ -245,17 +245,17 @@ describe('StallKillAudit — row shape (unit)', () => {
         lastStreamEvent: 'result',
         checkpointCommitted: true,
       }),
-      resumeAttempt: 1,
+      recoveryCount: 1,
     });
     const detail = calls[0].detail as unknown as StallKillDetail;
     assert.ok('kill_reason' in detail, 'kill_reason present');
     assert.ok('silence_kind' in detail, 'silence_kind present');
     assert.ok('last_stream_event' in detail, 'last_stream_event present');
-    assert.ok('resume_attempt' in detail, 'resume_attempt present');
+    assert.ok('recovery_count' in detail, 'recovery_count present');
     assert.ok('checkpoint_committed' in detail, 'checkpoint_committed present');
     assert.equal(detail.kill_reason, 'stall');
     assert.equal(detail.last_stream_event, 'result');
-    assert.equal(detail.resume_attempt, 1);
+    assert.equal(detail.recovery_count, 1);
   });
 });
 
@@ -285,7 +285,7 @@ describe('StallKillAudit — integration: row persists and is queryable', () => 
       agentId: agent.id,
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'hung_request', checkpointCommitted: true }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
 
     const rows = audit.getByStory('story-001-001');
@@ -296,7 +296,7 @@ describe('StallKillAudit — integration: row persists and is queryable', () => 
     const detail: StallKillDetail = JSON.parse(killRow!.detail ?? '{}');
     assert.equal(detail.kill_reason, 'hung_request');
     assert.equal(detail.silence_kind, 'hung_request_no_response');
-    assert.equal(detail.resume_attempt, 0);
+    assert.equal(detail.recovery_count, 0);
     assert.equal(detail.checkpoint_committed, true);
   });
 
@@ -314,7 +314,7 @@ describe('StallKillAudit — integration: row persists and is queryable', () => 
         lastStreamEvent: 'assistant/delta',
         checkpointCommitted: false,
       }),
-      resumeAttempt: 1,
+      recoveryCount: 1,
     });
 
     const rows = audit.getByStory('story-001-001');
@@ -325,7 +325,7 @@ describe('StallKillAudit — integration: row persists and is queryable', () => 
     assert.equal(detail.kill_reason, 'stall');
     assert.equal(detail.silence_kind, 'fully_silent_subprocess');
     assert.equal(detail.last_stream_event, 'assistant/delta');
-    assert.equal(detail.resume_attempt, 1);
+    assert.equal(detail.recovery_count, 1);
     assert.equal(detail.checkpoint_committed, false);
   });
 
@@ -340,7 +340,7 @@ describe('StallKillAudit — integration: row persists and is queryable', () => 
         agentId: agent.id,
         storyId: 'story-001-001',
         result: makeResult({ killReason: 'stall' }),
-        resumeAttempt: 0,
+        recoveryCount: 0,
       });
     });
 
@@ -363,13 +363,13 @@ describe('StallKillAudit — integration: row persists and is queryable', () => 
       agentId: agent.id,
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'stall', checkpointCommitted: true }),
-      resumeAttempt: 0,
+      recoveryCount: 0,
     });
     recordStallKill(audit, {
       agentId: agent.id,
       storyId: 'story-001-001',
       result: makeResult({ killReason: 'hung_request', checkpointCommitted: true }),
-      resumeAttempt: 1,
+      recoveryCount: 1,
     });
 
     const rows = audit.getByStory('story-001-001');
