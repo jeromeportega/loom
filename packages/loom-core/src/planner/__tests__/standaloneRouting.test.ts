@@ -269,9 +269,10 @@ describe('Planner.run — standalone path (advisory, size=story)', () => {
     assert.equal(result.architecturePath, '', 'standalone path must not produce an architecture doc');
   });
 
-  it('result.epicIds contains the container epic id', () => {
+  it('result.epicIds contains the standalone story id (story-NNN, not epic-NNN)', () => {
     assert.equal(result.epicIds.length, 1);
-    assert.ok(result.epicIds[0].startsWith('epic-'));
+    assert.ok(result.epicIds[0].startsWith('story-'), `epicIds[0] must be story-NNN, got: ${result.epicIds[0]}`);
+    assert.equal(result.epicIds[0], result.runId, 'epicIds[0] must equal runId');
   });
 
   it('the YAML file exists and contains exactly one story (AC4)', () => {

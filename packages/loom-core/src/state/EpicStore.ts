@@ -28,19 +28,19 @@ export class EpicStore {
   }
 
   /**
-   * Inserts an internal container row for a standalone story (v24, epic-047).
-   * The row has kind='standalone' so list() and presentation sites can exclude
-   * or render it separately. The FK agents.epic_id points to this container id,
-   * keeping the agents schema unchanged (ADR-002).
+   * Inserts a standalone story row whose PK `id` IS `storyId` ('story-NNN')
+   * with kind='standalone' and status='planned'. There is no epic-NNN container —
+   * the story-NNN row is the primary identity for both storage and presentation.
+   * The FK agents.epic_id references this row directly (ADR-002).
    */
-  createStandalone(epicId: string, title: string): void {
+  createStandalone(storyId: string, title: string): void {
     const now = new Date().toISOString();
     this.db
       .prepare(
         `INSERT INTO epics (id, title, status, kind, created_at, updated_at)
          VALUES (?, ?, 'planned', ?, ?, ?)`
       )
-      .run(epicId, title, STANDALONE_KIND, now, now);
+      .run(storyId, title, STANDALONE_KIND, now, now);
   }
 
   /** Returns true iff the given epic row is a standalone story container. */
