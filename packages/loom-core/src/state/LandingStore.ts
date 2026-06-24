@@ -71,12 +71,16 @@ function rowToMerge(row: Record<string, unknown>): RepoMergeRecord {
 
 export class LandingStore implements LandingStorePort {
   private readonly _captureBaseSha: (repoRoot: string) => string;
+  private readonly stmtLatestAttempt: Database.Statement;
 
   constructor(
     private readonly db: Database.Database,
     captureBaseSha?: (repoRoot: string) => string,
   ) {
     this._captureBaseSha = captureBaseSha ?? defaultCaptureBaseSha;
+    this.stmtLatestAttempt = db.prepare(
+      'SELECT id FROM landing_attempts WHERE epic_id = ? ORDER BY rowid DESC LIMIT 1',
+    );
   }
 
   beginAttempt(epicId: string, stages: RepoStage[]): string {
@@ -222,13 +226,12 @@ export class LandingStore implements LandingStorePort {
 
   latestAttemptIdForEpic(epicId: string): string | undefined {
     try {
-      const row = this.db
-        .prepare('SELECT id FROM landing_attempts WHERE epic_id = ? ORDER BY rowid DESC LIMIT 1')
-        .get(epicId) as { id: string } | undefined;
+      const row = this.stmtLatestAttempt.get(epicId) as { id: string } | undefined;
       return row?.id;
-    } catch {
-      // Table may not exist on pre-v27 databases — degrade gracefully.
-      return undefined;
+    } catch (e) {
+      // Degrade gracefully only for pre-v27 databases where the table does not exist.
+      if (e instanceof Error && e.message.includes('no such table')) return undefined;
+      throw e;
     }
   }
 }

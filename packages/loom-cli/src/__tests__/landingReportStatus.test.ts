@@ -51,6 +51,7 @@ afterEach(() => {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// runStatus is intentionally synchronous; if it becomes async this capture pattern breaks.
 function captureStatus(opts: { projectRoot?: string } = {}): string {
   const lines: string[] = [];
   const orig = console.log;

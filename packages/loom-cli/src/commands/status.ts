@@ -377,9 +377,13 @@ function renderLandingReport(report: LandingReport): void {
   }
 
   if (report.status === 'rolling_back') {
-    const pending = report.repos.filter((r) => r.mergeState === 'merged' || r.mergeState === 'revert_pending');
-    if (pending.length > 0) {
-      console.log(`           reverting: ${pending.map((r) => r.repoSlug).join(', ')}`);
+    const reverting = report.repos.filter((r) => r.mergeState === 'revert_pending');
+    const awaitingRevert = report.repos.filter((r) => r.mergeState === 'merged');
+    if (reverting.length > 0) {
+      console.log(`           reverting: ${reverting.map((r) => r.repoSlug).join(', ')}`);
+    }
+    if (awaitingRevert.length > 0) {
+      console.log(`           awaiting revert: ${awaitingRevert.map((r) => r.repoSlug).join(', ')}`);
     }
   }
 
@@ -430,6 +434,10 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
     const verdicts = epics.length > 0
       ? epicStore.getIntakeVerdicts(epics.map((e) => e.id))
       : new Map<string, IntakeVerdict | null>();
+
+    // Single read-only LandingStore instance shared across all epics.
+    // SHA provider throws loudly if beginAttempt is ever accidentally called.
+    const landingStore = new LandingStore(db, () => { throw new Error('LandingStore is read-only in status context'); });
 
     for (const epic of epics) {
       if (!epic) continue;
@@ -508,8 +516,6 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
 
       // Show the latest cross-repo landing attempt for this epic, if any.
       // Landing report is independent of agent presence — show even when no agents have been dispatched.
-      // SHA provider is a no-op: status is read-only and never calls beginAttempt.
-      const landingStore = new LandingStore(db, () => '');
       const latestAttemptId = landingStore.latestAttemptIdForEpic(epic.id);
       if (latestAttemptId) {
         try {

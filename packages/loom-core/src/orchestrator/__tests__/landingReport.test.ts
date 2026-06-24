@@ -72,19 +72,19 @@ function makeStore(
   attempt: LandingAttempt,
   merges: RepoMergeRecord[],
 ): LandingStorePort {
-  const noop = (): never => { throw new Error('unexpected store call'); };
+  function unexpected(_label: string): never { throw new Error('unexpected store call'); }
   return {
     getAttempt: (id: string) => {
       assert.equal(id, attempt.id, 'getAttempt must be called with the correct attemptId');
       return { attempt, merges };
     },
-    beginAttempt: noop as unknown as LandingStorePort['beginAttempt'],
-    recordMerge: noop as unknown as LandingStorePort['recordMerge'],
-    markRevertPending: noop as unknown as LandingStorePort['markRevertPending'],
-    markReverted: noop as unknown as LandingStorePort['markReverted'],
-    pendingReverts: noop as unknown as LandingStorePort['pendingReverts'],
-    setStatus: noop as unknown as LandingStorePort['setStatus'],
-    latestAttemptIdForEpic: noop as unknown as LandingStorePort['latestAttemptIdForEpic'],
+    beginAttempt: (_epicId: string, _stages: RepoStage[]): string => unexpected('beginAttempt'),
+    recordMerge: (_attemptId: string, _m: { repoSlug: string; prNumber: number; prUrl: string; mergeCommitSha: string }): void => unexpected('recordMerge'),
+    markRevertPending: (_attemptId: string, _repoSlug: string, _revertPrUrl: string): void => unexpected('markRevertPending'),
+    markReverted: (_attemptId: string, _repoSlug: string, _revertMergeSha: string): void => unexpected('markReverted'),
+    pendingReverts: (_attemptId: string): RepoMergeRecord[] => unexpected('pendingReverts'),
+    setStatus: (_attemptId: string, _status: LandingAttemptStatus, _blocker?: LandingBlocker): void => unexpected('setStatus'),
+    latestAttemptIdForEpic: (_epicId: string): string | undefined => unexpected('latestAttemptIdForEpic'),
   };
 }
 
