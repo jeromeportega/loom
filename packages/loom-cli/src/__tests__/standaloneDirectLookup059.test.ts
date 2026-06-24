@@ -1,16 +1,3 @@
-/**
- * story-059-004: Native story-NNN reads in loom status and CLI commands.
- *
- * Verifies that standalone stories are resolved by direct EpicStore.get('story-NNN')
- * PK lookup in status, artifacts, traces, and audit commands — with zero epic-NNN
- * leakage in any CLI output for a standalone row.
- *
- * AC coverage:
- * - AC1: loom status reads standalone by story-NNN via direct lookup (no .replace derivation).
- * - AC2: CLI artifacts/traces/audit resolve standalone by story-NNN directly.
- * - AC3: No epic-NNN id leaks to any CLI surface for a standalone story.
- * - AC4: Targeted tests for status and CLI command output.
- */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -31,6 +18,17 @@ import { runAudit } from '../commands/audit.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/** Sentinel thrown by the fake process.exit — not a plain Error so implementation
+ *  try/catch blocks that swallow generic errors won't accidentally suppress it. */
+class FakeExitError extends Error {
+  readonly code: number;
+  constructor(code: number) {
+    super(`process.exit(${code})`);
+    this.code = code;
+    Object.setPrototypeOf(this, FakeExitError.prototype);
+  }
+}
+
 let repo: string;
 let prevCwd: string;
 
@@ -49,49 +47,59 @@ afterEach(() => {
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
-/** Capture console.log / console.error / process.stdout.write output from a
- *  synchronous function. All four commands tested here (runStatus, runArtifacts,
- *  runTraces, runAudit) are synchronous; this helper is intentionally sync-only. */
+/** Capture all stdout (console.log + process.stdout.write) and stderr
+ *  (console.error + process.stderr.write) from a synchronous fn, in arrival order.
+ *  process.exit() is replaced with FakeExitError so implementation try/catch blocks
+ *  cannot accidentally swallow it. */
 function capture(fn: () => void): { stdout: string; stderr: string; exitCode: number | null } {
-  const logs: string[] = [];
-  const writes: string[] = [];
-  const errors: string[] = [];
+  const out: string[] = [];
+  const err: string[] = [];
   let exitCode: number | null = null;
   const origLog = console.log;
   const origErr = console.error;
-  const origWrite = process.stdout.write.bind(process.stdout);
+  const origOutWrite = process.stdout.write.bind(process.stdout);
+  const origErrWrite = process.stderr.write.bind(process.stderr);
   const origExit = process.exit as (code?: number) => never;
   const origExitCode = process.exitCode;
   process.exitCode = undefined;
   (process as NodeJS.Process & { exit: (code?: number) => never }).exit = (code?: number) => {
     exitCode = code ?? 0;
-    throw new Error(`process.exit(${code})`);
+    throw new FakeExitError(code ?? 0);
   };
-  console.log = (...args: unknown[]) => logs.push(args.map(String).join(' '));
-  console.error = (...args: unknown[]) => errors.push(args.map(String).join(' '));
+  console.log = (...args: unknown[]) => out.push(args.map(String).join(' '));
+  console.error = (...args: unknown[]) => err.push(args.map(String).join(' '));
   process.stdout.write = function (
     chunk: string | Uint8Array,
     _encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
     _cb?: (err?: Error | null) => void
   ): boolean {
-    writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+    out.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
     return true;
   } as typeof process.stdout.write;
+  process.stderr.write = function (
+    chunk: string | Uint8Array,
+    _encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+    _cb?: (err?: Error | null) => void
+  ): boolean {
+    err.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+    return true;
+  } as typeof process.stderr.write;
   try {
     fn();
   } catch (e) {
-    if (!(e instanceof Error && e.message.startsWith('process.exit'))) throw e;
+    if (!(e instanceof FakeExitError)) throw e;
   } finally {
     (process as NodeJS.Process & { exit: (code?: number) => never }).exit = origExit;
     console.log = origLog;
     console.error = origErr;
-    process.stdout.write = origWrite;
+    process.stdout.write = origOutWrite;
+    process.stderr.write = origErrWrite;
   }
   if (exitCode === null && typeof process.exitCode === 'number') {
     exitCode = process.exitCode;
   }
   process.exitCode = origExitCode;
-  return { stdout: [...logs, ...writes].join('\n'), stderr: errors.join('\n'), exitCode };
+  return { stdout: out.join('\n'), stderr: err.join('\n'), exitCode };
 }
 
 // ─── AC1 + AC3: loom status — direct story-NNN lookup, no epic-NNN leak ──────
@@ -204,6 +212,7 @@ describe('loom artifacts — standalone story-NNN direct lookup (story-059-004 A
     createDatabase(path.join(repo, '.loom', 'loom.db')).close();
 
     const { stderr, exitCode } = capture(() => runArtifacts('story-999'));
+    // Exit code 1 is the documented contract for "not found" in runArtifacts (see exitCodes spec).
     assert.equal(exitCode, 1, 'Unknown story-NNN must exit with code 1');
     assert.ok(
       stderr.includes('story-999') && /not found/i.test(stderr),
@@ -276,8 +285,8 @@ describe('loom traces — standalone story-NNN direct lookup (story-059-004 AC2)
     assert.ok(payload.traces.length > 0, 'Must return at least one trace');
     assert.equal(payload.traces[0].story_id, 'story-059', 'story_id must be story-059');
     assert.ok(
-      !JSON.stringify(payload).includes('"epic_id":"epic-059"'),
-      'epic-059 must not appear as epic_id in JSON traces'
+      payload.traces.every((t) => t.epic_id !== 'epic-059'),
+      'epic-059 must not appear as epic_id in any JSON trace'
     );
   });
 
