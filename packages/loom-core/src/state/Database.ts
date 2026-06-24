@@ -193,7 +193,7 @@ CREATE TABLE IF NOT EXISTS landing_attempts (
   id         TEXT PRIMARY KEY,
   epic_id    TEXT NOT NULL REFERENCES epics(id),
   status     TEXT NOT NULL CHECK(status IN ('staging','merging','blocked','landed','rolling_back','rolled_back','failed')),
-  base_shas  TEXT,
+  base_shas  TEXT NOT NULL DEFAULT '{}',
   blocker    TEXT,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -216,6 +216,7 @@ CREATE TABLE IF NOT EXISTS repo_merges (
 );
 
 CREATE INDEX IF NOT EXISTS idx_repo_merges_attempt ON repo_merges(attempt_id);
+CREATE INDEX IF NOT EXISTS idx_landing_attempts_epic ON landing_attempts(epic_id);
 `;
 
 let _db: Database.Database | null = null;

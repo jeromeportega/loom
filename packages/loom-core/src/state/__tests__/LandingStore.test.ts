@@ -8,7 +8,6 @@ import Database from 'better-sqlite3';
 import { createDatabase, runMigrations, SCHEMA_VERSION } from '../Database.js';
 import { LandingStore, makeAnchoringMerger } from '../LandingStore.js';
 import type { RepoStage } from '../../orchestrator/CrossRepoCoordinator.js';
-import type { PolicyEngine } from '../../guardrails/PolicyEngine.js';
 
 let tmpDir: string;
 
@@ -271,7 +270,7 @@ describe('LandingStore.recordMerge — error paths', () => {
 // ─── Uniqueness boundary test ─────────────────────────────────────────────────
 
 describe('repo_merges uniqueness boundary', () => {
-  it('a second recordMerge for the same (attempt_id, repo_slug) updates rather than duplicates', () => {
+  it('a second recordMerge for the same (attempt_id, repo_slug) is a no-op — the anchor SHA is preserved', () => {
     const db = makeDb('uniqueness.db');
     seedEpic(db);
     const store = new LandingStore(db);
@@ -283,13 +282,14 @@ describe('repo_merges uniqueness boundary', () => {
       prUrl: 'https://github.com/org/repo/pull/1',
       mergeCommitSha: 'sha-first',
     });
-    // Second call — same slug, different SHA (simulates an idempotent re-call)
-    store.recordMerge(id, {
+    // Second call — same slug, different SHA. With the merge_state='pending' guard,
+    // the row is already 'merged' so the UPDATE is a no-op (anchor SHA is preserved).
+    assert.doesNotThrow(() => store.recordMerge(id, {
       repoSlug: 'repo-a',
       prNumber: 1,
       prUrl: 'https://github.com/org/repo/pull/1',
       mergeCommitSha: 'sha-second',
-    });
+    }), 'second recordMerge must not throw — idempotent no-op');
 
     const count = (db.prepare(
       "SELECT COUNT(*) as cnt FROM repo_merges WHERE attempt_id = ? AND repo_slug = 'repo-a'",
@@ -297,7 +297,7 @@ describe('repo_merges uniqueness boundary', () => {
     assert.equal(count, 1, 'only one row must exist (no duplicate)');
 
     const { merges } = store.getAttempt(id);
-    assert.equal(merges[0].mergeCommitSha, 'sha-second', 'second recordMerge wins (UPDATE semantics)');
+    assert.equal(merges[0].mergeCommitSha, 'sha-first', 'first SHA is anchored — second call cannot overwrite it');
     db.close();
   });
 });
@@ -477,6 +477,61 @@ describe('LandingStore.markRevertPending / markReverted', () => {
   });
 });
 
+// ─── markRevertPending / markReverted error paths ─────────────────────────────
+
+describe('LandingStore.markRevertPending — error path', () => {
+  it('throws when (attempt_id, repo_slug) row does not exist', () => {
+    const db = makeDb('revert-pending-missing.db');
+    seedEpic(db);
+    const store = new LandingStore(db);
+    const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
+    assert.throws(
+      () => store.markRevertPending(id, 'nonexistent-repo', 'https://github.com/org/repo/pull/99'),
+      /no row found.*nonexistent-repo/,
+      'must throw when no matching repo_merges row exists',
+    );
+    db.close();
+  });
+});
+
+describe('LandingStore.markReverted — error path', () => {
+  it('throws when (attempt_id, repo_slug) row does not exist', () => {
+    const db = makeDb('reverted-missing.db');
+    seedEpic(db);
+    const store = new LandingStore(db);
+    const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
+    assert.throws(
+      () => store.markReverted(id, 'nonexistent-repo', 'sha-xyz'),
+      /no row found.*nonexistent-repo/,
+      'must throw when no matching repo_merges row exists',
+    );
+    db.close();
+  });
+});
+
+// ─── Cycle detection in topoSortReversed ──────────────────────────────────────
+
+describe('LandingStore.pendingReverts — cycle detection', () => {
+  it('throws when repo dependency graph contains a cycle', () => {
+    const db = makeDb('cycle-detect.db');
+    seedEpic(db);
+    const store = new LandingStore(db);
+
+    // Manually insert a cyclic dependency: repo-a depends on repo-b, repo-b depends on repo-a.
+    // We cannot do this via beginAttempt (which uses RepoStage), so insert raw.
+    const id = store.beginAttempt('epic-test', []);
+    db.prepare("INSERT INTO repo_merges (attempt_id, repo_slug, depends_on, merge_state) VALUES (?, 'repo-a', ?, 'merged')").run(id, JSON.stringify(['repo-b']));
+    db.prepare("INSERT INTO repo_merges (attempt_id, repo_slug, depends_on, merge_state) VALUES (?, 'repo-b', ?, 'merged')").run(id, JSON.stringify(['repo-a']));
+
+    assert.throws(
+      () => store.pendingReverts(id),
+      /cycle detected/,
+      'cyclic dependency must throw rather than silently return a partial list',
+    );
+    db.close();
+  });
+});
+
 // ─── makeAnchoringMerger tests (ADR-004) ──────────────────────────────────────
 
 describe('makeAnchoringMerger — ADR-004: active gh pr merge with SHA capture', () => {
@@ -487,10 +542,8 @@ describe('makeAnchoringMerger — ADR-004: active gh pr merge with SHA capture',
     const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
 
     const capturedUrls: string[] = [];
-    const fakePolicy = {} as PolicyEngine;
 
     const merger = makeAnchoringMerger(store, {
-      policy: fakePolicy,
       _ghMerge: (prUrl) => {
         capturedUrls.push(prUrl);
         return { number: 77, mergeCommitSha: 'squash-sha-abc' };
@@ -532,7 +585,6 @@ describe('makeAnchoringMerger — ADR-004: active gh pr merge with SHA capture',
     const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
 
     const merger = makeAnchoringMerger(store, {
-      policy: {} as PolicyEngine,
       _ghMerge: () => ({ number: 1, mergeCommitSha: 'sha' }),
     });
 
@@ -560,7 +612,6 @@ describe('makeAnchoringMerger — ADR-004: active gh pr merge with SHA capture',
     const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
 
     const merger = makeAnchoringMerger(store, {
-      policy: {} as PolicyEngine,
       _ghMerge: () => ({ number: 1, mergeCommitSha: 'sha' }),
     });
 
@@ -588,7 +639,6 @@ describe('makeAnchoringMerger — ADR-004: active gh pr merge with SHA capture',
     const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
 
     const merger = makeAnchoringMerger(store, {
-      policy: {} as PolicyEngine,
       _ghMerge: () => ({ number: 7, mergeCommitSha: 'sha-clock-test' }),
     });
 

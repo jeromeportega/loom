@@ -11,7 +11,13 @@ import type {
 } from '../orchestrator/landingTypes.js';
 import type { RepoStage } from '../orchestrator/CrossRepoCoordinator.js';
 import { gitSafe } from '../orchestrator/git.js';
-import type { PolicyEngine } from '../guardrails/PolicyEngine.js';
+
+// Default SHA capture wraps gitSafe so the seam can be overridden in tests
+// without adding git I/O as a hidden dependency of every LandingStore test.
+function defaultCaptureBaseSha(repoRoot: string): string {
+  const res = gitSafe(repoRoot, ['rev-parse', 'HEAD']);
+  return res.ok ? res.output : '';
+}
 
 // ─── Row mappers ──────────────────────────────────────────────────────────────
 
@@ -64,14 +70,20 @@ function rowToMerge(row: Record<string, unknown>): RepoMergeRecord {
 // ─── LandingStore ─────────────────────────────────────────────────────────────
 
 export class LandingStore implements LandingStorePort {
-  constructor(private readonly db: Database.Database) {}
+  private readonly _captureBaseSha: (repoRoot: string) => string;
+
+  constructor(
+    private readonly db: Database.Database,
+    captureBaseSha?: (repoRoot: string) => string,
+  ) {
+    this._captureBaseSha = captureBaseSha ?? defaultCaptureBaseSha;
+  }
 
   beginAttempt(epicId: string, stages: RepoStage[]): string {
     // Capture SHA outside the transaction — I/O ops must not run inside SQLite transactions.
     const baseShas: Record<string, string> = {};
     for (const stage of stages) {
-      const res = gitSafe(stage.repoRoot, ['rev-parse', 'HEAD']);
-      baseShas[stage.repoSlug] = res.ok ? res.output : '';
+      baseShas[stage.repoSlug] = this._captureBaseSha(stage.repoRoot);
     }
 
     const insertAttempt = this.db.prepare(
@@ -83,18 +95,17 @@ export class LandingStore implements LandingStorePort {
        VALUES (?, ?, ?, 'pending')`,
     );
 
-    let attemptId!: string;
-
-    this.db.transaction(() => {
+    const attemptId = this.db.transaction((): string => {
       const { cnt } = this.db
         .prepare('SELECT COUNT(*) as cnt FROM landing_attempts WHERE epic_id = ?')
         .get(epicId) as { cnt: number };
-      attemptId = `landing-${epicId}-${cnt}`;
+      const id = `landing-${epicId}-${cnt}`;
 
-      insertAttempt.run(attemptId, epicId, JSON.stringify(baseShas));
+      insertAttempt.run(id, epicId, JSON.stringify(baseShas));
       for (const stage of stages) {
-        insertMerge.run(attemptId, stage.repoSlug, JSON.stringify(stage.dependsOnRepos));
+        insertMerge.run(id, stage.repoSlug, JSON.stringify(stage.dependsOnRepos));
       }
+      return id;
     })();
 
     return attemptId;
@@ -112,28 +123,40 @@ export class LandingStore implements LandingStorePort {
              pr_url = ?,
              merge_state = 'merged',
              merged_at = CURRENT_TIMESTAMP
-         WHERE attempt_id = ? AND repo_slug = ?`,
+         WHERE attempt_id = ? AND repo_slug = ? AND merge_state = 'pending'`,
       )
       .run(m.mergeCommitSha, m.prNumber, m.prUrl, attemptId, m.repoSlug);
     if (result.changes !== 1) {
-      throw new Error(
-        `LandingStore.recordMerge: no row found for attempt '${attemptId}' repo '${m.repoSlug}' — call beginAttempt first`,
-      );
+      // Row may already be in merged/revert_pending/reverted — treat as idempotent no-op.
+      const existing = this.db
+        .prepare('SELECT merge_state FROM repo_merges WHERE attempt_id = ? AND repo_slug = ?')
+        .get(attemptId, m.repoSlug) as { merge_state: string } | undefined;
+      if (!existing) {
+        throw new Error(
+          `LandingStore.recordMerge: no row found for attempt '${attemptId}' repo '${m.repoSlug}' — call beginAttempt first`,
+        );
+      }
+      // Row exists but not in pending state — idempotent re-call, leave the anchor intact.
     }
   }
 
   markRevertPending(attemptId: string, repoSlug: string, revertPrUrl: string): void {
-    this.db
+    const result = this.db
       .prepare(
         `UPDATE repo_merges
          SET merge_state = 'revert_pending', revert_pr_url = ?
          WHERE attempt_id = ? AND repo_slug = ?`,
       )
       .run(revertPrUrl, attemptId, repoSlug);
+    if (result.changes !== 1) {
+      throw new Error(
+        `LandingStore.markRevertPending: no row found for attempt '${attemptId}' repo '${repoSlug}'`,
+      );
+    }
   }
 
   markReverted(attemptId: string, repoSlug: string, revertMergeSha: string): void {
-    this.db
+    const result = this.db
       .prepare(
         `UPDATE repo_merges
          SET merge_state = 'reverted',
@@ -142,6 +165,11 @@ export class LandingStore implements LandingStorePort {
          WHERE attempt_id = ? AND repo_slug = ?`,
       )
       .run(revertMergeSha, attemptId, repoSlug);
+    if (result.changes !== 1) {
+      throw new Error(
+        `LandingStore.markReverted: no row found for attempt '${attemptId}' repo '${repoSlug}'`,
+      );
+    }
   }
 
   pendingReverts(attemptId: string): RepoMergeRecord[] {
@@ -240,6 +268,14 @@ function topoSortReversed(records: RepoMergeRecord[]): RepoMergeRecord[] {
     }
   }
 
+  // Cycle guard: if BFS ended with unprocessed nodes, the graph has a cycle.
+  // A partial rollback in this case would silently skip repos, so we fail hard.
+  if (topo.length !== records.length) {
+    throw new Error(
+      `LandingStore: cycle detected in repo dependency graph (processed ${topo.length}/${records.length} nodes) — rollback order is incomplete`,
+    );
+  }
+
   // Reverse: consumers-first for rollback.
   topo.reverse();
   return topo;
@@ -250,7 +286,6 @@ function topoSortReversed(records: RepoMergeRecord[]): RepoMergeRecord[] {
 const GITHUB_PR_URL_RE = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/;
 
 export interface AnchoringMergerDeps {
-  policy: PolicyEngine;
   /**
    * Injectable for tests — replaces the real `gh pr merge --squash` execFileSync
    * call so tests can verify SHA capture without shelling out to GitHub.
