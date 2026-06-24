@@ -7,6 +7,7 @@ import { ensureLoomHome } from './ensureLoomHome.js';
 import { resolveRepoStatePaths, type RepoStatePaths } from './repoState.js';
 import { migrateStateDatabase } from './migrateState.js';
 import { migratePlanningScratch } from './migrateScratch.js';
+import { resolveActiveRepo } from './resolveActiveRepo.js';
 
 const LOCK_STALE_CROSS_HOST_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -139,6 +140,10 @@ export function prepareRepoState(
   // 1. Ensure loom-home exists as a git repository.
   const loomHome = resolveLoomHomePath(projectRoot, policy);
   ensureLoomHome(loomHome);
+
+  // Observe-and-record: register this repo in the workspace manifest on first use
+  // (ADR-003 seam — every repo-scoped command gets first-use registration here).
+  resolveActiveRepo(loomHome, projectRoot);
 
   // 2. Resolve namespace paths.
   const paths = resolveRepoStatePaths(projectRoot, policy);
