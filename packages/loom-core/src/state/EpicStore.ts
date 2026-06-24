@@ -45,6 +45,27 @@ export class EpicStore {
   }
 
   /**
+   * Repoint a freshly-reserved planning row from its epic-NNN id to the
+   * story-NNN standalone identity. The CLI reserves an epic-NNN placeholder
+   * BEFORE classification knows the size; once routing resolves to standalone,
+   * the row's identity must become story-NNN (story-059-002 made story-NNN the
+   * standalone PK — runStandalone rejects a non-story id). Idempotent: a
+   * story-NNN id is returned unchanged. Single-row analogue of the v26 bulk
+   * migration, with deferred FK so agents.epic_id is checked at COMMIT.
+   */
+  repointReservationToStandalone(id: string): string {
+    if (id.startsWith('story-')) return id;
+    const storyId = id.replace(/^epic-/, 'story-');
+    this.db.transaction(() => {
+      this.db.prepare('PRAGMA defer_foreign_keys = ON').run();
+      this.db.prepare('UPDATE epics SET id = ?, kind = ? WHERE id = ?').run(storyId, STANDALONE_KIND, id);
+      this.db.prepare('UPDATE agents SET epic_id = ? WHERE epic_id = ?').run(storyId, id);
+      this.db.prepare('UPDATE decision_traces SET epic_id = ? WHERE epic_id = ?').run(storyId, id);
+    })();
+    return storyId;
+  }
+
+  /**
    * Finalises a standalone story row with its title and status='planned'.
    * Uses ON CONFLICT DO UPDATE so this is safe whether the row was
    * pre-reserved via `beginStandalonePlanning` or is being created for the

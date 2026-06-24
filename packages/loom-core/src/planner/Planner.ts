@@ -160,7 +160,13 @@ export class Planner {
     if (reservedId !== undefined) {
       // Pre-reserved by the caller: adopt the id, do not allocate again. The
       // row already exists (status 'planning') so we skip beginPlanning here.
-      runId = reservedId;
+      // The caller reserves BEFORE classification knows the size, so a
+      // standalone run arrives with an epic-NNN id — repoint the reserved row
+      // to its story-NNN identity (story-059-002) so runStandalone's PK is the
+      // story id, never an epic-NNN container. No-op for non-standalone runs.
+      runId = isStandalone(this.opts.routing)
+        ? epicStore.repointReservationToStandalone(reservedId)
+        : reservedId;
     } else {
       // Globally-unique id numbering: draw from the shared counter that spans
       // both 'epic-NNN' and 'story-NNN' rows (nextEpicId counts via idNumber).
