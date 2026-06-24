@@ -129,3 +129,5 @@ export { SignalLedger } from './signalStore.js';
 export { renderBuildSignalAnalysis } from './signalRender.js';
 export type { SignalRenderInput } from './signalRender.js';
 export { oneLine, displayModel } from './renderUtils.js';
+export { ForwardReverter } from './ForwardReverter.js';
+export type { ForwardReverterOptions } from './ForwardReverter.js';
