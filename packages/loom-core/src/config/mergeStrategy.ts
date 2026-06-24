@@ -38,4 +38,9 @@ export const MERGE_STRATEGY: Record<string, MergeStrategy> = {
   // agents_must_use_pr=true is the more restrictive value; once any layer asserts
   // it, no higher layer can loosen it to false.
   'git.agents_must_use_pr':        'and',
+
+  // ── Cross-repo retrieval guards (epic-057) ──────────────────────────────────
+  // secret_globs is a security denylist — union semantics so no layer can remove
+  // a secret pattern contributed by a lower layer (ADR-004).
+  'cross_repo.secret_globs':       'union',
 };

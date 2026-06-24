@@ -617,6 +617,34 @@ export const PolicySchema = z.object({
   // Absolute or ~-expandable path to the loom-home repository. Omit to use
   // the default sibling directory (parent of projectRoot + '/loom-home').
   loom_home: z.string().optional(),
+  // Cross-repo read-only retrieval (epic-057). opt-in; single-repo workspaces
+  // never enter this path when enabled=false (the default).
+  cross_repo: z
+    .object({
+      enabled: z.boolean().default(false),
+      bounds: z
+        .object({
+          max_line_window: z.number().int().default(200),
+          max_file_bytes: z.number().int().default(262144),
+          max_files: z.number().int().default(20),
+          max_matches_per_file: z.number().int().default(10),
+        })
+        .default({}),
+      // Paths excluded from BOTH search results and reads (FR-7).
+      // Security denylist — union-merged across layers (ADR-004).
+      secret_globs: z
+        .array(z.string())
+        .default([
+          '**/.env',
+          '**/.env.*',
+          '**/*.pem',
+          '**/*.key',
+          '**/id_rsa*',
+          '**/secrets/**',
+          '**/*.tfstate',
+        ]),
+    })
+    .default({}),
 });
 export type Policy = z.infer<typeof PolicySchema>;
 

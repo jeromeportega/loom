@@ -397,3 +397,49 @@ properties:
         description: |
           Path to a checkout of the org's approved-MCP registry (a directory of
           servers/<name>/server.json files). Unset = `loom mcp` is disabled.
+
+  cross_repo:
+    type: object
+    properties:
+      enabled:
+        type: boolean
+        default: false
+        description: |
+          Opt-in cross-repo read-only retrieval (epic-057). When false (default),
+          single-repo workspaces never enter this path. Set to true to allow
+          `loom retrieve` to read from sibling registered repos.
+      bounds:
+        type: object
+        properties:
+          max_line_window:
+            type: integer
+            default: 200
+            description: "Maximum number of lines returned in a single windowed read."
+          max_file_bytes:
+            type: integer
+            default: 262144
+            description: "Maximum file size in bytes (256 KiB). Files over this are refused, not truncated."
+          max_files:
+            type: integer
+            default: 20
+            description: "Maximum number of files per search request."
+          max_matches_per_file:
+            type: integer
+            default: 10
+            description: "Maximum number of search matches returned per file."
+      secret_globs:
+        type: array
+        items:
+          type: string
+        default:
+          - '**/.env'
+          - '**/.env.*'
+          - '**/*.pem'
+          - '**/*.key'
+          - '**/id_rsa*'
+          - '**/secrets/**'
+          - '**/*.tfstate'
+        description: |
+          Glob patterns for paths excluded from BOTH search results and reads (FR-7).
+          Security denylist — union-merged across layers so no layer can remove an
+          entry contributed by a lower layer (ADR-004).
