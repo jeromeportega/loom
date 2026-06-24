@@ -15,8 +15,11 @@ export interface WorktreeContext {
   worktreeRoot: string;
   /** Loom home directory containing the workspace manifest. */
   loomHome: string;
-  /** Optional audit logger; every guard refusal is recorded before returning (invariant #5). */
-  audit?: AuditLog;
+  /**
+   * Audit logger — required by invariant #5: every guard refusal must be recorded
+   * before returning. Use an AuditLog instance (real or spy in tests); do not omit.
+   */
+  audit: AuditLog;
 }
 
 export class PolicyEngine {
@@ -99,7 +102,13 @@ export class PolicyEngine {
   checkCrossRepoAccess(cmd: ParsedCommand, ctx: WorktreeContext): PolicyCheckResult {
     if (!this.policy.cross_repo.enabled) return { allowed: true };
 
-    const ownWorktree = resolveArg(ctx.worktreeRoot, ctx.worktreeRoot);
+    // Canonicalize own worktree: follow symlinks (e.g. macOS /var → /private/var).
+    let ownWorktree: string;
+    try {
+      ownWorktree = fs.realpathSync(ctx.worktreeRoot);
+    } catch {
+      ownWorktree = ctx.worktreeRoot;
+    }
 
     let siblingRoots: string[];
     try {
@@ -108,8 +117,12 @@ export class PolicyEngine {
       // Fail closed: if the manifest is unreadable, treat as no siblings.
       siblingRoots = [];
     }
-    // Exclude own worktree from the sibling list (an agent's own repo may be
-    // registered in the manifest but must not be treated as a sibling).
+    // Exclude own worktree from the sibling list. Registered repos that are
+    // ancestor directories of ownWorktree (nested-repo topology) are also
+    // excluded from siblings so they don't trigger USE_RETRIEVAL on own-worktree
+    // paths; those ancestor roots do remain in allRoots for OUT_OF_WORKSPACE.
+    // Invariant: workspace repos are never nested parents of an agent worktree
+    // in normal loom usage. Tested in crossRepoAccess.test.ts.
     const siblings = siblingRoots.filter(
       r => r !== ownWorktree && !ownWorktree.startsWith(r + path.sep),
     );
@@ -117,7 +130,11 @@ export class PolicyEngine {
     const candidates = extractArgPaths(cmd.argv, ownWorktree);
 
     // ── Rule 1: raw read into a registered sibling root → USE_RETRIEVAL ──────
-    const RAW_READ_PROGRAMS = new Set(['cat', 'head', 'tail', 'less', 'grep', 'Read', 'find']);
+    // Scripting interpreters (python -c, node -e, etc.) are intentionally
+    // absent here; they must be blocked by the forbidden_programs policy list
+    // because detecting their path arguments requires per-interpreter parsing
+    // beyond the scope of this guard.
+    const RAW_READ_PROGRAMS = new Set(['cat', 'head', 'tail', 'less', 'grep', 'find']);
     if (RAW_READ_PROGRAMS.has(cmd.program)) {
       for (const [p, resolved] of candidates) {
         for (const sib of siblings) {
@@ -127,7 +144,7 @@ export class PolicyEngine {
               rule: CROSS_REPO_RULES.USE_RETRIEVAL,
               reason: `Raw read of "${p}" into registered sibling repo is not permitted — use "loom retrieve" to access cross-repo content`,
             };
-            ctx.audit?.record({
+            ctx.audit.record({
               action: 'guard_denied',
               command: cmd.argv.join(' '),
               allowed: false,
@@ -150,7 +167,7 @@ export class PolicyEngine {
           rule: CROSS_REPO_RULES.OUT_OF_WORKSPACE,
           reason: `Path "${p}" (resolved: "${resolved}") is outside the workspace — only paths within registered repositories are permitted`,
         };
-        ctx.audit?.record({
+        ctx.audit.record({
           action: 'guard_denied',
           command: cmd.argv.join(' '),
           allowed: false,
@@ -169,11 +186,17 @@ export class PolicyEngine {
     ]);
     const WRITE_PROGRAMS = new Set([
       'cp', 'mv', 'touch', 'tee', 'truncate', 'install', 'rsync', 'ln', 'dd',
+      'rm', 'mkdir', 'chmod', 'chown',
+      // sed: covered here when -i is present; the forbidden_programs list handles
+      // sed without -i for any cross-repo path (not parseable without flag awareness).
     ]);
-    // Scan all args (not just cmd.subcommand) so `-C /path commit` is detected:
-    // the parser puts /path before commit in cmd.args when -C is a flag.
+    // Find the effective git subcommand: the first element of cmd.args that is
+    // not an absolute/home path (those are -C values, not the verb). This avoids
+    // false positives on `git log commit..HEAD /sibling` where 'commit..HEAD' ≠ 'commit'
+    // and `git log` is a read operation whose first bare arg is 'log'.
+    const gitEffectiveSubcmd = cmd.args.find(a => !a.startsWith('/') && !a.startsWith('~'));
     const isGitWrite =
-      cmd.program === 'git' && cmd.args.some(a => GIT_WRITE_SUBCMDS.has(a));
+      cmd.program === 'git' && GIT_WRITE_SUBCMDS.has(gitEffectiveSubcmd ?? '');
     const isWriteOp = WRITE_PROGRAMS.has(cmd.program) || isGitWrite;
 
     if (isWriteOp) {
@@ -184,7 +207,7 @@ export class PolicyEngine {
             rule: CROSS_REPO_RULES.READ_ONLY,
             reason: `Write to "${p}" (resolved: "${resolved}") is outside the agent's own worktree — cross-repo writes are not permitted`,
           };
-          ctx.audit?.record({
+          ctx.audit.record({
             action: 'guard_denied',
             command: cmd.argv.join(' '),
             allowed: false,
@@ -481,20 +504,20 @@ function resolveArg(p: string, base: string): string {
 }
 
 /**
- * Extract path-like tokens from the command argv (skipping argv[0], the
- * program itself) that could reference filesystem locations: absolute paths,
- * home-dir paths, and `..`-prefixed traversals.  Relative paths without `..`
- * resolve within the agent's own worktree and are not checked.
+ * Extract path candidates from the command argv (skipping argv[0], the
+ * program itself).  Every non-flag token is resolved unconditionally so that
+ * traversals like `src/../../sibling/` and `./../../outside/` are caught even
+ * though they start with an innocuous directory component.  Flags (tokens
+ * starting with `-`) are excluded because they are option names, not paths.
+ *
+ * The rule checks in checkCrossRepoAccess decide whether each resolved path
+ * is inside a sibling root, inside the workspace, or outside the workspace —
+ * tokens that resolve inside own worktree pass all three rules unchanged.
  *
  * Returns pairs of [original token, resolved absolute path].
  */
 function extractArgPaths(argv: string[], base: string): Array<[string, string]> {
   return argv.slice(1)
-    .filter(t =>
-      t.startsWith('/') ||
-      t.startsWith('~') ||
-      t.startsWith('../') ||
-      t === '..'
-    )
+    .filter(t => !t.startsWith('-'))
     .map(t => [t, resolveArg(t, base)]);
 }

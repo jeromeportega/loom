@@ -104,7 +104,9 @@ describe('PolicyEngine — checkCrossRepoAccess (story-057-004)', () => {
   // ── Rule 1: USE_RETRIEVAL — raw read into sibling ─────────────────────────
 
   describe('Rule 1 — USE_RETRIEVAL: raw read into sibling root', () => {
-    const readVerbs = ['cat', 'head', 'tail', 'less', 'grep', 'Read', 'find'];
+    // 'Read' (capital R) is a Claude Code tool name, not a shell program —
+    // it is intentionally absent from RAW_READ_PROGRAMS and from this list.
+    const readVerbs = ['cat', 'head', 'tail', 'less', 'grep', 'find'];
 
     for (const verb of readVerbs) {
       it(`"${verb}" targeting a file inside a sibling root is denied`, () => {
@@ -166,12 +168,44 @@ describe('PolicyEngine — checkCrossRepoAccess (story-057-004)', () => {
       assert.equal(r.rule, CROSS_REPO_RULES.OUT_OF_WORKSPACE);
     });
 
-    it('.. alone resolving outside workspace is denied', () => {
+    it('absolute path two levels above own worktree is denied', () => {
       // go up two levels from a nested own-worktree subdirectory
       const nestedCtx = { ...ctx, worktreeRoot: path.join(ownWorktree, 'a', 'b') };
       const r = engine.check(`cat ${path.resolve(ownWorktree, '..', '..', 'etc', 'passwd')}`, nestedCtx);
       assert.equal(r.allowed, false);
       assert.equal(r.rule, CROSS_REPO_RULES.OUT_OF_WORKSPACE);
+    });
+
+    it('cat with literal ".." resolving outside workspace is denied', () => {
+      // Literal ".." from own worktree resolves to the parent directory, which
+      // is outside [ownWorktree ∪ siblings] in a temp-dir-based fixture.
+      // This exercises the extractArgPaths path for relative tokens that happen
+      // to be the bare token "..".
+      const r = engine.check('cat ..', { ...ctx, worktreeRoot: ownWorktree });
+      assert.equal(r.allowed, false);
+      assert.equal(r.rule, CROSS_REPO_RULES.OUT_OF_WORKSPACE);
+    });
+
+    it('cat with "./../../outside" traversal is denied (blocker: ./ prefix was previously missed)', () => {
+      // A token like "./../../outside/secret.txt" previously started with "./"
+      // and was silently skipped by extractArgPaths, bypassing all three rules.
+      const traversal = `./../../${path.basename(outsideDir)}/secret.txt`;
+      // Resolve to verify it lands outside the workspace (sanity-check fixture).
+      const r = engine.check(`cat ${traversal}`, { ...ctx, worktreeRoot: ownWorktree });
+      assert.equal(r.allowed, false,
+        './../../ traversal into outside dir must be denied');
+    });
+
+    it('cat with "subdir/../../sibling/" traversal is denied (blocker: non-dotdot prefix was previously missed)', () => {
+      // A token like "src/../../sibling/secret.ts" starts with "src/" and was
+      // silently skipped by the old prefix filter, letting an agent bypass the
+      // USE_RETRIEVAL rule by prepending an intermediate directory component.
+      const traversal = `src/../../${path.basename(siblingDir)}/secret.ts`;
+      const r = engine.check(`cat ${traversal}`, { ...ctx, worktreeRoot: ownWorktree });
+      assert.equal(r.allowed, false,
+        'relative traversal into a sibling root must be denied');
+      assert.equal(r.rule, CROSS_REPO_RULES.USE_RETRIEVAL,
+        'traversal into a sibling must trigger USE_RETRIEVAL, not OUT_OF_WORKSPACE');
     });
 
     it('unregistered absolute path is denied', () => {
@@ -284,6 +318,32 @@ describe('PolicyEngine — checkCrossRepoAccess (story-057-004)', () => {
       assert.equal(plain.allowed, false);
       assert.equal(withExtra.allowed, false);
       assert.equal(plain.rule, withExtra.rule);
+    });
+
+    it('rm targeting a sibling path is denied', () => {
+      // checkRm() fires before checkCrossRepoAccess() so the rule may be
+      // filesystem.allowed_write_root rather than cross_repo.read_only; both
+      // constitute a structural denial of the write.
+      const r = engine.check(`rm ${path.join(siblingDir, 'file.ts')}`, ctx);
+      assert.equal(r.allowed, false);
+    });
+
+    it('mkdir targeting a sibling path is denied', () => {
+      const r = engine.check(`mkdir ${path.join(siblingDir, 'newdir')}`, ctx);
+      assert.equal(r.allowed, false);
+      assert.equal(r.rule, CROSS_REPO_RULES.READ_ONLY);
+    });
+
+    it('chmod targeting a sibling path is denied', () => {
+      const r = engine.check(`chmod 644 ${path.join(siblingDir, 'file.ts')}`, ctx);
+      assert.equal(r.allowed, false);
+      assert.equal(r.rule, CROSS_REPO_RULES.READ_ONLY);
+    });
+
+    it('chown targeting a sibling path is denied', () => {
+      const r = engine.check(`chown user:group ${path.join(siblingDir, 'file.ts')}`, ctx);
+      assert.equal(r.allowed, false);
+      assert.equal(r.rule, CROSS_REPO_RULES.READ_ONLY);
     });
   });
 
