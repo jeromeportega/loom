@@ -42,6 +42,7 @@ async function capture(fn: () => Promise<void> | void): Promise<Captured> {
   const origExit = process.exit;
   const origLog = console.log;
   const origErr = console.error;
+  const origWarn = console.warn;
   const logs: string[] = [];
   const errors: string[] = [];
   let exitCode: number | null = null;
@@ -52,6 +53,7 @@ async function capture(fn: () => Promise<void> | void): Promise<Captured> {
   };
   console.log = (...args: unknown[]) => { logs.push(args.map(String).join(' ')); };
   console.error = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
+  console.warn = (...args: unknown[]) => { errors.push(args.map(String).join(' ')); };
   try {
     await fn();
   } catch (err) {
@@ -60,6 +62,7 @@ async function capture(fn: () => Promise<void> | void): Promise<Captured> {
     process.exit = origExit;
     console.log = origLog;
     console.error = origErr;
+    console.warn = origWarn;
   }
   return { exitCode, logs, errors };
 }

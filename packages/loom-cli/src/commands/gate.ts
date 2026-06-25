@@ -1,16 +1,10 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import yaml from 'js-yaml';
 import {
   EpicStore,
   PolicyEngine,
-  EpicYamlSchema,
-  readManifest,
-  resolvePrimaryRepo,
-  CyclicRepoDependencyError,
-  assertNoCycles,
-  loomHome,
+  detectCyclesInEpicYaml,
 } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 import { printOverlapAdvisory as defaultPrintOverlapAdvisory } from '../crossEpicOverlap.js';
@@ -49,75 +43,6 @@ function persistPolicySnapshot(
     store.setPolicySnapshot(epicId, JSON.stringify(policy));
   } catch {
     // Snapshot persistence is observability — never block approve on it.
-  }
-}
-
-/**
- * Approval-time cycle check (ADR-002, fail-closed seam).
- *
- * Loads the epic's stories from its YAML plan and the workspace manifest from
- * loom-home, then calls {@link assertNoCycles} (the single call-site for the
- * validator) to check the cross-repo dependency graph.  Returns an
- * operator-readable error string if a cycle is found, or null when the graph is
- * acyclic or the check cannot run (file missing, no multi-repo manifest, etc.).
- *
- * Failure modes:
- * - Infrastructure failures (missing file, no manifest, single-repo): fail-open,
- *   return null silently — a missing manifest never blocks a single-repo approve.
- * - Data failures (YAML parse error, schema validation): warn to stderr and
- *   return null — the operator can see that validation was skipped, but the
- *   approve is not blocked (avoids false-blocking on a transient YAML edit).
- *
- * Never throws — always returns string | null.
- *
- * This is the WIRED CLI seam — called before any `store.updateStatus('approved')`
- * write so that a cyclic epic is rejected before its status can change and before
- * any worker can be dispatched.
- */
-function detectRepoCycles(yamlPath: string, projectRoot: string): string | null {
-  // ── Path-traversal guard ───────────────────────────────────────────────────
-  // Reject any yaml_path that escapes the project root (e.g. ../../etc/passwd).
-  const abs = path.resolve(projectRoot, yamlPath);
-  if (!abs.startsWith(path.resolve(projectRoot) + path.sep)) return null;
-
-  // ── Infrastructure failures: fail-open, no warning ────────────────────────
-  if (!fs.existsSync(abs)) return null;
-
-  let parsed: ReturnType<typeof EpicYamlSchema.parse>;
-  let manifest: ReturnType<typeof readManifest>;
-  try {
-    parsed = EpicYamlSchema.parse(yaml.load(fs.readFileSync(abs, 'utf8'), { schema: yaml.JSON_SCHEMA }));
-  } catch (e) {
-    // Data failure (bad YAML, schema mismatch): warn so the operator knows the
-    // cycle check was skipped rather than passed, but never block approval.
-    console.warn(`  warn: cycle check skipped — epic YAML could not be parsed (${(e as Error).message})`);
-    return null;
-  }
-  try {
-    manifest = readManifest(loomHome());
-  } catch {
-    return null; // No manifest file — single-repo setup, cycles impossible.
-  }
-
-  let primarySlug: string;
-  try {
-    primarySlug = resolvePrimaryRepo(manifest);
-  } catch {
-    // Ambiguous or absent primary repo — cross-repo cycles are impossible.
-    return null;
-  }
-
-  // ── Cycle detection via the shared assertNoCycles helper ──────────────────
-  // assertNoCycles throws CyclicRepoDependencyError when a cycle is found;
-  // CyclicRepoDependencyError.cycleDescription is the canonical operator string.
-  try {
-    assertNoCycles(parsed.stories, manifest, primarySlug, '(approval-check)');
-    return null;
-  } catch (e) {
-    if (e instanceof CyclicRepoDependencyError) {
-      return e.cycleDescription;
-    }
-    return null;
   }
 }
 
@@ -203,7 +128,7 @@ export async function runApprove(
     // therefore never dispatched.
     if (epic.yaml_path) {
       const projectRoot = path.dirname(loomDir);
-      const cycleErr = detectRepoCycles(epic.yaml_path, projectRoot);
+      const cycleErr = detectCyclesInEpicYaml(epic.yaml_path, projectRoot);
       if (cycleErr) {
         console.error(`Cannot approve "${displayId}": ${cycleErr}`);
         process.exit(1);
@@ -242,7 +167,7 @@ export async function runApprove(
   for (const epic of planned) {
     // Cycle check before each individual bulk approval.
     if (epic.yaml_path) {
-      const cycleErr = detectRepoCycles(epic.yaml_path, projectRoot);
+      const cycleErr = detectCyclesInEpicYaml(epic.yaml_path, projectRoot);
       if (cycleErr) {
         console.error(`  skipped   ${epic.id}: ${cycleErr}`);
         continue;
@@ -256,12 +181,16 @@ export async function runApprove(
     printOverlapAdvisory(projectRoot, epic.id);
     approvedCount += 1;
   }
+  const skippedCount = planned.length - approvedCount;
   if (approvedCount === 0 && planned.length > 0) {
     console.error(`\n  0 of ${planned.length} epic(s) approved (all had cycle errors). Resolve cycles and retry.`);
     process.exit(1);
   } else {
+    const skippedSuffix = skippedCount > 0
+      ? `, ${skippedCount} skipped (cycle errors — see above)`
+      : '';
     console.log(
-      `\n  ${approvedCount} epic(s) approved. Next: run \`loom run <epic-id>\` to dispatch.`
+      `\n  ${approvedCount} of ${planned.length} epic(s) approved${skippedSuffix}. Next: run \`loom run <epic-id>\` to dispatch.`
     );
   }
 }

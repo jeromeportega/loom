@@ -1,7 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import yaml from 'js-yaml';
 import type { EpicStore } from '../../state/EpicStore.js';
 import type { AuditLog } from '../../state/AuditLog.js';
-import type { Policy, Story } from '../../types.js';
-import type { WorkspaceManifest } from '../../home/workspaceManifest.js';
+import { type Policy, type Story, EpicYamlSchema } from '../../types.js';
+import { readManifest, type WorkspaceManifest } from '../../home/workspaceManifest.js';
+import { resolvePrimaryRepo } from '../../home/primaryRepo.js';
+import { loomHome } from '../../state/paths.js';
 import { validateCrossRepoEdges, type CrossRepoEdgeError } from '../crossRepoReadiness.js';
 
 // ─── Cycle rejection ──────────────────────────────────────────────────────────
@@ -41,11 +46,14 @@ export class CyclicRepoDependencyError extends Error {
 
 /**
  * Calls {@link validateCrossRepoEdges} and throws {@link CyclicRepoDependencyError}
- * if the repo dependency graph contains any cycle. This is the single location
- * that calls the validator — callers get a typed error with structured fields
- * ({@link CyclicRepoDependencyError.cyclicRepos}, {@link CyclicRepoDependencyError.edges},
- * {@link CyclicRepoDependencyError.cycleDescription}) rather than re-implementing
- * the validation or the error formatting.
+ * if the repo dependency graph contains any cycle. Callers get a typed error with
+ * structured fields ({@link CyclicRepoDependencyError.cyclicRepos},
+ * {@link CyclicRepoDependencyError.edges}, {@link CyclicRepoDependencyError.cycleDescription})
+ * rather than re-implementing the validation or the error formatting.
+ *
+ * This function has two call sites: file-based callers should prefer
+ * {@link detectCyclesInEpicYaml} which reads and validates the YAML before calling
+ * here. In-memory callers (tests, `approveAndDispatch`) call this directly.
  */
 export function assertNoCycles(
   stories: Story[],
@@ -56,6 +64,67 @@ export function assertNoCycles(
   const errs = validateCrossRepoEdges(stories, manifest, primarySlug);
   if (errs.length > 0) {
     throw new CyclicRepoDependencyError(errs, epicId);
+  }
+}
+
+// ─── File-based cycle detection ───────────────────────────────────────────────
+
+/**
+ * Loads an epic YAML from disk and checks its cross-repo dependency graph for
+ * cycles. Returns an operator-readable error string if a cycle is found, or
+ * `null` when the graph is acyclic or the check cannot run.
+ *
+ * Failure modes:
+ * - Path-traversal: returns null (no warning — structural guard, not data error).
+ * - File not found: returns null — single-repo / missing file is not a cycle.
+ * - YAML parse / schema error: logs to stderr and returns null — operator can
+ *   see the skip but the approve is not blocked on a transient YAML edit.
+ * - No manifest / no multi-repo setup: returns null — cycles impossible.
+ *
+ * This is the canonical file-based cycle detection seam; both the CLI approve
+ * path and the web approve route call it so the logic stays in one place.
+ */
+export function detectCyclesInEpicYaml(
+  yamlPath: string,
+  projectRoot: string,
+): string | null {
+  // Path-traversal guard — reject paths that escape the project root.
+  const resolvedRoot = path.resolve(projectRoot);
+  const abs = path.resolve(projectRoot, yamlPath);
+  if (!abs.startsWith(resolvedRoot + path.sep) && abs !== resolvedRoot) return null;
+
+  if (!fs.existsSync(abs)) return null;
+
+  let parsed: ReturnType<typeof EpicYamlSchema.parse>;
+  try {
+    parsed = EpicYamlSchema.parse(yaml.load(fs.readFileSync(abs, 'utf8'), { schema: yaml.JSON_SCHEMA }));
+  } catch (e) {
+    console.error(`  warn: cycle check skipped — epic YAML could not be parsed (${(e as Error).message})`);
+    return null;
+  }
+
+  let manifest: WorkspaceManifest;
+  try {
+    manifest = readManifest(loomHome());
+  } catch {
+    return null; // No manifest — single-repo setup, cycles impossible.
+  }
+
+  let primarySlug: string;
+  try {
+    primarySlug = resolvePrimaryRepo(manifest);
+  } catch {
+    return null; // Ambiguous or absent primary repo.
+  }
+
+  try {
+    assertNoCycles(parsed.stories, manifest, primarySlug, '(approval-check)');
+    return null;
+  } catch (e) {
+    if (e instanceof CyclicRepoDependencyError) {
+      return e.cycleDescription;
+    }
+    return null;
   }
 }
 
