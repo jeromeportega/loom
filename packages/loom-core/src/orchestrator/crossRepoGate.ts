@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { AuditLog } from '../state/index.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import type { GateOutcome } from './IntegrationGate.js';
+import type { RepoStage } from './CrossRepoCoordinator.js';
 
 /** Injectable PR-comment function for tests. */
 export type PrCommentFn = (prUrl: string, body: string) => Promise<void>;
@@ -16,26 +17,70 @@ export interface GateRunner {
 }
 
 export interface RunConsumerGateArgs {
-  /** Absolute path to the consumer repo root. */
-  consumerRoot: string;
-  /** Story ids from the consumer's epic that failed to merge (amputation signal). */
-  conflicted: string[];
+  /** The consumer repo stage (carries dependsOnRepos for fan-in validation). */
+  consumer: RepoStage;
+  /**
+   * ALL producer stages of `consumer` that have already landed.
+   * When not all declared dependencies are present with status 'landed', the
+   * gate is deferred and returns ran:false. This is the fan-in guard (ADR-003):
+   * the gate fires exactly once — triggered when the last dependency lands —
+   * never once-per-incoming-edge.
+   */
+  landedDependencies: RepoStage[];
+  /** Absolute path to the consumer repo root — where the integration gate runs. */
+  projectRoot: string;
   /** Injectable gate for tests. Defaults to a standard IntegrationGate. */
   gate?: GateRunner;
 }
 
 /**
- * Runs the IntegrationGate in the consumer worktree AFTER the producer PR has
- * merged so the consumer build resolves the producer's landed interface.
+ * Runs the IntegrationGate in the consumer worktree after ALL of its producer
+ * dependencies have landed, so the consumer build resolves against the combined
+ * landed state of every upstream repo.
  *
- * Cross-story amputation and regression detection come for free by reusing the
- * existing IntegrationGate.run — no bespoke test runner is needed.
+ * Fan-in semantics (ADR-003): the gate fires exactly once per consumer, triggered
+ * only when every declared dependency appears in `landedDependencies` with
+ * status 'landed'. If any dependency has not yet landed, the function returns
+ * immediately with ran:false (deferred) — it never fires once-per-incoming-edge.
  *
- * `IntegrationGate` is reused unchanged per the shared contract.
+ * Per-repo `IntegrationGate.run` mechanics are unchanged (NFR-4): the same gate
+ * runner executes in the consumer repo root once the fan-in condition is met.
  */
 export async function runConsumerGate(args: RunConsumerGateArgs): Promise<GateOutcome> {
+  const { consumer, landedDependencies, projectRoot } = args;
+
+  // Root repos (no declared dependencies) are not consumers — skip.
+  if (consumer.dependsOnRepos.length === 0) {
+    return deferredGateOutcome('No dependencies — consumer gate not applicable for a root repo.');
+  }
+
+  // Fan-in guard: only fire when ALL declared dependencies are present in
+  // landedDependencies with status 'landed'. This enforces the fire-exactly-once
+  // invariant: callers may invoke runConsumerGate on each dep-landing event;
+  // the gate itself gates on the full fan-in (in-degree-to-zero in the landed sense).
+  const allDepsLanded = consumer.dependsOnRepos.every(
+    slug => landedDependencies.some(dep => dep.repoSlug === slug && dep.status === 'landed'),
+  );
+
+  if (!allDepsLanded) {
+    return deferredGateOutcome('Consumer gate deferred — not all dependencies have landed yet.');
+  }
+
+  // All dependencies landed — run the per-repo integration gate exactly once.
   const gate = args.gate ?? new IntegrationGate();
-  return gate.run({ projectRoot: args.consumerRoot, conflicted: args.conflicted });
+  return gate.run({ projectRoot });
+}
+
+function deferredGateOutcome(summary: string): GateOutcome {
+  return {
+    ok: true,
+    ran: false,
+    timedOut: false,
+    durationMs: 0,
+    output: '',
+    amputated: [],
+    summary,
+  };
 }
 
 /**

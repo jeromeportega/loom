@@ -314,27 +314,8 @@ describe('(3) gate passes → consumer stage reaches landed', () => {
       ],
     };
 
-    // Passing gate (ok = true). testCommand forces resolution so the runner IS called.
-    const passGate = new IntegrationGate({
-      testCommand: 'echo ok',
-      runner: async () => ({ exitCode: 0, output: 'all good', timedOut: false, durationMs: 50 }),
-    });
-
-    const prCommentCalls: string[] = [];
-    const runConsumerGateFn = async (producerStage: RepoStage, consumerStage: RepoStage) => {
-      const outcome = await runConsumerGate({
-        consumerRoot: consumerStage.repoRoot,
-        conflicted: [],
-        gate: passGate,
-      });
-      if (!outcome.ok) {
-        consumerStage.status = 'partial_landing';
-        await surfacePartialLanding(EPIC_ID, producerStage.prUrl!, outcome.summary, db, async (prUrl) => {
-          prCommentCalls.push(prUrl);
-        });
-      }
-    };
-
+    // runConsumerGateFn is deprecated (no-op in story-060-001 STAGE→MERGE flow).
+    // The coordinator lands repos through its own STAGE→MERGE flow regardless.
     const coordinator = new CrossRepoCoordinator({
       projectRoot: repoDir,
       supervisor: { run: async () => okResult() },
@@ -342,8 +323,6 @@ describe('(3) gate passes → consumer stage reaches landed', () => {
       db,
       manifest: mf,
       primarySlug: TWO_REPO_PRIMARY,
-      waitForMergeFn: async () => { /* resolve immediately */ },
-      runConsumerGateFn,
     });
 
     const { stages } = await coordinator.run(EPIC_ID);
@@ -351,9 +330,8 @@ describe('(3) gate passes → consumer stage reaches landed', () => {
     const consumer = stages.find(s => s.repoSlug === 'repo-b')!;
     const producer = stages.find(s => s.repoSlug === 'repo-a')!;
 
-    assert.equal(consumer.status, 'landed', 'consumer must reach landed when gate passes');
+    assert.equal(consumer.status, 'landed', 'consumer must reach landed through STAGE→MERGE flow');
     assert.equal(producer.status, 'landed', 'producer must remain landed');
-    assert.equal(prCommentCalls.length, 0, 'no PR comment when gate passes');
 
     // No partial_landing audit entry.
     const audit = new AuditLog(db);
@@ -634,16 +612,43 @@ describe('(5) surfacePartialLanding fires all three channels', () => {
 
 // ─── runConsumerGate unit tests ───────────────────────────────────────────────
 
-describe('runConsumerGate', () => {
+// Helpers for building RepoStage fixtures used throughout these tests.
+function makeConsumerStage(
+  slug: string,
+  dependsOnRepos: string[],
+  repoRoot?: string,
+): RepoStage {
+  return {
+    repoSlug: slug,
+    repoRoot: repoRoot ?? `/repos/${slug}`,
+    storyIds: [`story-${slug}-001`],
+    dependsOnRepos,
+    status: 'finalizing',
+  };
+}
+
+function makeLandedStage(slug: string): RepoStage {
+  return {
+    repoSlug: slug,
+    repoRoot: `/repos/${slug}`,
+    storyIds: [`story-${slug}-001`],
+    dependsOnRepos: [],
+    status: 'landed',
+  };
+}
+
+describe('runConsumerGate — gate mechanics', () => {
   it('returns ok=true when the consumer build passes', async () => {
-    // testCommand forces command resolution so the runner is called, not auto-detection.
+    const consumer = makeConsumerStage('repo-b', ['repo-a']);
+    const depA = makeLandedStage('repo-a');
     const passGate = new IntegrationGate({
       testCommand: 'echo ok',
       runner: async () => ({ exitCode: 0, output: 'pass', timedOut: false, durationMs: 10 }),
     });
     const outcome = await runConsumerGate({
-      consumerRoot: '/repos/repo-b',
-      conflicted: [],
+      consumer,
+      landedDependencies: [depA],
+      projectRoot: consumer.repoRoot,
       gate: passGate,
     });
     assert.equal(outcome.ok, true);
@@ -651,39 +656,184 @@ describe('runConsumerGate', () => {
   });
 
   it('returns ok=false when the consumer build fails', async () => {
-    // testCommand forces command resolution so the runner is called, not auto-detection.
+    const consumer = makeConsumerStage('repo-b', ['repo-a']);
+    const depA = makeLandedStage('repo-a');
     const failGate = new IntegrationGate({
       testCommand: 'echo fail',
       runner: async () => ({ exitCode: 2, output: 'compilation error', timedOut: false, durationMs: 20 }),
     });
     const outcome = await runConsumerGate({
-      consumerRoot: '/repos/repo-b',
-      conflicted: [],
+      consumer,
+      landedDependencies: [depA],
+      projectRoot: consumer.repoRoot,
       gate: failGate,
     });
     assert.equal(outcome.ok, false);
     assert.equal(outcome.ran, true);
   });
 
-  it('passes conflicted list to the gate (amputation signal)', async () => {
-    let capturedConflicted: string[] | undefined;
-    const probeGate = new IntegrationGate({
-      // The gate will return ok=false because of amputated stories (no command needed).
-      fileExists: () => false,
-      fileReader: () => null,
-    });
-    // Wrap the gate to capture the input; GateRunner eliminates the unsafe cast.
-    const wrappedGate: GateRunner = {
-      run: async (input: { projectRoot: string; conflicted?: string[] }) => {
-        capturedConflicted = input.conflicted;
-        return probeGate.run(input);
+  it('AC3: delegates to IntegrationGate.run with projectRoot — per-repo mechanics unchanged', async () => {
+    const consumer = makeConsumerStage('repo-b', ['repo-a'], '/workspace/repo-b');
+    const depA = makeLandedStage('repo-a');
+    const capturedInputs: Array<{ projectRoot: string; conflicted?: string[] }> = [];
+    const gateRunner: GateRunner = {
+      run: async (input) => {
+        capturedInputs.push({ ...input });
+        return { ok: true, ran: true, timedOut: false, durationMs: 10, output: '', amputated: [], summary: 'pass' };
       },
     };
     await runConsumerGate({
-      consumerRoot: '/repos/repo-b',
-      conflicted: ['story-001-002'],
-      gate: wrappedGate,
+      consumer,
+      landedDependencies: [depA],
+      projectRoot: '/workspace/repo-b',
+      gate: gateRunner,
     });
-    assert.deepEqual(capturedConflicted, ['story-001-002']);
+    assert.equal(capturedInputs.length, 1, 'IntegrationGate.run must be called exactly once');
+    assert.equal(capturedInputs[0].projectRoot, '/workspace/repo-b',
+      'gate must run in the consumer repo root (projectRoot passed through unchanged)');
+  });
+});
+
+// ─── runConsumerGate — fan-in N-dependency behavior (story-062-004) ───────────
+
+describe('runConsumerGate — fan-in N-dependency behavior', () => {
+  it('AC1/AC4 happy path — two producers both landed: gate fires with both deps in landedDependencies', async () => {
+    const consumer = makeConsumerStage('repo-c', ['repo-a', 'repo-b']);
+    const depA = makeLandedStage('repo-a');
+    const depB = makeLandedStage('repo-b');
+
+    // landedDependencies carries both deps' landed state.
+    assert.equal(depA.status, 'landed', 'dep A must be landed');
+    assert.equal(depB.status, 'landed', 'dep B must be landed');
+
+    let capturedRoot: string | undefined;
+    const gateRunner: GateRunner = {
+      run: async (input) => {
+        capturedRoot = input.projectRoot;
+        return { ok: true, ran: true, timedOut: false, durationMs: 10, output: '', amputated: [], summary: 'pass' };
+      },
+    };
+
+    const outcome = await runConsumerGate({
+      consumer,
+      landedDependencies: [depA, depB],
+      projectRoot: consumer.repoRoot,
+      gate: gateRunner,
+    });
+
+    assert.equal(outcome.ran, true,
+      'gate must fire when all dependencies are landed');
+    assert.equal(outcome.ok, true);
+    assert.equal(capturedRoot, consumer.repoRoot,
+      'gate must run in the consumer repo root (builds+tests against both deps\' landed state)');
+  });
+
+  it('AC2 — first of two deps landed: gate does NOT fire (deferred)', async () => {
+    const consumer = makeConsumerStage('repo-c', ['repo-a', 'repo-b']);
+    const depA = makeLandedStage('repo-a');
+
+    let gateRunCount = 0;
+    const gateRunner: GateRunner = {
+      run: async () => {
+        gateRunCount++;
+        return { ok: true, ran: true, timedOut: false, durationMs: 10, output: '', amputated: [], summary: 'pass' };
+      },
+    };
+
+    const outcome = await runConsumerGate({
+      consumer,
+      landedDependencies: [depA],   // only A landed; B not yet
+      projectRoot: consumer.repoRoot,
+      gate: gateRunner,
+    });
+
+    assert.equal(outcome.ran, false,
+      'gate must NOT fire when only the first of two dependencies is landed');
+    assert.equal(gateRunCount, 0,
+      'IntegrationGate.run must not be called before all deps are landed');
+    assert.equal(outcome.ok, true,
+      'deferred outcome must be ok:true (no failure detected, not yet run)');
+  });
+
+  it('AC2 — fire EXACTLY once: gate fires once on last dep, never twice (once-per-edge guard)', async () => {
+    const consumer = makeConsumerStage('repo-c', ['repo-a', 'repo-b']);
+    const depA = makeLandedStage('repo-a');
+    const depB = makeLandedStage('repo-b');
+
+    let gateRunCount = 0;
+    const gateRunner: GateRunner = {
+      run: async () => {
+        gateRunCount++;
+        return { ok: true, ran: true, timedOut: false, durationMs: 10, output: '', amputated: [], summary: 'pass' };
+      },
+    };
+
+    // Simulate dep A landing first — gate must NOT fire.
+    const outcome1 = await runConsumerGate({
+      consumer,
+      landedDependencies: [depA],
+      projectRoot: consumer.repoRoot,
+      gate: gateRunner,
+    });
+    assert.equal(outcome1.ran, false, 'gate must not fire on first dep landing');
+    assert.equal(gateRunCount, 0, 'gate.run must not be called yet (dep B not yet landed)');
+
+    // Simulate dep B landing — last dep transitions to landed → gate fires exactly ONCE.
+    const outcome2 = await runConsumerGate({
+      consumer,
+      landedDependencies: [depA, depB],
+      projectRoot: consumer.repoRoot,
+      gate: gateRunner,
+    });
+    assert.equal(outcome2.ran, true, 'gate must fire when last dep transitions to landed');
+    assert.equal(gateRunCount, 1,
+      'gate.run must be called exactly ONCE — never once-per-incoming-edge (ADR-003)');
+  });
+
+  it('single-dependency consumer: gates once when its sole dep is landed', async () => {
+    const consumer = makeConsumerStage('repo-b', ['repo-a']);
+    const depA = makeLandedStage('repo-a');
+
+    let gateRunCount = 0;
+    const gateRunner: GateRunner = {
+      run: async () => {
+        gateRunCount++;
+        return { ok: true, ran: true, timedOut: false, durationMs: 10, output: '', amputated: [], summary: 'pass' };
+      },
+    };
+
+    const outcome = await runConsumerGate({
+      consumer,
+      landedDependencies: [depA],
+      projectRoot: consumer.repoRoot,
+      gate: gateRunner,
+    });
+
+    assert.equal(outcome.ran, true, 'single-dep consumer must gate when its sole dep lands');
+    assert.equal(gateRunCount, 1, 'gate must be called exactly once (single dep case)');
+  });
+
+  it('boundary — root repo (no deps): consumer gate is not run', async () => {
+    const rootStage = makeConsumerStage('repo-a', []);   // root: no dependsOnRepos
+
+    let gateRunCount = 0;
+    const gateRunner: GateRunner = {
+      run: async () => {
+        gateRunCount++;
+        return { ok: true, ran: true, timedOut: false, durationMs: 10, output: '', amputated: [], summary: 'pass' };
+      },
+    };
+
+    const outcome = await runConsumerGate({
+      consumer: rootStage,
+      landedDependencies: [],
+      projectRoot: rootStage.repoRoot,
+      gate: gateRunner,
+    });
+
+    assert.equal(outcome.ran, false,
+      'root repo must not have the consumer gate run (no deps to gate against)');
+    assert.equal(gateRunCount, 0, 'IntegrationGate.run must not be called for root repos');
+    assert.equal(outcome.ok, true, 'root repo outcome must be ok:true (no failure)');
   });
 });
