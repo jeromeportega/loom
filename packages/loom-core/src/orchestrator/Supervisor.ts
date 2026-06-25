@@ -12,8 +12,15 @@ import {
   LeaseStore,
   WorkerLogStore,
   RecoveryStore,
+  MetricsStore,
 } from '../state/index.js';
 import type { GlobalLimiter, LimiterSlot } from '../state/index.js';
+import { withRunMetrics } from '../metrics/withRunMetrics.js';
+import { activeCollector } from '../metrics/activeCollector.js';
+import { startPhase, endPhase } from '../metrics/timing.js';
+import { toLLMUsage } from '../metrics/workerUsage.js';
+import { buildRunAttribution } from '../metrics/runAttribution.js';
+import type { RunScope, RunOutcome } from '../metrics/types.js';
 import { EpicYamlSchema, type Story, type AgentStatus } from '../types.js';
 import { approveAndDispatch } from './actions/approveAndDispatch.js';
 import {
@@ -388,6 +395,10 @@ export class Supervisor {
   private recoveryStore!: RecoveryStore;
   /** Clean-retry service (clean=true) for stall auto-recovery (story-061-003). */
   private cleanRetryService!: StoryRetryService;
+  /** Count of stall auto-recoveries within the current run. Reset at run entry. */
+  private runAutoRecoveryCount = 0;
+  /** Count of clean-worktree auto-recoveries within the current run. Reset at run entry. */
+  private runCleanRetryCount = 0;
 
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
@@ -491,7 +502,8 @@ export class Supervisor {
   async run(
     epicIdsOrOpts?: string[] | { epicId?: string; epicIds?: string[]; repoFilter?: string }
   ): Promise<SupervisorResult> {
-    // Normalize the two call forms into epicIds + optional repoFilter.
+    // Normalize the two call forms into epicIds + optional repoFilter BEFORE
+    // entering withRunMetrics so scope can be determined structurally.
     let epicIds: string[] | undefined;
     let repoFilter: string | undefined;
     if (Array.isArray(epicIdsOrOpts) || epicIdsOrOpts === undefined) {
@@ -504,12 +516,24 @@ export class Supervisor {
       epicIds = singleId !== undefined ? [singleId] : epicIdsOrOpts.epicIds;
       repoFilter = epicIdsOrOpts.repoFilter;
     }
+    // Determine scope structurally from the resolved input — a single story-prefixed
+    // ID is a standalone-story dispatch; everything else is an epic dispatch.
+    const initialScope: RunScope = (epicIds?.length === 1 && epicIds[0]?.startsWith('story-'))
+      ? 'standalone_story'
+      : 'epic';
+    return withRunMetrics(
+      { scope: initialScope, store: new MetricsStore(this.opts.db) },
+      async () => {
+    // Capture run start time before any work begins.
+    const runStartedAt = new Date().toISOString();
 
     this.skillGenPromises = [];
     this.outputTails.clear();
     this.logBytes.clear();
     this.agentToStory.clear();
     this.successCount = 0;
+    this.runAutoRecoveryCount = 0;
+    this.runCleanRetryCount = 0;
     // Clear any stale stop signal from a previous run.
     this.control.setState('running');
 
@@ -757,7 +781,47 @@ export class Supervisor {
       for (const epicId of this.leasedEpics) this.lease.release(epicId);
       this.leasedEpics.clear();
     }
+    // Terminal region (story-065-004): set attribution strictly after fn settles,
+    // never inside per-story/retry/auto-recovery loops. Fail-open (ADR-006).
+    try {
+      const primaryEpicId = leased[0];
+      // Use initialScope (set structurally before withRunMetrics) rather than
+      // re-inferring scope from the ID string at the terminal region.
+      const isStandaloneDispatch = initialScope === 'standalone_story';
+      const outcome: RunOutcome =
+        result.storiesTotal > 0 &&
+        result.storiesDone === result.storiesTotal &&
+        !result.halted
+          ? 'done'
+          : 'failed';
+      const priorRunCount = primaryEpicId
+        ? isStandaloneDispatch
+          ? ((this.opts.db
+              .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE story_id = ?')
+              .get(primaryEpicId) as { n: number } | undefined)?.n ?? 0)
+          : ((this.opts.db
+              .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE epic_id = ?')
+              .get(primaryEpicId) as { n: number } | undefined)?.n ?? 0)
+        : 0;
+      activeCollector()?.setAttribution(buildRunAttribution({
+        scope: initialScope,
+        epicId: isStandaloneDispatch ? undefined : primaryEpicId,
+        storyId: isStandaloneDispatch ? primaryEpicId : undefined,
+        intakeVerdict: isStandaloneDispatch ? 'story' : 'epic',
+        storyCount: result.storiesTotal,
+        retryCount: priorRunCount,
+        cleanRetryCount: this.runCleanRetryCount,
+        autoRecoveryCount: this.runAutoRecoveryCount,
+        outcome,
+        startedAt: runStartedAt,
+        endedAt: new Date().toISOString(),
+      }));
+    } catch {
+      // fail-open — attribution must never propagate into the run
+    }
     return result;
+    }
+  );
   }
 
   /**
@@ -784,10 +848,12 @@ export class Supervisor {
    * epic_pr_url != null`).
    */
   private async finalizeAndGateDone(epicId: string): Promise<void> {
+    startPhase('finalize');
     let fin;
     try {
       fin = await this.opts.epicFinalizer!.finalize(epicId);
     } catch (err) {
+      endPhase('finalize');
       // Never let a finalizer error crash the run — record it as a terminal
       // infra failure so the epic doesn't masquerade as still-finalizing, and
       // continue with the next epic.
@@ -801,6 +867,7 @@ export class Supervisor {
       this.epics.fail(epicId, `finalize threw: ${(err as Error).message}`.slice(0, 500));
       return;
     }
+    endPhase('finalize');
 
     if (fin.status === 'publish_pending') {
       this.audit.record({
@@ -1338,7 +1405,9 @@ export class Supervisor {
         if (!committed.ok) {
           rejected = `staging/committing the resolved merge failed: ${committed.output}`;
         } else {
+          startPhase('gate');
           const gate = await this.integratorGate.run({ projectRoot: wtPath });
+          endPhase('gate');
           if (gate.ok) {
             this.recordIntegratorAttempt(task, {
               epicId,
@@ -1851,9 +1920,15 @@ export class Supervisor {
     // Await the spawn-stagger slot claimed at the top of dispatch — this is the
     // jittered 1–2s delay that spaces concurrent cursor-agent spawns apart
     // (story-006-004). All bookkeeping above ran eagerly; only the spawn waits.
+    startPhase('dispatch');
     return staggerSlot
       .then(() => this.maybeAssembleContext(task))
-      .then(() => this.opts.worker.run(assignment))
+      .then(() => {
+        endPhase('dispatch');
+        startPhase('worker');
+        try { activeCollector()?.markFirstToken(); } catch { /* timing is observability */ }
+        return this.opts.worker.run(assignment);
+      })
       .then((result) => ({ storyId: task.story.id, result }))
       .catch((err: unknown) => ({
         storyId: task.story.id,
@@ -1864,7 +1939,10 @@ export class Supervisor {
           logTail: '',
         },
       }))
-      .finally(() => watchdog?.stop());
+      .finally(() => {
+        endPhase('worker');
+        watchdog?.stop();
+      });
   }
 
   /**
@@ -2442,6 +2520,7 @@ export class Supervisor {
         cost_usd: result.usage.costUsd,
         request_count: result.usage.requestCount,
       });
+      activeCollector()?.addUsage(toLLMUsage(result.usage), result.model, 'worker');
     }
     // Overwrite with the executed model when the system/init event provided one.
     if (result.model) {
@@ -2591,6 +2670,8 @@ export class Supervisor {
             });
             this.recoveryStore.incrementRecoveryCount(task.story.id);
           })();
+          this.runAutoRecoveryCount++; // story-065-004: track for terminal attribution
+          this.runCleanRetryCount++;   // clean-worktree recovery path
           task.status = 'pending';
           return;
         }

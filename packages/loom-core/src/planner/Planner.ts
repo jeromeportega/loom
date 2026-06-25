@@ -3,7 +3,8 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { LLMClient, LLMUsage } from '../llm/index.js';
 import { addUsage, EMPTY_USAGE } from '../llm/index.js';
-import { EpicStore, AuditLog, AgentStore } from '../state/index.js';
+import { EpicStore, AuditLog, AgentStore, MetricsStore } from '../state/index.js';
+import { withRunMetrics } from '../metrics/withRunMetrics.js';
 import { SkillSelector } from '../skills/index.js';
 import type { SkillStore } from '../skills/index.js';
 import type { PlannerContext } from './context.js';
@@ -20,6 +21,8 @@ import { epicId, epicNumber, storyId, idNumber, planningPaths, planningRelPaths 
 import { PlanningOutputSink } from './PlanningOutputSink.js';
 import type { PlanningEvent } from './PlanningEvent.js';
 import { startPhase, endPhase } from '../metrics/timing.js';
+import { activeCollector } from '../metrics/activeCollector.js';
+import { buildRunAttribution } from '../metrics/runAttribution.js';
 import { serializeEpic } from './epicSerializer.js';
 import type { EpicYaml } from '../types.js';
 import type { EffectiveRouting } from '../intake/routing.js';
@@ -154,6 +157,19 @@ export class Planner {
    *     self-allocates via `nextEpicId` and reserves the row itself.
    */
   async run(brief: string, reservedId?: string): Promise<PlanResult> {
+    if (isStandalone(this.opts.routing)) {
+      return withRunMetrics(
+        { scope: 'standalone_story', store: new MetricsStore(this.opts.db) },
+        () => this.runBody(brief, reservedId),
+      );
+    }
+    return withRunMetrics(
+      { scope: 'epic', store: new MetricsStore(this.opts.db) },
+      () => this.runBody(brief, reservedId),
+    );
+  }
+
+  private async runBody(brief: string, reservedId?: string): Promise<PlanResult> {
     const epicStore = new EpicStore(this.opts.db);
     const startedAt = Date.now();
 
@@ -362,6 +378,30 @@ export class Planner {
     epicStore.updatePaths(runId, { brief_path: rel.brief, yaml_path: rel.epicFile(runId) });
     epicStore.updateTokens(runId, usage, durationMs);
 
+    // Terminal region (story-065-004): set run attribution before withRunMetrics.finally fires.
+    // Fail-open (ADR-006) — attribution errors must never abort the planning run.
+    try {
+      const priorRunCount = (this.opts.db
+        .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE story_id = ?')
+        .get(runId) as { n: number } | undefined)?.n ?? 0;
+      const sr = this.opts.routing;
+      activeCollector()?.setAttribution(buildRunAttribution({
+        scope: 'standalone_story',
+        storyId: runId,
+        intakeVerdict: (sr?.size === 'story' || sr?.size === 'epic') ? sr.size : undefined,
+        intakeKind: sr?.type,
+        storyCount: 1,
+        retryCount: priorRunCount,
+        cleanRetryCount: 0,
+        autoRecoveryCount: 0,
+        outcome: 'done',
+        startedAt: new Date(startedAt).toISOString(),
+        endedAt: new Date().toISOString(),
+      }));
+    } catch {
+      // fail-open — attribution must never propagate into the planning run
+    }
+
     return {
       runId,
       briefPath: analyst.briefPath,
@@ -429,6 +469,30 @@ export class Planner {
     // that edit the same file, ensuring they integrate sequentially.
     const audit = new AuditLog(this.opts.db);
     applySameFileSerialization(architect.epics, this.opts.projectRoot, audit, runId, this.planningRoot);
+
+    // Terminal region (story-065-004): set run attribution for the epic planning path.
+    // Fail-open (ADR-006) — attribution errors must never abort the planning run.
+    try {
+      const priorRunCount = (this.opts.db
+        .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE epic_id = ?')
+        .get(runId) as { n: number } | undefined)?.n ?? 0;
+      const r = this.opts.routing;
+      activeCollector()?.setAttribution(buildRunAttribution({
+        scope: 'epic',
+        epicId: runId,
+        intakeVerdict: (r?.size === 'story' || r?.size === 'epic') ? r.size : undefined,
+        intakeKind: r?.type,
+        storyCount,
+        retryCount: priorRunCount,
+        cleanRetryCount: 0,
+        autoRecoveryCount: 0,
+        outcome: 'done',
+        startedAt: new Date(startedAt).toISOString(),
+        endedAt: new Date().toISOString(),
+      }));
+    } catch {
+      // fail-open — attribution must never propagate into the planning run
+    }
 
     return {
       runId,

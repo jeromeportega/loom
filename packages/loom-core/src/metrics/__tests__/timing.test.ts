@@ -325,28 +325,32 @@ describe('Seam placement — Planner.run() wraps analyst/pm/architect phases [AC
   });
 
   it('epic path: analyst, pm, architect phases all have wallMs >= 0 in collector [AC1]', async () => {
-    const c = new RunMetricsCollector();
-    bindActiveCollector(c);
-
+    // withRunMetrics now wraps the epic path too (story-065-004), so all phase
+    // data is persisted to run_metrics_phase. Verify via DB query (mirrors the
+    // standalone test below), not via an external collector that would be
+    // overwritten by withRunMetrics's internal bind.
     const db = openDatabase(path.join(tmpDir, '.loom'));
     const llm = new MockLLMClient(epicPipelineResponder);
     const planner = new Planner({ projectRoot: tmpDir, llm, model: 'mock', db });
     await planner.run('Add a login form.');
 
-    clearActiveCollector();
+    const run = db
+      .prepare('SELECT id FROM run_metrics WHERE scope = ?')
+      .get('epic') as { id: number } | undefined;
+    assert.ok(run, 'an epic run row must be persisted after Planner.run() on the epic path');
 
-    const built = c.build();
-    for (const phase of ['analyst', 'pm', 'architect'] as RunPhase[]) {
-      const entry = built.phases.find((p) => p.phase === phase);
+    const phases = db
+      .prepare('SELECT phase, wall_ms FROM run_metrics_phase WHERE run_id = ? ORDER BY id ASC')
+      .all(run.id) as { phase: string; wall_ms: number }[];
+
+    for (const phase of ['analyst', 'pm', 'architect']) {
+      const entry = phases.find((p) => p.phase === phase);
       assert.ok(entry, `'${phase}' phase must be present after epic pipeline run`);
-      assert.ok(entry.wallMs >= 0, `wallMs for '${phase}' must be non-negative`);
+      assert.ok(entry.wall_ms >= 0, `wall_ms for '${phase}' must be non-negative`);
     }
   });
 
   it('standalone path: analyst and standalone_plan phases are captured [AC1]', async () => {
-    const c = new RunMetricsCollector();
-    bindActiveCollector(c);
-
     // Need fresh tmp dir + DB since openDatabase is a singleton per process
     const tmpStandalone = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-timing-standalone-'));
     try {
@@ -357,20 +361,27 @@ describe('Seam placement — Planner.run() wraps analyst/pm/architect phases [AC
       const planner = new Planner({ projectRoot: tmpStandalone, llm, model: 'mock', db, routing });
       await planner.run('Add a login form.');
 
-      clearActiveCollector();
+      // withRunMetrics wraps the entire standalone run (including the Analyst phase),
+      // so all phase data is persisted to run_metrics_phase. Verify via raw DB query.
+      const run = db
+        .prepare('SELECT id FROM run_metrics WHERE scope = ?')
+        .get('standalone_story') as { id: number } | undefined;
+      assert.ok(run, 'a standalone_story run row must be persisted');
 
-      const built = c.build();
-      for (const phase of ['analyst', 'standalone_plan'] as RunPhase[]) {
-        const entry = built.phases.find((p) => p.phase === phase);
-        assert.ok(entry, `'${phase}' phase must be present after standalone run`);
-        assert.ok(entry.wallMs >= 0, `wallMs for '${phase}' must be non-negative`);
+      const phases = db
+        .prepare('SELECT phase, wall_ms FROM run_metrics_phase WHERE run_id = ? ORDER BY id ASC')
+        .all(run.id) as { phase: string; wall_ms: number }[];
+
+      for (const phaseName of ['analyst', 'standalone_plan']) {
+        const entry = phases.find((p) => p.phase === phaseName);
+        assert.ok(entry, `'${phaseName}' phase must be present after standalone run`);
+        assert.ok(entry.wall_ms >= 0, `wall_ms for '${phaseName}' must be non-negative`);
       }
 
       // pm and architect must NOT be present on standalone path
-      assert.ok(!built.phases.find((p) => p.phase === 'pm'), 'pm phase must not appear on standalone path');
-      assert.ok(!built.phases.find((p) => p.phase === 'architect'), 'architect phase must not appear on standalone path');
+      assert.ok(!phases.find((p) => p.phase === 'pm'), 'pm phase must not appear on standalone path');
+      assert.ok(!phases.find((p) => p.phase === 'architect'), 'architect phase must not appear on standalone path');
     } finally {
-      clearActiveCollector();
       resetDatabaseForTest();
       fs.rmSync(tmpStandalone, { recursive: true, force: true });
     }
