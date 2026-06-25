@@ -1,19 +1,3 @@
-/**
- * End-to-end test: a real Supervisor run populates the run_metrics store
- * including worker execution cost (story-065-005).
- *
- * Drives real flows through the existing orchestrator test seam
- * (Supervisor.run() → planning + dispatch + gate + finalize) for both an
- * epic run and a standalone-story run. Asserts the persisted run_metrics row
- * has correct scope, attribution, per-phase cost/wall-clock, dispatch latency,
- * and non-zero worker-phase cost (the ADR-003 regression guard).
- *
- * Also verifies that MetricsStore.listRuns() returns the recorded runs
- * (the loom cost surface — no longer 'No metrics recorded yet').
- *
- * The existing byte-for-byte observe-only test (observeOnly.test.ts) passes
- * unchanged, proving this wiring changed no orchestration behavior (NFR-1).
- */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -30,9 +14,7 @@ import { clearActiveCollector } from '../activeCollector.js';
 import type { Story } from '../../types.js';
 import type { WorkerUsage } from '../../orchestrator/WorkerRunner.js';
 
-// ─── Worker usage fixture with non-zero cost ──────────────────────────────────
-// Non-zero costUsd is the dedicated guard against the ADR-003 regression where
-// subprocess execution cost is silently dropped from the collector.
+// Non-zero costUsd guards against the ADR-003 regression (subprocess cost silently dropped).
 const WORKER_USAGE: WorkerUsage = {
   inputTokens: 500,
   outputTokens: 200,
@@ -42,8 +24,6 @@ const WORKER_USAGE: WorkerUsage = {
   costUsd: 0.005,
   requestCount: 2,
 };
-
-// ─── Test infrastructure ──────────────────────────────────────────────────────
 
 let repo: string;
 let loomDir: string;
@@ -146,8 +126,6 @@ afterEach(() => {
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
-// ─── Epic dispatch path ───────────────────────────────────────────────────────
-
 describe('live run metrics — epic dispatch path [AC1, AC2, AC3]', () => {
   it('persists exactly one run_metrics row with correct scope and attribution', async () => {
     // planned + full-auto so approveAndDispatch fires inside withRunMetrics,
@@ -184,7 +162,7 @@ describe('live run metrics — epic dispatch path [AC1, AC2, AC3]', () => {
 
     // Correct attribution: epicId, verdict, counts, outcome
     assert.equal(run.epicId, 'epic-001', 'epicId must be set for the epic dispatch path');
-    assert.equal(run.storyId, undefined, 'storyId must be absent for the epic path');
+    assert.ok(run.storyId == null, 'storyId must be absent for the epic path');
     assert.equal(run.intakeVerdict, 'epic', 'intakeVerdict must be epic on the epic dispatch path');
     assert.equal(run.storyCount, 1, 'storyCount must be 1');
     assert.equal(run.outcome, 'done', 'outcome must be done when all stories succeed');
@@ -258,8 +236,6 @@ describe('live run metrics — epic dispatch path [AC1, AC2, AC3]', () => {
   });
 });
 
-// ─── Standalone dispatch path ─────────────────────────────────────────────────
-
 describe('live run metrics — standalone-story dispatch path [AC1, AC2, AC3]', () => {
   it('persists exactly one run_metrics row with scope=standalone_story and correct attribution', async () => {
     seedStandalone('story-001');
@@ -294,7 +270,7 @@ describe('live run metrics — standalone-story dispatch path [AC1, AC2, AC3]', 
 
     // storyId set, epicId absent for the standalone path
     assert.equal(run.storyId, 'story-001', 'storyId must be set for standalone dispatch');
-    assert.equal(run.epicId, undefined, 'epicId must be absent for standalone dispatch');
+    assert.ok(run.epicId == null, 'epicId must be absent for standalone dispatch');
 
     // Attribution
     assert.equal(run.intakeVerdict, 'story', 'intakeVerdict must be story for standalone dispatch');
@@ -328,8 +304,6 @@ describe('live run metrics — standalone-story dispatch path [AC1, AC2, AC3]', 
   });
 });
 
-// ─── loom cost surface ────────────────────────────────────────────────────────
-
 describe('loom cost surface — MetricsStore.listRuns reports recorded runs [AC5]', () => {
   it('after both an epic and a standalone run, listRuns returns ≥2 rows (not the empty branch)', async () => {
     // Run 1: epic dispatch
@@ -343,11 +317,18 @@ describe('loom cost surface — MetricsStore.listRuns reports recorded runs [AC5
       db,
       worker: new MockWorkerRunner({
         status: 'done',
+        commitCount: 1,
+        summary: 'completed',
+        logTail: '',
         usage: WORKER_USAGE,
+        model: 'claude-sonnet-4-6',
       }),
       maxConcurrent: 1,
       lease: false,
     }).run(['epic-001']);
+
+    // Clear between runs so the second withRunMetrics gets a fresh collector.
+    clearActiveCollector();
 
     // Run 2: standalone dispatch (same repo, same db)
     seedStandalone('story-002');
@@ -358,7 +339,11 @@ describe('loom cost surface — MetricsStore.listRuns reports recorded runs [AC5
       db,
       worker: new MockWorkerRunner({
         status: 'done',
+        commitCount: 1,
+        summary: 'completed',
+        logTail: '',
         usage: WORKER_USAGE,
+        model: 'claude-sonnet-4-6',
       }),
       maxConcurrent: 1,
       lease: false,
