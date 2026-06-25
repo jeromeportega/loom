@@ -318,4 +318,57 @@ describe('loom approve — cyclic epic rejected before dispatch (story-062-002)'
     assert.deepEqual(errors, []);
     assert.equal(epicStatus('epic-205'), 'approved');
   });
+
+  // [high] Bulk approve (no epic-id) exits 1 when ALL planned epics are cyclic.
+  // Previously the bulk path used console.log + return (exit 0) — now it must
+  // call process.exit(1) and write the summary to stderr, mirroring the single-epic path.
+  it('bulk approve exits non-zero when all planned epics have cycles', async () => {
+    seedTwoRepoManifest();
+    // Two separate cyclic epics — different story-id namespaces so IDs don't collide.
+    seedCyclicEpic('epic-206', '206');
+    seedCyclicEpic('epic-207', '207');
+    const { fn: runRunStub, calls } = makeRunRunStub();
+
+    const { exitCode, errors } = await capture(() =>
+      runApprove(undefined /* bulk */, {
+        runRun: runRunStub,
+        printOverlapAdvisory: () => {},
+      })
+    );
+
+    assert.equal(exitCode, 1, 'bulk approve must exit 1 when all epics are cyclic');
+    assert.equal(calls.length, 0, 'runRun (dispatch) must never be called');
+    // Summary must go to stderr (not stdout) and mention what happened.
+    const errText = errors.join('\n');
+    assert.match(errText, /0 of 2 epic\(s\) approved/i, 'stderr must state 0 approved');
+    assert.match(errText, /cycle/i, 'stderr must mention cycle');
+    // Epics must remain planned.
+    assert.equal(epicStatus('epic-206'), 'planned', 'epic-206 must remain planned');
+    assert.equal(epicStatus('epic-207'), 'planned', 'epic-207 must remain planned');
+  });
+
+  // Bulk approve with a mix: one cyclic + one acyclic.  The acyclic one must be
+  // approved; exit code is 0 (partial success) because at least one was approved.
+  it('bulk approve exits 0 when at least one epic is approved (partial batch)', async () => {
+    seedTwoRepoManifest();
+    seedCyclicEpic('epic-208', '208'); // cyclic — skipped
+
+    // Seed a clean single-repo epic that has no yaml_path (no cycle check runs).
+    resetDatabaseForTest();
+    const db = openProjectDatabase(tmpDir);
+    new EpicStore(db).create('epic-209', 'Clean planned epic');
+    resetDatabaseForTest();
+
+    const { fn: runRunStub } = makeRunRunStub();
+    const { exitCode } = await capture(() =>
+      runApprove(undefined /* bulk */, {
+        runRun: runRunStub,
+        printOverlapAdvisory: () => {},
+      })
+    );
+
+    assert.equal(exitCode, null, 'bulk approve with at least one success must exit 0');
+    assert.equal(epicStatus('epic-208'), 'planned', 'cyclic epic stays planned');
+    assert.equal(epicStatus('epic-209'), 'approved', 'acyclic epic must be approved');
+  });
 });
