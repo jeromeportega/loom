@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import type Database from 'better-sqlite3';
 import type {
+  AuditRecordFn,
   LandingAttempt,
   LandingAttemptStatus,
   LandingBlocker,
@@ -10,7 +11,6 @@ import type {
   RepoMergeRecord,
 } from '../orchestrator/landingTypes.js';
 import { CROSS_REPO_ACTIONS } from '../orchestrator/landingTypes.js';
-import type { AuditRecordFn } from '../orchestrator/ForwardReverter.js';
 import type { RepoStage } from '../orchestrator/CrossRepoCoordinator.js';
 import { gitSafe } from '../orchestrator/git.js';
 

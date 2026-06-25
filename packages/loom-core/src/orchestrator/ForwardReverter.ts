@@ -4,19 +4,13 @@ import type { PolicyEngine } from '../guardrails/PolicyEngine.js';
 import type { IntegrationGate } from './IntegrationGate.js';
 import { git } from './git.js';
 import type {
+  AuditRecordFn,
   LandingStorePort,
   RepoMergeRecord,
   RollbackResult,
 } from './landingTypes.js';
 import { CROSS_REPO_ACTIONS } from './landingTypes.js';
 import { collectSkipped, hasConverged } from './rollbackResume.js';
-
-/** Minimal audit-record seam — matches AuditLog.record's accepted shape. */
-export type AuditRecordFn = (entry: {
-  action: string;
-  command?: string;
-  detail?: Record<string, unknown>;
-}) => void;
 
 export interface ForwardReverterOptions {
   projectRoot: string;
@@ -113,7 +107,7 @@ export class ForwardReverter {
     this._auditRecord({
       action: CROSS_REPO_ACTIONS.ROLLBACK_STARTED,
       command: attemptId,
-      detail: { pendingCount: pending.length, skippedCount: alreadyReverted.length },
+      detail: { pendingCount: pending.length, alreadyRevertedCount: alreadyReverted.length },
     });
 
     const reverted: RollbackResult['reverted'] = [];
@@ -231,6 +225,11 @@ export class ForwardReverter {
     } catch (err) {
       // Best-effort status update — if the store itself is broken, swallow that error.
       try { this.store.setStatus(attemptId, 'failed'); } catch { /* ignored */ }
+      this._auditRecord({
+        action: CROSS_REPO_ACTIONS.ROLLBACK_FAILED,
+        command: attemptId,
+        detail: { reason: (err as Error).message },
+      });
       throw err;
     }
 

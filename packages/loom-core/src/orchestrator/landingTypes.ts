@@ -98,6 +98,14 @@ export interface LandingStorePort {
   latestAttemptIdForEpic(epicId: string): string | undefined;
 }
 
+// ── Audit seam — shared by ForwardReverter and LandingStore ──────────────────
+/** Minimal audit-record seam — matches AuditLog.record's accepted shape. */
+export type AuditRecordFn = (entry: {
+  action: string;
+  command?: string;
+  detail?: Record<string, unknown>;
+}) => void;
+
 // ── Audit action types — producers (002/003) emit, consumer (005) renders ─────
 export const CROSS_REPO_ACTIONS = {
   STAGED:           'cross_repo.staged',

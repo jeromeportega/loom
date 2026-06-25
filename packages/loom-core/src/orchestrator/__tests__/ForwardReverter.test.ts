@@ -1078,11 +1078,6 @@ describe('ForwardReverter — audit events (Invariant 5)', () => {
 
     const auditEvents: Array<{ action: string; detail?: Record<string, unknown> }> = [];
     const stubs = makeStubs();
-    const reverter = makeReverter(store, stubs, makePassingGate(), DEFAULT_POLICY, {
-      'repo-a': '/tmp/repo-a',
-      'repo-b': '/tmp/repo-b',
-    });
-    // Rebuild with audit
     const reverterWithAudit = new ForwardReverter({
       projectRoot: '/tmp/project',
       store,

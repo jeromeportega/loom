@@ -447,7 +447,6 @@ describe('assessLandingReadiness — ≥3 repos, all-or-none barrier (AC1/AC5)',
         makeFinalizeResult(repoRoot === '/repos/repo-b' ? undefined : 'https://unused.example.com/pull/99'),
     };
 
-    const mergeCalls: string[] = [];
     const result = await assessLandingReadiness('epic-n3-missing-pr', stages, {
       integrationGate: gate,
       finalizer,
@@ -461,9 +460,8 @@ describe('assessLandingReadiness — ≥3 repos, all-or-none barrier (AC1/AC5)',
     assert.equal(result.blocker!.check, 'pr_open', 'check must be pr_open');
     assert.equal(setStatusCalls[0]?.status, 'blocked', 'must transition to blocked');
 
-    // makeAnchoringMerger is never invoked (spy: assessLandingReadiness has no merge seam).
-    // Verified structurally: assessLandingReadiness deps has no mergeRepo — zero merges.
-    assert.deepEqual(mergeCalls, [], 'makeAnchoringMerger must never be invoked by assessLandingReadiness');
+    // assessLandingReadiness only assesses readiness — merges are the coordinator's job.
+    // No merge seam exists in assessLandingReadiness deps, so zero merges is a structural guarantee.
 
     // All 3 repos should be in the result; only repo-b (missing PR) is definitely not ready.
     assert.equal(result.repos.length, 3);
