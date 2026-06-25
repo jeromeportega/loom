@@ -154,3 +154,4 @@ export {
 export type {
   CrossRepoEdgeError,
 } from './crossRepoReadiness.js';
+export { CyclicRepoDependencyError } from './actions/approveAndDispatch.js';

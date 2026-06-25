@@ -1,7 +1,16 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EpicStore, PolicyEngine } from '@loom-ai/core';
+import yaml from 'js-yaml';
+import {
+  EpicStore,
+  PolicyEngine,
+  EpicYamlSchema,
+  readManifest,
+  resolvePrimaryRepo,
+  validateCrossRepoEdges,
+  loomHome,
+} from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 import { printOverlapAdvisory as defaultPrintOverlapAdvisory } from '../crossEpicOverlap.js';
 import { runRun as defaultRunRun, type RunOptions } from './run.js';
@@ -39,6 +48,46 @@ function persistPolicySnapshot(
     store.setPolicySnapshot(epicId, JSON.stringify(policy));
   } catch {
     // Snapshot persistence is observability — never block approve on it.
+  }
+}
+
+/**
+ * Approval-time cycle check (ADR-002, fail-closed seam).
+ *
+ * Loads the epic's stories from its YAML plan and the workspace manifest from
+ * loom-home, then validates the cross-repo dependency graph for cycles.
+ * Returns an operator-readable error string if a cycle is found, or null when
+ * the graph is acyclic or the check cannot run (no yaml_path, YAML missing,
+ * single-repo setup, etc.).  Never throws — failures are fail-open (best-effort)
+ * so a broken manifest never prevents approving a single-repo epic.
+ *
+ * This is the WIRED CLI seam — called before any `store.updateStatus('approved')`
+ * write so that a cyclic epic is rejected before its status can change and before
+ * any worker can be dispatched.
+ */
+function detectRepoCycles(yamlPath: string, projectRoot: string): string | null {
+  try {
+    const file = path.join(projectRoot, yamlPath);
+    if (!fs.existsSync(file)) return null;
+    const parsed = EpicYamlSchema.parse(yaml.load(fs.readFileSync(file, 'utf8')));
+    const manifest = readManifest(loomHome());
+    let primarySlug: string;
+    try {
+      primarySlug = resolvePrimaryRepo(manifest);
+    } catch {
+      // No multi-repo setup (or ambiguous manifest) — cross-repo cycles are impossible.
+      return null;
+    }
+    const errs = validateCrossRepoEdges(parsed.stories, manifest, primarySlug);
+    if (errs.length === 0) return null;
+    const repos = [...new Set(errs.flatMap(e => [e.consumerSlug, e.producerSlug]))];
+    const edgeList = errs.map(e => `"${e.consumerSlug}" → "${e.producerSlug}"`).join(', ');
+    return (
+      `cross-repo dependency cycle detected: repos ${repos.map(r => `"${r}"`).join(', ')} ` +
+      `form a cycle (${edgeList}). Resolve the cycle before approving.`
+    );
+  } catch {
+    return null; // Best-effort — never block approve on check failure.
   }
 }
 
@@ -119,6 +168,17 @@ export async function runApprove(
       console.error(`Epic "${displayId}" is "${epic.status}", not "planned" — nothing to approve.`);
       process.exit(1);
     }
+    // Approval-time cycle check (ADR-002, fail-closed seam) — runs before any
+    // state mutation so a cyclic epic is never transitioned to 'approved' and
+    // therefore never dispatched.
+    if (epic.yaml_path) {
+      const projectRoot = path.dirname(loomDir);
+      const cycleErr = detectRepoCycles(epic.yaml_path, projectRoot);
+      if (cycleErr) {
+        console.error(`Cannot approve "${displayId}": ${cycleErr}`);
+        process.exit(1);
+      }
+    }
     persistPolicySnapshot(store, loomDir, internalId);
     store.updateStatus(internalId, 'approved');
     console.log(`  approved  ${displayId}: ${epic.title}`);
@@ -148,17 +208,31 @@ export async function runApprove(
     return;
   }
   const projectRoot = path.dirname(loomDir);
+  let approvedCount = 0;
   for (const epic of planned) {
+    // Cycle check before each individual bulk approval.
+    if (epic.yaml_path) {
+      const cycleErr = detectRepoCycles(epic.yaml_path, projectRoot);
+      if (cycleErr) {
+        console.error(`  skipped   ${epic.id}: ${cycleErr}`);
+        continue;
+      }
+    }
     persistPolicySnapshot(store, loomDir, epic.id);
     store.updateStatus(epic.id, 'approved');
     // After story-059-002, standalone rows have id='story-NNN' directly.
     console.log(`  approved  ${epic.id}: ${epic.title}`);
     // Advisory only — never blocks the bulk approval.
     printOverlapAdvisory(projectRoot, epic.id);
+    approvedCount += 1;
   }
-  console.log(
-    `\n  ${planned.length} epic(s) approved. Next: run \`loom run <epic-id>\` to dispatch.`
-  );
+  if (approvedCount === 0 && planned.length > 0) {
+    console.log(`\n  0 of ${planned.length} epic(s) approved (all had cycle errors). Resolve cycles and retry.`);
+  } else {
+    console.log(
+      `\n  ${approvedCount} epic(s) approved. Next: run \`loom run <epic-id>\` to dispatch.`
+    );
+  }
 }
 
 export function runReject(epicId: string, reason: string | undefined): void {
