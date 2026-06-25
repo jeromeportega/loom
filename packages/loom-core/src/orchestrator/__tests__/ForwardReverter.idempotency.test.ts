@@ -802,3 +802,143 @@ describe('rollbackResume — predicate unit tests', () => {
     });
   });
 });
+
+// ─── AC3/AC5: Idempotency across ≥3 repos ────────────────────────────────────
+//
+// Proves that a second rollback on a 3-repo chain returns rolled_back with all
+// repos in 'skipped', issues no git/gh commands, and leaves the DB unchanged.
+
+describe('ForwardReverter idempotency — 3-repo chain (AC3/AC5)', () => {
+  it('second rollback on a 3-node chain is a no-op: all repos skipped, no commands', async () => {
+    const db = makeDb('idempotent-chain3.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+    const stages = [
+      makeStage('repo-a', []),
+      makeStage('repo-b', ['repo-a']),
+      makeStage('repo-c', ['repo-b']),
+    ];
+    const attemptId = seedMerged(store, stages, [
+      { slug: 'repo-a', sha: 'sha-a' },
+      { slug: 'repo-b', sha: 'sha-b' },
+      { slug: 'repo-c', sha: 'sha-c' },
+    ]);
+
+    const repoRoots = {
+      'repo-a': '/tmp/repo-a',
+      'repo-b': '/tmp/repo-b',
+      'repo-c': '/tmp/repo-c',
+    };
+
+    // First run: full rollback of all 3 repos.
+    const stubs1 = makeStubs();
+    const r1 = await makeReverter(store, stubs1, makePassingGate(), repoRoots).rollback(attemptId);
+    assert.equal(r1.status, 'rolled_back', 'first run must return rolled_back');
+    assert.equal(r1.reverted.length, 3, 'first run must revert all 3 repos');
+    assert.ok(stubs1.log.length > 0, 'first run must issue git/gh commands');
+
+    // Second run: everything already done — must be a no-op.
+    const stubs2 = makeStubs();
+    const r2 = await makeReverter(store, stubs2, makePassingGate(), repoRoots).rollback(attemptId);
+    assert.equal(r2.status, 'rolled_back', 'second run must return rolled_back');
+    assert.equal(r2.reverted.length, 0, 'second run must revert nothing');
+    assert.equal(r2.skipped.length, 3, 'second run must report all 3 repos as skipped');
+    assert.ok(r2.skipped.includes('repo-a'), 'repo-a in skipped');
+    assert.ok(r2.skipped.includes('repo-b'), 'repo-b in skipped');
+    assert.ok(r2.skipped.includes('repo-c'), 'repo-c in skipped');
+    assert.equal(stubs2.log.length, 0, 'second run must issue no git/gh commands');
+
+    // Third run: stable state — still a no-op.
+    const stubs3 = makeStubs();
+    const r3 = await makeReverter(store, stubs3, makePassingGate(), repoRoots).rollback(attemptId);
+    assert.equal(r3.status, 'rolled_back');
+    assert.equal(r3.reverted.length, 0);
+    assert.equal(r3.skipped.length, 3);
+    assert.equal(stubs3.log.length, 0, 'third run must also issue no commands');
+
+    // DB state must be stable throughout.
+    const { attempt, merges } = store.getAttempt(attemptId);
+    assert.equal(attempt.status, 'rolled_back', 'attempt status must be rolled_back after all runs');
+    for (const m of merges) {
+      assert.equal(m.mergeState, 'reverted', `${m.repoSlug} must be reverted in DB`);
+    }
+
+    db.close();
+  });
+
+  it('partial rollback of 3-repo chain + re-run converges to full rolled_back (AC1+AC3)', async () => {
+    const db = makeDb('chain3-partial-rerun.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+    const stages = [
+      makeStage('repo-a', []),
+      makeStage('repo-b', ['repo-a']),
+      makeStage('repo-c', ['repo-b']),
+    ];
+    const attemptId = seedMerged(store, stages, [
+      { slug: 'repo-a', sha: 'sha-a' },
+      { slug: 'repo-b', sha: 'sha-b' },
+      { slug: 'repo-c', sha: 'sha-c' },
+    ]);
+
+    const repoRoots = {
+      'repo-a': '/tmp/repo-a',
+      'repo-b': '/tmp/repo-b',
+      'repo-c': '/tmp/repo-c',
+    };
+
+    // First run: repo-c merges OK, repo-b merge fails.
+    // Rollback order: C (leaf) → B (mid) → A (root).
+    // C's merge succeeds; B's merge throws (simulated network error).
+    const failingStubs = makeStubs({
+      onGhCall: (args) => {
+        if (args[0] === 'pr' && args[1] === 'merge') {
+          const prUrl = args[2] ?? '';
+          if (prUrl.includes('repo-b')) {
+            throw new Error('gh: simulated merge failure for repo-b');
+          }
+        }
+      },
+    });
+    const firstReverter = makeReverter(store, failingStubs, makePassingGate(), repoRoots);
+
+    await assert.rejects(() => firstReverter.rollback(attemptId));
+
+    // After first run:
+    //   repo-c: reverted (merge succeeded)
+    //   repo-b: revert_pending (PR created, markRevertPending called, merge threw)
+    //   repo-a: merged (not yet reached)
+    const { merges: mid } = store.getAttempt(attemptId);
+    assert.equal(mid.find(m => m.repoSlug === 'repo-c')?.mergeState, 'reverted');
+    assert.equal(mid.find(m => m.repoSlug === 'repo-b')?.mergeState, 'revert_pending');
+    assert.equal(mid.find(m => m.repoSlug === 'repo-a')?.mergeState, 'merged');
+
+    // Second run (healthy): must complete without error and converge.
+    const healthyStubs = makeStubs();
+    const secondReverter = makeReverter(store, healthyStubs, makePassingGate(), repoRoots);
+
+    const r2 = await secondReverter.rollback(attemptId);
+
+    assert.equal(r2.status, 'rolled_back', 'second run must converge to rolled_back');
+    // repo-c was already reverted, so it must be in skipped.
+    assert.ok(r2.skipped.includes('repo-c'), 'repo-c must be skipped (already reverted)');
+    // repo-b and repo-a must be reverted in this run.
+    const revertedSlugs = r2.reverted.map(r => r.repoSlug);
+    assert.ok(revertedSlugs.includes('repo-b'), 'repo-b must be reverted on re-run');
+    assert.ok(revertedSlugs.includes('repo-a'), 'repo-a must be reverted on re-run');
+
+    // No commands for repo-c on second run.
+    const repoCCmds = healthyStubs.log.filter(
+      c => c.cwd === '/tmp/repo-c' || (typeof c.args[2] === 'string' && c.args[2].includes('repo-c')),
+    );
+    assert.equal(repoCCmds.length, 0, 'no commands for repo-c on second run (already reverted)');
+
+    // Final DB state: all reverted.
+    const { merges: final } = store.getAttempt(attemptId);
+    for (const m of final) {
+      assert.equal(m.mergeState, 'reverted', `${m.repoSlug} must be reverted after re-run`);
+    }
+
+    db.close();
+  });
+});
