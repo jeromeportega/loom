@@ -27,10 +27,17 @@
  *  3. WORKTREE ARTIFACTS — all regular files under <projectRoot>/.loom/planning/,
  *     read byte-for-byte and keyed by relative path. For the standalone path the
  *     two files written are:
- *       <runId>/project-brief.md          — analyst brief (AnalystAgent output)
- *       <runId>/epics/<runId>.yaml        — story YAML (Planner.runStandalone)
+ *       story-001/project-brief.md          — analyst brief (AnalystAgent output)
+ *       story-001/epics/story-001.yaml      — story YAML (Planner.runStandalone)
  *     Normalized: none. MockLLMClient returns fixed strings; serializeEpic emits
  *     deterministic YAML with no embedded wall-clock values.
+ *     Path determinism: runId is derived by Planner.nextEpicId(), which scans
+ *     all existing epics rows and returns max(idNumber)+1. Each runPlannerFlow()
+ *     call receives a fresh ':memory:' database with no rows, so max=0 and
+ *     nextEpicId returns epic-001, which the standalone path converts to
+ *     story-001. Both baseline and instrumented runs therefore produce the same
+ *     path prefix. If this invariant breaks, the bPaths.length assertion below
+ *     fires with the actual paths, giving an actionable error message.
  *
  * ASSERTION DIRECTION (one-way — encoding the fail-open trade-off):
  *   Extra rows in run_metrics / run_metrics_phase  →  PASS (acceptable)
@@ -55,6 +62,12 @@ import { MockLLMClient } from '../../llm/MockLLMClient.js';
 import type { LLMClient, LLMRequest } from '../../llm/LLMClient.js';
 import type { EffectiveRouting } from '../../intake/routing.js';
 
+// ─── SQL injection guard ──────────────────────────────────────────────────────
+// countRows() interpolates the table name directly into SQL. Restrict to the
+// known tables used in this test so a future caller cannot pass a computed
+// or user-derived string and accidentally introduce an injection vector.
+const ALLOWED_TABLES = new Set<string>(['run_metrics', 'run_metrics_phase', 'audit_log']);
+
 // ─── Deterministic LLM fixture responses ─────────────────────────────────────
 // Fixed strings — no embedded wall-clock values — so artifact files are
 // byte-identical across runs regardless of when they execute.
@@ -72,7 +85,10 @@ const STORY_TEMPLATE = {
 
 function makeResponder(): (req: LLMRequest) => string {
   return (req: LLMRequest): string => {
-    const last = req.messages[req.messages.length - 1].content;
+    // content is typed string; cast through unknown to guard against unexpected
+    // runtime ContentBlock[] variants from SDK version drift.
+    const raw: unknown = req.messages[req.messages.length - 1].content;
+    const last = typeof raw === 'string' ? raw : JSON.stringify(raw);
     // Analyst phase: produce the project brief document
     if (
       last.includes('brief to analyze') ||
@@ -86,7 +102,7 @@ function makeResponder(): (req: LLMRequest) => string {
       const storyId = match?.[1] ?? 'story-001';
       return '```json\n' + JSON.stringify({ ...STORY_TEMPLATE, id: storyId }) + '\n```';
     }
-    throw new Error(`Unexpected planning message: ${last.slice(0, 80)}`);
+    throw new Error(`Unexpected planning message (${last.length}B): ${last.slice(0, 200)}`);
   };
 }
 
@@ -101,9 +117,17 @@ const STANDALONE_ROUTING: EffectiveRouting = {
 // ─── process.stdout capture ───────────────────────────────────────────────────
 // Intercepts process.stdout.write for the duration of `fn()` and returns all
 // bytes written as a Buffer. Passes through to the real stdout (non-suppressing).
-// Serial only — not safe for concurrent calls.
+// Serial only — not safe for concurrent calls. Throws immediately if called
+// while another captureStdout is active.
+
+let _captureStdoutActive = false;
 
 async function captureStdout(fn: () => Promise<unknown>): Promise<Buffer> {
+  if (_captureStdoutActive) {
+    throw new Error('captureStdout: concurrent call detected — not re-entrant-safe');
+  }
+  _captureStdoutActive = true;
+
   const chunks: Buffer[] = [];
   const origWrite = process.stdout.write;
 
@@ -121,6 +145,7 @@ async function captureStdout(fn: () => Promise<unknown>): Promise<Buffer> {
     await fn();
   } finally {
     process.stdout.write = origWrite;
+    _captureStdoutActive = false;
   }
 
   return Buffer.concat(chunks);
@@ -168,6 +193,9 @@ function readArtifacts(planningRoot: string): Map<string, Buffer> {
 }
 
 function countRows(db: Database.Database, table: string): number {
+  if (!ALLOWED_TABLES.has(table)) {
+    throw new Error(`countRows: table '${table}' is not in the allowed list`);
+  }
   return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
 }
 
@@ -183,13 +211,22 @@ interface FlowResult {
 
 async function runPlannerFlow(opts: {
   withCollector: boolean;
-  // When true and withCollector is true, the metrics write step is skipped
-  // (simulates recordRun throwing and being swallowed — the fail-open arm).
-  simulateMetricsDrop?: boolean;
+  // When true and withCollector is true, the metrics write step is skipped.
+  // This is equivalent to recordRun throwing and being swallowed in the
+  // caller's try/catch — the fail-open arm. The option name "skipMetricsWrite"
+  // reflects that we omit the recordRun call; a dropped row is acceptable under
+  // NFR-1, a perturbed run is not.
+  skipMetricsWrite?: boolean;
+  // tmpDirs receives projectRoot immediately after mkdtempSync so the directory
+  // is cleaned up even if the function throws later in its body.
+  tmpDirs: string[];
 }): Promise<FlowResult> {
   clearActiveCollector();
 
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-obs-'));
+  // Push immediately — ensures cleanup even on a mid-function throw.
+  opts.tmpDirs.push(projectRoot);
+
   const db = createDatabase(':memory:');
 
   const rawLlm = new MockLLMClient(makeResponder());
@@ -216,10 +253,10 @@ async function runPlannerFlow(opts: {
   const stdout = await captureStdout(() => planner.run('Build a login form.'));
   clearActiveCollector();
 
-  if (opts.withCollector && collector && !opts.simulateMetricsDrop) {
+  if (opts.withCollector && collector && !opts.skipMetricsWrite) {
     // Persist metrics — this is what story-063-004 does at run end.
     // In production code this is wrapped in try/catch; in the fail-open arm
-    // it is intentionally omitted (simulateMetricsDrop=true), leaving 0 rows.
+    // it is intentionally omitted (skipMetricsWrite=true), leaving 0 rows.
     new MetricsStore(db).recordRun(collector.build());
   }
 
@@ -244,24 +281,26 @@ describe('observe-only verification (NFR-1 / ADR-4)', () => {
 
   before(async () => {
     // Run 1 — BASELINE: no collector bound, raw MockLLMClient.
-    baseline = await runPlannerFlow({ withCollector: false });
-    tmpDirs.push(baseline.projectRoot);
+    // tmpDirs receives projectRoot inside runPlannerFlow, so no push needed here.
+    baseline = await runPlannerFlow({ withCollector: false, tmpDirs });
 
     // Run 2 — INSTRUMENTED: collector bound + instrumentLLMClient + recordRun
     // persists the metrics row (simulates what story-063-004 does at run end).
-    instrumented = await runPlannerFlow({ withCollector: true });
-    tmpDirs.push(instrumented.projectRoot);
+    instrumented = await runPlannerFlow({ withCollector: true, tmpDirs });
 
     // Run 3 — FAIL-OPEN: collector bound + instrumentLLMClient, but the metrics
-    // write is intentionally skipped (simulateMetricsDrop=true). This simulates
+    // write is intentionally skipped (skipMetricsWrite=true). This simulates
     // recordRun throwing and being swallowed. The three surfaces must still be
     // byte-identical to baseline even when the metrics row is never written.
-    failOpen = await runPlannerFlow({ withCollector: true, simulateMetricsDrop: true });
-    tmpDirs.push(failOpen.projectRoot);
+    failOpen = await runPlannerFlow({ withCollector: true, skipMetricsWrite: true, tmpDirs });
   });
 
   after(() => {
     clearActiveCollector();
+    // Close DB handles before removing temp dirs to avoid WAL/SHM leaks.
+    baseline?.db.close();
+    instrumented?.db.close();
+    failOpen?.db.close();
     for (const d of tmpDirs) {
       fs.rmSync(d, { recursive: true, force: true });
     }
@@ -292,7 +331,8 @@ describe('observe-only verification (NFR-1 / ADR-4)', () => {
 
   it('worktree artifacts [AC1, AC3]: same paths and byte-identical content', () => {
     // SURFACE 3 — worktree artifacts (all files under planningRoot).
-    // Expected files: <runId>/project-brief.md and <runId>/epics/<runId>.yaml
+    // Expected files: story-001/project-brief.md and story-001/epics/story-001.yaml
+    // (see file-level JSDoc for the runId determinism argument).
     const bPaths = [...baseline.artifacts.keys()].sort();
     const iPaths = [...instrumented.artifacts.keys()].sort();
 
@@ -301,7 +341,10 @@ describe('observe-only verification (NFR-1 / ADR-4)', () => {
       bPaths,
       'artifact file paths differ between baseline and instrumented run',
     );
-    assert.ok(bPaths.length >= 1, 'no artifacts written — fix the flow or the path reader');
+    assert.ok(
+      bPaths.length >= 2,
+      `expected ≥2 artifacts (story-001/project-brief.md, story-001/epics/story-001.yaml) but got: ${JSON.stringify(bPaths)}`,
+    );
 
     for (const rel of bPaths) {
       const bBuf = baseline.artifacts.get(rel)!;
@@ -363,7 +406,7 @@ describe('observe-only verification (NFR-1 / ADR-4)', () => {
   });
 
   // ─── AC1 + AC2: fail-open arm ─────────────────────────────────────────────
-  // When recordRun throws (simulated by simulateMetricsDrop=true), the three
+  // When recordRun throws (simulated by skipMetricsWrite=true), the three
   // surfaces must remain byte-identical to baseline. A dropped metrics row is
   // acceptable; a perturbed run is not.
 
@@ -405,6 +448,11 @@ describe('observe-only verification (NFR-1 / ADR-4)', () => {
       countRows(failOpen.db, 'run_metrics'),
       0,
       'fail-open run must have 0 run_metrics rows (metrics write was not persisted)',
+    );
+    assert.equal(
+      countRows(failOpen.db, 'run_metrics_phase'),
+      0,
+      'fail-open run must have 0 run_metrics_phase rows',
     );
   });
 });
