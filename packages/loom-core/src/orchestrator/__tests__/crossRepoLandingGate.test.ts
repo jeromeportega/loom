@@ -388,6 +388,160 @@ describe('assessLandingReadiness — blockedRecord producer-awareness', () => {
   });
 });
 
+// ─── (10) ≥3 repos: all-ready-or-none barrier (AC1/AC5 scale) ────────────────
+//
+// This suite exercises the all-or-none barrier with exactly 3 repos to prove
+// the N-repo generalisation holds beyond the 2-repo case.
+// Topology: repo-a (root producer) → repo-b (consumer) → repo-c (leaf consumer).
+
+describe('assessLandingReadiness — ≥3 repos, all-or-none barrier (AC1/AC5)', () => {
+  function make3Stages(
+    prUrls: Record<string, string | undefined> = {},
+  ): ReturnType<typeof makeStage>[] {
+    return [
+      makeStage('repo-a', [],           prUrls['repo-a'] ?? 'https://github.com/org/repo-a/pull/1'),
+      makeStage('repo-b', ['repo-a'],   prUrls['repo-b'] ?? 'https://github.com/org/repo-b/pull/2'),
+      makeStage('repo-c', ['repo-b'],   prUrls['repo-c'] ?? 'https://github.com/org/repo-c/pull/3'),
+    ];
+  }
+
+  it('(a) all 3 PRs open + all gates green → allReady:true, store.setStatus called with merging', async () => {
+    const stages = make3Stages();
+    const { store, setStatusCalls } = makeStore();
+    const gate = makeGate({}, true);
+
+    const result = await assessLandingReadiness('epic-n3', stages, {
+      integrationGate: gate,
+      finalizer: makeFinalizer('unused'),
+      store,
+    });
+
+    assert.equal(result.allReady, true, 'allReady must be true for 3 ready repos');
+    assert.equal(result.repos.length, 3, 'must assess all 3 repos');
+    assert.ok(result.repos.every(r => r.ready), 'all 3 repos must be ready');
+    assert.equal(result.blocker, undefined, 'no blocker when all ready');
+    assert.equal(setStatusCalls[0]?.status, 'merging', 'must transition to merging when all ready');
+
+    // Topological structure preserved: repo-a is producer, repo-b consumer, repo-c leaf-consumer.
+    const a = result.repos.find(r => r.repoSlug === 'repo-a')!;
+    const b = result.repos.find(r => r.repoSlug === 'repo-b')!;
+    const c = result.repos.find(r => r.repoSlug === 'repo-c')!;
+    assert.equal(a.consumerGateGreen, true, 'repo-a is a producer — consumerGateGreen true by default');
+    assert.equal(b.consumerGateGreen, true, 'repo-b PR is open — consumer stub is true');
+    assert.equal(c.consumerGateGreen, true, 'repo-c PR is open — consumer stub is true');
+  });
+
+  it('(b) any one of the 3 PRs is missing → allReady:false, all repos not ready, zero merges', async () => {
+    // repo-b's PR is missing (no prUrl). Finalizer will be called for it and return no URL.
+    const stages = [
+      makeStage('repo-a', [],         'https://github.com/org/repo-a/pull/1'),
+      makeStage('repo-b', ['repo-a']),  // no prUrl — finalizer must be called
+      makeStage('repo-c', ['repo-b'],  'https://github.com/org/repo-c/pull/3'),
+    ];
+    const { store, setStatusCalls } = makeStore();
+    const gate = makeGate({}, true);
+
+    // Finalizer returns no URL for repo-b (PR not yet opened).
+    const finalizer = {
+      stageForLanding: async (_epicId: string, repoRoot: string) =>
+        makeFinalizeResult(repoRoot === '/repos/repo-b' ? undefined : 'https://unused.example.com/pull/99'),
+    };
+
+    const result = await assessLandingReadiness('epic-n3-missing-pr', stages, {
+      integrationGate: gate,
+      finalizer,
+      store,
+    });
+
+    // All-or-none: one PR missing → nothing is ready to merge.
+    assert.equal(result.allReady, false, 'allReady must be false when any PR is missing');
+    assert.ok(result.blocker, 'blocker must be set');
+    assert.equal(result.blocker!.repoSlug, 'repo-b', 'blocker names the repo with missing PR');
+    assert.equal(result.blocker!.check, 'pr_open', 'check must be pr_open');
+    assert.equal(setStatusCalls[0]?.status, 'blocked', 'must transition to blocked');
+
+    // assessLandingReadiness only assesses readiness — merges are the coordinator's job.
+    // No merge seam exists in assessLandingReadiness deps, so zero merges is a structural guarantee.
+
+    // All 3 repos should be in the result; only repo-b (missing PR) is definitely not ready.
+    assert.equal(result.repos.length, 3);
+    const bReadiness = result.repos.find(r => r.repoSlug === 'repo-b')!;
+    assert.equal(bReadiness.prOpen, false, 'repo-b must have prOpen:false');
+    assert.equal(bReadiness.ready, false, 'repo-b must not be ready');
+  });
+
+  it('(c) middle repo gate red → allReady:false, blocker populated, other repos do not block', async () => {
+    // repo-b's integration gate fails; repo-a and repo-c pass.
+    const stages = make3Stages();
+    const { store, setStatusCalls } = makeStore();
+    const gate = makeGate({ '/repos/repo-b': false }, true);
+
+    const result = await assessLandingReadiness('epic-n3-gate-fail', stages, {
+      integrationGate: gate,
+      finalizer: makeFinalizer('unused'),
+      store,
+    });
+
+    assert.equal(result.allReady, false, 'allReady must be false when any gate fails');
+    assert.ok(result.blocker, 'blocker must be set');
+    assert.equal(result.blocker!.repoSlug, 'repo-b', 'blocker must name the failing repo');
+    assert.equal(result.blocker!.check, 'integration_gate', 'check must be integration_gate');
+    assert.equal(setStatusCalls[0]?.status, 'blocked');
+
+    const bReadiness = result.repos.find(r => r.repoSlug === 'repo-b')!;
+    assert.equal(bReadiness.gate.ok, false, 'repo-b gate must be false');
+    assert.equal(bReadiness.ready, false);
+
+    // repo-a passes its own gate.
+    const aReadiness = result.repos.find(r => r.repoSlug === 'repo-a')!;
+    assert.equal(aReadiness.gate.ok, true, 'repo-a gate must pass');
+    assert.equal(aReadiness.ready, true, 'repo-a is ready (gate passed)');
+  });
+
+  it('leaf consumer gate red → allReady:false, leaf consumer named in blocker', async () => {
+    const stages = make3Stages();
+    const { store } = makeStore();
+    const gate = makeGate({ '/repos/repo-c': false }, true);
+
+    const result = await assessLandingReadiness('epic-n3-leaf-fail', stages, {
+      integrationGate: gate,
+      finalizer: makeFinalizer('unused'),
+      store,
+    });
+
+    assert.equal(result.allReady, false);
+    assert.equal(result.blocker!.repoSlug, 'repo-c', 'blocker must be the leaf consumer');
+    assert.equal(result.blocker!.check, 'integration_gate');
+
+    // repo-a and repo-b are ready even though the leaf consumer fails.
+    const aReady = result.repos.find(r => r.repoSlug === 'repo-a')!.ready;
+    const bReady = result.repos.find(r => r.repoSlug === 'repo-b')!.ready;
+    assert.equal(aReady, true, 'repo-a must be ready');
+    assert.equal(bReady, true, 'repo-b must be ready');
+  });
+
+  it('all 3 PRs missing → allReady:false, all repos report prOpen:false', async () => {
+    const stages = [
+      makeStage('repo-a', []),          // no prUrl
+      makeStage('repo-b', ['repo-a']),  // no prUrl
+      makeStage('repo-c', ['repo-b']),  // no prUrl
+    ];
+    const { store } = makeStore();
+    const gate = makeGate({}, true);
+
+    const result = await assessLandingReadiness('epic-n3-all-missing', stages, {
+      integrationGate: gate,
+      finalizer: { stageForLanding: async () => makeFinalizeResult(undefined) },
+      store,
+    });
+
+    assert.equal(result.allReady, false);
+    // All repos must report prOpen:false — none is ready.
+    assert.ok(result.repos.every(r => !r.prOpen), 'all repos must have prOpen:false');
+    assert.ok(result.repos.every(r => !r.ready), 'all repos must not be ready');
+  });
+});
+
 // ─── (9) Parallel gate assessment ────────────────────────────────────────────
 
 describe('assessLandingReadiness — parallel gate assessment', () => {

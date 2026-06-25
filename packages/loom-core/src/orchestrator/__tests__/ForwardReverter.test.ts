@@ -826,3 +826,346 @@ describe('ForwardReverter — error handling', () => {
     db.close();
   });
 });
+
+// ─── ≥3 repos: 3-node chain rollback (AC2/AC5) ───────────────────────────────
+//
+// Topology: repo-a (root producer) → repo-b (mid consumer) → repo-c (leaf consumer).
+// All three merged; rollback must proceed C → B → A (reverse topo order).
+
+describe('ForwardReverter — 3-repo chain rollback (AC2/AC5)', () => {
+  it('reverts all 3 repos in reverse-topo order (C→B→A)', async () => {
+    const db = makeDb('chain3-happy.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+
+    const stages = [
+      makeStage('repo-a', []),
+      makeStage('repo-b', ['repo-a']),
+      makeStage('repo-c', ['repo-b']),
+    ];
+    const attemptId = seedMergedRepo(store, 'epic-test', stages, [
+      { slug: 'repo-a', sha: 'sha-a' },
+      { slug: 'repo-b', sha: 'sha-b' },
+      { slug: 'repo-c', sha: 'sha-c' },
+    ]);
+
+    const revertOrder: string[] = [];
+    const stubs = makeStubs();
+    const origExecGit = stubs.execGit;
+    const trackingExecGit = (cwd: string, args: string[]): string => {
+      if (args[0] === 'revert') revertOrder.push(cwd.split('/').at(-1) ?? cwd);
+      return origExecGit(cwd, args);
+    };
+
+    const reverter = new ForwardReverter({
+      projectRoot: '/tmp/project',
+      store,
+      policy: DEFAULT_POLICY,
+      integrationGate: makePassingGate(),
+      allowedRemotes: ['https://github.com/org/*'],
+      repoRoots: {
+        'repo-a': '/tmp/repo-a',
+        'repo-b': '/tmp/repo-b',
+        'repo-c': '/tmp/repo-c',
+      },
+      _execGit: trackingExecGit,
+      _execGh: stubs.execGh,
+    });
+
+    const result = await reverter.rollback(attemptId);
+
+    assert.equal(result.status, 'rolled_back', '3-repo chain must roll back cleanly');
+    assert.equal(result.reverted.length, 3, 'all 3 repos must be reverted');
+    assert.deepEqual(
+      revertOrder, ['repo-c', 'repo-b', 'repo-a'],
+      'revert order must be leaf-consumer → mid-consumer → root-producer',
+    );
+    assert.equal(result.reverted[0].repoSlug, 'repo-c', 'first reverted entry is leaf consumer');
+    assert.equal(result.reverted[1].repoSlug, 'repo-b', 'second reverted entry is mid consumer');
+    assert.equal(result.reverted[2].repoSlug, 'repo-a', 'third reverted entry is root producer');
+
+    // DB: all repos at 'reverted'.
+    const { merges } = store.getAttempt(attemptId);
+    for (const m of merges) {
+      assert.equal(m.mergeState, 'reverted', `${m.repoSlug} must be reverted in ledger`);
+      assert.ok(m.revertMergeSha, `${m.repoSlug} revertMergeSha must be set`);
+    }
+    db.close();
+  });
+
+  it('AC4: halt-and-strand on second revert — first (leaf) already reverted, producer stranded', async () => {
+    const db = makeDb('chain3-strand.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+
+    const stages = [
+      makeStage('repo-a', []),
+      makeStage('repo-b', ['repo-a']),
+      makeStage('repo-c', ['repo-b']),
+    ];
+    const attemptId = seedMergedRepo(store, 'epic-test', stages, [
+      { slug: 'repo-a', sha: 'sha-a' },
+      { slug: 'repo-b', sha: 'sha-b' },
+      { slug: 'repo-c', sha: 'sha-c' },
+    ]);
+
+    // Rollback order: repo-c first (passes), repo-b second (fails), repo-a third (never reached).
+    let gateCallCount = 0;
+    const mixedGate = new IntegrationGate({
+      testCommand: 'echo test',
+      runner: async () => {
+        gateCallCount++;
+        const pass = gateCallCount === 1;  // only repo-c passes
+        return { exitCode: pass ? 0 : 1, output: pass ? 'ok' : 'FAIL', timedOut: false, durationMs: 5 };
+      },
+    });
+
+    const stubs = makeStubs();
+    const reverter = makeReverter(store, stubs, mixedGate, DEFAULT_POLICY, {
+      'repo-a': '/tmp/repo-a',
+      'repo-b': '/tmp/repo-b',
+      'repo-c': '/tmp/repo-c',
+    });
+
+    const result = await reverter.rollback(attemptId);
+
+    // Halt-and-strand: repo-b's gate failed — walk HALTS.
+    assert.equal(result.status, 'partial', 'status must be partial on strand');
+    assert.ok(result.stranded, 'stranded must be set');
+    assert.equal(result.stranded?.repoSlug, 'repo-b', 'stranded must name repo-b');
+    assert.ok(result.stranded?.reason, 'stranded must have a reason');
+
+    // repo-c was successfully reverted before the strand.
+    assert.equal(result.reverted.length, 1, 'only repo-c (leaf) was reverted before strand');
+    assert.equal(result.reverted[0].repoSlug, 'repo-c');
+
+    // repo-a was never reached (walk halted at repo-b).
+    assert.equal(result.skipped.length, 0, 'repo-a was not yet skipped or reverted');
+
+    // DB: repo-c reverted, repo-b revert_pending (PR created but gate failed), repo-a merged.
+    const { merges } = store.getAttempt(attemptId);
+    const aRow = merges.find(m => m.repoSlug === 'repo-a')!;
+    const bRow = merges.find(m => m.repoSlug === 'repo-b')!;
+    const cRow = merges.find(m => m.repoSlug === 'repo-c')!;
+    assert.equal(cRow.mergeState, 'reverted', 'repo-c must be reverted');
+    assert.equal(bRow.mergeState, 'revert_pending', 'repo-b must be revert_pending (PR opened, gate failed)');
+    assert.equal(aRow.mergeState, 'merged', 'repo-a must still be merged (walk never reached it)');
+
+    // Attempt status reflects the strand.
+    const { attempt } = store.getAttempt(attemptId);
+    assert.equal(attempt.status, 'failed', 'attempt must be in failed state after strand');
+    db.close();
+  });
+
+  it('all 3 repos reverted — each git revert uses its own merge SHA as the anchor', async () => {
+    const db = makeDb('chain3-anchors.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+
+    const stages = [
+      makeStage('repo-a', []),
+      makeStage('repo-b', ['repo-a']),
+      makeStage('repo-c', ['repo-b']),
+    ];
+    const mergedSHAs: Record<string, string> = {
+      'repo-a': 'sha-a-merge-commit',
+      'repo-b': 'sha-b-merge-commit',
+      'repo-c': 'sha-c-merge-commit',
+    };
+    const attemptId = seedMergedRepo(store, 'epic-test', stages, [
+      { slug: 'repo-a', sha: mergedSHAs['repo-a'] },
+      { slug: 'repo-b', sha: mergedSHAs['repo-b'] },
+      { slug: 'repo-c', sha: mergedSHAs['repo-c'] },
+    ]);
+
+    const revertSHAsUsed: Record<string, string[]> = {};
+    const stubs = makeStubs();
+    const origExecGit = stubs.execGit;
+    const trackingExecGit = (cwd: string, args: string[]): string => {
+      if (args[0] === 'revert') {
+        const slug = cwd.split('/').at(-1) ?? cwd;
+        revertSHAsUsed[slug] = args;
+      }
+      return origExecGit(cwd, args);
+    };
+
+    const reverter = new ForwardReverter({
+      projectRoot: '/tmp/project',
+      store,
+      policy: DEFAULT_POLICY,
+      integrationGate: makePassingGate(),
+      allowedRemotes: ['https://github.com/org/*'],
+      repoRoots: {
+        'repo-a': '/tmp/repo-a',
+        'repo-b': '/tmp/repo-b',
+        'repo-c': '/tmp/repo-c',
+      },
+      _execGit: trackingExecGit,
+      _execGh: stubs.execGh,
+    });
+
+    await reverter.rollback(attemptId);
+
+    // Each git revert must use the repo's own recorded mergeCommitSha.
+    for (const [slug, sha] of Object.entries(mergedSHAs)) {
+      const args = revertSHAsUsed[slug];
+      assert.ok(args, `git revert must be issued for ${slug}`);
+      assert.ok(args.includes(sha), `${slug} git revert must use SHA ${sha}`);
+    }
+    db.close();
+  });
+});
+
+// ─── Audit events (Invariant 5) ──────────────────────────────────────────────
+//
+// ForwardReverter must emit CROSS_REPO_ACTIONS events for every state transition.
+// Tests use the injectable _auditRecord seam and record events into an array.
+
+describe('ForwardReverter — audit events (Invariant 5)', () => {
+  it('emits ROLLBACK_STARTED before any revert command', async () => {
+    const db = makeDb('audit-started.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+    const stages = [makeStage('repo-a')];
+    const attemptId = seedMergedRepo(store, 'epic-test', stages, [
+      { slug: 'repo-a', sha: 'sha-a' },
+    ]);
+
+    const auditEvents: Array<{ action: string }> = [];
+    const revertCallsBefore: number[] = [];
+    const stubs = makeStubs();
+    const origExecGit = stubs.execGit;
+    const trackingExecGit = (cwd: string, args: string[]): string => {
+      if (args[0] === 'revert') {
+        revertCallsBefore.push(auditEvents.length);
+      }
+      return origExecGit(cwd, args);
+    };
+
+    const reverter = new ForwardReverter({
+      projectRoot: '/tmp/project',
+      store,
+      policy: DEFAULT_POLICY,
+      integrationGate: makePassingGate(),
+      allowedRemotes: ['https://github.com/org/*'],
+      repoRoots: { 'repo-a': '/tmp/repo-a' },
+      _execGit: trackingExecGit,
+      _execGh: stubs.execGh,
+      _auditRecord: (e) => auditEvents.push(e),
+    });
+
+    await reverter.rollback(attemptId);
+
+    const startedIdx = auditEvents.findIndex(e => e.action === 'cross_repo.rollback_started');
+    assert.ok(startedIdx >= 0, 'ROLLBACK_STARTED must be emitted');
+    // The ROLLBACK_STARTED event must appear before any git revert call.
+    assert.ok(
+      revertCallsBefore.every(callCount => callCount > startedIdx),
+      'ROLLBACK_STARTED must be emitted before any git revert',
+    );
+    db.close();
+  });
+
+  it('emits REVERTED for each successfully reverted repo', async () => {
+    const db = makeDb('audit-reverted.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+    const stages = [makeStage('repo-a'), makeStage('repo-b', ['repo-a'])];
+    const attemptId = seedMergedRepo(store, 'epic-test', stages, [
+      { slug: 'repo-a', sha: 'sha-a' },
+      { slug: 'repo-b', sha: 'sha-b' },
+    ]);
+
+    const auditEvents: Array<{ action: string; detail?: Record<string, unknown> }> = [];
+    const stubs = makeStubs();
+    const reverterWithAudit = new ForwardReverter({
+      projectRoot: '/tmp/project',
+      store,
+      policy: DEFAULT_POLICY,
+      integrationGate: makePassingGate(),
+      allowedRemotes: ['https://github.com/org/*'],
+      repoRoots: { 'repo-a': '/tmp/repo-a', 'repo-b': '/tmp/repo-b' },
+      _execGit: stubs.execGit,
+      _execGh: stubs.execGh,
+      _auditRecord: (e) => auditEvents.push(e),
+    });
+
+    await reverterWithAudit.rollback(attemptId);
+
+    const revertedEvents = auditEvents.filter(e => e.action === 'cross_repo.reverted');
+    assert.equal(revertedEvents.length, 2, 'must emit REVERTED for each reverted repo');
+    const revertedSlugs = revertedEvents.map(e => e.detail?.repoSlug as string);
+    assert.ok(revertedSlugs.includes('repo-a'), 'REVERTED must name repo-a');
+    assert.ok(revertedSlugs.includes('repo-b'), 'REVERTED must name repo-b');
+    db.close();
+  });
+
+  it('emits ROLLED_BACK at the end of a successful rollback', async () => {
+    const db = makeDb('audit-rolled-back.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+    const stages = [makeStage('repo-a')];
+    const attemptId = seedMergedRepo(store, 'epic-test', stages, [
+      { slug: 'repo-a', sha: 'sha-a' },
+    ]);
+
+    const auditEvents: Array<{ action: string }> = [];
+    const stubs = makeStubs();
+    const reverter = new ForwardReverter({
+      projectRoot: '/tmp/project',
+      store,
+      policy: DEFAULT_POLICY,
+      integrationGate: makePassingGate(),
+      allowedRemotes: ['https://github.com/org/*'],
+      repoRoots: { 'repo-a': '/tmp/repo-a' },
+      _execGit: stubs.execGit,
+      _execGh: stubs.execGh,
+      _auditRecord: (e) => auditEvents.push(e),
+    });
+
+    await reverter.rollback(attemptId);
+
+    const rolledBackIdx = auditEvents.findIndex(e => e.action === 'cross_repo.rolled_back');
+    assert.ok(rolledBackIdx >= 0, 'ROLLED_BACK must be emitted');
+    // ROLLED_BACK must be the last audit event.
+    assert.equal(rolledBackIdx, auditEvents.length - 1, 'ROLLED_BACK must be the last audit event');
+    db.close();
+  });
+
+  it('emits STRANDED when a revert PR fails its gate, and DOES NOT emit ROLLED_BACK', async () => {
+    const db = makeDb('audit-stranded.db');
+    seedEpic(db);
+    const store = new LandingStore(db, () => '');
+    const stages = [makeStage('repo-a')];
+    const attemptId = seedMergedRepo(store, 'epic-test', stages, [
+      { slug: 'repo-a', sha: 'sha-a' },
+    ]);
+
+    const auditEvents: Array<{ action: string; detail?: Record<string, unknown> }> = [];
+    const stubs = makeStubs();
+    const reverter = new ForwardReverter({
+      projectRoot: '/tmp/project',
+      store,
+      policy: DEFAULT_POLICY,
+      integrationGate: makeFailingGate(),
+      allowedRemotes: ['https://github.com/org/*'],
+      repoRoots: { 'repo-a': '/tmp/repo-a' },
+      _execGit: stubs.execGit,
+      _execGh: stubs.execGh,
+      _auditRecord: (e) => auditEvents.push(e),
+    });
+
+    const result = await reverter.rollback(attemptId);
+
+    assert.equal(result.status, 'partial');
+    assert.ok(result.stranded, 'stranded must be set');
+
+    const strandedEvent = auditEvents.find(e => e.action === 'cross_repo.stranded');
+    assert.ok(strandedEvent, 'STRANDED must be emitted');
+    assert.equal(strandedEvent!.detail?.repoSlug, 'repo-a', 'STRANDED must name the stranded repo');
+
+    const rolledBackEvent = auditEvents.find(e => e.action === 'cross_repo.rolled_back');
+    assert.equal(rolledBackEvent, undefined, 'ROLLED_BACK must NOT be emitted on strand');
+    db.close();
+  });
+});

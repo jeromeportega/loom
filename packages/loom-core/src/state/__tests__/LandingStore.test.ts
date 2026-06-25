@@ -661,3 +661,111 @@ describe('makeAnchoringMerger — ADR-004: active gh pr merge with SHA capture',
     db.close();
   });
 });
+
+// ─── makeAnchoringMerger audit event (Invariant 5) ───────────────────────────
+//
+// The MERGED audit event must be emitted after each successful recordMerge call.
+
+describe('makeAnchoringMerger — audit event (Invariant 5)', () => {
+  it('emits MERGED after a successful merge, carrying repoSlug and mergeCommitSha', async () => {
+    const db = makeDb('merger-audit.db');
+    seedEpic(db);
+    const store = new LandingStore(db);
+    const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
+
+    const auditEvents: Array<{ action: string; command?: string; detail?: Record<string, unknown> }> = [];
+
+    const merger = makeAnchoringMerger(store, {
+      _ghMerge: () => ({ number: 42, mergeCommitSha: 'sha-audit-test' }),
+      _auditRecord: (e) => auditEvents.push(e),
+    });
+
+    const stage: RepoStage = {
+      repoSlug: 'repo-a',
+      repoRoot: '/tmp',
+      storyIds: ['story-001'],
+      dependsOnRepos: [],
+      status: 'finalizing',
+      prUrl: 'https://github.com/org/repo/pull/42',
+    };
+
+    await merger(stage, id);
+
+    const mergedEvent = auditEvents.find(e => e.action === 'cross_repo.merged');
+    assert.ok(mergedEvent, 'MERGED audit event must be emitted');
+    assert.equal(mergedEvent!.command, id, 'MERGED event command must be the attemptId');
+    assert.equal(mergedEvent!.detail?.repoSlug, 'repo-a', 'MERGED event must carry repoSlug');
+    assert.equal(mergedEvent!.detail?.mergeCommitSha, 'sha-audit-test', 'MERGED event must carry mergeCommitSha');
+    db.close();
+  });
+
+  it('emits MERGED for each of ≥3 repo merges (AC5 scale)', async () => {
+    const db = makeDb('merger-audit-3repos.db');
+    seedEpic(db);
+    const store = new LandingStore(db);
+    const slugs = ['repo-a', 'repo-b', 'repo-c'];
+    const stages = [
+      makeStage('repo-a', '/tmp'),
+      makeStage('repo-b', '/tmp', ['repo-a']),
+      makeStage('repo-c', '/tmp', ['repo-b']),
+    ];
+    const id = store.beginAttempt('epic-test', stages);
+
+    const auditEvents: Array<{ action: string; detail?: Record<string, unknown> }> = [];
+
+    const merger = makeAnchoringMerger(store, {
+      _ghMerge: (prUrl) => {
+        const slug = prUrl.split('/').at(-3) ?? 'unknown';
+        return { number: 1, mergeCommitSha: `sha-${slug}` };
+      },
+      _auditRecord: (e) => auditEvents.push(e),
+    });
+
+    // Merge all 3 repos in topo order.
+    for (const slug of slugs) {
+      const stage: RepoStage = {
+        repoSlug: slug,
+        repoRoot: '/tmp',
+        storyIds: [`story-${slug}-001`],
+        dependsOnRepos: slug === 'repo-a' ? [] : [slug === 'repo-b' ? 'repo-a' : 'repo-b'],
+        status: 'finalizing',
+        prUrl: `https://github.com/org/${slug}/pull/1`,
+      };
+      await merger(stage, id);
+    }
+
+    const mergedEvents = auditEvents.filter(e => e.action === 'cross_repo.merged');
+    assert.equal(mergedEvents.length, 3, 'MERGED must be emitted once per repo');
+    const mergedSlugs = mergedEvents.map(e => e.detail?.repoSlug as string);
+    for (const slug of slugs) {
+      assert.ok(mergedSlugs.includes(slug), `MERGED must include ${slug}`);
+    }
+    db.close();
+  });
+
+  it('does not emit MERGED when no _auditRecord is provided (backwards-compatible)', async () => {
+    const db = makeDb('merger-audit-noop.db');
+    seedEpic(db);
+    const store = new LandingStore(db);
+    const id = store.beginAttempt('epic-test', [makeStage('repo-a', '/tmp')]);
+
+    // No _auditRecord: should not throw.
+    const merger = makeAnchoringMerger(store, {
+      _ghMerge: () => ({ number: 1, mergeCommitSha: 'sha-noop' }),
+      // _auditRecord intentionally omitted
+    });
+
+    const stage: RepoStage = {
+      repoSlug: 'repo-a',
+      repoRoot: '/tmp',
+      storyIds: ['story-001'],
+      dependsOnRepos: [],
+      status: 'finalizing',
+      prUrl: 'https://github.com/org/repo/pull/1',
+    };
+
+    // Must not throw when _auditRecord is absent.
+    await assert.doesNotReject(() => merger(stage, id), 'merger must not throw without _auditRecord');
+    db.close();
+  });
+});
