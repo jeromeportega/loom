@@ -4,10 +4,12 @@ import type { PolicyEngine } from '../guardrails/PolicyEngine.js';
 import type { IntegrationGate } from './IntegrationGate.js';
 import { git } from './git.js';
 import type {
+  AuditRecordFn,
   LandingStorePort,
   RepoMergeRecord,
   RollbackResult,
 } from './landingTypes.js';
+import { CROSS_REPO_ACTIONS } from './landingTypes.js';
 import { collectSkipped, hasConverged } from './rollbackResume.js';
 
 export interface ForwardReverterOptions {
@@ -28,6 +30,12 @@ export interface ForwardReverterOptions {
    * Receives (args, cwd?) and must return stdout as a string.
    */
   _execGh?: (args: string[], cwd?: string) => string;
+  /**
+   * Injectable audit recorder — emits CROSS_REPO_ACTIONS events.
+   * When absent, audit writes are skipped (backwards-compatible).
+   * In production, pass `(e) => auditLog.record(e)`.
+   */
+  _auditRecord?: AuditRecordFn;
 }
 
 /**
@@ -52,6 +60,7 @@ export class ForwardReverter {
   private readonly repoRoots: Record<string, string>;
   private readonly _runGit: (cwd: string, args: string[]) => string;
   private readonly _runGh: (args: string[], cwd?: string) => string;
+  private readonly _auditRecord: AuditRecordFn;
 
   constructor(opts: ForwardReverterOptions) {
     this.store = opts.store;
@@ -67,6 +76,7 @@ export class ForwardReverter {
         ...(cwd ? { cwd } : {}),
       }).trim()
     );
+    this._auditRecord = opts._auditRecord ?? (() => undefined);
   }
 
   /**
@@ -94,6 +104,11 @@ export class ForwardReverter {
     }
 
     this.store.setStatus(attemptId, 'rolling_back');
+    this._auditRecord({
+      action: CROSS_REPO_ACTIONS.ROLLBACK_STARTED,
+      command: attemptId,
+      detail: { pendingCount: pending.length, alreadyRevertedCount: alreadyReverted.length },
+    });
 
     const reverted: RollbackResult['reverted'] = [];
     const skipped: string[] = [...alreadyReverted];
@@ -178,6 +193,11 @@ export class ForwardReverter {
         const gateOutcome = await this.integrationGate.run({ projectRoot: repoRoot });
         if (!gateOutcome.ok) {
           this.store.setStatus(attemptId, 'failed');
+          this._auditRecord({
+            action: CROSS_REPO_ACTIONS.STRANDED,
+            command: attemptId,
+            detail: { repoSlug: record.repoSlug, reason: gateOutcome.summary },
+          });
           return {
             attemptId,
             status: 'partial',
@@ -196,14 +216,29 @@ export class ForwardReverter {
         this.store.markReverted(attemptId, record.repoSlug, revertMergeSha);
 
         reverted.push({ repoSlug: record.repoSlug, revertPrUrl, revertMergeSha });
+        this._auditRecord({
+          action: CROSS_REPO_ACTIONS.REVERTED,
+          command: attemptId,
+          detail: { repoSlug: record.repoSlug, revertPrUrl, revertMergeSha },
+        });
       }
     } catch (err) {
       // Best-effort status update — if the store itself is broken, swallow that error.
       try { this.store.setStatus(attemptId, 'failed'); } catch { /* ignored */ }
+      this._auditRecord({
+        action: CROSS_REPO_ACTIONS.ROLLBACK_FAILED,
+        command: attemptId,
+        detail: { reason: (err as Error).message },
+      });
       throw err;
     }
 
     this.store.setStatus(attemptId, 'rolled_back');
+    this._auditRecord({
+      action: CROSS_REPO_ACTIONS.ROLLED_BACK,
+      command: attemptId,
+      detail: { reverted: reverted.length, skipped: skipped.length },
+    });
     return { attemptId, status: 'rolled_back', reverted, skipped };
   }
 

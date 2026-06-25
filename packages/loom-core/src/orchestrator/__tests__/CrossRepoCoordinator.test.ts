@@ -31,6 +31,7 @@ import {
   type SupervisorLike,
   type FinalizerHandle,
 } from '../CrossRepoCoordinator.js';
+import { isDepReady } from '../crossRepoReadiness.js';
 import { CROSS_REPO_ACTIONS } from '../landingTypes.js';
 import type { WorkspaceManifest, ManifestEntry } from '../../home/workspaceManifest.js';
 import type { Story } from '../../types.js';
@@ -268,6 +269,23 @@ describe('topoSortRepos — producer before consumer', () => {
     const aIdx = sorted.findIndex(s => s.repoSlug === 'repo-a');
     const bIdx = sorted.findIndex(s => s.repoSlug === 'repo-b');
     assert.ok(aIdx < bIdx, 'producer must still come before consumer with duplicate deps');
+  });
+
+  it('throws when a dependsOnRepos entry references a slug not in the stage set', () => {
+    // Unknown dep slug — should fail before any merges, not mid-merge with rollback.
+    const badStages: RepoStage[] = [
+      {
+        repoSlug: 'repo-a',
+        repoRoot: '/repos/repo-a',
+        storyIds: ['s1'],
+        dependsOnRepos: ['repo-does-not-exist'],
+        status: 'pending',
+      },
+    ];
+    assert.throws(
+      () => topoSortRepos(badStages),
+      /unknown dep repo/,
+    );
   });
 
   it('throws when a cycle is detected instead of silently returning input order', () => {
@@ -1020,5 +1038,387 @@ describe('CrossRepoCoordinator.run — MERGE phase partial_landing on failure', 
     // The internal stages are not returned on throw, but we can verify via mergeCallCount
     // that repo-a was attempted (called once) and that the error propagated.
     assert.equal(mergeCallCount, 2, 'mergeRepo called for repo-a (success) then repo-b (throws)');
+  });
+});
+
+// ─── (9) topoSortRepos — ≥3-repo branching ordering CONSTRAINT (AC1/AC3) ─────
+// Tests MUST assert the partial-order invariant (each repo after all its deps)
+// over a branching graph — NOT one fixed sequence. This covers both a strict
+// fan-in (C depends on A and B) and a fan-out (B and C both depend on A).
+
+describe('topoSortRepos — ≥3-repo branching ordering constraint (AC1/AC3)', () => {
+  /** Helper: assert partial-order invariant for every stage in the sorted result. */
+  function assertTopoConstraint(sorted: RepoStage[]): void {
+    const indexBySlug = new Map(sorted.map((s, i) => [s.repoSlug, i]));
+    for (const stage of sorted) {
+      for (const dep of stage.dependsOnRepos) {
+        const stageIdx = indexBySlug.get(stage.repoSlug)!;
+        const depIdx = indexBySlug.get(dep);
+        assert.ok(depIdx !== undefined, `dep ${dep} of ${stage.repoSlug} missing from sorted result`);
+        assert.ok(
+          stageIdx > depIdx,
+          `${stage.repoSlug} (pos ${stageIdx}) must come after its dep ${dep} (pos ${depIdx})`,
+        );
+      }
+    }
+  }
+
+  it('fan-in: C depends on A and B — all three appear and constraint holds (not a fixed permutation)', () => {
+    // DAG: A root, B→[A], C→[A,B].
+    // Only valid topo order: [A, B, C] — constraint is what we assert.
+    const stages: RepoStage[] = [
+      { repoSlug: 'repo-a', repoRoot: '/a', storyIds: ['s1'], dependsOnRepos: [],                  status: 'pending' },
+      { repoSlug: 'repo-b', repoRoot: '/b', storyIds: ['s2'], dependsOnRepos: ['repo-a'],          status: 'pending' },
+      { repoSlug: 'repo-c', repoRoot: '/c', storyIds: ['s3'], dependsOnRepos: ['repo-a', 'repo-b'], status: 'pending' },
+    ];
+    const sorted = topoSortRepos(stages);
+    assert.equal(sorted.length, 3, 'all three stages must appear');
+    assertTopoConstraint(sorted);
+  });
+
+  it('fan-out: B and C both depend on A — A comes first, B and C follow in any order', () => {
+    // DAG: A root, B→[A], C→[A].
+    // Valid orderings: [A, B, C] or [A, C, B] — only constraint is A before B and C.
+    const stages: RepoStage[] = [
+      { repoSlug: 'repo-a', repoRoot: '/a', storyIds: ['s1'], dependsOnRepos: [],         status: 'pending' },
+      { repoSlug: 'repo-b', repoRoot: '/b', storyIds: ['s2'], dependsOnRepos: ['repo-a'], status: 'pending' },
+      { repoSlug: 'repo-c', repoRoot: '/c', storyIds: ['s3'], dependsOnRepos: ['repo-a'], status: 'pending' },
+    ];
+    const sorted = topoSortRepos(stages);
+    assert.equal(sorted.length, 3, 'all three stages must appear');
+    // A must be first (root with no deps).
+    assert.equal(sorted[0].repoSlug, 'repo-a', 'root repo must be first');
+    // Partial-order constraint: B and C each come after A.
+    assertTopoConstraint(sorted);
+  });
+
+  it('four-repo diamond: A root, B→[A], C→[A], D→[B,C] — constraint holds', () => {
+    // DAG: diamond shape. Valid orderings: [A,B,C,D], [A,C,B,D].
+    const stages: RepoStage[] = [
+      { repoSlug: 'repo-a', repoRoot: '/a', storyIds: ['s1'], dependsOnRepos: [],                  status: 'pending' },
+      { repoSlug: 'repo-b', repoRoot: '/b', storyIds: ['s2'], dependsOnRepos: ['repo-a'],          status: 'pending' },
+      { repoSlug: 'repo-c', repoRoot: '/c', storyIds: ['s3'], dependsOnRepos: ['repo-a'],          status: 'pending' },
+      { repoSlug: 'repo-d', repoRoot: '/d', storyIds: ['s4'], dependsOnRepos: ['repo-b', 'repo-c'], status: 'pending' },
+    ];
+    const sorted = topoSortRepos(stages);
+    assert.equal(sorted.length, 4, 'all four stages must appear');
+    assertTopoConstraint(sorted);
+    // D must be last (depends on everyone).
+    assert.equal(sorted[sorted.length - 1].repoSlug, 'repo-d', 'repo-d must be last');
+  });
+});
+
+// ─── (10) isDepReady — fan-in gating with two producers (AC2) ─────────────────
+// A consumer story with two cross-repo producers must wait for BOTH producers'
+// repo stages to reach 'landed'. isDepReady is called once per (consumer, producer)
+// pair; the conjunction of all calls governs dispatchability.
+
+describe('isDepReady — fan-in gating with two producers (AC2)', () => {
+  const THREE_REPO_MANIFEST = manifest([
+    entry('repo-a', { primary: true }),
+    entry('repo-b'),
+    entry('repo-c'),
+  ]);
+  const THREE_REPO_PRIMARY = 'repo-a';
+
+  const storyInA = story('story-010-001', [], 'repo-a');
+  const storyInB = story('story-010-002', [], 'repo-b');
+  // Consumer in repo-c depends on both stories in repo-a and repo-b.
+  const storyInC = story('story-010-003', ['story-010-001', 'story-010-002'], 'repo-c');
+
+  it('returns false for producer A when A stage is not landed', () => {
+    assert.equal(
+      isDepReady(storyInC, storyInA, 'done', 'pending', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY),
+      false,
+    );
+  });
+
+  it('returns false for producer B when B stage is not landed', () => {
+    assert.equal(
+      isDepReady(storyInC, storyInB, 'done', 'finalizing', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY),
+      false,
+    );
+  });
+
+  it('returns true for producer A when A stage is landed', () => {
+    assert.equal(
+      isDepReady(storyInC, storyInA, 'done', 'landed', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY),
+      true,
+    );
+  });
+
+  it('consumer is NOT ready when only A is landed but B is pending (fan-in gate)', () => {
+    const depAReady = isDepReady(storyInC, storyInA, 'done', 'landed', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY);
+    const depBReady = isDepReady(storyInC, storyInB, 'done', 'pending', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY);
+    assert.equal(depAReady, true, 'A dep is ready');
+    assert.equal(depBReady, false, 'B dep is not ready — consumer blocked until BOTH producers landed');
+  });
+
+  it('consumer is NOT ready when only B is landed but A is pending (fan-in gate)', () => {
+    const depAReady = isDepReady(storyInC, storyInA, 'done', 'pending', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY);
+    const depBReady = isDepReady(storyInC, storyInB, 'done', 'landed', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY);
+    assert.equal(depAReady, false, 'A dep is not ready');
+    assert.equal(depBReady, true, 'B dep is ready');
+    assert.equal(depAReady && depBReady, false, 'consumer must not dispatch until BOTH producers landed');
+  });
+
+  it('consumer IS ready when both A and B are landed (fan-in gate)', () => {
+    const depAReady = isDepReady(storyInC, storyInA, 'done', 'landed', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY);
+    const depBReady = isDepReady(storyInC, storyInB, 'done', 'landed', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY);
+    assert.equal(depAReady, true, 'A dep is ready');
+    assert.equal(depBReady, true, 'B dep is ready');
+    assert.equal(depAReady && depBReady, true, 'consumer ready once both producers landed');
+  });
+});
+
+// ─── (11) Integration: ≥3-repo branching dependency landing order (AC1–AC3) ───
+// CrossRepoCoordinator.run with a ≥3-repo branching DAG. Captures the actual
+// merge order and asserts the partial-order invariant (each repo merged only after
+// all its dependsOnRepos have been merged) — NOT one fixed permutation.
+
+describe('CrossRepoCoordinator.run — ≥3-repo branching landing order (AC1–AC3)', () => {
+  let repoDirC: string;
+
+  beforeEach(() => {
+    repoDirC = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-crc-c-'));
+    initRepo(repoDirC);
+  });
+
+  afterEach(() => {
+    fs.rmSync(repoDirC, { recursive: true, force: true });
+  });
+
+  it('(AC1–AC3) merges ≥3 repos in an order satisfying the partial-order invariant', async () => {
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+    const realC = fs.realpathSync(repoDirC);
+
+    // DAG: A is root, B depends on A, C depends on both A and B.
+    // Only valid merge order: A, B, C.
+    const epicStories = [
+      story('story-011-001', [],                               'repo-a'),
+      story('story-011-002', ['story-011-001'],                'repo-b'),
+      story('story-011-003', ['story-011-001', 'story-011-002'], 'repo-c'),
+    ];
+    seedEpicOnDisk(repoDir, 'epic-003', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+        { slug: 'repo-c', path: realC, remote_url: null },
+      ],
+    };
+
+    // Capture the merge order.
+    const mergeOrder: string[] = [];
+    const mergeRepo = async (stage: RepoStage) => {
+      mergeOrder.push(stage.repoSlug);
+      return {
+        attemptId: 'attempt-003',
+        repoSlug: stage.repoSlug,
+        dependsOn: stage.dependsOnRepos,
+        prNumber: 1,
+        prUrl: stage.prUrl ?? null,
+        mergeCommitSha: 'sha',
+        mergeState: 'merged' as const,
+        revertPrUrl: null,
+        revertMergeSha: null,
+        mergedAt: null,
+        revertedAt: null,
+      };
+    };
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: (repoRoot) => ({
+        finalize: async () => {
+          const slug = repoRoot === realA ? 'repo-a' : repoRoot === realB ? 'repo-b' : 'repo-c';
+          return okFinalizeResult(`https://github.com/org/${slug}/pull/1`);
+        },
+      }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+      mergeRepo,
+    });
+
+    const { stages } = await coordinator.run('epic-003');
+
+    // All three repos must be present and landed.
+    assert.equal(stages.length, 3, 'must have three stages');
+    for (const s of stages) {
+      assert.equal(s.status, 'landed', `${s.repoSlug} must be landed`);
+    }
+
+    // All three repos must appear in the merge order.
+    assert.equal(mergeOrder.length, 3, 'mergeRepo called exactly once per repo');
+
+    // Partial-order invariant (AC1–AC3): for every repo, its merge index must be
+    // greater than the merge index of each dependency. Do NOT assert one fixed sequence.
+    const mergeIdx = new Map(mergeOrder.map((slug, i) => [slug, i]));
+
+    // Build the dependsOnRepos map from the resulting stages.
+    const depMap = new Map(stages.map(s => [s.repoSlug, s.dependsOnRepos]));
+
+    for (const [repoSlug, deps] of depMap) {
+      for (const dep of deps) {
+        const consumerIdx = mergeIdx.get(repoSlug)!;
+        const producerIdx = mergeIdx.get(dep)!;
+        assert.ok(
+          consumerIdx > producerIdx,
+          `${repoSlug} (merge pos ${consumerIdx}) must merge after its dep ${dep} (merge pos ${producerIdx})`,
+        );
+      }
+    }
+  });
+
+  it('(AC3-rollback) fan-in violation fires AND triggers rollback when dep status resets mid-merge', async () => {
+    // Defence-in-depth: if a dep's status reverts to non-landed before a consumer's
+    // MERGE iteration, the coordinator must throw the fan-in error AND call rollback.
+    // We simulate a sort-invariant break by having mergeRepo(B) reset A's status from
+    // 'landed' back to 'finalizing'. When C's fan-in check runs it finds A not landed.
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+    const realC = fs.realpathSync(repoDirC);
+
+    const epicStories = [
+      story('story-012-001', [],                               'repo-a'),
+      story('story-012-002', ['story-012-001'],                'repo-b'),
+      story('story-012-003', ['story-012-001', 'story-012-002'], 'repo-c'),
+    ];
+    seedEpicOnDisk(repoDir, 'epic-012', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+        { slug: 'repo-c', path: realC, remote_url: null },
+      ],
+    };
+
+    // Capture stage references so mergeRepo(B) can reset A's status mid-run.
+    // IMPORTANT: this test relies on object identity — the coordinator passes the same
+    // RepoStage reference to mergeRepo that stageBySlug holds. If the coordinator ever
+    // shallow-copies stages before passing them to mergeRepo, this mutation won't affect
+    // the fan-in check and the test will pass vacuously.
+    const stageRefs = new Map<string, RepoStage>();
+    let rollbackCalled = false;
+
+    const mergeRepo = async (stage: RepoStage) => {
+      stageRefs.set(stage.repoSlug, stage);
+      if (stage.repoSlug === 'repo-b') {
+        // Simulate a sort-invariant break: reset A to non-landed so C's fan-in check fires.
+        stageRefs.get('repo-a')!.status = 'finalizing';
+      }
+      return {
+        attemptId: 'attempt-012',
+        repoSlug: stage.repoSlug,
+        dependsOn: stage.dependsOnRepos,
+        prNumber: 1,
+        prUrl: stage.prUrl ?? null,
+        mergeCommitSha: 'sha',
+        mergeState: 'merged' as const,
+        revertPrUrl: null,
+        revertMergeSha: null,
+        mergedAt: null,
+        revertedAt: null,
+      };
+    };
+
+    const rollback = async (_attemptId: string) => {
+      rollbackCalled = true;
+      return {
+        attemptId: _attemptId,
+        status: 'rolled_back' as const,
+        reverted: [] as Array<{ repoSlug: string; revertPrUrl: string; revertMergeSha: string }>,
+        skipped: [] as string[],
+      };
+    };
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: (repoRoot) => ({
+        finalize: async () => {
+          const slug = repoRoot === realA ? 'repo-a' : repoRoot === realB ? 'repo-b' : 'repo-c';
+          return okFinalizeResult(`https://github.com/org/${slug}/pull/1`);
+        },
+      }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+      mergeRepo,
+      rollback,
+    });
+
+    await assert.rejects(
+      () => coordinator.run('epic-012'),
+      /fan-in constraint violated/,
+      'must throw fan-in error when a dep is not landed at consumer merge time',
+    );
+
+    assert.equal(rollbackCalled, true, 'rollback must be invoked when fan-in constraint fires (fix for high finding)');
+  });
+
+  it('(AC4) N=2 resolves to today\'s linear order — producer merges before consumer', async () => {
+    // AC4: the two-repo path must remain exactly [producer, consumer].
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+
+    const epicStories = [
+      story('story-011-004', [],               'repo-a'),   // producer
+      story('story-011-005', ['story-011-004'], 'repo-b'),   // consumer
+    ];
+    seedEpicOnDisk(repoDir, 'epic-004', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+      ],
+    };
+
+    const mergeOrder: string[] = [];
+    const mergeRepo = async (stage: RepoStage) => {
+      mergeOrder.push(stage.repoSlug);
+      return {
+        attemptId: 'attempt-004',
+        repoSlug: stage.repoSlug,
+        dependsOn: stage.dependsOnRepos,
+        prNumber: 1,
+        prUrl: null,
+        mergeCommitSha: 'sha',
+        mergeState: 'merged' as const,
+        revertPrUrl: null,
+        revertMergeSha: null,
+        mergedAt: null,
+        revertedAt: null,
+      };
+    };
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: () => ({
+        finalize: async () => okFinalizeResult('https://github.com/org/repo/pull/1'),
+      }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+      mergeRepo,
+    });
+
+    await coordinator.run('epic-004');
+
+    // N=2: producer (repo-a) must merge before consumer (repo-b) — today's linear order.
+    assert.deepEqual(mergeOrder, ['repo-a', 'repo-b'], 'N=2 must resolve to linear order (AC4)');
   });
 });

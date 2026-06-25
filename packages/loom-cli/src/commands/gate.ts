@@ -1,7 +1,11 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EpicStore, PolicyEngine } from '@loom-ai/core';
+import {
+  EpicStore,
+  PolicyEngine,
+  detectCyclesInEpicYaml,
+} from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 import { printOverlapAdvisory as defaultPrintOverlapAdvisory } from '../crossEpicOverlap.js';
 import { runRun as defaultRunRun, type RunOptions } from './run.js';
@@ -119,6 +123,17 @@ export async function runApprove(
       console.error(`Epic "${displayId}" is "${epic.status}", not "planned" — nothing to approve.`);
       process.exit(1);
     }
+    // Approval-time cycle check (ADR-002, fail-closed seam) — runs before any
+    // state mutation so a cyclic epic is never transitioned to 'approved' and
+    // therefore never dispatched.
+    if (epic.yaml_path) {
+      const projectRoot = path.dirname(loomDir);
+      const cycleErr = detectCyclesInEpicYaml(epic.yaml_path, projectRoot);
+      if (cycleErr) {
+        console.error(`Cannot approve "${displayId}": ${cycleErr}`);
+        process.exit(1);
+      }
+    }
     persistPolicySnapshot(store, loomDir, internalId);
     store.updateStatus(internalId, 'approved');
     console.log(`  approved  ${displayId}: ${epic.title}`);
@@ -148,17 +163,36 @@ export async function runApprove(
     return;
   }
   const projectRoot = path.dirname(loomDir);
+  let approvedCount = 0;
   for (const epic of planned) {
+    // Cycle check before each individual bulk approval.
+    if (epic.yaml_path) {
+      const cycleErr = detectCyclesInEpicYaml(epic.yaml_path, projectRoot);
+      if (cycleErr) {
+        console.error(`  skipped   ${epic.id}: ${cycleErr}`);
+        continue;
+      }
+    }
     persistPolicySnapshot(store, loomDir, epic.id);
     store.updateStatus(epic.id, 'approved');
     // After story-059-002, standalone rows have id='story-NNN' directly.
     console.log(`  approved  ${epic.id}: ${epic.title}`);
     // Advisory only — never blocks the bulk approval.
     printOverlapAdvisory(projectRoot, epic.id);
+    approvedCount += 1;
   }
-  console.log(
-    `\n  ${planned.length} epic(s) approved. Next: run \`loom run <epic-id>\` to dispatch.`
-  );
+  const skippedCount = planned.length - approvedCount;
+  if (approvedCount === 0 && planned.length > 0) {
+    console.error(`\n  0 of ${planned.length} epic(s) approved (all had cycle errors). Resolve cycles and retry.`);
+    process.exit(1);
+  } else {
+    const skippedSuffix = skippedCount > 0
+      ? `, ${skippedCount} skipped (cycle errors — see above)`
+      : '';
+    console.log(
+      `\n  ${approvedCount} of ${planned.length} epic(s) approved${skippedSuffix}. Next: run \`loom run <epic-id>\` to dispatch.`
+    );
+  }
 }
 
 export function runReject(epicId: string, reason: string | undefined): void {
@@ -212,9 +246,9 @@ export const spec: CommandDescription = {
   ],
   exitCodes: [
     { code: 0, meaning: 'Epic(s) approved successfully' },
-    { code: 1, meaning: 'Epic not found, wrong status, or --run without explicit id' },
+    { code: 1, meaning: 'Epic not found, wrong status, --run without explicit id, or cross-repo dependency cycle detected' },
   ],
-  errors: ['Epic not found', 'Epic is not in planned status', '--run requires an explicit epic-id argument', 'loom is not initialized — run `loom init` first'],
+  errors: ['Epic not found', 'Epic is not in planned status', '--run requires an explicit epic-id argument', 'loom is not initialized — run `loom init` first', 'Cross-repo dependency cycle detected — resolve the cycle and retry'],
   relationships: { prerequisites: ['epic'], nextSteps: ['run', 'status'] },
 };
 

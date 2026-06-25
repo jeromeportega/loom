@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import type Database from 'better-sqlite3';
 import type {
+  AuditRecordFn,
   LandingAttempt,
   LandingAttemptStatus,
   LandingBlocker,
@@ -9,6 +10,7 @@ import type {
   MergeState,
   RepoMergeRecord,
 } from '../orchestrator/landingTypes.js';
+import { CROSS_REPO_ACTIONS } from '../orchestrator/landingTypes.js';
 import type { RepoStage } from '../orchestrator/CrossRepoCoordinator.js';
 import { gitSafe } from '../orchestrator/git.js';
 
@@ -306,6 +308,12 @@ export interface AnchoringMergerDeps {
    * call so tests can verify SHA capture without shelling out to GitHub.
    */
   _ghMerge?: (prUrl: string) => { number: number; mergeCommitSha: string };
+  /**
+   * Injectable audit recorder — emits MERGED after each successful merge.
+   * When absent, audit writes are skipped (backwards-compatible).
+   * In production, pass `(e) => auditLog.record(e)`.
+   */
+  _auditRecord?: AuditRecordFn;
 }
 
 /**
@@ -323,6 +331,7 @@ export function makeAnchoringMerger(
   store: LandingStorePort,
   deps: AnchoringMergerDeps,
 ): MergeRepoFn {
+  const auditRecord: AuditRecordFn = deps._auditRecord ?? (() => undefined);
   return async (stage: RepoStage, attemptId: string): Promise<RepoMergeRecord> => {
     if (!stage.prUrl) {
       throw new Error(
@@ -383,6 +392,12 @@ export function makeAnchoringMerger(
       prNumber,
       prUrl: stage.prUrl,
       mergeCommitSha,
+    });
+
+    auditRecord({
+      action: CROSS_REPO_ACTIONS.MERGED,
+      command: attemptId,
+      detail: { repoSlug: stage.repoSlug, prNumber, prUrl: stage.prUrl, mergeCommitSha },
     });
 
     // Return the canonically persisted record so mergedAt reflects the DB clock,

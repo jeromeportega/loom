@@ -20,6 +20,7 @@ export { resolveRepoStatePaths, type RepoStatePaths, type MigrationResult } from
 export { prepareRepoState } from './home/prepareRepoState.js';
 export { migratePlanningScratch } from './home/migrateScratch.js';
 export { registerRepo, readManifest, manifestPath, WorkspaceManifestSchema, type ManifestEntry, type WorkspaceManifest } from './home/workspaceManifest.js';
+export { resolvePrimaryRepo } from './home/primaryRepo.js';
 export { RetrievalService } from './retrieval/RetrievalService.js';
 export { RetrievalRefused, CROSS_REPO_RULES } from './retrieval/types.js';
 export type { RetrievalRequest, SearchResult, ReadResult, ResolvedRepo, SliceBounds } from './retrieval/types.js';

@@ -1,12 +1,12 @@
 /**
- * story-058-008: Single-repo behavior-unchanged proof (NFR-2, permanent obligation).
+ * story-058-008 + story-062-006: Single-repo / N=2 regression proof (NFR-2, permanent obligation).
  *
- * This is the regression test that proves the cross-repo generalizations
- * introduced by epic-058 leave single-repo epics byte-identical in every
- * observable dimension — worktree paths, branch names, SharedContract
- * injection content, and the one-PR-per-epic model.
+ * Proves the N-repo cross-repo generalization (epic-062) leaves single-repo
+ * epics byte-identical in every observable dimension, AND that the two-repo
+ * (N=2) linear ordering is preserved as the expected special case of the
+ * generalized N-repo topological path.
  *
- * Three seams are exercised explicitly:
+ * Five seams are exercised explicitly:
  *   (A) primary-resolution-without-declaration — resolvePrimaryRepo with ONE
  *       registered repo and no `primary: true` flag → resolves to that slug.
  *   (B) wtByRepo-of-one — Supervisor with a single-repo epic populates
@@ -15,6 +15,11 @@
  *   (C) single-RepoStage — buildRepoStages / CrossRepoCoordinator.run() with
  *       a single-repo epic returns exactly one stage with empty dependsOnRepos
  *       and never calls waitForMerge.
+ *   (D) N=1 DAG bypass — CrossRepoCoordinator.run() with N=1 NEVER invokes the
+ *       cross-repo mergeRepo seam (asserting _runCrossRepo was not entered).
+ *   (E) N=2 linear order — buildRepoStages + topoSortRepos for a two-repo
+ *       epic produces exactly 2 stages in producer-before-consumer order; the
+ *       coordinator drives both to 'landed' via the mergeRepo seam.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -44,6 +49,7 @@ import type { WorkspaceManifest, ManifestEntry } from '../../home/workspaceManif
 import type { Story } from '../../types.js';
 import type { SupervisorResult } from '../Supervisor.js';
 import type { FinalizeResult } from '../EpicFinalizer.js';
+import type { RepoMergeRecord } from '../landingTypes.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -341,6 +347,176 @@ describe('buildRepoStages — single-RepoStage path', () => {
     assert.equal(result.stages[0].status, 'landed', 'single stage ends as landed');
     assert.equal(finalizerCalls.length, 1, 'finalizer called exactly once (one PR per repo)');
     assert.equal(waitForMergeCalls.length, 0, 'waitForMerge never called for single-repo epic');
+  });
+});
+
+// ─── SharedContract injection content — byte-identical for single-repo ────────
+//
+// SharedContract.read returns null for an epic with no contract written.
+// When a contract is written it round-trips verbatim. The path and the
+// write/read API are unchanged for single-repo epics.
+
+// ─── (D) N=1 — NEVER enters cross-repo DAG path ──────────────────────────────
+//
+// CrossRepoCoordinator.run() with a single-repo epic must NEVER invoke the
+// cross-repo `mergeRepo` seam (i.e. `_runCrossRepo` is not entered). The
+// `mergeRepo` seam is the unambiguous discriminator: it is only called by
+// `_runCrossRepo`, never by `_runSingleRepo`.
+
+describe('CrossRepoCoordinator N=1 — mergeRepo seam NEVER called (DAG path bypassed)', () => {
+  it('mergeRepo is not invoked for a single-repo epic (direct proof _runCrossRepo was skipped)', async () => {
+    const m = manifest([entry('mono', { primary: true })]);
+    seedEpic(repoDir, 'epic-099', [story('story-099-001')]);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const supervisor: SupervisorLike = {
+      run: async () => okSupervisorResult(),
+    };
+    const finalizerFactory = (_root: string): FinalizerHandle => ({
+      finalize: async () => okFinalizeResult('https://github.com/test/repo/pull/1'),
+    });
+
+    const mergeRepoCalls: string[] = [];
+    const mergeRepo = async (stage: RepoStage, _attemptId: string): Promise<RepoMergeRecord> => {
+      mergeRepoCalls.push(stage.repoSlug);
+      return {
+        attemptId: _attemptId,
+        repoSlug: stage.repoSlug,
+        dependsOn: stage.dependsOnRepos,
+        prNumber: null,
+        prUrl: stage.prUrl ?? null,
+        mergeCommitSha: null,
+        mergeState: 'merged',
+        revertPrUrl: null,
+        revertMergeSha: null,
+        mergedAt: null,
+        revertedAt: null,
+      };
+    };
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor,
+      finalizerFactory,
+      db,
+      manifest: m,
+      primarySlug: 'mono',
+      mergeRepo,
+    });
+
+    const result = await coordinator.run('epic-099');
+
+    assert.equal(result.stages.length, 1, 'exactly one stage');
+    assert.equal(result.stages[0].status, 'landed', 'single stage ends landed');
+    assert.equal(mergeRepoCalls.length, 0,
+      'mergeRepo must NEVER be called for N=1 — proof that _runCrossRepo was not entered');
+  });
+});
+
+// ─── (E) N=2 — two-repo linear ordering preserved ────────────────────────────
+//
+// The N=2 case is the degenerate case of the N-repo generalization introduced
+// by epic-062. The two-repo linear ordering (producer before consumer) must be
+// identical to the pre-generalization behavior — NFR-1.
+
+describe('N=2 two-repo linear ordering preserved (NFR-1)', () => {
+  it('buildRepoStages returns 2 stages for a two-repo epic', () => {
+    const m = manifest([entry('repo-api', { primary: true }), entry('repo-frontend')]);
+    const stories = [
+      story('story-001-001', 'repo-api'),
+      story('story-001-002', 'repo-frontend'),
+    ];
+    const stages = buildRepoStages(stories, m, 'repo-api');
+    assert.equal(stages.length, 2, 'N=2 produces exactly 2 stages');
+    const slugs = new Set(stages.map(s => s.repoSlug));
+    assert.ok(slugs.has('repo-api'), 'repo-api stage present');
+    assert.ok(slugs.has('repo-frontend'), 'repo-frontend stage present');
+  });
+
+  it('topoSortRepos puts the producer stage before the consumer stage', () => {
+    const m = manifest([entry('repo-api', { primary: true }), entry('repo-frontend')]);
+    // story-001-002 depends on story-001-001 which is in repo-api → repo-frontend depends on repo-api
+    const stories = [
+      story('story-001-001', 'repo-api'),
+      story('story-001-002', 'repo-frontend'),
+    ];
+    // Manually set up dependsOn so the DAG has repo-frontend depending on repo-api
+    // (buildRepoDag derives this from cross-repo story.dependencies)
+    const stages = buildRepoStages(stories, m, 'repo-api');
+    // With no cross-repo story.dependencies, stages are independent — both have empty dependsOnRepos.
+    // Verify: adding a cross-repo dependency produces the expected ordering.
+    const storiesWithDep = [
+      story('story-001-001', 'repo-api'),
+      { ...story('story-001-002', 'repo-frontend'), dependencies: ['story-001-001'] },
+    ];
+    const stagesWithDep = buildRepoStages(storiesWithDep, m, 'repo-api');
+    const sorted = topoSortRepos(stagesWithDep);
+    assert.equal(sorted.length, 2, 'topo sort returns 2 stages');
+    assert.equal(sorted[0].repoSlug, 'repo-api', 'producer (repo-api) must come first');
+    assert.equal(sorted[1].repoSlug, 'repo-frontend', 'consumer (repo-frontend) must come second');
+    assert.deepEqual(sorted[1].dependsOnRepos, ['repo-api'],
+      'consumer stage records its producer dependency');
+  });
+
+  it('N=2 coordinator drives both stages to landed via mergeRepo in producer-first order', async () => {
+    // Two repos: repo-api (primary, producer) and repo-frontend (consumer with cross-repo dep).
+    const m = manifest([entry('repo-api', { primary: true }), entry('repo-frontend')]);
+    // story-001-002 depends on story-001-001 (cross-repo dep → repo-frontend after repo-api)
+    const storiesWithDep: Story[] = [
+      story('story-001-001', 'repo-api'),
+      { ...story('story-001-002', 'repo-frontend'), dependencies: ['story-001-001'] },
+    ];
+    seedEpic(repoDir, 'epic-099', storiesWithDep);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const supervisor: SupervisorLike = {
+      run: async () => okSupervisorResult(),
+    };
+    // Both stages share one repo root in this test (the primary repoDir).
+    // The finalizer exposes stageForLanding so the coordinator uses it.
+    const finalizerFactory = (_root: string): FinalizerHandle => ({
+      finalize: async () => okFinalizeResult(),
+      stageForLanding: async () => okFinalizeResult('https://github.com/test/repo/pull/2'),
+    });
+
+    const mergeOrder: string[] = [];
+    const mergeRepo = async (stage: RepoStage, attemptId: string): Promise<RepoMergeRecord> => {
+      mergeOrder.push(stage.repoSlug);
+      return {
+        attemptId,
+        repoSlug: stage.repoSlug,
+        dependsOn: stage.dependsOnRepos,
+        prNumber: null,
+        prUrl: stage.prUrl ?? null,
+        mergeCommitSha: null,
+        mergeState: 'merged',
+        revertPrUrl: null,
+        revertMergeSha: null,
+        mergedAt: null,
+        revertedAt: null,
+      };
+    };
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor,
+      finalizerFactory,
+      db,
+      manifest: m,
+      primarySlug: 'repo-api',
+      mergeRepo,
+    });
+
+    const result = await coordinator.run('epic-099');
+
+    assert.equal(result.stages.length, 2, 'N=2 produces exactly 2 stages');
+    const statuses = Object.fromEntries(result.stages.map(s => [s.repoSlug, s.status]));
+    assert.equal(statuses['repo-api'], 'landed', 'producer stage landed');
+    assert.equal(statuses['repo-frontend'], 'landed', 'consumer stage landed');
+
+    assert.equal(mergeOrder.length, 2, 'mergeRepo called exactly twice for N=2');
+    assert.equal(mergeOrder[0], 'repo-api', 'producer merged first (topo order preserved)');
+    assert.equal(mergeOrder[1], 'repo-frontend', 'consumer merged second (topo order preserved)');
   });
 });
 

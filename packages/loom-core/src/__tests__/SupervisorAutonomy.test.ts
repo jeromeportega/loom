@@ -15,6 +15,14 @@ import { approveAndDispatch } from '../orchestrator/actions/approveAndDispatch.j
 import { resumeEpic } from '../orchestrator/actions/resumeEpic.js';
 import { PolicyEngine } from '../guardrails/index.js';
 import type { Story } from '../types.js';
+import type { WorkspaceManifest } from '../home/workspaceManifest.js';
+
+// Minimal single-repo manifest for tests that call approveAndDispatch with actor:'human'.
+// No cross-repo edges means validateCrossRepoEdges returns [] — cycle check passes.
+const SINGLE_REPO_MANIFEST: WorkspaceManifest = {
+  version: 1,
+  repos: [{ slug: 'repo-mono', path: '/repos/repo-mono', remote_url: null, primary: true }],
+};
 
 let repo: string;
 
@@ -168,9 +176,17 @@ describe('Supervisor autonomy modes', () => {
     const auditLog = new AuditLog(db);
     const policy = PolicyEngine.load(loomDir).policyData;
 
-    // Human approve path: create epic-001 in planned state and call approveAndDispatch directly
-    seedEpicPlanned('epic-001', [story('story-001-001')]);
-    await approveAndDispatch({ epicStore, auditLog, policy }, 'epic-001', { actor: 'human' });
+    // Human approve path: create epic-001 in planned state and call approveAndDispatch directly.
+    // Supply a single-repo manifest so the discriminated-union actor:'human' signature is
+    // satisfied; no cross-repo edges means the cycle check passes immediately.
+    const storyFixture = story('story-001-001');
+    seedEpicPlanned('epic-001', [storyFixture]);
+    await approveAndDispatch({ epicStore, auditLog, policy }, 'epic-001', {
+      actor: 'human',
+      stories: [storyFixture],
+      manifest: SINGLE_REPO_MANIFEST,
+      primarySlug: 'repo-mono',
+    });
 
     const humanRows = auditLog.recent(50).filter((r) => r.action === 'epic_approved' && r.command === 'epic-001');
     assert.equal(humanRows.length, 1, 'human approve must write one epic_approved row');
