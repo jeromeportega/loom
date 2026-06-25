@@ -1,6 +1,6 @@
 {
   "name": "@loom-ai/web",
-  "version": "5.43.0",
+  "version": "6.0.0",
   "description": "Loom web dashboard — local Express + vanilla-JS UI over the SQLite state",
   "license": "UNLICENSED",
   "homepage": "https://github.com/jeromeportega/loom",
@@ -16,7 +16,7 @@
   },
   "files": ["dist", "public"],
   "dependencies": {
-    "@loom-ai/core": "^5.43.0",
+    "@loom-ai/core": "^6.0.0",
     "express": "^4.19.2"
   },
   "devDependencies": {
