@@ -1036,7 +1036,8 @@ describe('topoSortRepos — ≥3-repo branching ordering constraint (AC1/AC3)', 
     for (const stage of sorted) {
       for (const dep of stage.dependsOnRepos) {
         const stageIdx = indexBySlug.get(stage.repoSlug)!;
-        const depIdx = indexBySlug.get(dep)!;
+        const depIdx = indexBySlug.get(dep);
+        assert.ok(depIdx !== undefined, `dep ${dep} of ${stage.repoSlug} missing from sorted result`);
         assert.ok(
           stageIdx > depIdx,
           `${stage.repoSlug} (pos ${stageIdx}) must come after its dep ${dep} (pos ${depIdx})`,
@@ -1133,8 +1134,7 @@ describe('isDepReady — fan-in gating with two producers (AC2)', () => {
     const depAReady = isDepReady(storyInC, storyInA, 'done', 'landed', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY);
     const depBReady = isDepReady(storyInC, storyInB, 'done', 'pending', THREE_REPO_MANIFEST, THREE_REPO_PRIMARY);
     assert.equal(depAReady, true, 'A dep is ready');
-    assert.equal(depBReady, false, 'B dep is not ready');
-    assert.equal(depAReady && depBReady, false, 'consumer must not dispatch until BOTH producers landed');
+    assert.equal(depBReady, false, 'B dep is not ready — consumer blocked until BOTH producers landed');
   });
 
   it('consumer is NOT ready when only B is landed but A is pending (fan-in gate)', () => {
@@ -1257,6 +1257,92 @@ describe('CrossRepoCoordinator.run — ≥3-repo branching landing order (AC1–
         );
       }
     }
+  });
+
+  it('(AC3-rollback) fan-in violation fires AND triggers rollback when dep status resets mid-merge', async () => {
+    // Defence-in-depth: if a dep's status reverts to non-landed before a consumer's
+    // MERGE iteration, the coordinator must throw the fan-in error AND call rollback.
+    // We simulate a sort-invariant break by having mergeRepo(B) reset A's status from
+    // 'landed' back to 'finalizing'. When C's fan-in check runs it finds A not landed.
+    const realA = fs.realpathSync(repoDir);
+    const realB = fs.realpathSync(repoDirB);
+    const realC = fs.realpathSync(repoDirC);
+
+    const epicStories = [
+      story('story-012-001', [],                               'repo-a'),
+      story('story-012-002', ['story-012-001'],                'repo-b'),
+      story('story-012-003', ['story-012-001', 'story-012-002'], 'repo-c'),
+    ];
+    seedEpicOnDisk(repoDir, 'epic-012', epicStories);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const mf: WorkspaceManifest = {
+      version: 1,
+      repos: [
+        { slug: 'repo-a', path: realA, remote_url: null, primary: true },
+        { slug: 'repo-b', path: realB, remote_url: null },
+        { slug: 'repo-c', path: realC, remote_url: null },
+      ],
+    };
+
+    // Capture stage references so mergeRepo(B) can reset A's status mid-run.
+    const stageRefs = new Map<string, RepoStage>();
+    let rollbackCalled = false;
+
+    const mergeRepo = async (stage: RepoStage) => {
+      stageRefs.set(stage.repoSlug, stage);
+      if (stage.repoSlug === 'repo-b') {
+        // Simulate a sort-invariant break: reset A to non-landed so C's fan-in check fires.
+        stageRefs.get('repo-a')!.status = 'finalizing';
+      }
+      return {
+        attemptId: 'attempt-012',
+        repoSlug: stage.repoSlug,
+        dependsOn: stage.dependsOnRepos,
+        prNumber: 1,
+        prUrl: stage.prUrl ?? null,
+        mergeCommitSha: 'sha',
+        mergeState: 'merged' as const,
+        revertPrUrl: null,
+        revertMergeSha: null,
+        mergedAt: null,
+        revertedAt: null,
+      };
+    };
+
+    const rollback = async (_attemptId: string) => {
+      rollbackCalled = true;
+      return {
+        attemptId: _attemptId,
+        status: 'rolled_back' as const,
+        reverted: [] as Array<{ repoSlug: string; revertPrUrl: string; revertMergeSha: string }>,
+        skipped: [] as string[],
+      };
+    };
+
+    const coordinator = new CrossRepoCoordinator({
+      projectRoot: repoDir,
+      supervisor: { run: async () => okResult() },
+      finalizerFactory: (repoRoot) => ({
+        finalize: async () => {
+          const slug = repoRoot === realA ? 'repo-a' : repoRoot === realB ? 'repo-b' : 'repo-c';
+          return okFinalizeResult(`https://github.com/org/${slug}/pull/1`);
+        },
+      }),
+      db,
+      manifest: mf,
+      primarySlug: 'repo-a',
+      mergeRepo,
+      rollback,
+    });
+
+    await assert.rejects(
+      () => coordinator.run('epic-012'),
+      /fan-in constraint violated/,
+      'must throw fan-in error when a dep is not landed at consumer merge time',
+    );
+
+    assert.equal(rollbackCalled, true, 'rollback must be invoked when fan-in constraint fires (fix for high finding)');
   });
 
   it('(AC4) N=2 resolves to today\'s linear order — producer merges before consumer', async () => {
