@@ -6,10 +6,6 @@ Tracking deferred work and known edge cases. Each item has a deferral reason and
 
 ## State layer
 
-**Module-level DB singleton in `Database.ts`**
-- `_db: Database | null` is a module-scoped variable. Fine for the single-repo CLI; would break if loom ever ran multiple repos in one process.
-- **Revisit when**: we add multi-repo orchestration or daemon mode.
-
 **`loom status` only shows the latest agent per story**
 - `AgentStore.getByStory` returns the most recent attempt, hiding retries.
 - **Revisit when**: retry analytics or failure patterns become a debugging need.
@@ -62,11 +58,6 @@ Tracking deferred work and known edge cases. Each item has a deferral reason and
   context broadcast to many agents in Epic 3 and skill manifests in Epic 5.
 - **Revisit when**: implementing Epic 3 worker dispatch — cache the project context.
 
-**`loom_start_epic` blocks the MCP client**
-- The MCP tool runs the planner to completion (minutes) before returning. The server
-  stays responsive but the calling client may hit a tool-call timeout.
-- **Revisit when**: Epic 4 — consider returning a run id immediately and polling.
-
 **Concurrent planning runs can race on epic numbering**
 - `Planner.nextEpicId()` reads-then-writes; two runs started together could collide on
   the epics primary key. Fails loudly (no data corruption); low likelihood.
@@ -89,23 +80,6 @@ Tracking deferred work and known edge cases. Each item has a deferral reason and
 
 ## Story dispatch (Epic 3)
 
-**Worker guardrails require `loom` on PATH — operational prerequisite**
-- Real workers run `claude --permission-mode bypassPermissions`; the loom guard hook
-  (`loom guard hook` in `.claude/settings.json`) is the structural safety net. If
-  `loom` is not on the worker's PATH, the hook cannot execute and **workers run
-  unguarded**.
-- **Before running real workers, install loom globally** (`npm link` from the repo,
-  or `npm i -g loom-ai`).
-- **Revisit when**: Epic 6 — `loom init` should write an absolute path to the loom
-  binary into the hook command, removing the PATH dependency.
-
-**Worktrees are never cleaned up automatically**
-- The Supervisor creates one worktree per story and never removes it. `.loom/worktrees/`
-  grows over time. `WorktreeManager.remove()` exists but nothing calls it.
-- Intentional — worktrees are needed to review un-merged work.
-- **Revisit when**: add a `loom clean` command to remove worktrees for merged/closed
-  stories.
-
 **`ClaudeCodeWorker` subprocess flow is not CI-tested**
 - The `claude` spawn and the push / `gh pr create` flow only run against a real
   environment with `claude` and `gh` installed. Prompt building and result
@@ -122,39 +96,12 @@ Tracking deferred work and known edge cases. Each item has a deferral reason and
 
 ---
 
-## MCP server (Epic 4)
-
-**`loom_start_epic` blocks the calling MCP client**
-- Planning (~5 min) runs synchronously within the tool call. `loom_approve_plan`, by
-  contrast, dispatches in the background and returns immediately.
-- The asymmetry is deliberate — planning is bounded and returns a needed result.
-- **Revisit when**: a real MCP client's tool-call timeout proves shorter than a
-  planning run (verify against Cursor in Epic 6).
-
-**`loom_get_status` story title mirrors the story id**
-- The `agents` table does not store the story title; the status tree repeats the id.
-- **Revisit when**: polishing the Epic 6 dashboard — store the title or read the YAML.
-
-**The stdio transport wiring is not unit-tested**
-- `startMcpServer()` / `productionContext()` are thin SDK glue. The 7 handlers (the
-  logic) are fully tested via injected mocks.
-
----
-
 ## IDE integrations (Epic 6)
 
 **The hook's absolute loom path goes stale if loom is reinstalled**
 - `loom init` writes `node "<absolute dist/index.js>" guard hook` so the guardrail
   fires without `loom` on PATH. If loom is moved or reinstalled elsewhere, the path
   is stale — re-run `loom init` to refresh it.
-
-**Slash commands assume the loom MCP server is connected**
-- The `/loom-*` skills call `loom_*` MCP tools (with a CLI fallback). A normal
-  `loom init` writes both `.mcp.json` and the skills, so they stay consistent.
-
-**Claude Code project-MCP discovery path**
-- loom writes a project-root `.mcp.json`. Confirm this matches the current Claude Code
-  release's project-scoped MCP discovery during real-world use.
 
 ---
 
@@ -233,10 +180,6 @@ Tracking deferred work and known edge cases. Each item has a deferral reason and
 - Worker bash commands are audited into the worktree's DB, not the main DB (the Epic 3
   audit-fragmentation issue). `SkillGenerator` uses the story spec + worker summary +
   log tail instead. Adequate, but thinner than a full trace.
-
-**Skill generation costs one Haiku call per successful story**
-- No opt-out beyond unsetting `ANTHROPIC_API_KEY`. A `policy.agents.skill_generation`
-  toggle (on/off/sampled) is the planned control.
 
 **`SkillSelector` uses shallow keyword matching**
 - Token overlap with a stopword list — no stemming or embeddings. The interface is
@@ -348,6 +291,6 @@ Tracking deferred work and known edge cases. Each item has a deferral reason and
 
 - Multi-machine agent coordination (current scope: single machine)
 - Windows native support (current scope: macOS/Linux)
-- Web UI / hosted dashboard
+- Hosted dashboard (local `loom web` dashboard shipped)
 - Provider abstraction (Anthropic-only for V1; LiteLLM later if needed)
 - Automated PR merging (always human-merged for V1)

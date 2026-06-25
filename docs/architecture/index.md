@@ -104,7 +104,7 @@ graph TD
 | Layer | Technology | Rationale |
 |---|---|---|
 | Language | TypeScript (Node.js 20+) | MCP SDK is TypeScript-first; npm packaging; broad LSP support |
-| LLM API | Anthropic SDK (`@anthropic-ai/sdk`) | Claude 4.x; prompt caching; extended thinking for complex planning |
+| LLM API | Anthropic SDK (`@anthropic-ai/sdk`) | the latest Claude models; prompt caching; extended thinking for complex planning |
 | MCP Server | `@modelcontextprotocol/sdk` | IDE-agnostic; Cursor + Claude Code both support MCP stdio |
 | State/Audit | `better-sqlite3` + FTS5 | Local, zero-dep, synchronous API suits Node.js single-threaded model |
 | CLI | `commander` + `chalk` + `cli-table3` | Minimal, well-maintained, LSP-friendly |
@@ -443,5 +443,5 @@ loom epic "brief text"           # starts planning pipeline
 
 **Decision**: Only Claude models via Anthropic SDK for V1.
 **Context**: User is experimenting with Claude Code; the planning methodology is LLM-agnostic in principle but loom needs a concrete implementation.
-**Rationale**: Prompt caching is Anthropic-specific and material to cost; Claude Sonnet 4.6 excels at code generation. Provider abstraction adds complexity without V1 benefit.
+**Rationale**: Prompt caching is Anthropic-specific and material to cost; the latest Claude models excel at code generation. Provider abstraction adds complexity without V1 benefit.
 **Tradeoff**: Users on OpenAI or Gemini can't use V1. V2 can add provider abstraction via LiteLLM.

@@ -107,12 +107,34 @@ options.0.name: option name must match ^--[a-z][a-z0-9-]*$
 
 `packages/loom-cli/src/describe/workflows.ts` exports `WORKFLOWS: Workflow[]`
 — a fixed set of multi-step sequences (plan, approve, run, status, retry,
-reconcile) that represent common operator patterns. Each step's `command`
-field must exactly match a `CommandDescription.name` from `collectSpecs()`.
+reconcile, migrate, cost) that represent common operator patterns. Each step's
+`command` field must exactly match a `CommandDescription.name` from
+`collectSpecs()`.
+
+### Key operator sequences
+
+| Sequence | Commands | Notes |
+|---|---|---|
+| **Standard epic** | `loom epic` → `loom approve` → `loom run` → `loom status` | The canonical planning-to-execution loop |
+| **Cross-repo epic** | same as standard, but stories carry `repo: <slug>` | `loom run` partitions per-repo stages in topological order; one PR per repo |
+| **Migrate to loom-home** | `loom migrate [--dry-run]` | Ensures loom-home exists, migrates DB + planning scratch, registers repo in workspace manifest (`<loom-home>/workspace.yaml`). Idempotent. |
+| **Cost inspection** | `loom cost [--epic <id>] [--aggregate] [--json]` | Read-only: per-phase cost, token, and wall-time breakdown; cross-run statistics with `--aggregate`. Never mutates state. |
+| **Stall recovery** | `loom stop` / `loom retry <story-id>` | Loom auto-retries stalled workers up to `policy.agents.stall_recovery_budget` times (default 2); once exhausted, surfaces for manual `loom retry`. |
+| **Standalone story** | `loom weave "<brief>"` (with `policy.agents.intake_routing` set to `advisory`) | Lightweight path for story-sized briefs: no PM/PRD, no decomposition; produces one PR under a `story-NNN` id. |
+
+### Cross-repo execution
+
+When an epic spans multiple registered repositories, set `repo: <slug>` on
+individual stories in the epic YAML. `loom run` coordinates work across all
+registered repos — stored in the workspace manifest (`<loom-home>/workspace.yaml`,
+written by `loom init`) — dispatching per-repo stages in topological dependency
+order. A `CommandDescription` for cross-repo-aware commands should document the
+`repo` field and the `loom init` workspace-registration prerequisite in its
+`relationships.prerequisites` list.
 
 ## The manifest
 
-`loom describe` assembles a `Manifest` — `{ loomVersion, source, commands, workflows }`
+The `describe` subcommand assembles a `Manifest` — `{ loomVersion, source, commands, workflows }`
 — by calling `buildManifest(program)`. The manifest is validated against
 `ManifestSchema` before emission. `source` is always the literal
 `'live-commander-registry'` to mark that the data came from the live

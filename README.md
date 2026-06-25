@@ -1,12 +1,14 @@
 # Loom
 
-**A self-learning, autonomous agentic engineering system.**
+**A self-learning, self-healing, cross-repo agentic engineering system.**
 
 Write a one-paragraph brief. Approve the plan. Agents deliver the epic — planning,
 implementation, tests, and pull requests — while you stay in control.
 
 Loom orchestrates Claude Code and Cursor: it turns an interactive coding assistant
-into an unattended, auditable, self-improving epic-delivery system.
+into an unattended, auditable, self-improving epic-delivery system. Work can span
+multiple repositories in a single brief; planning artifacts live in the loom-home
+control plane; cost is tracked and queryable via `loom cost`.
 
 ```bash
 npm install -g loom-ai          # see Install below
@@ -91,10 +93,10 @@ AI-forward orgs still want to see deliberate cost control. Loom bakes it in:
   the gate for a single run — the refiner still runs and its critique is
   audit-logged. The override is a per-invocation escape hatch, not a disable
   switch; only the threshold is tunable per repo.
-- **Tiered model routing, not all-Opus.** Opus 4.7 (xhigh) only on the planner, where
-  reasoning depth matters most. Sonnet 4.6 on story execution. Haiku 4.5 on the
-  cheap meta-work (skill generation, the skill judge). Configurable per role in
-  `.loom/policy.yaml`.
+- **Tiered model routing, not all-top-tier.** The planner runs on the latest Claude models
+  at the highest reasoning tier, where depth matters most. Story execution uses the
+  mid-tier; meta-work (skill generation, the skill judge) uses the lightweight tier.
+  Configurable per role in `.loom/policy.yaml`.
 - **Planner token tracking, per epic.** Every planning run records input / output /
   cached tokens and wall-clock time on the epic row. `loom status` displays it so
   cost is visible, not buried.
@@ -114,10 +116,10 @@ if you need a roll-up today.
 | Capability | How |
 |---|---|
 | **Plan** | Analyst → PM → Architect personas turn a brief into a PRD, an architecture, and a story breakdown |
-| **Build** | Parallel story agents implement, test, and merge — each isolated in its own git worktree; one PR per epic |
+| **Build** | Parallel story agents implement, test, and merge — each isolated in its own git worktree. A single-repo epic produces one pull request; a cross-repo epic produces one pull request per repository, landed in dependency order with all-ready-or-none staging. |
 | **Learn** | A curated skill library auto-injects into worker agents; new skills are extracted from successful work and gated by an eval harness (the lifecycle runs internally — no user-facing CRUD surface today) |
 | **Supervise** | `loom status`, checkpoints, and `loom stop` keep you in control; `loom status --all` spans every repo on the machine |
-| **Observe** | Local web dashboard (`loom web`) for visibility into running agents, planning artifacts, and history |
+| **Observe** | Local web dashboard (`loom web`) for visibility into running agents, planning artifacts, and history; `loom cost` for per-epic cost and token breakdown |
 | **Integrate** | Provisions your org's approved MCP servers for worker agents via `loom mcp add` |
 
 ---
@@ -284,38 +286,27 @@ The same live tail is written to the DB, so any other window can read it — `lo
 status` (or `loom web`) shows the latest stdout/stderr from every *running*
 worker, not only the post-mortem after it finishes.
 
-### Where loom writes things in your repo
+### Where loom writes things
 
-Two locations, deliberately separated:
+`.loom/` holds **working state** — SQLite DB, per-story worktrees, in-progress
+planning artifacts. Local to your machine, mostly gitignored.
 
-- `.loom/` — **working state**. SQLite DB, per-story worktrees, in-progress
-  planning artifacts. Local to your machine, mostly ignored by `loom init`'s
-  gitignore block.
-- `.loom_outputs/<epic-id>/` — **delivered record**. When an epic
-  successfully completes, the EpicFinalizer copies its `project-brief.md`,
-  `prd.md`, `architecture.md`, and `epic.yaml` here and commits them as
-  part of the epic PR. Stale plans for rejected or in-progress epics never
-  reach this directory.
-
-The namespaced `.loom_outputs/` prefix keeps loom artifacts out of your
-team's `docs/` tree and easy to find. Future briefs can reference the
-delivered architecture by pasting the relevant excerpts inline — every
+Delivered artifacts live in the loom-home control plane; target repositories receive only code pull requests. The loom-home path defaults to a sibling of
+the project root (e.g. `~/repos/loom-home`); override with `policy.loom_home`.
+Future briefs can reference the delivered architecture from loom-home — every
 delivered epic becomes a referenceable seed for related work.
 
-### One PR per epic
+### How pull requests land
 
-Loom ships **one PR per epic**, not one PR per story. Worker agents
-commit on isolated story branches; when the whole epic succeeds, the
-`EpicFinalizer` merges those branches into `epic/<epic-id>` in dependency
-order and opens a single PR with the full work. Story commits are preserved on
-the epic branch so reviewers can still see each unit; they just don't have to
-chase N PRs to review one logical change.
+A single-repo epic produces one pull request. A cross-repo epic produces one pull request per repository, landed in topological (dependency) order with all-ready-or-none staging and forward-revert rollback.
 
-On a merge conflict between two story branches, the finalizer aborts that
-specific merge and lists the conflicted story in the epic PR description for
-follow-up — the rest of the epic still ships.
+Worker agents commit on isolated story branches; the `EpicFinalizer` merges
+those branches in dependency order. Story commits are preserved on the epic
+branch so reviewers can see each unit. On a merge conflict, the finalizer
+aborts that specific merge and lists the conflicted story in the epic PR
+description for follow-up — the rest of the epic still ships.
 
-`policy.agents.pr_strategy` is the knob; only `per-epic` is accepted.
+`policy.agents.pr_strategy` is the knob; only `per-epic` is accepted (one PR per repository for cross-repo epics; the landing order is controlled by the coordinator, not this knob).
 
 ### The local web dashboard — `loom web`
 
@@ -366,14 +357,17 @@ Developer-tool binaries (separate from the main `loom` CLI):
 
 Loom is a TypeScript monorepo: `loom-core` (orchestration), `loom-cli` (the `loom`
 command — the usability surface), `loom-web` (the local dashboard — the observability
-surface). It uses SQLite for state (`.loom/loom.db`, auto-created — no DB server, no
-Docker). Worker agents are `claude` CLI sessions (or `cursor-agent`, with the
-`cursor-cli` backend) in git worktrees. The skill system learns reusable patterns from
-completed work, gated by an eval harness and a candidate→active→disabled lifecycle.
+surface). State lives in the loom-home control plane (auto-created SQLite — no DB
+server, no Docker). Worker agents are `claude` CLI sessions (or `cursor-agent`, with
+the `cursor-cli` backend) in git worktrees. The skill system learns reusable patterns
+from completed work, gated by an eval harness and a candidate→active→disabled lifecycle
+— self-healing against skill degradation over time.
 
-Beyond a single repo: `loom status --all` aggregates every loom repo on the machine,
-and a per-machine config (`~/.loom/config.json`) can cap worker concurrency across
-all of them so several products do not exhaust your Claude session at once.
+Cross-repo: a single brief can span N registered repositories. The cross-repo coordinator
+partitions stories into per-repo stages, sorts them topologically so producers land before
+consumers, and applies all-ready-or-none staging with forward-revert rollback on failure.
+`loom status --all` aggregates every loom repo on the machine, and a per-machine config
+(`~/.loom/config.json`) can cap worker concurrency across all of them.
 
 ## Documentation
 
