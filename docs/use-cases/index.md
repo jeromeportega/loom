@@ -95,10 +95,10 @@ mobile team disables PRs entirely; platform team requires
 
 Loom's brief is the only planning input. If you have prior architecture
 decisions, research, or a delivered epic to anchor the new work, paste
-the relevant excerpts directly into the brief. Past epics' artifacts
-live under `.loom_outputs/<epic-id>/` (brief, PRD, architecture, epic
-YAML) — open them, lift what matters, fold it into the new brief's
-constraints.
+the relevant excerpts directly into the brief. Delivered artifacts live in the loom-home control plane; target repositories receive only code pull requests.
+Past epics' planning artifacts (brief, PRD, architecture, epic YAML) are in
+loom-home under `repos/<slug>/<epic-id>/` — open them, lift what matters,
+fold it into the new brief's constraints.
 
 The same goes for mockups: chat clients (Claude Code, Cursor) that accept
 pasted images can translate the image into prose themselves before
