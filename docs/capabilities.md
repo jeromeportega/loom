@@ -117,6 +117,7 @@ One interface over the engine:
 | **Per-story signal ledger** | `.loom/signals/<story-id>.md` (observe-only) | Generated at story completion: cost tier, review steps, and heuristics (diff_lines, diff_files, tests_green_first_try, risky_paths_touched). **Observe-only — the ledger does NOT influence execution** (NFR-1); loom reads signals back only for rendering the PR body section. Covered by the existing `.loom/` gitignore (never committed). The same signals are also written durably to `audit_log` (`action='story_signals'`), readable via `loom audit`. |
 | **Durable worker log** | `.loom/logs/<story-id>.log` / `agents.log_bytes` in DB | Full post-redaction streamed output for each worker is appended to a per-story file under `.loom/logs/` as it is produced. The file is never overwritten or truncated at completion — it always holds 100% of the stream. `agents.log_bytes` in the DB records the authoritative post-redaction byte length and serves as the durable seek offset for consumers reading the file without a full re-stat. Redaction runs once before any write (DB tail or file). Files are covered by the `.loom/logs/` gitignore block and never committed. |
 | **Audit log** | `loom audit [--story <id>] [--agent <id>]` | Every command, every policy check, every status change — structured rows for incident review. |
+| **Cost and timing breakdown** | `loom cost [--run <id>] [--epic <id>] [--aggregate] [--json]` | Strictly read-only. Without flags: lists recent runs with per-phase cost, token, and wall-time breakdown. `--run <id>` scopes to a single run. `--epic <id>` scopes the run list to one epic. `--aggregate` shows cross-run statistics computed at query time from raw rows: median planning cost by intake verdict, time share by phase, and retry/auto-recovery cost totals (ADR-5, no rollup tables). `--json` emits machine-readable output. Never mutates state or triggers orchestration. |
 | **Decision traces (worker reasoning)** | `loom traces --story <id> \| --agent <id> \| --epic <id>` | Replayable worker reasoning captured to SQLite. |
 | **Per-story decision traces and audit in dashboard** | Epic detail view → **Story observability** section | Within a running or completed epic's detail view, a **Story observability** section renders collapsible **Decision traces** and **Audit log** panels per story. Traces are fetched in one call (`GET /api/epics/:id/traces`, grouped by `story_id` client-side); audit is fetched per-agent (`GET /api/agents/:id/audit`) and merged in timestamp order. Complements the `loom traces` and `loom audit --story <id>` CLI commands. |
 | **Skills library board** | Skills tab in `loom web` | Browser view of every bundled, project, global, generated, and shared skill — name, description, source, lifecycle badge, and track record (injected / succeeded / failed counts). Click a skill name to open a per-skill history timeline (`GET /api/skills/:name/history`) showing generated, lifecycle, and injection events in chronological order. Read-only in `--read-only` mode. |
@@ -303,6 +304,7 @@ truth.
 `loom artifacts`
 `loom audit`
 `loom autonomy`
+`loom cost`
 `loom diff`
 `loom doctor`
 `loom epic`
