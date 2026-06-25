@@ -17,6 +17,7 @@ import {
 import type { GlobalLimiter, LimiterSlot } from '../state/index.js';
 import { withRunMetrics } from '../metrics/withRunMetrics.js';
 import { activeCollector } from '../metrics/activeCollector.js';
+import { startPhase, endPhase } from '../metrics/timing.js';
 import { toLLMUsage } from '../metrics/workerUsage.js';
 import { EpicYamlSchema, type Story, type AgentStatus } from '../types.js';
 import { approveAndDispatch } from './actions/approveAndDispatch.js';
@@ -793,10 +794,12 @@ export class Supervisor {
    * epic_pr_url != null`).
    */
   private async finalizeAndGateDone(epicId: string): Promise<void> {
+    startPhase('finalize');
     let fin;
     try {
       fin = await this.opts.epicFinalizer!.finalize(epicId);
     } catch (err) {
+      endPhase('finalize');
       // Never let a finalizer error crash the run — record it as a terminal
       // infra failure so the epic doesn't masquerade as still-finalizing, and
       // continue with the next epic.
@@ -810,6 +813,7 @@ export class Supervisor {
       this.epics.fail(epicId, `finalize threw: ${(err as Error).message}`.slice(0, 500));
       return;
     }
+    endPhase('finalize');
 
     if (fin.status === 'publish_pending') {
       this.audit.record({
@@ -1347,7 +1351,9 @@ export class Supervisor {
         if (!committed.ok) {
           rejected = `staging/committing the resolved merge failed: ${committed.output}`;
         } else {
+          startPhase('gate');
           const gate = await this.integratorGate.run({ projectRoot: wtPath });
+          endPhase('gate');
           if (gate.ok) {
             this.recordIntegratorAttempt(task, {
               epicId,
@@ -1860,9 +1866,15 @@ export class Supervisor {
     // Await the spawn-stagger slot claimed at the top of dispatch — this is the
     // jittered 1–2s delay that spaces concurrent cursor-agent spawns apart
     // (story-006-004). All bookkeeping above ran eagerly; only the spawn waits.
+    startPhase('dispatch');
     return staggerSlot
       .then(() => this.maybeAssembleContext(task))
-      .then(() => this.opts.worker.run(assignment))
+      .then(() => {
+        endPhase('dispatch');
+        startPhase('worker');
+        try { activeCollector()?.markFirstToken(); } catch { /* timing is observability */ }
+        return this.opts.worker.run(assignment);
+      })
       .then((result) => ({ storyId: task.story.id, result }))
       .catch((err: unknown) => ({
         storyId: task.story.id,
@@ -1873,7 +1885,10 @@ export class Supervisor {
           logTail: '',
         },
       }))
-      .finally(() => watchdog?.stop());
+      .finally(() => {
+        endPhase('worker');
+        watchdog?.stop();
+      });
   }
 
   /**
