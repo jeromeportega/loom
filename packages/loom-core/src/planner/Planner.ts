@@ -163,7 +163,10 @@ export class Planner {
         () => this.runBody(brief, reservedId),
       );
     }
-    return this.runBody(brief, reservedId);
+    return withRunMetrics(
+      { scope: 'epic', store: new MetricsStore(this.opts.db) },
+      () => this.runBody(brief, reservedId),
+    );
   }
 
   private async runBody(brief: string, reservedId?: string): Promise<PlanResult> {
@@ -381,11 +384,12 @@ export class Planner {
       const priorRunCount = (this.opts.db
         .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE story_id = ?')
         .get(runId) as { n: number } | undefined)?.n ?? 0;
+      const sr = this.opts.routing;
       activeCollector()?.setAttribution(buildRunAttribution({
         scope: 'standalone_story',
         storyId: runId,
-        intakeVerdict: this.opts.routing?.size,
-        intakeKind: this.opts.routing?.type,
+        intakeVerdict: (sr?.size === 'story' || sr?.size === 'epic') ? sr.size : undefined,
+        intakeKind: sr?.type,
         storyCount: 1,
         retryCount: priorRunCount,
         cleanRetryCount: 0,
@@ -465,6 +469,30 @@ export class Planner {
     // that edit the same file, ensuring they integrate sequentially.
     const audit = new AuditLog(this.opts.db);
     applySameFileSerialization(architect.epics, this.opts.projectRoot, audit, runId, this.planningRoot);
+
+    // Terminal region (story-065-004): set run attribution for the epic planning path.
+    // Fail-open (ADR-006) — attribution errors must never abort the planning run.
+    try {
+      const priorRunCount = (this.opts.db
+        .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE epic_id = ?')
+        .get(runId) as { n: number } | undefined)?.n ?? 0;
+      const r = this.opts.routing;
+      activeCollector()?.setAttribution(buildRunAttribution({
+        scope: 'epic',
+        epicId: runId,
+        intakeVerdict: (r?.size === 'story' || r?.size === 'epic') ? r.size : undefined,
+        intakeKind: r?.type,
+        storyCount,
+        retryCount: priorRunCount,
+        cleanRetryCount: 0,
+        autoRecoveryCount: 0,
+        outcome: 'done',
+        startedAt: new Date(startedAt).toISOString(),
+        endedAt: new Date().toISOString(),
+      }));
+    } catch {
+      // fail-open — attribution must never propagate into the planning run
+    }
 
     return {
       runId,

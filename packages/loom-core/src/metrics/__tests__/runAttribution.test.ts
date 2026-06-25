@@ -1,15 +1,3 @@
-/**
- * Unit tests for buildRunAttribution (story-065-004).
- *
- * Covers:
- *  - Attribution completeness: all fields map correctly to Partial<RunMetricsInput>
- *  - Outcome round-trips for all four RunOutcome values
- *  - Optional fields (epicId, storyId, intakeVerdict, intakeKind, startedAt, endedAt)
- *    are only included when defined
- *  - Count fields (retryCount, cleanRetryCount, autoRecoveryCount) are always included
- *  - Integration with withRunMetrics + MetricsStore: attribution persists to run_metrics
- *  - Fail-open: setAttribution error never propagates (tested via withRunMetrics)
- */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -258,23 +246,39 @@ describe('buildRunAttribution — exactly-once recordRun guarantee', () => {
 // ─── fail-open: attribution failure must not propagate into the run ───────────
 
 describe('buildRunAttribution — fail-open (ADR-006)', () => {
-  it('setAttribution errors are swallowed when wrapped in try/catch (fail-open pattern)', () => {
-    // Simulate what the production code does: wrap setAttribution in try/catch.
-    let runAffected = false;
-    try {
+  it('recordRun throwing inside withRunMetrics does not propagate into the run result', async () => {
+    // Exercise the actual production fail-open path: withRunMetrics's finally block
+    // catches and drops store.recordRun errors without perturbing the run.
+    const brokenStore = {
+      recordRun(): never { throw new Error('simulated persistence failure'); },
+    } as unknown as MetricsStore;
+
+    const result = await withRunMetrics({ scope: 'epic', store: brokenStore }, async (c) => {
+      c.setAttribution(buildRunAttribution(baseState()));
+      return 'run-result';
+    });
+
+    assert.equal(result, 'run-result', 'run result must be unaffected by a recordRun failure');
+  });
+
+  it('setAttribution throwing inside the fn try/catch does not propagate into the run', async () => {
+    const db = makeDb();
+    insertEpic(db, 'epic-001');
+    const store = new MetricsStore(db);
+
+    const result = await withRunMetrics({ scope: 'epic', store }, async (c) => {
       try {
-        const brokenCollector = {
-          setAttribution(_: unknown): void { throw new Error('attribution failure'); },
-        };
-        brokenCollector.setAttribution(buildRunAttribution(baseState()));
+        // Simulate a broken buildRunAttribution call inside the production attribution block.
+        const badAttr = () => { throw new Error('attribution build failure'); };
+        c.setAttribution(badAttr());
       } catch {
-        // fail-open — swallow attribution errors
+        // fail-open — swallow attribution errors (mirrors Supervisor/Planner pattern)
       }
-      runAffected = false;
-    } catch {
-      runAffected = true;
-    }
-    assert.equal(runAffected, false, 'attribution failure must never escape the try/catch wrapper');
+      return 'run-ok';
+    });
+
+    assert.equal(result, 'run-ok', 'run result must be unaffected by a setAttribution failure');
+    db.close();
   });
 });
 

@@ -396,7 +396,9 @@ export class Supervisor {
   /** Clean-retry service (clean=true) for stall auto-recovery (story-061-003). */
   private cleanRetryService!: StoryRetryService;
   /** Count of stall auto-recoveries within the current run. Reset at run entry. */
-  private _runAutoRecoveryCount = 0;
+  private runAutoRecoveryCount = 0;
+  /** Count of clean-worktree auto-recoveries within the current run. Reset at run entry. */
+  private runCleanRetryCount = 0;
 
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
@@ -504,7 +506,7 @@ export class Supervisor {
       { scope: 'epic', store: new MetricsStore(this.opts.db) },
       async () => {
     // Capture run start time before any work begins (story-065-004 attribution).
-    const _runStartedAt = new Date().toISOString();
+    const runStartedAt = new Date().toISOString();
     // Normalize the two call forms into epicIds + optional repoFilter.
     let epicIds: string[] | undefined;
     let repoFilter: string | undefined;
@@ -524,7 +526,8 @@ export class Supervisor {
     this.logBytes.clear();
     this.agentToStory.clear();
     this.successCount = 0;
-    this._runAutoRecoveryCount = 0;
+    this.runAutoRecoveryCount = 0;
+    this.runCleanRetryCount = 0;
     // Clear any stale stop signal from a previous run.
     this.control.setState('running');
 
@@ -785,20 +788,25 @@ export class Supervisor {
           ? 'done'
           : 'failed';
       const priorRunCount = primaryEpicId
-        ? ((this.opts.db
-            .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE epic_id = ? OR story_id = ?')
-            .get(primaryEpicId, primaryEpicId) as { n: number } | undefined)?.n ?? 0)
+        ? isStandaloneDispatch
+          ? ((this.opts.db
+              .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE story_id = ?')
+              .get(primaryEpicId) as { n: number } | undefined)?.n ?? 0)
+          : ((this.opts.db
+              .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE epic_id = ?')
+              .get(primaryEpicId) as { n: number } | undefined)?.n ?? 0)
         : 0;
       activeCollector()?.setAttribution(buildRunAttribution({
         scope,
         epicId: isStandaloneDispatch ? undefined : primaryEpicId,
         storyId: isStandaloneDispatch ? primaryEpicId : undefined,
+        intakeVerdict: isStandaloneDispatch ? 'story' : 'epic',
         storyCount: result.storiesTotal,
         retryCount: priorRunCount,
-        cleanRetryCount: this._runAutoRecoveryCount,
-        autoRecoveryCount: this._runAutoRecoveryCount,
+        cleanRetryCount: this.runCleanRetryCount,
+        autoRecoveryCount: this.runAutoRecoveryCount,
         outcome,
-        startedAt: _runStartedAt,
+        startedAt: runStartedAt,
         endedAt: new Date().toISOString(),
       }));
     } catch {
@@ -2655,7 +2663,8 @@ export class Supervisor {
             });
             this.recoveryStore.incrementRecoveryCount(task.story.id);
           })();
-          this._runAutoRecoveryCount++; // story-065-004: track for terminal attribution
+          this.runAutoRecoveryCount++; // story-065-004: track for terminal attribution
+          this.runCleanRetryCount++;   // clean-worktree recovery path
           task.status = 'pending';
           return;
         }
