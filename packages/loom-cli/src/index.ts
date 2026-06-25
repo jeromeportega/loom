@@ -28,6 +28,7 @@ import { runReview, spec as reviewSpec } from './commands/review.js';
 import { runArtifacts, spec as artifactsSpec } from './commands/artifacts.js';
 import { runTraces, spec as tracesSpec } from './commands/traces.js';
 import { runAudit, spec as auditSpec } from './commands/audit.js';
+import { runCost, spec as costSpec } from './commands/cost.js';
 import { runAutonomy, spec as autonomySpec } from './commands/autonomy.js';
 import { runProjects, spec as projectsSpec } from './commands/projects.js';
 import { runPullGuidance, spec as pullGuidanceSpec } from './commands/pullGuidance.js';
@@ -291,6 +292,17 @@ export function buildProgram(): Command {
       runAudit({
         ...opts,
         limit: opts.limit !== undefined ? parseInt(String(opts.limit), 10) : undefined,
+      });
+    });
+
+  // ─── loom cost ────────────────────────────────────────────────────────────
+  applySpec(program.command('cost'), costSpec)
+    .action((opts: { run?: string | number; epic?: string; aggregate?: boolean; json?: boolean }) => {
+      runCost({
+        run: opts.run !== undefined ? parseInt(String(opts.run), 10) : undefined,
+        epic: opts.epic,
+        aggregate: opts.aggregate,
+        json: opts.json,
       });
     });
 
