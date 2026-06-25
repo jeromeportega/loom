@@ -1,6 +1,6 @@
 # loom
 
-**An open-source, self-learning, autonomous agentic engineering system.**
+**An open-source, self-learning, self-healing, cross-repo agentic engineering system.**
 
 Write a one-paragraph brief. Approve the plan. Agents deliver the epic —
 planning, implementation, tests, and pull requests — while you stay in control.
@@ -10,16 +10,21 @@ planning, implementation, tests, and pull requests — while you stay in control
 ## What loom changes
 
 AI coding tools today make a developer faster keystroke by keystroke. Loom
-changes the unit of work: you delegate an **entire epic** and supervise the
-outcome.
+changes the unit of work: you delegate an **entire epic** — across one or
+more repositories — and supervise the outcome.
 
 Write a paragraph describing what you want. Loom plans it — analyst,
 product-manager, and architect personas turn the brief into a PRD, an
-architecture, and a set of stories. You approve the plan. A supervisor then
-dispatches story agents that each work in an isolated git worktree, write
-code and tests, and open pull requests. You review the PRs.
+architecture, and a set of stories spanning as many repos as the work requires.
+You approve the plan. A supervisor dispatches story agents in isolated git
+worktrees; landings are coordinated in dependency order with all-ready-or-none
+staging. You review the PRs.
 
 **Two human touchpoints: the brief and the approval.**
+
+Delivered artifacts live in the loom-home control plane; target repositories receive only code pull requests.
+
+A single-repo epic produces one pull request. A cross-repo epic produces one pull request per repository, landed in topological (dependency) order with all-ready-or-none staging and forward-revert rollback.
 
 ## The 30-second loop
 
@@ -36,11 +41,14 @@ loom status
 | Principle | How loom does it |
 |---|---|
 | **Delegation, not autocomplete** | The unit of work is the epic, not the keystroke. The bottleneck moves from typing speed to describing intent. |
+| **Cross-repo by default** | A single brief can span N registered repositories. The coordinator partitions stories into per-repo stages, sorts them topologically (producers before consumers), and applies all-ready-or-none staging with forward-revert rollback. |
 | **Senior review at every story** | The Supervisor injects curated skills (code-review, edge-case review, UX-design, etc.) into each worker as it implements. |
 | **Structural guardrails** | A policy engine blocks destructive commands (force-push, `git reset --hard`, etc.) at the OS level — not by asking the model to behave. |
 | **Worktree isolation** | Every story runs in its own git worktree. Agents physically cannot touch your main branch; they open PRs you review. |
+| **Self-healing** | Worker stalls are auto-recovered via clean retry (bounded by `stall_recovery_budget`); the skill lifecycle demotes degraded skills before they drag down future runs. |
 | **It learns without drifting** | Loom extracts new skills from completed work; a candidate→active→disabled lifecycle stops a bad skill from degrading the system. (The lifecycle runs internally; there is no user-facing skill-management surface today.) |
-| **Auditable** | Every agent action — every command, every status change — is logged to a local SQLite database you can query. |
+| **Cost instrumentation** | `loom cost` gives per-epic, per-phase token and cost breakdowns. Tiered model routing uses the latest Claude models — highest tier for planning, mid-tier for execution, lightweight for meta-work. |
+| **Auditable** | Every agent action — every command, every status change — is logged to the loom-home control plane (SQLite) you can query. |
 | **No API billing by default** | The `claude-cli` and `cursor-cli` backends use your existing Claude Code / Cursor login. Delivering an epic costs no metered tokens. |
 
 ## Where to go next
@@ -57,11 +65,13 @@ loom status
 
 TypeScript monorepo: `loom-core` (orchestration), `loom-cli` (the `loom`
 command — CLI is the usability surface), `loom-web` (local dashboard —
-the observability surface). SQLite for state (`.loom/loom.db`, auto-created — no
-DB server, no Docker). Worker agents are `claude` CLI sessions (or `cursor-agent`)
-in git worktrees. The skill system learns reusable patterns from completed work,
-gated by an eval harness and a candidate→active→disabled lifecycle.
+the observability surface). SQLite for state in the loom-home control plane
+(auto-created — no DB server, no Docker). Worker agents are `claude` CLI sessions
+(or `cursor-agent`) in git worktrees. The skill system learns reusable patterns
+from completed work, gated by an eval harness and a candidate→active→disabled
+lifecycle — self-healing against skill degradation over time.
 
-Beyond a single repo: `loom status --all` aggregates every loom repo on the
-machine, and a per-machine config can cap worker concurrency across all of
-them so several products do not exhaust your Claude session at once.
+Cross-repo: a single brief can span N registered repositories, coordinated in
+dependency order with all-ready-or-none staging and forward-revert rollback.
+`loom status --all` aggregates every loom repo on the machine, and a per-machine
+config can cap worker concurrency across all of them.

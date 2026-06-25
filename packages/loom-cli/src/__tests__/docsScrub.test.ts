@@ -158,3 +158,100 @@ describe('docs scrub (story-003-005) — CLI=usability, web=observability refram
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// story-064-001 — v6.0.0 narrative, canonical corrections, model-version guard
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Verbatim canonical phrasings from the shared contract (ADR-003, epic-064).
+// Both headline files must contain these exact strings (identical phrasing
+// across both files is the correctness bar for the cross-epic consistency
+// invariant).
+const ARTIFACT_RELOCATION_VERBATIM =
+  'Delivered artifacts live in the loom-home control plane; target repositories receive only code pull requests.';
+
+const CROSS_REPO_LANDING_VERBATIM =
+  'A single-repo epic produces one pull request. A cross-repo epic produces one pull request per repository, landed in topological (dependency) order with all-ready-or-none staging and forward-revert rollback.';
+
+const MODEL_TIER_PHRASING_VERBATIM = 'the latest Claude models';
+
+const HEADLINE_FILES = [
+  { label: 'README.md', filePath: path.join(REPO_ROOT, 'README.md') },
+  { label: 'docs/index.md', filePath: path.join(REPO_ROOT, 'docs', 'index.md') },
+];
+
+describe('docs scrub (story-064-001) — ARTIFACT_RELOCATION canonical string', () => {
+  for (const { label, filePath } of HEADLINE_FILES) {
+    it(`${label}: contains ARTIFACT_RELOCATION verbatim`, () => {
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.ok(
+        content.includes(ARTIFACT_RELOCATION_VERBATIM),
+        `${label} must contain the ARTIFACT_RELOCATION canonical string verbatim`
+      );
+    });
+
+    it(`${label}: does not claim artifacts land in .loom_outputs/<epic-id>/ in your repo`, () => {
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.ok(
+        !content.includes('.loom_outputs/<epic-id>/'),
+        `${label} must not claim artifacts land in .loom_outputs/<epic-id>/ (replaced by ARTIFACT_RELOCATION)`
+      );
+    });
+  }
+});
+
+describe('docs scrub (story-064-001) — CROSS_REPO_LANDING canonical string', () => {
+  for (const { label, filePath } of HEADLINE_FILES) {
+    it(`${label}: contains CROSS_REPO_LANDING verbatim`, () => {
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.ok(
+        content.includes(CROSS_REPO_LANDING_VERBATIM),
+        `${label} must contain the CROSS_REPO_LANDING canonical string verbatim`
+      );
+    });
+  }
+});
+
+describe('docs scrub (story-064-001) — MODEL_TIER_PHRASING and no pinned versions', () => {
+  for (const { label, filePath } of HEADLINE_FILES) {
+    it(`${label}: no pinned model version (Opus/Sonnet/Haiku N.N)`, () => {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const match = /\b(Opus|Sonnet|Haiku)\s+\d+\.\d+/.exec(content);
+      assert.ok(
+        match === null,
+        `${label} must not pin a model version — found: "${match?.[0] ?? ''}"`
+      );
+    });
+
+    it(`${label}: contains MODEL_TIER_PHRASING ("the latest Claude models")`, () => {
+      const content = fs.readFileSync(filePath, 'utf8');
+      assert.ok(
+        content.includes(MODEL_TIER_PHRASING_VERBATIM),
+        `${label} must use MODEL_TIER_PHRASING verbatim: "the latest Claude models"`
+      );
+    });
+  }
+});
+
+describe('docs scrub (story-064-001) — v6.0.0 narrative tokens', () => {
+  const V6_TOKENS = [
+    'self-learning',
+    'self-healing',
+    'cross-repo',
+    'loom-home',
+    'all-ready-or-none',
+    'loom cost',
+  ];
+
+  for (const { label, filePath } of HEADLINE_FILES) {
+    for (const token of V6_TOKENS) {
+      it(`${label}: contains v6.0.0 token "${token}"`, () => {
+        const content = fs.readFileSync(filePath, 'utf8');
+        assert.ok(
+          content.includes(token),
+          `${label} must contain v6.0.0 narrative token "${token}"`
+        );
+      });
+    }
+  }
+});
