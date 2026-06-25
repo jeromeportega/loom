@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -226,6 +226,53 @@ CREATE TABLE IF NOT EXISTS story_recovery (
   recovery_count  INTEGER NOT NULL DEFAULT 0,
   updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- v29: cost-and-timing metrics store (epic-063 story-063-001).
+-- run_metrics: one row per run (epic, standalone story, or per-story-within-epic).
+-- run_metrics_phase: one row per LLM phase within a run.
+-- schema_version stamps the row-level format in effect at write time.
+CREATE TABLE IF NOT EXISTS run_metrics (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  schema_version       INTEGER NOT NULL,
+  scope                TEXT NOT NULL CHECK (scope IN ('epic','standalone_story','epic_story')),
+  epic_id              TEXT REFERENCES epics(id),
+  story_id             TEXT,                             -- soft reference; no stories table in current schema
+  agent_id             TEXT REFERENCES agents(id),
+  intake_verdict       TEXT,
+  intake_kind          TEXT,
+  story_count          INTEGER,
+  retry_count          INTEGER NOT NULL DEFAULT 0,
+  clean_retry_count    INTEGER NOT NULL DEFAULT 0,
+  auto_recovery_count  INTEGER NOT NULL DEFAULT 0,
+  outcome              TEXT CHECK (outcome IN ('done','failed','gate_passed','gate_failed') OR outcome IS NULL),
+  total_wall_ms        INTEGER,
+  dispatch_latency_ms  INTEGER,
+  billed_tokens_total  INTEGER,
+  cost_usd             REAL,
+  started_at           DATETIME,
+  ended_at             DATETIME,
+  created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS run_metrics_phase (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id                INTEGER NOT NULL REFERENCES run_metrics(id) ON DELETE CASCADE,
+  phase                 TEXT NOT NULL CHECK (phase IN ('analyst','pm','architect','standalone_plan','dispatch','worker','gate','finalize')),
+  model                 TEXT,
+  tokens_input          INTEGER NOT NULL DEFAULT 0,
+  tokens_output         INTEGER NOT NULL DEFAULT 0,
+  tokens_cached         INTEGER NOT NULL DEFAULT 0,
+  tokens_cache_creation INTEGER NOT NULL DEFAULT 0,
+  billed_tokens         INTEGER NOT NULL DEFAULT 0,
+  cost_usd              REAL,
+  request_count         INTEGER NOT NULL DEFAULT 0,
+  wall_ms               INTEGER NOT NULL DEFAULT 0,
+  created_at            DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_metrics_epic      ON run_metrics(epic_id);
+CREATE INDEX IF NOT EXISTS idx_run_metrics_scope     ON run_metrics(scope);
+CREATE INDEX IF NOT EXISTS idx_run_metrics_phase_run ON run_metrics_phase(run_id);
 `;
 
 let _db: Database.Database | null = null;

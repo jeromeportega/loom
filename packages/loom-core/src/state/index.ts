@@ -29,3 +29,5 @@ export {
   processAlive,
 } from './GlobalLimiter.js';
 export type { LimiterSlot } from './GlobalLimiter.js';
+export { MetricsStore } from './MetricsStore.js';
+export type { RunMetricsRecord, PhaseMetricsRecord } from '../metrics/types.js';
