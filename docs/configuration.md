@@ -9,6 +9,10 @@ order. Each layer is optional; absent layers contribute nothing.
 team-config.yaml  ◁  policy.yaml  ◁  LOOM_* env vars
 ```
 
+In plain language:
+
+> **loom-home team config (base)  ←  target-repo policy.yaml (override)  ←  env vars (secrets / final override)**
+
 A value from a higher-precedence source overrides the same field from a
 lower-precedence source, subject to the per-type merge semantics below.
 Guard fields are the exception: they merge most-restrictively
@@ -23,7 +27,7 @@ Guard fields are the exception: they merge most-restrictively
 | **env** | `LOOM_<SECTION>_<KEY>` env variables | CI/CD or per-deployment overrides; highest precedence |
 
 `loom_home` (the path to the team-config directory) is read for **path
-resolution** from `policy.yaml` only — it cannot come from
+resolution** from `.loom/policy.yaml` only — it cannot come from
 `team-config.yaml` (circular: the team-config file lives inside loom-home)
 and `LOOM_LOOM_HOME` cannot redirect where loom looks for `team-config.yaml`
 (the env layer loads after `loom_home` is already resolved). See
@@ -48,11 +52,11 @@ which layer contributed the value** — this is the key distinction from
 ordinary precedence-based merging:
 
 - A **denylist** (e.g. `git.protected_branches`) can only grow. A
-  team-config entry cannot be removed by `policy.yaml` or by an env var.
+  team-config entry cannot be removed by `.loom/policy.yaml` or by an env var.
 - An **allowlist** (e.g. `git.allowed_remotes`) is the intersection of
-  every non-empty layer. A `policy.yaml` entry cannot widen the set
+  every non-empty layer. A `.loom/policy.yaml` entry cannot widen the set
   beyond what `team-config.yaml` permits, and an env var cannot widen
-  beyond `policy.yaml`.
+  beyond `.loom/policy.yaml`.
 
 **Empty array = "no opinion"**: an empty list in any layer is skipped
 during intersect so that a blank `LOOM_GIT_ALLOWED_REMOTES=` env var
@@ -77,7 +81,7 @@ from a non-empty intersection collapsing to zero.
 ### Type conflict error
 
 When the same dotted key path carries structurally incompatible values
-across layers — for example, `agents.model` is a string in `policy.yaml`
+across layers — for example, `agents.model` is a string in `.loom/policy.yaml`
 but an object in `team-config.yaml` — the merge engine throws
 `ConfigMergeError` before `PolicySchema.parse` is reached:
 
@@ -156,9 +160,9 @@ so neither `team-config.yaml` (circular dependency) nor a
 `team-config.yaml`.
 
 Note: `LOOM_LOOM_HOME` is a valid `LOOM_*` key — the env layer maps it
-to `loom_home` in the merged policy tree (`policy.loom_home`) just like
-any other env override. The value lands in the final policy object but
-has no effect on path resolution, which was already fixed in step 2.
+to the `loom_home` field in the merged policy tree just like any other
+env override. The value lands in the final policy object but has no
+effect on path resolution, which was already fixed in step 2.
 
 ## Putting it together
 
@@ -174,7 +178,8 @@ git:
   protected_branches: [staging]                   # denylist: union → [main, release, staging]
   allowed_remotes: ["github.com/acme/backend"]    # allowlist: intersect → only acme/backend
 agents:
-  model: claude-opus-4-8
+  max_concurrent: 2                               # example scalar
+  # model: ...  # omitted — defaults to the latest Claude models (see policy.agents.model)
 
 # CI environment
 LOOM_AGENTS_MAX_CONCURRENT=4            # scalar: overrides agents.max_concurrent
@@ -188,7 +193,6 @@ git:
   protected_branches: [main, release, staging, hotfix]  # union of all layers
   allowed_remotes: ["github.com/acme/backend"]           # intersection (tightest)
 agents:
-  model: claude-opus-4-8     # repo wins (env did not set it)
   max_concurrent: 4          # env wins
 ```
 

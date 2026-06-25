@@ -80,20 +80,21 @@ worker output with `loom run --verbose`.
 
 ## What just happened
 
-1. **`loom init`** wrote `.loom/policy.yaml`, the SQLite state DB, a Claude
-   Code `PreToolUse` guard hook in `.claude/settings.json`, and a managed
-   `.gitignore` block.
+1. **`loom init`** wrote `.loom/policy.yaml`, the guard hook in
+   `.claude/settings.json`, a managed `.gitignore` block, and registered this
+   repo in the workspace manifest (`<loom-home>/workspace.yaml`).
 2. **`loom epic`** ran the planning pipeline (Analyst → PM → Architect)
-   against your brief. Output: a project brief, PRD, architecture doc, and
-   a machine-readable epic YAML in `.loom/planning/epic-001/`.
+   against your brief and stored the output (brief, PRD, architecture doc,
+   epic YAML) in the loom-home control plane — not in your target repo.
 3. **`loom approve`** marked the epic as ready for execution.
 4. **`loom run --checkpoint epic`** dispatched story agents (`claude` CLI
    in isolated git worktrees), each implementing one story, writing tests,
-   and pushing their commits. On success, the EpicFinalizer merges all story
-   branches into `epic/epic-001` and opens **one PR** for the whole epic.
-5. The artifacts that mattered (brief, PRD, architecture, epic YAML) get
-   committed into `.loom_outputs/epic-001/` on the epic branch — a durable,
-   reviewable record of what was planned and delivered.
+   and pushing their commits. A single-repo epic produces one pull request.
+   A cross-repo epic produces one pull request per repository, landed in
+   topological (dependency) order with all-ready-or-none staging and
+   forward-revert rollback.
+5. Delivered artifacts live in the loom-home control plane; target repositories
+   receive only code pull requests.
 
 ## You stay in control
 
@@ -121,15 +122,85 @@ Tighten or loosen as you learn to trust the system:
 
 | Path | What | Tracked? |
 |---|---|---|
-| `.loom/loom.db` | SQLite state | No (per-machine) |
+| `<loom-home>/repos/<slug>/loom.db` | SQLite state (auto-migrated from `.loom/loom.db` on first upgrade) | No (gitignored in loom-home) |
+| `<loom-home>/repos/<slug>/planning/` | Planning artifacts — brief, PRD, architecture, epic YAML (auto-migrated from `.loom/planning/`) | No (gitignored in loom-home) |
+| `<loom-home>/repos/<slug>/<epic-id>/` | Delivered artifact record committed to loom-home | In loom-home, not target repo |
 | `.loom/worktrees/` | Per-story git worktrees | No |
-| `.loom/planning/<run>/` | In-progress planning artifacts | No (working dir) |
-| `.loom_outputs/<epic>/` | Delivered planning record (brief / PRD / architecture / epic.yaml) | **Yes** — committed on the epic branch |
 | `.claude/settings.json` | Guard hook config | Per-machine; regenerable via `loom init` |
 | `.cursor/mcp.json` | Cursor worker MCP provisioning config | Per-machine; regenerable |
 
 `loom init` writes a managed `.gitignore` block that handles this — don't
 hand-edit inside the markers.
+
+## loom-home — the control plane
+
+Loom stores all planning artifacts and the state database outside your target
+repo in a dedicated **loom-home** git repository. By default this is a sibling
+directory to your project root (e.g. `~/repos/app` → `~/repos/loom-home`).
+Override the location with `loom_home: ~/path/to/loom-home` in
+`.loom/policy.yaml`.
+
+The **workspace manifest** (`<loom-home>/workspace.yaml`) records every repo
+registered with this loom installation — slug, absolute path, and git remote
+URL. It is the committed source of truth for which repos loom tracks.
+
+`loom init` registers the current repo in the manifest automatically. If you
+previously ran loom before loom-home was introduced, run:
+
+```bash
+loom migrate           # ensures loom-home exists, migrates DB + planning scratch, registers repo
+loom migrate --dry-run # preview what would be migrated without touching anything
+```
+
+Re-running `loom migrate` is idempotent — an already-migrated repo reports
+"nothing to do". Net-new installs can ignore `loom migrate` entirely; their
+first `loom run` triggers the same migration automatically.
+
+## Monitoring cost with `loom cost`
+
+```bash
+loom cost                      # recent runs with per-phase cost, token, and wall-time detail
+loom cost --epic <epic-id>     # scope to one epic
+loom cost --aggregate          # cross-run statistics: median planning cost, retry totals
+loom cost --json               # machine-readable output
+```
+
+`loom cost` is strictly read-only and never triggers orchestration.
+
+## Stall recovery
+
+Loom automatically retries stalled workers (default: up to 2 clean retries per
+story, controlled by `policy.agents.stall_recovery_budget`). Recovered stories
+appear as `(recovered N)` in `loom status`. Set `stall_recovery_budget: 0` to
+disable clean retry and require manual `loom retry <story-id>` on every stall.
+
+## Standalone stories
+
+For a small, self-contained change that doesn't warrant a full multi-story
+epic, use `loom weave` with intake routing enabled:
+
+```bash
+# .loom/policy.yaml: agents.intake_routing: advisory
+loom weave "Fix the typo in the footer component"
+```
+
+When the intake classifier scores the brief as `story`-sized, loom takes a
+lightweight path — a single Analyst call followed by one `StandaloneStoryAgent`
+call, with no PM/PRD step and no epic decomposition. The result is a
+single-story container with a `story-NNN` id. Every downstream command —
+`loom approve`, `loom run`, `loom status`, `loom artifacts` — accepts
+`story-NNN` directly.
+
+## Config hierarchy at a glance
+
+Loom composes one effective policy from three layers in fixed precedence order:
+
+```
+loom-home team config (base)  ←  target-repo policy.yaml (override)  ←  env vars (secrets / final override)
+```
+
+See [Configuration](../configuration.md) for full merge semantics, env variable
+naming, and guard-list rules.
 
 ## Watching a run — `loom web`
 
@@ -155,5 +226,6 @@ stale. Open the URL the latest terminal printed.
 ## Next
 
 - [Use cases](../use-cases/index.md) — which pathway fits your work.
+- [Configuration](../configuration.md) — three-layer config resolver, env variables, guard merge semantics.
 - [Testing](../testing/index.md) — when to run each pipeline, what each one tells you.
 - [Architecture](../architecture/index.md) — the orchestrator, the supervisor, the skill loop.
