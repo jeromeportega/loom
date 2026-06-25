@@ -16,6 +16,8 @@ import {
 } from '../state/index.js';
 import type { GlobalLimiter, LimiterSlot } from '../state/index.js';
 import { withRunMetrics } from '../metrics/withRunMetrics.js';
+import { activeCollector } from '../metrics/activeCollector.js';
+import { toLLMUsage } from '../metrics/workerUsage.js';
 import { EpicYamlSchema, type Story, type AgentStatus } from '../types.js';
 import { approveAndDispatch } from './actions/approveAndDispatch.js';
 import {
@@ -2449,6 +2451,7 @@ export class Supervisor {
         cost_usd: result.usage.costUsd,
         request_count: result.usage.requestCount,
       });
+      activeCollector()?.addUsage(toLLMUsage(result.usage), result.model, 'worker');
     }
     // Overwrite with the executed model when the system/init event provided one.
     if (result.model) {
