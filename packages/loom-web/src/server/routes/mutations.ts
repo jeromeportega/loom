@@ -16,10 +16,17 @@
  * Owner: story-003-004
  */
 
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import type { Express } from 'express';
 import type Database from 'better-sqlite3';
-import { ControlStore, StoryRetryService, PolicyEngine, reopenOpportunityForRejectedEpic } from '@loom-ai/core';
+import {
+  ControlStore,
+  StoryRetryService,
+  PolicyEngine,
+  reopenOpportunityForRejectedEpic,
+  detectCyclesInEpicYaml,
+} from '@loom-ai/core';
 import type { ResolveProjectDb } from '../resolveProjectDb.js';
 
 export interface MutationDeps {
@@ -58,6 +65,20 @@ export function registerMutationRoutes(app: Express, deps: MutationDeps): void {
           error: `epic is ${epic.status}; only planned epics can be approved`,
         });
         return;
+      }
+
+      // Approval-time cycle check (ADR-002, fail-closed seam) — mirrors the CLI
+      // approve path. Runs before any state mutation; a cyclic epic is rejected
+      // here with 422 and the epic stays 'planned', so no worker is dispatched.
+      if (epic.yaml_path) {
+        const cycleErr = detectCyclesInEpicYaml(epic.yaml_path, resolved.cwd);
+        if (cycleErr) {
+          res.status(422).json({
+            error: `cross-repo dependency cycle detected: ${cycleErr}`,
+            cycle_description: cycleErr,
+          });
+          return;
+        }
       }
 
       // Best-effort policy snapshot (observability only — never blocks approve).
