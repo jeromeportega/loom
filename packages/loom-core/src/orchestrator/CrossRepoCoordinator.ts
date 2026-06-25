@@ -142,6 +142,18 @@ export function buildRepoStages(
  */
 export function topoSortRepos(stages: RepoStage[]): RepoStage[] {
   const bySlug = new Map<string, RepoStage>(stages.map(s => [s.repoSlug, s]));
+
+  // Validate all dependsOnRepos slugs reference known stages. This is a pre-flight
+  // check so callers get a config error before any merges begin (not mid-merge).
+  for (const s of stages) {
+    const unknown = s.dependsOnRepos.filter(dep => !bySlug.has(dep));
+    if (unknown.length > 0) {
+      throw new Error(
+        `CrossRepoCoordinator: unknown dep repo(s) for '${s.repoSlug}': ${unknown.join(', ')}`,
+      );
+    }
+  }
+
   const inDegree = new Map<string, number>(stages.map(s => [s.repoSlug, 0]));
 
   for (const s of stages) {
@@ -373,8 +385,25 @@ export class CrossRepoCoordinator {
     // This keeps old tests passing until 002 injects the real implementation.
     const mergeRepo = this._mergeRepo ?? defaultNoopMerge;
 
+    // defence-in-depth: topo sort guarantees order, but explicit check catches sort invariant breaks.
+    const stageBySlug = new Map(sorted.map(s => [s.repoSlug, s]));
+    if (stageBySlug.size !== sorted.length) {
+      throw new Error('CrossRepoCoordinator: duplicate repoSlug in sorted stages');
+    }
+
     for (const stage of sorted) {
       try {
+        // Fan-in gate: every producer repo must be 'landed' before this consumer merges.
+        // (Unknown dep slugs are caught earlier in topoSortRepos — no need to re-check here.)
+        const notLanded = stage.dependsOnRepos.filter(
+          dep => stageBySlug.get(dep)!.status !== 'landed',
+        );
+        if (notLanded.length > 0) {
+          throw new Error(
+            `CrossRepoCoordinator: fan-in constraint violated for '${stage.repoSlug}' — ` +
+            `producer repo(s) not yet landed: ${notLanded.join(', ')}`,
+          );
+        }
         await mergeRepo(stage, readiness.attemptId);
         stage.status = 'landed';
       } catch (err) {
