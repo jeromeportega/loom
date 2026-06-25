@@ -313,7 +313,7 @@ is denser than the orchestration layer.
 
 | Module | Hinges on |
 |---|---|
-| `orchestrator/EpicFinalizer` | If they ship "release this set of agent runs" as a primitive, the merge composition retires. The org-specific artifact promotion (`.loom_outputs/<epic-id>/`) + PR body format + skill-aware diff composition stays. Likely: keep promotion, retire merge. |
+| `orchestrator/EpicFinalizer` | If they ship "release this set of agent runs" as a primitive, the merge composition retires. The org-specific artifact promotion (loom-home `repos/<slug>/<epic-id>/`) + PR body format + skill-aware diff composition stays. Likely: keep promotion, retire merge. |
 | `loom-web` dashboard | If they ship multi-agent visualization, the worker-stream UI retires. Cross-project federation + audit-log review + cost-rollup view stays. |
 | Most CLI subcommands | Wrap both retire-and-keep modules. Retire orchestration verbs (`run`, `approve`, parts of `epic`); keep `skills`, `revert`, `guide`, `cost`, `web`, `bench`. |
 
