@@ -165,9 +165,9 @@ describe('v27 → v28 migration (story_recovery table)', () => {
 
     runMigrations(db);
 
-    // Schema bumped to v28.
+    // Schema bumped to current SCHEMA_VERSION (29 after epic-063 story-063-001).
     assert.equal(schemaVersion(db), SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 28, 'SCHEMA_VERSION constant is 28');
+    assert.equal(SCHEMA_VERSION, 29, 'SCHEMA_VERSION constant is 29');
 
     // story_recovery table now exists.
     assert.ok(tableExists(db, 'story_recovery'), 'story_recovery created by migration');
@@ -214,7 +214,7 @@ describe('v27 → v28 migration (story_recovery table)', () => {
     db.close();
   });
 
-  it('initializes a brand-new DB directly at SCHEMA_VERSION 28 with story_recovery present', () => {
+  it('initializes a brand-new DB directly at current SCHEMA_VERSION with story_recovery present', () => {
     const dbPath = path.join(tmpDir, 'fresh-v28.db');
     const db = createDatabase(dbPath);
 
