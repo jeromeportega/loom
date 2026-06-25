@@ -5,3 +5,4 @@ export {
   clearActiveCollector,
   activeCollector,
 } from './activeCollector.js';
+export { withRunMetrics } from './withRunMetrics.js';
