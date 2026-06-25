@@ -29,6 +29,13 @@ export interface RunConsumerGateArgs {
   landedDependencies: RepoStage[];
   /** Absolute path to the consumer repo root — where the integration gate runs. */
   projectRoot: string;
+  /**
+   * Story IDs of stories whose PRs failed to merge (amputation signal).
+   * Forwarded verbatim to IntegrationGate.run for cross-story conflict detection.
+   * Per-repo gate mechanics are unchanged (NFR-4) — this field mirrors the
+   * existing `conflicted` parameter the gate already accepts.
+   */
+  conflicted?: string[];
   /** Injectable gate for tests. Defaults to a standard IntegrationGate. */
   gate?: GateRunner;
 }
@@ -38,13 +45,19 @@ export interface RunConsumerGateArgs {
  * dependencies have landed, so the consumer build resolves against the combined
  * landed state of every upstream repo.
  *
- * Fan-in semantics (ADR-003): the gate fires exactly once per consumer, triggered
- * only when every declared dependency appears in `landedDependencies` with
- * status 'landed'. If any dependency has not yet landed, the function returns
- * immediately with ran:false (deferred) — it never fires once-per-incoming-edge.
+ * Fan-in guard: the gate is deferred (ran:false) until every declared dependency
+ * appears in `landedDependencies` with status 'landed'. Once all deps are present,
+ * the per-repo integration gate runs exactly once per invocation.
+ *
+ * Stateless — the 'fire exactly once per consumer lifecycle' invariant is the
+ * caller's responsibility (ADR-003). Callers must not re-invoke after all deps
+ * are already present; a second call with a complete fan-in will fire the gate
+ * a second time. The coordinator enforces this by tracking which consumers have
+ * already been gated.
  *
  * Per-repo `IntegrationGate.run` mechanics are unchanged (NFR-4): the same gate
- * runner executes in the consumer repo root once the fan-in condition is met.
+ * runner executes in the consumer repo root once the fan-in condition is met,
+ * with the `conflicted` amputation signal forwarded verbatim.
  */
 export async function runConsumerGate(args: RunConsumerGateArgs): Promise<GateOutcome> {
   const { consumer, landedDependencies, projectRoot } = args;
@@ -55,9 +68,7 @@ export async function runConsumerGate(args: RunConsumerGateArgs): Promise<GateOu
   }
 
   // Fan-in guard: only fire when ALL declared dependencies are present in
-  // landedDependencies with status 'landed'. This enforces the fire-exactly-once
-  // invariant: callers may invoke runConsumerGate on each dep-landing event;
-  // the gate itself gates on the full fan-in (in-degree-to-zero in the landed sense).
+  // landedDependencies with status 'landed' (in-degree-to-zero in the landed sense).
   const allDepsLanded = consumer.dependsOnRepos.every(
     slug => landedDependencies.some(dep => dep.repoSlug === slug && dep.status === 'landed'),
   );
@@ -66,9 +77,10 @@ export async function runConsumerGate(args: RunConsumerGateArgs): Promise<GateOu
     return deferredGateOutcome('Consumer gate deferred — not all dependencies have landed yet.');
   }
 
-  // All dependencies landed — run the per-repo integration gate exactly once.
+  // All dependencies landed — run the per-repo integration gate.
+  // Forward conflicted to preserve amputation-detection mechanics (NFR-4).
   const gate = args.gate ?? new IntegrationGate();
-  return gate.run({ projectRoot });
+  return gate.run({ projectRoot, conflicted: args.conflicted });
 }
 
 function deferredGateOutcome(summary: string): GateOutcome {

@@ -314,8 +314,7 @@ describe('(3) gate passes → consumer stage reaches landed', () => {
       ],
     };
 
-    // runConsumerGateFn is deprecated (no-op in story-060-001 STAGE→MERGE flow).
-    // The coordinator lands repos through its own STAGE→MERGE flow regardless.
+    // waitForMergeFn / runConsumerGateFn removed in story-062-004; coordinator lands repos through its own STAGE→MERGE flow.
     const coordinator = new CrossRepoCoordinator({
       projectRoot: repoDir,
       supervisor: { run: async () => okResult() },
@@ -692,6 +691,29 @@ describe('runConsumerGate — gate mechanics', () => {
     assert.equal(capturedInputs[0].projectRoot, '/workspace/repo-b',
       'gate must run in the consumer repo root (projectRoot passed through unchanged)');
   });
+
+  it('threads conflicted list through to IntegrationGate.run (amputation signal)', async () => {
+    const consumer = makeConsumerStage('repo-b', ['repo-a']);
+    const depA = makeLandedStage('repo-a');
+    const capturedInputs: Array<{ projectRoot: string; conflicted?: string[] }> = [];
+    const gateRunner: GateRunner = {
+      run: async (input) => {
+        capturedInputs.push({ ...input });
+        return { ok: true, ran: true, timedOut: false, durationMs: 10, output: '', amputated: [], summary: 'pass' };
+      },
+    };
+    const conflicted = ['story-x-001', 'story-x-002'];
+    await runConsumerGate({
+      consumer,
+      landedDependencies: [depA],
+      projectRoot: consumer.repoRoot,
+      conflicted,
+      gate: gateRunner,
+    });
+    assert.equal(capturedInputs.length, 1, 'gate must be called exactly once');
+    assert.deepEqual(capturedInputs[0].conflicted, conflicted,
+      'conflicted list must be forwarded to IntegrationGate.run for amputation detection (NFR-4)');
+  });
 });
 
 // ─── runConsumerGate — fan-in N-dependency behavior (story-062-004) ───────────
@@ -701,10 +723,6 @@ describe('runConsumerGate — fan-in N-dependency behavior', () => {
     const consumer = makeConsumerStage('repo-c', ['repo-a', 'repo-b']);
     const depA = makeLandedStage('repo-a');
     const depB = makeLandedStage('repo-b');
-
-    // landedDependencies carries both deps' landed state.
-    assert.equal(depA.status, 'landed', 'dep A must be landed');
-    assert.equal(depB.status, 'landed', 'dep B must be landed');
 
     let capturedRoot: string | undefined;
     const gateRunner: GateRunner = {
@@ -811,6 +829,27 @@ describe('runConsumerGate — fan-in N-dependency behavior', () => {
 
     assert.equal(outcome.ran, true, 'single-dep consumer must gate when its sole dep lands');
     assert.equal(gateRunCount, 1, 'gate must be called exactly once (single dep case)');
+  });
+
+  it('stateless — calling twice with all deps fires gate twice (caller enforces once-per-lifetime)', async () => {
+    const consumer = makeConsumerStage('repo-c', ['repo-a', 'repo-b']);
+    const depA = makeLandedStage('repo-a');
+    const depB = makeLandedStage('repo-b');
+
+    let gateRunCount = 0;
+    const gateRunner: GateRunner = {
+      run: async () => {
+        gateRunCount++;
+        return { ok: true, ran: true, timedOut: false, durationMs: 10, output: '', amputated: [], summary: 'pass' };
+      },
+    };
+
+    await runConsumerGate({ consumer, landedDependencies: [depA, depB], projectRoot: consumer.repoRoot, gate: gateRunner });
+    await runConsumerGate({ consumer, landedDependencies: [depA, depB], projectRoot: consumer.repoRoot, gate: gateRunner });
+
+    assert.equal(gateRunCount, 2,
+      'function is stateless — calling twice with all deps present fires twice; ' +
+      'ADR-003 once-per-lifetime is enforced by the coordinator, not by this function');
   });
 
   it('boundary — root repo (no deps): consumer gate is not run', async () => {
