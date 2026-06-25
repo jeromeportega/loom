@@ -32,16 +32,23 @@ describe('parseCursorJson', () => {
 // ─── createLLMClient — backend selection ────────────────────────────────────
 
 describe('createLLMClient', () => {
-  it('returns a ClaudeCliClient for the claude-cli backend', () => {
-    assert.ok(createLLMClient('claude-cli') instanceof ClaudeCliClient);
+  it('returns an instrumented decorator (not a raw ClaudeCliClient) for the claude-cli backend', () => {
+    // factory.ts wraps the concrete client with instrumentLLMClient — a plain decorator object
+    const client = createLLMClient('claude-cli');
+    assert.equal(typeof client.complete, 'function');
+    assert.ok(!(client instanceof ClaudeCliClient), 'decorator must not be the raw class instance');
   });
 
-  it('returns a CursorCliClient for the cursor-cli backend', () => {
-    assert.ok(createLLMClient('cursor-cli') instanceof CursorCliClient);
+  it('returns an instrumented decorator (not a raw CursorCliClient) for the cursor-cli backend', () => {
+    const client = createLLMClient('cursor-cli');
+    assert.equal(typeof client.complete, 'function');
+    assert.ok(!(client instanceof CursorCliClient), 'decorator must not be the raw class instance');
   });
 
-  it('defaults to the session-based claude-cli backend', () => {
-    assert.ok(createLLMClient() instanceof ClaudeCliClient);
+  it('defaults to the session-based claude-cli backend and returns an instrumented decorator', () => {
+    const client = createLLMClient();
+    assert.equal(typeof client.complete, 'function');
+    assert.ok(!(client instanceof ClaudeCliClient), 'decorator must not be the raw class instance');
   });
 });
 
