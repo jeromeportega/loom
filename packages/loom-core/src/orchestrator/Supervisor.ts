@@ -19,6 +19,8 @@ import { withRunMetrics } from '../metrics/withRunMetrics.js';
 import { activeCollector } from '../metrics/activeCollector.js';
 import { startPhase, endPhase } from '../metrics/timing.js';
 import { toLLMUsage } from '../metrics/workerUsage.js';
+import { buildRunAttribution } from '../metrics/runAttribution.js';
+import type { RunScope, RunOutcome } from '../metrics/types.js';
 import { EpicYamlSchema, type Story, type AgentStatus } from '../types.js';
 import { approveAndDispatch } from './actions/approveAndDispatch.js';
 import {
@@ -393,6 +395,10 @@ export class Supervisor {
   private recoveryStore!: RecoveryStore;
   /** Clean-retry service (clean=true) for stall auto-recovery (story-061-003). */
   private cleanRetryService!: StoryRetryService;
+  /** Count of stall auto-recoveries within the current run. Reset at run entry. */
+  private runAutoRecoveryCount = 0;
+  /** Count of clean-worktree auto-recoveries within the current run. Reset at run entry. */
+  private runCleanRetryCount = 0;
 
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
@@ -496,10 +502,8 @@ export class Supervisor {
   async run(
     epicIdsOrOpts?: string[] | { epicId?: string; epicIds?: string[]; repoFilter?: string }
   ): Promise<SupervisorResult> {
-    return withRunMetrics(
-      { scope: 'epic', store: new MetricsStore(this.opts.db) },
-      async () => {
-    // Normalize the two call forms into epicIds + optional repoFilter.
+    // Normalize the two call forms into epicIds + optional repoFilter BEFORE
+    // entering withRunMetrics so scope can be determined structurally.
     let epicIds: string[] | undefined;
     let repoFilter: string | undefined;
     if (Array.isArray(epicIdsOrOpts) || epicIdsOrOpts === undefined) {
@@ -512,12 +516,24 @@ export class Supervisor {
       epicIds = singleId !== undefined ? [singleId] : epicIdsOrOpts.epicIds;
       repoFilter = epicIdsOrOpts.repoFilter;
     }
+    // Determine scope structurally from the resolved input — a single story-prefixed
+    // ID is a standalone-story dispatch; everything else is an epic dispatch.
+    const initialScope: RunScope = (epicIds?.length === 1 && epicIds[0]?.startsWith('story-'))
+      ? 'standalone_story'
+      : 'epic';
+    return withRunMetrics(
+      { scope: initialScope, store: new MetricsStore(this.opts.db) },
+      async () => {
+    // Capture run start time before any work begins.
+    const runStartedAt = new Date().toISOString();
 
     this.skillGenPromises = [];
     this.outputTails.clear();
     this.logBytes.clear();
     this.agentToStory.clear();
     this.successCount = 0;
+    this.runAutoRecoveryCount = 0;
+    this.runCleanRetryCount = 0;
     // Clear any stale stop signal from a previous run.
     this.control.setState('running');
 
@@ -765,9 +781,47 @@ export class Supervisor {
       for (const epicId of this.leasedEpics) this.lease.release(epicId);
       this.leasedEpics.clear();
     }
+    // Terminal region (story-065-004): set attribution strictly after fn settles,
+    // never inside per-story/retry/auto-recovery loops. Fail-open (ADR-006).
+    try {
+      const primaryEpicId = leased[0];
+      // Use initialScope (set structurally before withRunMetrics) rather than
+      // re-inferring scope from the ID string at the terminal region.
+      const isStandaloneDispatch = initialScope === 'standalone_story';
+      const outcome: RunOutcome =
+        result.storiesTotal > 0 &&
+        result.storiesDone === result.storiesTotal &&
+        !result.halted
+          ? 'done'
+          : 'failed';
+      const priorRunCount = primaryEpicId
+        ? isStandaloneDispatch
+          ? ((this.opts.db
+              .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE story_id = ?')
+              .get(primaryEpicId) as { n: number } | undefined)?.n ?? 0)
+          : ((this.opts.db
+              .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE epic_id = ?')
+              .get(primaryEpicId) as { n: number } | undefined)?.n ?? 0)
+        : 0;
+      activeCollector()?.setAttribution(buildRunAttribution({
+        scope: initialScope,
+        epicId: isStandaloneDispatch ? undefined : primaryEpicId,
+        storyId: isStandaloneDispatch ? primaryEpicId : undefined,
+        intakeVerdict: isStandaloneDispatch ? 'story' : 'epic',
+        storyCount: result.storiesTotal,
+        retryCount: priorRunCount,
+        cleanRetryCount: this.runCleanRetryCount,
+        autoRecoveryCount: this.runAutoRecoveryCount,
+        outcome,
+        startedAt: runStartedAt,
+        endedAt: new Date().toISOString(),
+      }));
+    } catch {
+      // fail-open — attribution must never propagate into the run
+    }
     return result;
-      }  // end withRunMetrics fn
-    );   // end withRunMetrics call
+    }
+  );
   }
 
   /**
@@ -2616,6 +2670,8 @@ export class Supervisor {
             });
             this.recoveryStore.incrementRecoveryCount(task.story.id);
           })();
+          this.runAutoRecoveryCount++; // story-065-004: track for terminal attribution
+          this.runCleanRetryCount++;   // clean-worktree recovery path
           task.status = 'pending';
           return;
         }
