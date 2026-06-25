@@ -3,7 +3,8 @@ import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { LLMClient, LLMUsage } from '../llm/index.js';
 import { addUsage, EMPTY_USAGE } from '../llm/index.js';
-import { EpicStore, AuditLog, AgentStore } from '../state/index.js';
+import { EpicStore, AuditLog, AgentStore, MetricsStore } from '../state/index.js';
+import { withRunMetrics } from '../metrics/withRunMetrics.js';
 import { SkillSelector } from '../skills/index.js';
 import type { SkillStore } from '../skills/index.js';
 import type { PlannerContext } from './context.js';
@@ -154,6 +155,16 @@ export class Planner {
    *     self-allocates via `nextEpicId` and reserves the row itself.
    */
   async run(brief: string, reservedId?: string): Promise<PlanResult> {
+    if (isStandalone(this.opts.routing)) {
+      return withRunMetrics(
+        { scope: 'standalone_story', store: new MetricsStore(this.opts.db) },
+        () => this.runBody(brief, reservedId),
+      );
+    }
+    return this.runBody(brief, reservedId);
+  }
+
+  private async runBody(brief: string, reservedId?: string): Promise<PlanResult> {
     const epicStore = new EpicStore(this.opts.db);
     const startedAt = Date.now();
 

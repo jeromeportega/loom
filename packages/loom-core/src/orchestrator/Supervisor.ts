@@ -12,8 +12,10 @@ import {
   LeaseStore,
   WorkerLogStore,
   RecoveryStore,
+  MetricsStore,
 } from '../state/index.js';
 import type { GlobalLimiter, LimiterSlot } from '../state/index.js';
+import { withRunMetrics } from '../metrics/withRunMetrics.js';
 import { EpicYamlSchema, type Story, type AgentStatus } from '../types.js';
 import { approveAndDispatch } from './actions/approveAndDispatch.js';
 import {
@@ -491,6 +493,9 @@ export class Supervisor {
   async run(
     epicIdsOrOpts?: string[] | { epicId?: string; epicIds?: string[]; repoFilter?: string }
   ): Promise<SupervisorResult> {
+    return withRunMetrics(
+      { scope: 'epic', store: new MetricsStore(this.opts.db) },
+      async () => {
     // Normalize the two call forms into epicIds + optional repoFilter.
     let epicIds: string[] | undefined;
     let repoFilter: string | undefined;
@@ -758,6 +763,8 @@ export class Supervisor {
       this.leasedEpics.clear();
     }
     return result;
+      }  // end withRunMetrics fn
+    );   // end withRunMetrics call
   }
 
   /**
