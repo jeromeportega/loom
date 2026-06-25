@@ -271,6 +271,23 @@ describe('topoSortRepos — producer before consumer', () => {
     assert.ok(aIdx < bIdx, 'producer must still come before consumer with duplicate deps');
   });
 
+  it('throws when a dependsOnRepos entry references a slug not in the stage set', () => {
+    // Unknown dep slug — should fail before any merges, not mid-merge with rollback.
+    const badStages: RepoStage[] = [
+      {
+        repoSlug: 'repo-a',
+        repoRoot: '/repos/repo-a',
+        storyIds: ['s1'],
+        dependsOnRepos: ['repo-does-not-exist'],
+        status: 'pending',
+      },
+    ];
+    assert.throws(
+      () => topoSortRepos(badStages),
+      /unknown dep repo/,
+    );
+  });
+
   it('throws when a cycle is detected instead of silently returning input order', () => {
     // Manually construct a cyclic stage graph (A depends on B, B depends on A).
     const cycleStages: RepoStage[] = [
@@ -1286,6 +1303,10 @@ describe('CrossRepoCoordinator.run — ≥3-repo branching landing order (AC1–
     };
 
     // Capture stage references so mergeRepo(B) can reset A's status mid-run.
+    // IMPORTANT: this test relies on object identity — the coordinator passes the same
+    // RepoStage reference to mergeRepo that stageBySlug holds. If the coordinator ever
+    // shallow-copies stages before passing them to mergeRepo, this mutation won't affect
+    // the fan-in check and the test will pass vacuously.
     const stageRefs = new Map<string, RepoStage>();
     let rollbackCalled = false;
 
