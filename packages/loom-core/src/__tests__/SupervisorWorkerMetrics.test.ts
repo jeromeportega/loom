@@ -240,7 +240,9 @@ describe('Supervisor.applyResult — worker-cost tap', () => {
     assert.equal(result.storiesFailed, 0, 'no stories failed');
   });
 
-  it('absent usage: no worker phase row created and no error thrown', async () => {
+  it('absent usage: worker phase row exists with zero tokens, no error thrown', async () => {
+    // story-065-002 added startPhase/endPhase wall-clock brackets around every worker dispatch,
+    // so a worker phase row always appears. When usage is absent, token counts stay at zero.
     seedEpic('epic-001', [story('story-001-001')]);
     const db = openDatabase(loomDir);
 
@@ -260,6 +262,10 @@ describe('Supervisor.applyResult — worker-cost tap', () => {
     const store = new MetricsStore(db);
     const phases = store.getPhases(store.listRuns()[0].id);
     const workerPhase = phases.find((p) => p.phase === 'worker');
-    assert.equal(workerPhase, undefined, 'no worker phase when usage is absent');
+    assert.ok(workerPhase !== undefined, 'worker phase row exists (wall-clock bracket fires regardless of usage)');
+    assert.equal(workerPhase.tokensInput, 0, 'tokensInput must be 0 when usage is absent');
+    assert.equal(workerPhase.tokensOutput, 0, 'tokensOutput must be 0 when usage is absent');
+    assert.equal(workerPhase.requestCount, 0, 'requestCount must be 0 when usage is absent');
+    assert.ok(workerPhase.wallMs >= 0, 'wallMs must be non-negative even without usage');
   });
 });
