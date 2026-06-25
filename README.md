@@ -306,7 +306,7 @@ branch so reviewers can see each unit. On a merge conflict, the finalizer
 aborts that specific merge and lists the conflicted story in the epic PR
 description for follow-up — the rest of the epic still ships.
 
-`policy.agents.pr_strategy` is the knob; only `per-epic` is accepted.
+`policy.agents.pr_strategy` is the knob; only `per-epic` is accepted (one PR per repository for cross-repo epics; the landing order is controlled by the coordinator, not this knob).
 
 ### The local web dashboard — `loom web`
 
@@ -363,7 +363,7 @@ the `cursor-cli` backend) in git worktrees. The skill system learns reusable pat
 from completed work, gated by an eval harness and a candidate→active→disabled lifecycle
 — self-healing against skill degradation over time.
 
-Cross-repo: a single brief can span N registered repositories. The `CrossRepoCoordinator`
+Cross-repo: a single brief can span N registered repositories. The cross-repo coordinator
 partitions stories into per-repo stages, sorts them topologically so producers land before
 consumers, and applies all-ready-or-none staging with forward-revert rollback on failure.
 `loom status --all` aggregates every loom repo on the machine, and a per-machine config

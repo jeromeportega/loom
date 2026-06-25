@@ -216,7 +216,7 @@ describe('docs scrub (story-064-001) — MODEL_TIER_PHRASING and no pinned versi
   for (const { label, filePath } of HEADLINE_FILES) {
     it(`${label}: no pinned model version (Opus/Sonnet/Haiku N.N)`, () => {
       const content = fs.readFileSync(filePath, 'utf8');
-      const match = /\b(Opus|Sonnet|Haiku)\s+\d+\.\d+/.exec(content);
+      const match = /\b(Opus|Sonnet|Haiku)\s+\d+\.\d+|claude-(opus|sonnet|haiku)-\d+/.exec(content);
       assert.ok(
         match === null,
         `${label} must not pin a model version — found: "${match?.[0] ?? ''}"`
