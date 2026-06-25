@@ -502,12 +502,8 @@ export class Supervisor {
   async run(
     epicIdsOrOpts?: string[] | { epicId?: string; epicIds?: string[]; repoFilter?: string }
   ): Promise<SupervisorResult> {
-    return withRunMetrics(
-      { scope: 'epic', store: new MetricsStore(this.opts.db) },
-      async () => {
-    // Capture run start time before any work begins (story-065-004 attribution).
-    const runStartedAt = new Date().toISOString();
-    // Normalize the two call forms into epicIds + optional repoFilter.
+    // Normalize the two call forms into epicIds + optional repoFilter BEFORE
+    // entering withRunMetrics so scope can be determined structurally.
     let epicIds: string[] | undefined;
     let repoFilter: string | undefined;
     if (Array.isArray(epicIdsOrOpts) || epicIdsOrOpts === undefined) {
@@ -520,6 +516,16 @@ export class Supervisor {
       epicIds = singleId !== undefined ? [singleId] : epicIdsOrOpts.epicIds;
       repoFilter = epicIdsOrOpts.repoFilter;
     }
+    // Determine scope structurally from the resolved input — a single story-prefixed
+    // ID is a standalone-story dispatch; everything else is an epic dispatch.
+    const initialScope: RunScope = (epicIds?.length === 1 && epicIds[0]?.startsWith('story-'))
+      ? 'standalone_story'
+      : 'epic';
+    return withRunMetrics(
+      { scope: initialScope, store: new MetricsStore(this.opts.db) },
+      async () => {
+    // Capture run start time before any work begins.
+    const runStartedAt = new Date().toISOString();
 
     this.skillGenPromises = [];
     this.outputTails.clear();
@@ -779,8 +785,9 @@ export class Supervisor {
     // never inside per-story/retry/auto-recovery loops. Fail-open (ADR-006).
     try {
       const primaryEpicId = leased[0];
-      const isStandaloneDispatch = leased.length === 1 && primaryEpicId?.startsWith('story-');
-      const scope: RunScope = isStandaloneDispatch ? 'standalone_story' : 'epic';
+      // Use initialScope (set structurally before withRunMetrics) rather than
+      // re-inferring scope from the ID string at the terminal region.
+      const isStandaloneDispatch = initialScope === 'standalone_story';
       const outcome: RunOutcome =
         result.storiesTotal > 0 &&
         result.storiesDone === result.storiesTotal &&
@@ -797,7 +804,7 @@ export class Supervisor {
               .get(primaryEpicId) as { n: number } | undefined)?.n ?? 0)
         : 0;
       activeCollector()?.setAttribution(buildRunAttribution({
-        scope,
+        scope: initialScope,
         epicId: isStandaloneDispatch ? undefined : primaryEpicId,
         storyId: isStandaloneDispatch ? primaryEpicId : undefined,
         intakeVerdict: isStandaloneDispatch ? 'story' : 'epic',
@@ -813,8 +820,8 @@ export class Supervisor {
       // fail-open — attribution must never propagate into the run
     }
     return result;
-      }  // end withRunMetrics fn
-    );   // end withRunMetrics call
+    }
+  );
   }
 
   /**

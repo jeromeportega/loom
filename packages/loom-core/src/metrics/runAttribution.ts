@@ -6,8 +6,8 @@ import type { RunMetricsInput, RunOutcome, RunScope } from './types.js';
  * that the collector merges before withRunMetrics.finally fires build() + recordRun().
  *
  * Stable run identifier: epicId (epic path) / storyId (standalone path) + startedAt.
- * Per ADR-005 there is no DB-level uniqueness constraint — the exactly-once guarantee
- * is structural (withRunMetrics calls recordRun exactly once per invocation).
+ * There is no DB-level uniqueness constraint — the exactly-once guarantee is
+ * structural (withRunMetrics calls recordRun exactly once per invocation).
  * A fresh-process resume legitimately produces one new, correctly-attributed row;
  * the prior run's row is correlated by the same epicId/storyId with an earlier startedAt.
  */
@@ -32,9 +32,9 @@ export interface RunAttributionState {
 
 /**
  * Maps orchestrator run state to the RunMetricsInput attribution slice.
- * Called at the terminal region inside withRunMetrics fn (story-065-004).
+ * Called at the terminal region inside the withRunMetrics callback.
  * The result is passed to collector.setAttribution(), which merges it with
- * any prior attribution (scope is already set by withRunMetrics init).
+ * any prior attribution.
  */
 export function buildRunAttribution(state: RunAttributionState): Partial<RunMetricsInput> {
   const attr: Partial<RunMetricsInput> = {

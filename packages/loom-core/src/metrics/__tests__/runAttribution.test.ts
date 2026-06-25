@@ -282,6 +282,25 @@ describe('buildRunAttribution — fail-open (ADR-006)', () => {
   });
 });
 
+// ─── scope mismatch: setAttribution overrides withRunMetrics init scope ──────
+
+describe('buildRunAttribution — scope mismatch override', () => {
+  it('setAttribution with standalone_story scope overrides an epic init scope in the persisted row', async () => {
+    // Production pattern: withRunMetrics init scope may differ from the scope
+    // computed at the terminal region. setAttribution must fully override scope.
+    const db = makeDb();
+    const store = new MetricsStore(db);
+
+    await withRunMetrics({ scope: 'epic', store }, async (c) => {
+      c.setAttribution(buildRunAttribution(baseState({ scope: 'standalone_story', epicId: undefined, storyId: 'story-007' })));
+    });
+
+    const row = db.prepare('SELECT scope FROM run_metrics LIMIT 1').get() as { scope: string } | undefined;
+    assert.equal(row?.scope, 'standalone_story', 'setAttribution scope must override the withRunMetrics init scope');
+    db.close();
+  });
+});
+
 // ─── resume idempotency: second run creates a new correlated row ──────────────
 
 describe('buildRunAttribution — resume idempotency', () => {
