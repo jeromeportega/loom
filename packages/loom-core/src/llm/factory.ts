@@ -2,6 +2,7 @@ import type { LLMClient } from './LLMClient.js';
 import type { Policy } from '../types.js';
 import { ClaudeCliClient } from './ClaudeCliClient.js';
 import { CursorCliClient } from './CursorCliClient.js';
+import { instrumentLLMClient } from '../metrics/instrumentLLMClient.js';
 
 export type LLMBackend = 'claude-cli' | 'cursor-cli';
 
@@ -39,6 +40,6 @@ export function createLLMClient(
   backend: LLMBackend = 'claude-cli',
   opts: CreateLLMOptions = {}
 ): LLMClient {
-  if (backend === 'cursor-cli') return new CursorCliClient({ timeoutMs: opts.timeoutMs });
-  return new ClaudeCliClient({ timeoutMs: opts.timeoutMs });
+  if (backend === 'cursor-cli') return instrumentLLMClient(new CursorCliClient({ timeoutMs: opts.timeoutMs }));
+  return instrumentLLMClient(new ClaudeCliClient({ timeoutMs: opts.timeoutMs }));
 }
