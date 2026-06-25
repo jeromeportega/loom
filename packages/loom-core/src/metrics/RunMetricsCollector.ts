@@ -31,6 +31,10 @@ export class RunMetricsCollector {
     this._currentPhase = phase;
     const existing = this.phases.get(phase);
     if (existing) {
+      // If the phase is already in-flight, accrue elapsed time before restarting.
+      if (existing.startTime !== undefined) {
+        existing.wallMs += Date.now() - existing.startTime;
+      }
       existing.startTime = Date.now();
     } else {
       this.phases.set(phase, {

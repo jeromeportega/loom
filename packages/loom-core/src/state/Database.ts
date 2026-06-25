@@ -236,7 +236,7 @@ CREATE TABLE IF NOT EXISTS run_metrics (
   schema_version       INTEGER NOT NULL,
   scope                TEXT NOT NULL CHECK (scope IN ('epic','standalone_story','epic_story')),
   epic_id              TEXT REFERENCES epics(id),
-  story_id             TEXT,
+  story_id             TEXT,                             -- soft reference; no stories table in current schema
   agent_id             TEXT REFERENCES agents(id),
   intake_verdict       TEXT,
   intake_kind          TEXT,
@@ -257,7 +257,7 @@ CREATE TABLE IF NOT EXISTS run_metrics (
 CREATE TABLE IF NOT EXISTS run_metrics_phase (
   id                    INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id                INTEGER NOT NULL REFERENCES run_metrics(id) ON DELETE CASCADE,
-  phase                 TEXT NOT NULL,
+  phase                 TEXT NOT NULL CHECK (phase IN ('analyst','pm','architect','standalone_plan','dispatch','worker','gate','finalize')),
   model                 TEXT,
   tokens_input          INTEGER NOT NULL DEFAULT 0,
   tokens_output         INTEGER NOT NULL DEFAULT 0,

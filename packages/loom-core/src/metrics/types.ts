@@ -13,7 +13,7 @@ export interface PhaseMetrics {
   tokensOutput: number;         // <- LLMUsage.outputTokens
   tokensCached: number;         // <- LLMUsage.cacheReadTokens
   tokensCacheCreation: number;  // <- LLMUsage.cacheCreationTokens
-  billedTokens: number;         // = tokensInput + tokensOutput + tokensCached + tokensCacheCreation
+  billedTokens: number;         // raw volume sum: input+output+cached+cacheCreation (NOT billing-weighted; see costUsd)
   costUsd?: number;             // <- LLMUsage.costUsd (0/undefined on cursor-cli path)
   requestCount: number;         // <- LLMUsage.requestCount
   wallMs: number;

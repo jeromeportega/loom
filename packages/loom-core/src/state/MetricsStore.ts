@@ -92,14 +92,11 @@ function mapPhaseRow(row: DbPhaseRow): PhaseMetricsRecord {
 }
 
 export class MetricsStore {
-  constructor(private db: Database.Database) {}
+  private readonly _insertParent: Database.Statement;
+  private readonly _insertPhase: Database.Statement;
 
-  recordRun(input: RunMetricsInput): number {
-    const totalWallMs = input.phases.reduce((sum, p) => sum + p.wallMs, 0);
-    const billedTokensTotal = input.phases.reduce((sum, p) => sum + p.billedTokens, 0);
-    const costUsdTotal = input.phases.reduce((sum, p) => sum + (p.costUsd ?? 0), 0);
-
-    const insertParent = this.db.prepare(`
+  constructor(private db: Database.Database) {
+    this._insertParent = db.prepare(`
       INSERT INTO run_metrics (
         schema_version, scope, epic_id, story_id, agent_id,
         intake_verdict, intake_kind, story_count,
@@ -114,17 +111,22 @@ export class MetricsStore {
         ?, ?, ?, ?
       )
     `);
-
-    const insertPhase = this.db.prepare(`
+    this._insertPhase = db.prepare(`
       INSERT INTO run_metrics_phase (
         run_id, phase, model,
         tokens_input, tokens_output, tokens_cached, tokens_cache_creation,
         billed_tokens, cost_usd, request_count, wall_ms
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+  }
+
+  recordRun(input: RunMetricsInput): number {
+    const totalWallMs = input.phases.reduce((sum, p) => sum + p.wallMs, 0);
+    const billedTokensTotal = input.phases.reduce((sum, p) => sum + p.billedTokens, 0);
+    const costUsdTotal = input.phases.reduce((sum, p) => sum + (p.costUsd ?? 0), 0);
 
     const doInsert = this.db.transaction((): number => {
-      const result = insertParent.run(
+      const result = this._insertParent.run(
         RUN_METRICS_SCHEMA_VERSION,
         input.scope,
         input.epicId ?? null,
@@ -144,9 +146,9 @@ export class MetricsStore {
         input.startedAt ?? null,
         input.endedAt ?? null
       );
-      const runId = result.lastInsertRowid as number;
+      const runId = Number(result.lastInsertRowid);
       for (const phase of input.phases) {
-        insertPhase.run(
+        this._insertPhase.run(
           runId,
           phase.phase,
           phase.model ?? null,
@@ -171,7 +173,9 @@ export class MetricsStore {
       .prepare('SELECT * FROM run_metrics WHERE id = ?')
       .get(id) as DbRunRow | undefined;
     if (!row) return undefined;
-    return mapRunRow(row);
+    const rec = mapRunRow(row);
+    rec.phases = this.getPhases(id);
+    return rec;
   }
 
   getPhases(runId: number): PhaseMetricsRecord[] {
@@ -181,6 +185,11 @@ export class MetricsStore {
     return rows.map(mapPhaseRow);
   }
 
+  /**
+   * Returns run header rows matching the filter. The `phases` field on each
+   * record is always empty — call `getPhases(runId)` for phase-level detail.
+   * Defaults to 100 rows; pass an explicit `limit` when completeness matters.
+   */
   listRuns(filter?: { epicId?: string; scope?: RunScope; limit?: number }): RunMetricsRecord[] {
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -247,7 +256,13 @@ export class MetricsStore {
     }));
   }
 
-  retryRecoveryCost(): { retryTokens: number; autoRecoveryTokens: number; costUsd: number } {
+  /**
+   * Returns the total (whole-run, not incremental) cost of runs that had
+   * retries or auto-recoveries. This is NOT the marginal overhead — it
+   * includes the cost of the successful final attempt as well. Use as an
+   * upper-bound "cost of imperfect runs", not as "wasted spend".
+   */
+  retryRecoveryCost(): { retryTokens: number; autoRecoveryTokens: number; costUsd: number; autoRecoveryCostUsd: number } {
     const retryRow = this.db
       .prepare(
         `SELECT COALESCE(SUM(billed_tokens_total), 0) as tokens,
@@ -257,14 +272,16 @@ export class MetricsStore {
       .get() as { tokens: number; cost: number };
     const recoveryRow = this.db
       .prepare(
-        `SELECT COALESCE(SUM(billed_tokens_total), 0) as tokens
+        `SELECT COALESCE(SUM(billed_tokens_total), 0) as tokens,
+                COALESCE(SUM(cost_usd), 0) as cost
          FROM run_metrics WHERE auto_recovery_count > 0`
       )
-      .get() as { tokens: number };
+      .get() as { tokens: number; cost: number };
     return {
       retryTokens: retryRow.tokens,
       autoRecoveryTokens: recoveryRow.tokens,
       costUsd: retryRow.cost,
+      autoRecoveryCostUsd: recoveryRow.cost,
     };
   }
 }

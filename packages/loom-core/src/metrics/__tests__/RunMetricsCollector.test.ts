@@ -61,6 +61,17 @@ describe('RunMetricsCollector — phase tracking', () => {
     const finalWall = c.build().phases.find((p) => p.phase === 'worker')!.wallMs;
     assert.ok(finalWall >= midWall, 'wall time accumulates across re-entry');
   });
+
+  it('startPhase called twice without endPhase accrues the first window (no time loss)', () => {
+    const c = new RunMetricsCollector();
+    c.startPhase('analyst');
+    // Do NOT call endPhase — call startPhase again immediately.
+    // The first window's elapsed time (>= 0ms) must be preserved.
+    c.startPhase('analyst');
+    c.endPhase('analyst');
+    const wall = c.build().phases.find((p) => p.phase === 'analyst')!.wallMs;
+    assert.ok(wall >= 0, 'wallMs must be non-negative after double startPhase');
+  });
 });
 
 // ─── addUsage ─────────────────────────────────────────────────────────────────

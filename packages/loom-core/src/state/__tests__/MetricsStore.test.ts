@@ -284,6 +284,26 @@ describe('MetricsStore.getRun — round-trip', () => {
     db.close();
   });
 
+  it('hydrates phases array — rec.phases matches getPhases(id)', () => {
+    const db = makeDb('getrun-phases-hydrated.db');
+    const store = new MetricsStore(db);
+    const input = makeInput();
+
+    const id = store.recordRun(input);
+    const rec = store.getRun(id)!;
+
+    assert.ok(Array.isArray(rec.phases), 'rec.phases is an array');
+    assert.equal(rec.phases.length, 2, 'rec.phases has 2 entries (same as input)');
+    assert.equal(rec.phases[0].phase, 'analyst');
+    assert.equal(rec.phases[1].phase, 'pm');
+
+    // Must match getPhases() exactly
+    const phases = store.getPhases(id);
+    assert.deepEqual(rec.phases, phases, 'getRun phases matches getPhases output');
+
+    db.close();
+  });
+
   it('returns undefined for a non-existent id', () => {
     const db = makeDb('getrun-missing.db');
     const store = new MetricsStore(db);
@@ -556,6 +576,26 @@ describe('MetricsStore — CHECK constraints', () => {
     db.close();
   });
 
+  it('rejects run_metrics_phase.phase outside the allowed enum', () => {
+    const db = makeDb('check-phase.db');
+    // Insert parent row first, then attempt to insert a bad phase row directly.
+    db.prepare("INSERT OR IGNORE INTO epics (id, title, status) VALUES ('e-phase-check', 'Test', 'planned')").run();
+    db.prepare(`INSERT INTO run_metrics (schema_version, scope, retry_count, clean_retry_count, auto_recovery_count)
+                VALUES (1, 'standalone_story', 0, 0, 0)`).run();
+    const runId = (db.prepare('SELECT last_insert_rowid() as id').get() as { id: number }).id;
+
+    assert.throws(
+      () => db.prepare(
+        `INSERT INTO run_metrics_phase (run_id, phase, tokens_input, tokens_output, tokens_cached, tokens_cache_creation, billed_tokens, request_count, wall_ms)
+         VALUES (?, 'invalid_phase', 0, 0, 0, 0, 0, 0, 0)`
+      ).run(runId),
+      /CHECK constraint failed/i,
+      'invalid phase must be rejected by CHECK constraint'
+    );
+
+    db.close();
+  });
+
   it('accepts NULL outcome (optional field)', () => {
     const db = makeDb('check-outcome-null.db');
     const store = new MetricsStore(db);
@@ -674,6 +714,7 @@ describe('MetricsStore.retryRecoveryCost', () => {
     assert.equal(result.retryTokens, 0);
     assert.equal(result.autoRecoveryTokens, 0);
     assert.equal(result.costUsd, 0);
+    assert.equal(result.autoRecoveryCostUsd, 0);
 
     db.close();
   });
@@ -699,6 +740,7 @@ describe('MetricsStore.retryRecoveryCost', () => {
 
     const result = store.retryRecoveryCost();
     assert.equal(result.retryTokens, 150, 'only tokens from retry runs counted');
+    assert.equal(typeof result.autoRecoveryCostUsd, 'number', 'autoRecoveryCostUsd is present');
 
     db.close();
   });
