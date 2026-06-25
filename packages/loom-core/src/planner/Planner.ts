@@ -19,6 +19,7 @@ import type { SerializationEdge } from '../orchestrator/SerializeOverlaps.js';
 import { epicId, epicNumber, storyId, idNumber, planningPaths, planningRelPaths } from './paths.js';
 import { PlanningOutputSink } from './PlanningOutputSink.js';
 import type { PlanningEvent } from './PlanningEvent.js';
+import { startPhase, endPhase } from '../metrics/timing.js';
 import { serializeEpic } from './epicSerializer.js';
 import type { EpicYaml } from '../types.js';
 import type { EffectiveRouting } from '../intake/routing.js';
@@ -230,9 +231,11 @@ export class Planner {
     sink.start();
     try {
       // ─── Analyst: brief -> project-brief.md ───────────────────────────
+      startPhase('analyst');
       sink.setPhase('analyst');
       const analyst = await new AnalystAgent(ctx).run(brief);
       usage = addUsage(usage, analyst.usage);
+      endPhase('analyst');
 
       // ─── Routing branch: standalone story or full epic pipeline ───────
       // Branch AFTER the Analyst so the refined brief is available on both
@@ -245,15 +248,19 @@ export class Planner {
       epicStore.updatePlanningPhase(runId, 'pm');
 
       // ─── PM: brief -> prd.md + epic YAMLs ─────────────────────────────
+      startPhase('pm');
       sink.setPhase('pm');
       const pm = await new PMAgent(ctx).run(analyst.briefContent, startNum);
       usage = addUsage(usage, pm.usage);
+      endPhase('pm');
       epicStore.updatePlanningPhase(runId, 'architect');
 
       // ─── Architect: prd + epics -> architecture.md + enriched epics ───
+      startPhase('architect');
       sink.setPhase('architect');
       const architect = await new ArchitectAgent(ctx).run(pm.prdContent, pm.epics);
       usage = addUsage(usage, architect.usage);
+      endPhase('architect');
 
       // ─── QA (opt-in): enrich each story with a risk-based test plan ───
       // Runs after the Architect so it can plan tests against the real

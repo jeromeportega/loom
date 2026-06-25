@@ -8,6 +8,7 @@ import { readManifest, type WorkspaceManifest } from '../../home/workspaceManife
 import { resolvePrimaryRepo } from '../../home/primaryRepo.js';
 import { loomHome } from '../../state/paths.js';
 import { validateCrossRepoEdges, type CrossRepoEdgeError } from '../crossRepoReadiness.js';
+import { activeCollector } from '../../metrics/activeCollector.js';
 
 // ─── Cycle rejection ──────────────────────────────────────────────────────────
 
@@ -178,6 +179,7 @@ export async function approveAndDispatch(
     // Snapshot persistence is observability — never block approve on it.
   }
   deps.epicStore.updateStatus(epicId, 'approved');
+  try { activeCollector()?.markApproved(); } catch { /* timing is observability */ }
   deps.auditLog.record({
     action: 'epic_approved',
     command: epicId,

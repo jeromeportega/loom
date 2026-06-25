@@ -474,12 +474,12 @@ describe('v26 migration — FK deferral implicit proof and schema version', () =
     db.close();
   });
 
-  it('schema version is bumped to SCHEMA_VERSION (28) after migration', () => {
+  it('schema version is bumped to current SCHEMA_VERSION after migration', () => {
     const dbPath = path.join(tmpDir, 'schema-version.db');
     const db = seedPreV26Db(dbPath);
     runMigrations(db);
     assert.equal(schemaVersion(db), SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 28);
+    assert.equal(SCHEMA_VERSION, 29);
     db.close();
   });
 });

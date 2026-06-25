@@ -6,6 +6,7 @@ import type { PlannerContext } from './context.js';
 import { StorySchema } from '../types.js';
 import type { Story } from '../types.js';
 import { extractJsonBlock } from './util.js';
+import { startPhase, endPhase } from '../metrics/timing.js';
 
 /**
  * System prompt for the standalone story agent. Cached on first use (Invariant 3).
@@ -52,57 +53,62 @@ export class StandaloneStoryAgent {
    *   transitive intake/ import from this module (physical-separation invariant)
    */
   async run(refinedBrief: string, storyId: string): Promise<{ story: Story; usage: LLMUsage }> {
-    let usage: LLMUsage = { ...EMPTY_USAGE };
-    let lastError = '';
-    let lastResponse = '';
+    startPhase('standalone_plan');
+    try {
+      let usage: LLMUsage = { ...EMPTY_USAGE };
+      let lastError = '';
+      let lastResponse = '';
 
-    const baseMsg =
-      `Produce a single story definition in JSON.\n\n` +
-      `Story id: "${storyId}"\n\n` +
-      `PROJECT BRIEF:\n---\n${refinedBrief}`;
+      const baseMsg =
+        `Produce a single story definition in JSON.\n\n` +
+        `Story id: "${storyId}"\n\n` +
+        `PROJECT BRIEF:\n---\n${refinedBrief}`;
 
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const messages: LLMMessage[] =
-        attempt === 0
-          ? [{ role: 'user', content: baseMsg }]
-          : [
-              { role: 'user', content: baseMsg },
-              { role: 'assistant', content: lastResponse },
-              {
-                role: 'user',
-                content:
-                  `That output failed validation:\n${lastError}\n\n` +
-                  'Return a corrected response — a single fenced ```json block only.',
-              },
-            ];
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const messages: LLMMessage[] =
+          attempt === 0
+            ? [{ role: 'user', content: baseMsg }]
+            : [
+                { role: 'user', content: baseMsg },
+                { role: 'assistant', content: lastResponse },
+                {
+                  role: 'user',
+                  content:
+                    `That output failed validation:\n${lastError}\n\n` +
+                    'Return a corrected response — a single fenced ```json block only.',
+                },
+              ];
 
-      const response = await this.ctx.llm.complete({
-        model: this.ctx.model,
-        system: [{ text: SYSTEM_PROMPT, cache: true }],
-        messages,
-      });
-      usage = addUsage(usage, response.usage);
-      lastResponse = response.text;
+        const response = await this.ctx.llm.complete({
+          model: this.ctx.model,
+          system: [{ text: SYSTEM_PROMPT, cache: true }],
+          messages,
+        });
+        usage = addUsage(usage, response.usage);
+        lastResponse = response.text;
 
-      try {
-        const json = extractJsonBlock(response.text);
-        const parsed = StorySchema.parse(json);
-        // Enforce the derived id regardless of model compliance — the system
-        // prompt asks the model to use it verbatim, but code-level enforcement
-        // ensures the DB row and on-disk YAML are always consistent (ADR-001 §5).
-        const story = parsed.id === storyId ? parsed : { ...parsed, id: storyId };
-        return { story, usage };
-      } catch (err) {
-        lastError =
-          err instanceof z.ZodError
-            ? err.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n')
-            : (err as Error).message;
+        try {
+          const json = extractJsonBlock(response.text);
+          const parsed = StorySchema.parse(json);
+          // Enforce the derived id regardless of model compliance — the system
+          // prompt asks the model to use it verbatim, but code-level enforcement
+          // ensures the DB row and on-disk YAML are always consistent (ADR-001 §5).
+          const story = parsed.id === storyId ? parsed : { ...parsed, id: storyId };
+          return { story, usage };
+        } catch (err) {
+          lastError =
+            err instanceof z.ZodError
+              ? err.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n')
+              : (err as Error).message;
+        }
       }
-    }
 
-    throw new Error(
-      `StandaloneStoryAgent failed to produce a valid story after 2 attempts.\n` +
-        `Last validation error:\n${lastError}`
-    );
+      throw new Error(
+        `StandaloneStoryAgent failed to produce a valid story after 2 attempts.\n` +
+          `Last validation error:\n${lastError}`
+      );
+    } finally {
+      endPhase('standalone_plan');
+    }
   }
 }
