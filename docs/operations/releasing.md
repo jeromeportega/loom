@@ -119,7 +119,25 @@ git fetch origin && git log --merges origin/main -1 --format=%H
 Tag pushes to `origin` pass the guard — `v<version>` is not a protected
 branch, and no `--force` flag is used.
 
-### Step 4 — npm publish
+### Step 4 — documentation review
+
+Before publishing to npm, review narrative and operational docs for accuracy
+at this release:
+
+- [ ] **Narrative docs** (`README.md`, `docs/index.md`,
+  `docs/getting-started/index.md`) — verify phrasing matches current
+  behaviour; remove any superseded claims.
+- [ ] **Operational docs** (`docs/operations/`) — confirm commands, flags,
+  and runbook steps still match the shipped code.
+- [ ] **Capabilities page** (`docs/capabilities.md`) — confirm the command
+  and policy-knob tables reflect what ships in this version.
+
+> **Automated README/index drift flag — deferred.**
+> Extending `checkCapabilitiesCoverage()` to auto-flag narrative/prose drift
+> was evaluated; the function is token-exact and cannot judge prose accuracy,
+> so the automated flag is deferred. This checklist item is the required minimum.
+
+### Step 5 — npm publish
 
 Authenticate to npm (`npm login`) if you are not already, then publish each
 workspace in dependency order:

@@ -218,6 +218,50 @@ function parseRunbookPackageNames(markdown: string): Set<string> {
   return names;
 }
 
+describe('docs/operations/releasing.md — documentation-review step (story-064-005)', () => {
+  let runbook = '';
+
+  before(() => {
+    const p = findDoc('docs/operations/releasing.md');
+    runbook = fs.readFileSync(p, 'utf8');
+  });
+
+  it('contains a release-time documentation-review checklist item', () => {
+    assert.ok(
+      /documentation.{0,10}review/i.test(runbook),
+      'must contain a documentation-review step'
+    );
+  });
+
+  it('prompts a narrative doc accuracy check', () => {
+    assert.ok(
+      /narrative/i.test(runbook),
+      'doc-review step must prompt a narrative doc accuracy check'
+    );
+  });
+
+  it('prompts an operational doc accuracy check', () => {
+    assert.ok(
+      /operational/i.test(runbook),
+      'doc-review step must prompt an operational doc accuracy check'
+    );
+  });
+
+  it('labels the automated README/index drift flag as deferred', () => {
+    assert.ok(
+      /deferred/i.test(runbook),
+      'automated README/index drift flag must be labeled "deferred"'
+    );
+  });
+
+  it('does NOT present the automated flag as shipped', () => {
+    assert.ok(
+      !/automated[^.]*(?:flag|drift)[^.]*(?:enabled|shipped|active|implemented|now runs|is live)/i.test(runbook),
+      'must not present the automated README/index drift flag as shipped'
+    );
+  });
+});
+
 describe('docs/capabilities.md — loom release row', () => {
   let caps = '';
 
