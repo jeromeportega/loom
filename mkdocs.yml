@@ -62,6 +62,7 @@ nav:
     - "Brief Refinement": architecture/brief-refinement.md
     - "Worker Resilience": architecture/worker-resilience.md
     - "Gate-Eval Framework": architecture/gate-eval-framework.md
+    - "Cross-Repo & loom-home": architecture/cross-repo-loom-home.md
   - "Runbooks":
     - "Brief-Quality Eval": runbooks/brief-quality-eval.md
     - "Skill-Judge Eval": runbooks/skill-judge-eval.md
