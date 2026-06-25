@@ -19,6 +19,8 @@ import { withRunMetrics } from '../metrics/withRunMetrics.js';
 import { activeCollector } from '../metrics/activeCollector.js';
 import { startPhase, endPhase } from '../metrics/timing.js';
 import { toLLMUsage } from '../metrics/workerUsage.js';
+import { buildRunAttribution } from '../metrics/runAttribution.js';
+import type { RunScope, RunOutcome } from '../metrics/types.js';
 import { EpicYamlSchema, type Story, type AgentStatus } from '../types.js';
 import { approveAndDispatch } from './actions/approveAndDispatch.js';
 import {
@@ -393,6 +395,8 @@ export class Supervisor {
   private recoveryStore!: RecoveryStore;
   /** Clean-retry service (clean=true) for stall auto-recovery (story-061-003). */
   private cleanRetryService!: StoryRetryService;
+  /** Count of stall auto-recoveries within the current run. Reset at run entry. */
+  private _runAutoRecoveryCount = 0;
 
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
@@ -499,6 +503,8 @@ export class Supervisor {
     return withRunMetrics(
       { scope: 'epic', store: new MetricsStore(this.opts.db) },
       async () => {
+    // Capture run start time before any work begins (story-065-004 attribution).
+    const _runStartedAt = new Date().toISOString();
     // Normalize the two call forms into epicIds + optional repoFilter.
     let epicIds: string[] | undefined;
     let repoFilter: string | undefined;
@@ -518,6 +524,7 @@ export class Supervisor {
     this.logBytes.clear();
     this.agentToStory.clear();
     this.successCount = 0;
+    this._runAutoRecoveryCount = 0;
     // Clear any stale stop signal from a previous run.
     this.control.setState('running');
 
@@ -764,6 +771,38 @@ export class Supervisor {
       // proceed — even if dispatch threw.
       for (const epicId of this.leasedEpics) this.lease.release(epicId);
       this.leasedEpics.clear();
+    }
+    // Terminal region (story-065-004): set attribution strictly after fn settles,
+    // never inside per-story/retry/auto-recovery loops. Fail-open (ADR-006).
+    try {
+      const primaryEpicId = leased[0];
+      const isStandaloneDispatch = leased.length === 1 && primaryEpicId?.startsWith('story-');
+      const scope: RunScope = isStandaloneDispatch ? 'standalone_story' : 'epic';
+      const outcome: RunOutcome =
+        result.storiesTotal > 0 &&
+        result.storiesDone === result.storiesTotal &&
+        !result.halted
+          ? 'done'
+          : 'failed';
+      const priorRunCount = primaryEpicId
+        ? ((this.opts.db
+            .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE epic_id = ? OR story_id = ?')
+            .get(primaryEpicId, primaryEpicId) as { n: number } | undefined)?.n ?? 0)
+        : 0;
+      activeCollector()?.setAttribution(buildRunAttribution({
+        scope,
+        epicId: isStandaloneDispatch ? undefined : primaryEpicId,
+        storyId: isStandaloneDispatch ? primaryEpicId : undefined,
+        storyCount: result.storiesTotal,
+        retryCount: priorRunCount,
+        cleanRetryCount: this._runAutoRecoveryCount,
+        autoRecoveryCount: this._runAutoRecoveryCount,
+        outcome,
+        startedAt: _runStartedAt,
+        endedAt: new Date().toISOString(),
+      }));
+    } catch {
+      // fail-open — attribution must never propagate into the run
     }
     return result;
       }  // end withRunMetrics fn
@@ -2616,6 +2655,7 @@ export class Supervisor {
             });
             this.recoveryStore.incrementRecoveryCount(task.story.id);
           })();
+          this._runAutoRecoveryCount++; // story-065-004: track for terminal attribution
           task.status = 'pending';
           return;
         }

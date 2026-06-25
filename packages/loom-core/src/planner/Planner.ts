@@ -21,6 +21,8 @@ import { epicId, epicNumber, storyId, idNumber, planningPaths, planningRelPaths 
 import { PlanningOutputSink } from './PlanningOutputSink.js';
 import type { PlanningEvent } from './PlanningEvent.js';
 import { startPhase, endPhase } from '../metrics/timing.js';
+import { activeCollector } from '../metrics/activeCollector.js';
+import { buildRunAttribution } from '../metrics/runAttribution.js';
 import { serializeEpic } from './epicSerializer.js';
 import type { EpicYaml } from '../types.js';
 import type { EffectiveRouting } from '../intake/routing.js';
@@ -372,6 +374,29 @@ export class Planner {
     // Both paths (brief and yaml) are known at this point — write in one call.
     epicStore.updatePaths(runId, { brief_path: rel.brief, yaml_path: rel.epicFile(runId) });
     epicStore.updateTokens(runId, usage, durationMs);
+
+    // Terminal region (story-065-004): set run attribution before withRunMetrics.finally fires.
+    // Fail-open (ADR-006) — attribution errors must never abort the planning run.
+    try {
+      const priorRunCount = (this.opts.db
+        .prepare('SELECT COUNT(*) AS n FROM run_metrics WHERE story_id = ?')
+        .get(runId) as { n: number } | undefined)?.n ?? 0;
+      activeCollector()?.setAttribution(buildRunAttribution({
+        scope: 'standalone_story',
+        storyId: runId,
+        intakeVerdict: this.opts.routing?.size,
+        intakeKind: this.opts.routing?.type,
+        storyCount: 1,
+        retryCount: priorRunCount,
+        cleanRetryCount: 0,
+        autoRecoveryCount: 0,
+        outcome: 'done',
+        startedAt: new Date(startedAt).toISOString(),
+        endedAt: new Date().toISOString(),
+      }));
+    } catch {
+      // fail-open — attribution must never propagate into the planning run
+    }
 
     return {
       runId,
