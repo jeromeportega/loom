@@ -73,10 +73,10 @@ function detectPhase(
   f: EpicFinalizer,
   epic: EpicRecord,
   remote: string | null
-): Promise<ResumePlan> {
+): ResumePlan {
   return (
     f as unknown as {
-      detectResumePhase(epic: EpicRecord, remote: string | null): Promise<ResumePlan>;
+      detectResumePhase(epic: EpicRecord, remote: string | null): ResumePlan;
     }
   ).detectResumePhase(epic, remote);
 }
@@ -252,7 +252,7 @@ describe('detectResumePhase → ResumePlan matrix (FR-4, FR-10, FR-11, FR-12)', 
     store.recordPrUrl('epic-001', PR_URL);
 
     const f = makeFinalizer(db, { prForRef: () => ({ exists: true, url: PR_URL }) });
-    const plan = await detectPhase(f, store.get('epic-001')!, 'origin');
+    const plan = detectPhase(f, store.get('epic-001')!, 'origin');
 
     assert.equal(plan.action, 'already-done');
     assert.equal((plan as Extract<ResumePlan, { action: 'already-done' }>).prUrl, PR_URL);
@@ -265,7 +265,7 @@ describe('detectResumePhase → ResumePlan matrix (FR-4, FR-10, FR-11, FR-12)', 
     // epic_pr_url is NOT set in DB
 
     const f = makeFinalizer(db, { prForRef: () => ({ exists: true, url: PR_URL }) });
-    const plan = await detectPhase(f, store.get('epic-001')!, 'origin');
+    const plan = detectPhase(f, store.get('epic-001')!, 'origin');
 
     assert.equal(plan.action, 'record-pr');
     assert.equal((plan as Extract<ResumePlan, { action: 'record-pr' }>).prUrl, PR_URL);
@@ -279,7 +279,7 @@ describe('detectResumePhase → ResumePlan matrix (FR-4, FR-10, FR-11, FR-12)', 
       prForRef: () => ({ exists: false }),
       remoteRefExists: () => true,
     });
-    const plan = await detectPhase(f, store.get('epic-001')!, 'origin');
+    const plan = detectPhase(f, store.get('epic-001')!, 'origin');
 
     assert.equal(plan.action, 'open-pr');
     assert.equal(
@@ -297,7 +297,7 @@ describe('detectResumePhase → ResumePlan matrix (FR-4, FR-10, FR-11, FR-12)', 
       remoteRefExists: () => false,
       integrationHeadMatchesRef: () => true, // local branch still at correct sha
     });
-    const plan = await detectPhase(f, store.get('epic-001')!, 'origin');
+    const plan = detectPhase(f, store.get('epic-001')!, 'origin');
 
     assert.equal(plan.action, 'push-and-open');
     assert.equal(
@@ -315,7 +315,7 @@ describe('detectResumePhase → ResumePlan matrix (FR-4, FR-10, FR-11, FR-12)', 
       remoteRefExists: () => false,
       integrationHeadMatchesRef: () => false, // sha changed
     });
-    const plan = await detectPhase(f, store.get('epic-001')!, 'origin');
+    const plan = detectPhase(f, store.get('epic-001')!, 'origin');
 
     assert.equal(plan.action, 'full-finalize');
   });
@@ -326,7 +326,7 @@ describe('detectResumePhase → ResumePlan matrix (FR-4, FR-10, FR-11, FR-12)', 
     // No finalize_ref — never started push
 
     const f = makeFinalizer(db);
-    const plan = await detectPhase(f, store.get('epic-001')!, 'origin');
+    const plan = detectPhase(f, store.get('epic-001')!, 'origin');
 
     assert.equal(plan.action, 'full-finalize');
   });
@@ -336,7 +336,7 @@ describe('detectResumePhase → ResumePlan matrix (FR-4, FR-10, FR-11, FR-12)', 
     store.create('epic-001', 'Test Epic');
 
     const f = makeFinalizer(db);
-    const plan = await detectPhase(f, store.get('epic-001')!, null);
+    const plan = detectPhase(f, store.get('epic-001')!, null);
 
     assert.equal(plan.action, 'noop-terminal');
     assert.match((plan as Extract<ResumePlan, { action: 'noop-terminal' }>).note, /no remote/i);
@@ -379,7 +379,7 @@ describe('FR-10: remote is the source of truth for PR existence', () => {
       remoteRefExists: () => true,          // but ref is still on remote
     });
 
-    const plan = await detectPhase(f, store.get('epic-001')!, 'origin');
+    const plan = detectPhase(f, store.get('epic-001')!, 'origin');
 
     assert.equal(plan.action, 'open-pr', 'Remote disagreement → open-pr, not already-done');
   });
@@ -398,7 +398,7 @@ describe('FR-11: sha-match determines whether prior gate result is trusted', () 
       integrationHeadMatchesRef: () => false, // sha changed → do not trust gate
     });
 
-    const plan = await detectPhase(f, store.get('epic-001')!, 'origin');
+    const plan = detectPhase(f, store.get('epic-001')!, 'origin');
     assert.equal(plan.action, 'full-finalize', 'sha mismatch must trigger full-finalize');
   });
 
@@ -412,7 +412,7 @@ describe('FR-11: sha-match determines whether prior gate result is trusted', () 
       integrationHeadMatchesRef: () => true, // sha matches → trust gate
     });
 
-    const plan = await detectPhase(f, store.get('epic-001')!, 'origin');
+    const plan = detectPhase(f, store.get('epic-001')!, 'origin');
     assert.equal(plan.action, 'push-and-open', 'sha match → push-and-open (gate trusted)');
   });
 });
@@ -703,7 +703,7 @@ describe('Stranding + resume end-to-end: push-fail and PR-open-fail reach recove
     assert.equal(audit.getByCommand('epic-001', ['epic_published']).length, 1);
   });
 
-  it('already-done scenario: resume returns merged without any writes to DB', async () => {
+  it('already-done scenario: resume returns merged without changing epic status or PR url', async () => {
     const { db, store, audit } = freshDb();
     store.create('epic-001', 'Test Epic');
     store.recordFinalizeRef('epic-001', FINALIZE_REF);
@@ -719,8 +719,13 @@ describe('Stranding + resume end-to-end: push-fail and PR-open-fail reach recove
     assert.equal(result.status, 'merged');
     assert.equal(result.url, PR_URL);
 
-    // Status unchanged (resume returns early for already-done)
+    // Status and PR URL unchanged (resume returns early for already-done)
     const after = store.get('epic-001')!;
     assert.equal(after.status, beforeStatus, 'already-done must not change epic status');
+    assert.equal(after.epic_pr_url, PR_URL, 'already-done must not change epic_pr_url');
+
+    // NFR-3: resume audit row is written even for already-done
+    const resumeRows = audit.getByCommand('epic-001', ['epic_finalize_resume']);
+    assert.equal(resumeRows.length, 1, 'epic_finalize_resume audit must be written');
   });
 });

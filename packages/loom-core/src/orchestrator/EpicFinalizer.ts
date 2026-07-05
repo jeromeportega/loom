@@ -928,26 +928,28 @@ export class EpicFinalizer {
     }
 
     try {
-      const plan = await this.detectResumePhase(epic, remote);
-      const result = await this.publishPhase(
-        epicId,
-        epic,
-        { finalizeRef: epic.finalize_ref ?? '', remote },
-        plan,
-        audit,
-        epicStore
-      );
+      const plan = this.detectResumePhase(epic, remote);
 
-      // NFR-3: audit BEFORE returning
+      // NFR-3: audit BEFORE publishPhase so the entry is written even if publishPhase throws.
       audit.record({
         agent_id: undefined,
         action: 'epic_finalize_resume',
         command: epicId,
         allowed: true,
-        detail: { plan: plan.action, result: result.status },
+        detail: { plan: plan.action },
       });
 
-      return result;
+      // Build ctx after plan is known so finalizeRef is taken from the plan arm
+      // that carries it rather than the nullable epic column (avoids silent '' for full-finalize).
+      const finalizeRef = 'finalizeRef' in plan ? plan.finalizeRef : (epic.finalize_ref ?? '');
+      return await this.publishPhase(
+        epicId,
+        epic,
+        { finalizeRef, remote },
+        plan,
+        audit,
+        epicStore
+      );
     } finally {
       lease.release(epicId);
     }
@@ -958,7 +960,7 @@ export class EpicFinalizer {
    * persisted `epics` row and injectable git/gh probes — never session state
    * (FR-4), so results are identical across separate process invocations.
    */
-  private async detectResumePhase(epic: EpicRecord, remote: string | null): Promise<ResumePlan> {
+  private detectResumePhase(epic: EpicRecord, remote: string | null): ResumePlan {
     // noop-terminal: no remote or remote not in policy.git.allowed_remotes
     if (!remote) {
       return { action: 'noop-terminal', note: 'no remote configured' };
@@ -1100,20 +1102,14 @@ export class EpicFinalizer {
       }
 
       case 'push-and-open': {
-        // Local branch at correct sha; push to remote then open the PR
-        if (!ctx.remote) {
-          return {
-            status: 'failed',
-            conflicted: [],
-            merged: [],
-            cleaned: [],
-            note: `Epic ${epicId}: no remote configured for push`,
-          };
-        }
+        // Local branch at correct sha; push to remote then open the PR.
+        // ctx.remote is always non-null here: detectResumePhase returns noop-terminal
+        // when remote is null, making this arm unreachable without a valid remote.
+        const remote = ctx.remote as string;
         const epicBranch = `epic/${epicId}`;
         const push = this.opts.pushBranch
-          ? this.opts.pushBranch(ctx.remote, plan.finalizeRef)
-          : gitSafe(this.opts.projectRoot, ['push', ctx.remote, `${epicBranch}:${plan.finalizeRef}`]);
+          ? this.opts.pushBranch(remote, plan.finalizeRef)
+          : gitSafe(this.opts.projectRoot, ['push', remote, `${epicBranch}:${plan.finalizeRef}`]);
         if (!push.ok) {
           return {
             status: 'publish_pending',
