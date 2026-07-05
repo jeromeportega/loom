@@ -15,6 +15,7 @@ import { runStop, spec as stopSpec } from './commands/stop.js';
 import { runRevert, spec as revertSpec } from './commands/revert.js';
 import { runReconcile, spec as reconcileSpec } from './commands/reconcile.js';
 import { runPublish, spec as publishSpec } from './commands/publish.js';
+import { runFinalize, spec as finalizeSpec } from './commands/finalize.js';
 import { runRelease, spec as releaseSpec } from './commands/release.js';
 import { runGuide, spec as guideSpec } from './commands/guide.js';
 import { runMcpList, runMcpAdd, specList as mcpListSpec, specAdd as mcpAddSpec } from './commands/mcp.js';
@@ -247,6 +248,12 @@ export function buildProgram(): Command {
   applySpec(program.command('publish'), publishSpec)
     .action((epicId: string) => {
       runPublish(epicId);
+    });
+
+  // ─── loom finalize ───────────────────────────────────────────────────────────
+  applySpec(program.command('finalize'), finalizeSpec)
+    .action(async (epicId: string, opts: { resume?: boolean }) => {
+      await runFinalize(epicId, { resume: opts.resume });
     });
 
   // ─── loom release ────────────────────────────────────────────────────────────
