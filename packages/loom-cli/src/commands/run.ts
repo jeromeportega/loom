@@ -191,6 +191,32 @@ export function renderSkillSummary(tally: SkillEventTally): string[] {
 }
 
 /**
+ * Renders per-epic skip output. For `finalizing` and `in_progress` epics,
+ * prints the exact recovery command instead of the bare 'not approved' message
+ * (FR-9). The recovery command string is verbatim — tests assert it exactly.
+ */
+export function renderSkipLines(
+  skipped: Array<{ id: string; status?: string | null }>
+): string[] {
+  if (skipped.length === 0) return [];
+  const lines: string[] = [];
+  const regular: string[] = [];
+
+  for (const { id, status } of skipped) {
+    if (status === 'finalizing' || status === 'in_progress') {
+      lines.push(`  Skipped: ${id}`);
+      lines.push(`  Recover it: loom finalize --resume ${id}`);
+    } else {
+      regular.push(id);
+    }
+  }
+  if (regular.length > 0) {
+    lines.push(`  Skipped (not approved / not found): ${regular.join(', ')}`);
+  }
+  return lines;
+}
+
+/**
  * Renders the run-end PR tail. For each processed epic that recorded an epic PR
  * URL (the finalizer's durable `epic_pr_url`), print the real URL. When no epic
  * produced a PR, fall back to the generic "run `loom status`" pointer so a
@@ -536,7 +562,13 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   if (result.epicsProcessed.length === 0) {
     console.log('  No approved epics to run. Approve a plan first: `loom approve`.');
     if (result.epicsSkipped.length > 0) {
-      console.log(`  Skipped (not approved / not found): ${result.epicsSkipped.join(', ')}`);
+      const skippedWithStatus = result.epicsSkipped.map((id) => ({
+        id,
+        status: epicStore.get(id)?.status ?? null,
+      }));
+      for (const line of renderSkipLines(skippedWithStatus)) {
+        console.log(line);
+      }
     }
     return;
   }
@@ -544,7 +576,13 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   // ids are already in display form (story-NNN for standalone, epic-NNN for regular).
   console.log(`  Epics processed: ${result.epicsProcessed.join(', ')}`);
   if (result.epicsSkipped.length > 0) {
-    console.log(`  Skipped: ${result.epicsSkipped.join(', ')}`);
+    const skippedWithStatus = result.epicsSkipped.map((id) => ({
+      id,
+      status: epicStore.get(id)?.status ?? null,
+    }));
+    for (const line of renderSkipLines(skippedWithStatus)) {
+      console.log(line);
+    }
   }
   console.log('');
   console.log(`  Stories: ${result.storiesTotal} total`);
