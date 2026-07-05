@@ -336,9 +336,12 @@ stop / per-worker kill. No external services — local only.
 | `loom epic "<brief>"` | Plan an epic from a brief (always gated by the brief-quality refiner) |
 | `loom web` | Open the local dashboard (planning artifacts, live worker output, controls) |
 | `loom approve [epic-id]` / `loom reject <epic-id>` | The human gate |
-| `loom run [--checkpoint story\|epic] [--verbose]` | Dispatch story agents; `--verbose` streams live worker stdout/stderr |
+| `loom run [--checkpoint story\|epic] [--verbose]` | Dispatch story agents; automatically resumes any `finalizing`/`publish_pending` epic it encounters before dispatching new work; `--verbose` streams live worker stdout/stderr |
+| `loom finalize --resume <epic-id>` | Manually resume a stranded `finalizing` or `publish_pending` epic to `done` without redoing merged work (copy-paste from `loom run`'s skip message) |
 | `loom stop` | Halt a run gracefully |
 | `loom status [--watch] [--epic <id>] [--all]` | Epic and agent status; `--all` spans every repo |
+| `loom publish <epic-id>` | Drive a `publish_pending` or `finalizing` epic to `done` by opening a PR from the pushed ref |
+| `loom reconcile <epic-id> [--pr <url>]` | Reconcile a stranded-but-merged (`in_progress`) or `finalizing` epic to `done` |
 | `loom revert <epic-id> [--remote]` | Tear down an epic; `--remote` also deletes the upstream branch and PR |
 | `loom guide <story-id> "<msg>"` | Append operator guidance to a running worker |
 | `loom mcp list / add <name>` | Provision approved MCP servers for worker agents |
