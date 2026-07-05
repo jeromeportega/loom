@@ -76,36 +76,59 @@ export async function runReconcile(epicId: string, opts: ReconcileCommandOptions
         console.error(`  Failed to load policy: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
+      // runtime guard: resume() is added by story-066-001; check before constructing
+      // to avoid allocating resources the constructor may hold (DB handles, etc.).
+      if (typeof (EpicFinalizer.prototype as unknown as WithResume).resume !== 'function') {
+        console.error('  EpicFinalizer.resume() is not available — rebuild @loom-ai/core (story-066-001 must be built into the dist).');
+        process.exit(1);
+      }
       const finalizer = new EpicFinalizer({
         projectRoot,
         db,
         allowedRemotes: policy.git.allowed_remotes,
         prStrategy: policy.agents.pr_strategy,
+        pushGate: policy.agents.push_gate,
+        integrationGate: policy.agents.integration_gate,
+        prAttribution: policy.agents.pr_attribution,
+        testCommand: policy.agents.test_command,
+        // Late-bound rebind — re-read from disk so a mid-run policy edit takes effect.
+        refreshPolicy: () => {
+          const live = PolicyEngine.load(loomDir).policyData;
+          return {
+            allowedRemotes: live.git.allowed_remotes,
+            testCommand: live.agents.test_command,
+            integrationGate: live.agents.integration_gate,
+            pushGate: live.agents.push_gate,
+            prAttribution: live.agents.pr_attribution,
+          };
+        },
       });
-      // runtime guard: resume() is added by story-066-001; the @loom-ai/core dist
-      // must be rebuilt before this production path is reachable.
-      if (typeof (finalizer as unknown as WithResume).resume !== 'function') {
-        console.error('  EpicFinalizer.resume() is not available — rebuild @loom-ai/core (story-066-001 must be built into the dist).');
-        process.exit(1);
-      }
       finalizeResult = await (finalizer as unknown as WithResume).resume(epicId);
     }
 
     const audit = new AuditLog(db);
     console.log('');
-    if (
-      finalizeResult.status === 'failed' ||
-      finalizeResult.status === 'partial' ||
-      finalizeResult.status === 'gated' ||
-      finalizeResult.status === 'publish_pending'
-    ) {
+
+    // skipped = noop: resume decided there was nothing to do. Epic stays in
+    // finalizing; not an error, but also not reconciled — skip the audit row.
+    if (finalizeResult.status === 'skipped') {
+      console.log(`  Epic ${epicId} finalization skipped (nothing to do).`);
+      console.log('');
+      return;
+    }
+
+    // Record the attempt unconditionally before branching — CLAUDE.md invariant:
+    // all agent actions logged before returning, including failures.
+    const succeeded = finalizeResult.status === 'merged';
+    audit.record({ action: 'epic_reconciled', command: epicId, allowed: succeeded, detail: { via: 'finalizing', status: finalizeResult.status } });
+
+    if (!succeeded) {
       console.error(`  ${finalizeResult.note}`);
       if (finalizeResult.status === 'publish_pending') {
         console.error('  Run `loom publish` to complete.');
       }
       process.exit(1);
     }
-    audit.record({ action: 'epic_reconciled', command: epicId, allowed: true, detail: { via: 'finalizing', status: finalizeResult.status } });
     if (finalizeResult.url) console.log(`  PR: ${finalizeResult.url}`);
     console.log(`  ${finalizeResult.note}`);
     console.log('');

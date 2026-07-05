@@ -477,7 +477,10 @@ describe('runReconcile — finalizing epic (FR-8)', () => {
       })
     );
     assert.equal(exitCode, 1, 'gated exits 1');
-    assert.ok(errors.some((e) => e.length > 0), 'gated note is printed');
+    assert.ok(
+      errors.some((e) => /push_gate|confirm|operator approval/i.test(e)),
+      'gate note mentioning the gate reason is printed'
+    );
   });
 
   it('exits 1 for publish_pending resume result with loom publish hint', async () => {
@@ -495,5 +498,27 @@ describe('runReconcile — finalizing epic (FR-8)', () => {
     );
     assert.equal(exitCode, 1, 'publish_pending exits 1');
     assert.ok(errors.some((e) => /loom publish/.test(e)), 'loom publish hint is printed');
+  });
+
+  it('exits 0 and does not write epic_reconciled audit for skipped resume result', async () => {
+    // skipped = resume decided there was nothing to do; epic is NOT reconciled,
+    // so the audit row must not be written and exit must be 0.
+    seedFinalizingEpic();
+    const { exitCode, logs } = await captureAsync(() =>
+      runReconcile('epic-001', {
+        _resume: () => ({
+          status: 'skipped',
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: 'nothing to do',
+        }),
+      })
+    );
+    assert.equal(exitCode, null, 'skipped exits 0');
+    assert.ok(logs.some((l) => /skipped/i.test(l)), 'skipped message is printed');
+    const db = openDatabase(loomDir);
+    const rows = new AuditLog(db).getByCommand('epic-001', ['epic_reconciled']);
+    assert.equal(rows.length, 0, 'no epic_reconciled audit row written for skipped result');
   });
 });
