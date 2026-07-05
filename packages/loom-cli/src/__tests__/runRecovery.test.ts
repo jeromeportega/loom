@@ -14,12 +14,16 @@ describe('renderSkipLines — FR-9 exact recovery command output', () => {
     );
   });
 
-  it('in_progress epic: output contains the exact recovery command', () => {
+  it('in_progress epic: output contains loom status advisory (not the finalize-resume command)', () => {
     const lines = renderSkipLines([{ id: 'epic-002', status: 'in_progress' }]);
     const joined = lines.join('\n');
     assert.ok(
-      joined.includes(`${RECOVERY_CMD_PREFIX}epic-002`),
-      `expected exact recovery command; got:\n${joined}`
+      joined.includes('loom status'),
+      `expected loom status advisory for in_progress; got:\n${joined}`
+    );
+    assert.ok(
+      !joined.includes(RECOVERY_CMD_PREFIX),
+      `loom finalize --resume must NOT appear for in_progress; got:\n${joined}`
     );
   });
 
@@ -71,15 +75,16 @@ describe('renderSkipLines — FR-9 exact recovery command output', () => {
     assert.deepEqual(renderSkipLines([]), []);
   });
 
-  it('mixed: recovery command for finalizing, fallback for others', () => {
+  it('mixed: recovery command for finalizing, status advisory for in_progress, fallback for others', () => {
     const lines = renderSkipLines([
       { id: 'epic-001', status: 'finalizing' },
       { id: 'epic-002', status: 'done' },
       { id: 'epic-003', status: 'in_progress' },
     ]);
     const joined = lines.join('\n');
-    assert.ok(joined.includes(`${RECOVERY_CMD_PREFIX}epic-001`));
-    assert.ok(joined.includes(`${RECOVERY_CMD_PREFIX}epic-003`));
+    assert.ok(joined.includes(`${RECOVERY_CMD_PREFIX}epic-001`), 'finalizing gets finalize-resume command');
+    assert.ok(!joined.includes(`${RECOVERY_CMD_PREFIX}epic-003`), 'in_progress must not get finalize-resume command');
+    assert.ok(joined.includes('loom status'), 'in_progress gets loom status advisory');
     assert.ok(joined.includes('epic-002'));
     assert.ok(joined.includes('not approved'));
   });

@@ -230,10 +230,9 @@ describe('Supervisor — selectEpics recoverable routing (FR-6, story-066-003)',
     ]);
 
     assert.ok(resumeCallCount >= 1, 'resume() must be called at least once');
-    // The key assertion: run() itself did NOT add a lock that would have
-    // prevented the second supervisor from reaching resume(). Both ran resume()
-    // without a run-local guard blocking them.
-    assert.ok(resumeCallCount >= 1, 'no run-local guard blocked concurrent resume() calls');
+    // Both supervisors must reach resume() — if run() added its own lock the
+    // second call would be blocked and count would stay at 1.
+    assert.ok(resumeCallCount >= 2, 'no run-local guard blocked concurrent resume() calls');
   });
 
   it('selectEpics: finalizing/publish_pending sorted into recoverable, not skipped — explicit ids', async () => {
