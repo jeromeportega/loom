@@ -7,6 +7,10 @@ export interface EpicPublisherOptions {
   db: Database.Database;
   // Injectable PR-open seam (tests). Defaults to probe-then-create via gh. Throws on failure.
   openPr?: (input: { branch: string }) => string | undefined;
+  // Injectable resume stub (tests). When the epic is `finalizing`, _publish() delegates here
+  // instead of refusing. Production callers bypass EpicPublisher for finalizing epics at the
+  // CLI layer (publish.ts routes them to EpicFinalizer.resume() before constructing this class).
+  _resume?: (epicId: string) => PublishResult;
 }
 
 export type PublishStatus = 'published' | 'refused' | 'failed';
@@ -52,6 +56,22 @@ export class EpicPublisher {
         status: 'refused',
         epicId,
         note: `Epic "${epicId}" not found.`,
+      };
+    }
+
+    // FR-7: accept finalizing epics and route to the injectable resume stub.
+    // Production callers bypass EpicPublisher entirely for finalizing epics (publish.ts
+    // routes them to EpicFinalizer.resume() before constructing this class). The _resume
+    // seam here exists for EpicPublisher-level unit tests that assert the old precondition
+    // no longer rejects a finalizing epic.
+    if (epic.status === 'finalizing') {
+      if (this.opts._resume) {
+        return this.opts._resume(epicId);
+      }
+      return {
+        status: 'refused',
+        epicId,
+        note: `Epic "${epicId}" is finalizing — use \`loom publish ${epicId}\` (CLI wires up resume) or \`loom finalize --resume ${epicId}\`.`,
       };
     }
 
