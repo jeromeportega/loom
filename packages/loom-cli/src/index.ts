@@ -239,9 +239,7 @@ export function buildProgram(): Command {
 
   // ─── loom reconcile ─────────────────────────────────────────────────────────
   applySpec(program.command('reconcile'), reconcileSpec)
-    .action((epicId: string, opts: { pr?: string }) => {
-      runReconcile(epicId, { pr: opts.pr });
-    });
+    .action((epicId: string, opts: { pr?: string }) => runReconcile(epicId, { pr: opts.pr }));
 
   // ─── loom publish ────────────────────────────────────────────────────────────
   applySpec(program.command('publish'), publishSpec)

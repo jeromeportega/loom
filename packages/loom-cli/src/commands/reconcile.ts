@@ -1,7 +1,7 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EpicReconciler, EpicFinalizer, EpicStore, PolicyEngine } from '@loom-ai/core';
+import { EpicReconciler, EpicFinalizer, EpicStore, AuditLog, PolicyEngine } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
 // FinalizeResult is defined in story-066-001's EpicFinalizer. The worktree resolves
@@ -69,21 +69,43 @@ export async function runReconcile(epicId: string, opts: ReconcileCommandOptions
     if (opts._resume) {
       finalizeResult = await opts._resume(epicId);
     } else {
-      const policy = PolicyEngine.load(loomDir).policyData;
+      let policy: ReturnType<typeof PolicyEngine.load>['policyData'];
+      try {
+        policy = PolicyEngine.load(loomDir).policyData;
+      } catch (err) {
+        console.error(`  Failed to load policy: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
       const finalizer = new EpicFinalizer({
         projectRoot,
         db,
         allowedRemotes: policy.git.allowed_remotes,
         prStrategy: policy.agents.pr_strategy,
       });
+      // runtime guard: resume() is added by story-066-001; the @loom-ai/core dist
+      // must be rebuilt before this production path is reachable.
+      if (typeof (finalizer as unknown as WithResume).resume !== 'function') {
+        console.error('  EpicFinalizer.resume() is not available — rebuild @loom-ai/core (story-066-001 must be built into the dist).');
+        process.exit(1);
+      }
       finalizeResult = await (finalizer as unknown as WithResume).resume(epicId);
     }
 
+    const audit = new AuditLog(db);
     console.log('');
-    if (finalizeResult.status === 'failed') {
+    if (
+      finalizeResult.status === 'failed' ||
+      finalizeResult.status === 'partial' ||
+      finalizeResult.status === 'gated' ||
+      finalizeResult.status === 'publish_pending'
+    ) {
       console.error(`  ${finalizeResult.note}`);
+      if (finalizeResult.status === 'publish_pending') {
+        console.error('  Run `loom publish` to complete.');
+      }
       process.exit(1);
     }
+    audit.record({ action: 'epic_reconciled', command: epicId, allowed: true, detail: { via: 'finalizing', status: finalizeResult.status } });
     if (finalizeResult.url) console.log(`  PR: ${finalizeResult.url}`);
     console.log(`  ${finalizeResult.note}`);
     console.log('');
@@ -130,7 +152,7 @@ export const spec: CommandDescription = {
   ],
   exitCodes: [
     { code: 0, meaning: 'Epic reconciled to done' },
-    { code: 1, meaning: 'Epic not found, PR not merged, or loom not initialized' },
+    { code: 1, meaning: 'Epic not found, PR not merged, loom not initialized, or finalize failed / gated / partial / publish_pending' },
   ],
   errors: ['Epic not found', 'PR not merged or not found', 'loom is not initialized — run `loom init` first'],
   relationships: { prerequisites: ['run'], nextSteps: ['status', 'archive'] },

@@ -433,4 +433,67 @@ describe('runReconcile — finalizing epic (FR-8)', () => {
     assert.equal(resumeCalledWith, 'epic-001', 'resume() receives the correct epic id');
     assert.equal(store.get('epic-001')?.status, 'done', 'epic reaches done via resume()');
   });
+
+  it('writes an epic_reconciled audit row on successful finalizing resume', async () => {
+    seedFinalizingEpic();
+    await captureAsync(() =>
+      runReconcile('epic-001', {
+        _resume: () => resumeOk(),
+      })
+    );
+    const db = openDatabase(loomDir);
+    const rows = new AuditLog(db).getByCommand('epic-001', ['epic_reconciled']);
+    assert.equal(rows.length, 1, 'epic_reconciled audit row written for finalizing path');
+  });
+
+  it('exits 1 for partial resume result (no silent success)', async () => {
+    seedFinalizingEpic();
+    const { exitCode, errors } = await captureAsync(() =>
+      runReconcile('epic-001', {
+        _resume: () => ({
+          status: 'partial',
+          conflicted: ['story-001'],
+          merged: [],
+          cleaned: [],
+          note: 'merge conflicts in story-001',
+        }),
+      })
+    );
+    assert.equal(exitCode, 1, 'partial exits 1');
+    assert.ok(errors.some((e) => /merge conflicts/.test(e)), 'partial note is printed');
+  });
+
+  it('exits 1 for gated resume result with actionable message', async () => {
+    seedFinalizingEpic();
+    const { exitCode, errors } = await captureAsync(() =>
+      runReconcile('epic-001', {
+        _resume: () => ({
+          status: 'gated',
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: 'push_gate=confirm: operator approval required',
+        }),
+      })
+    );
+    assert.equal(exitCode, 1, 'gated exits 1');
+    assert.ok(errors.some((e) => e.length > 0), 'gated note is printed');
+  });
+
+  it('exits 1 for publish_pending resume result with loom publish hint', async () => {
+    seedFinalizingEpic();
+    const { exitCode, errors } = await captureAsync(() =>
+      runReconcile('epic-001', {
+        _resume: () => ({
+          status: 'publish_pending',
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: 'branch pushed; PR open failed',
+        }),
+      })
+    );
+    assert.equal(exitCode, 1, 'publish_pending exits 1');
+    assert.ok(errors.some((e) => /loom publish/.test(e)), 'loom publish hint is printed');
+  });
 });
