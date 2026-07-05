@@ -2224,7 +2224,7 @@ loom finalize --resume epic-001
 | Branch pushed, no PR | Opens the PR, records URL, flips to `done` |
 | Integration tree built but not pushed | Pushes the branch, opens the PR, flips to `done` |
 | Epic already `done` | No-op |
-| No recoverable state | Reports `noop-terminal` note; exits non-zero |
+| No recoverable state (no remote, or remote not in `allowed_remotes`) | Exits non-zero; prints reason (e.g. `no remote configured` or `remote "…" is not in policy.git.allowed_remotes`) |
 
 ### Automatic recovery in `loom run`
 
