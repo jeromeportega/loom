@@ -602,6 +602,9 @@ describe('Done-write ownership: finalize() never writes done; resume() does', ()
     // Spy on EpicStore write order
     const writeOrder: string[] = [];
     const proto = EpicStore.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
+    assert.ok(typeof proto.recordPrUrl === 'function', 'recordPrUrl must exist on EpicStore.prototype');
+    assert.ok(typeof proto.clearFinalizePhase === 'function', 'clearFinalizePhase must exist on EpicStore.prototype');
+    assert.ok(typeof proto.updateStatus === 'function', 'updateStatus must exist on EpicStore.prototype');
     const origRecordPrUrl = proto.recordPrUrl;
     const origClearFinalizePhase = proto.clearFinalizePhase;
     const origUpdateStatus = proto.updateStatus;

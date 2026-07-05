@@ -1040,9 +1040,31 @@ export class EpicFinalizer {
           note: plan.note,
         };
 
-      case 'full-finalize':
-        // Re-run the full finalize flow (merge + gate + push + PR)
-        return this.finalize(epicId);
+      case 'full-finalize': {
+        // Re-run the full finalize flow (merge + gate + push + PR).
+        // finalize() records the prUrl but never writes 'done' (Supervisor owns that path).
+        // resume() owns the done write for standalone recovery, so complete it here if
+        // finalize() opened a PR successfully.
+        const result = await this.finalize(epicId);
+        if (result.url) {
+          const freshEpic = epicStore.get(epicId);
+          if (freshEpic?.epic_pr_url) {
+            this.opts.db.transaction(() => {
+              // recordPrUrl already done by finalize(); complete the canonical order.
+              epicStore.clearFinalizePhase(epicId);
+              audit.record({
+                agent_id: undefined,
+                action: 'epic_published',
+                command: epicId,
+                allowed: true,
+                detail: { pr_url: freshEpic.epic_pr_url, via: 'full-finalize' },
+              });
+              epicStore.updateStatus(epicId, 'done');
+            })();
+          }
+        }
+        return result;
+      }
 
       case 'record-pr': {
         // PR already exists on remote (FR-10 — remote wins); record and flip done
@@ -1051,6 +1073,7 @@ export class EpicFinalizer {
           epicStore.recordPrUrl(epicId, prUrl);
           epicStore.clearFinalizePhase(epicId);
           audit.record({
+            agent_id: undefined,
             action: 'epic_published',
             command: epicId,
             allowed: true,
@@ -1072,6 +1095,14 @@ export class EpicFinalizer {
         // Ref is on remote but no PR: open it
         const prUrl = await this.openPrForResume(epic, plan.finalizeRef);
         if (!prUrl) {
+          // NFR-3: audit the failure before returning (action is observable in the audit trail)
+          audit.record({
+            agent_id: undefined,
+            action: 'epic_publish_pending',
+            command: epicId,
+            allowed: true,
+            detail: { reason: 'pr_open_failed', via: plan.action, finalize_ref: plan.finalizeRef },
+          });
           return {
             status: 'publish_pending',
             conflicted: [],
@@ -1084,6 +1115,7 @@ export class EpicFinalizer {
           epicStore.recordPrUrl(epicId, prUrl);
           epicStore.clearFinalizePhase(epicId);
           audit.record({
+            agent_id: undefined,
             action: 'epic_published',
             command: epicId,
             allowed: true,
@@ -1111,6 +1143,14 @@ export class EpicFinalizer {
           ? this.opts.pushBranch(remote, plan.finalizeRef)
           : gitSafe(this.opts.projectRoot, ['push', remote, `${epicBranch}:${plan.finalizeRef}`]);
         if (!push.ok) {
+          // NFR-3: audit the push failure before returning
+          audit.record({
+            agent_id: undefined,
+            action: 'epic_publish_pending',
+            command: epicId,
+            allowed: true,
+            detail: { reason: 'push_failed', via: plan.action, finalize_ref: plan.finalizeRef },
+          });
           return {
             status: 'publish_pending',
             conflicted: [],
@@ -1121,6 +1161,14 @@ export class EpicFinalizer {
         }
         const prUrl = await this.openPrForResume(epic, plan.finalizeRef);
         if (!prUrl) {
+          // NFR-3: audit the PR-open failure before returning
+          audit.record({
+            agent_id: undefined,
+            action: 'epic_publish_pending',
+            command: epicId,
+            allowed: true,
+            detail: { reason: 'pr_open_failed', via: plan.action, finalize_ref: plan.finalizeRef },
+          });
           return {
             status: 'publish_pending',
             conflicted: [],
@@ -1133,6 +1181,7 @@ export class EpicFinalizer {
           epicStore.recordPrUrl(epicId, prUrl);
           epicStore.clearFinalizePhase(epicId);
           audit.record({
+            agent_id: undefined,
             action: 'epic_published',
             command: epicId,
             allowed: true,
@@ -1148,6 +1197,11 @@ export class EpicFinalizer {
           cleaned: [],
           note: `Epic ${epicId} published — pushed and opened PR: ${prUrl}`,
         };
+      }
+
+      default: {
+        const _exhaustive: never = plan;
+        throw new Error(`unhandled ResumePlan arm: ${(_exhaustive as { action: string }).action}`);
       }
     }
   }
@@ -1207,7 +1261,10 @@ export class EpicFinalizer {
   /** Remote probe: does the finalizer-owned ref exist on the remote? (FR-12) */
   private remoteRefExistsProbe(remote: string, finalizeRef: string): boolean {
     if (this.opts.remoteRefExists) return this.opts.remoteRefExists(remote, finalizeRef);
-    const result = gitSafe(this.opts.projectRoot, ['ls-remote', remote, `refs/${finalizeRef}`]);
+    // Branches pushed without a fully-qualified refspec land under refs/heads/ on the remote
+    // (git expands an unqualified push target to refs/heads/<name>). Querying the bare
+    // `refs/<name>` pattern would never match and always return false.
+    const result = gitSafe(this.opts.projectRoot, ['ls-remote', remote, `refs/heads/${finalizeRef}`]);
     return result.ok && result.output.trim().length > 0;
   }
 
