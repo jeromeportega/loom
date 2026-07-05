@@ -190,6 +190,31 @@ export function renderSkillSummary(tally: SkillEventTally): string[] {
   return lines;
 }
 
+// Pure: per-epic skip output; recoverable statuses get the exact FR-9 recovery command.
+export function renderSkipLines(
+  skipped: Array<{ id: string; status?: string | null }>
+): string[] {
+  if (skipped.length === 0) return [];
+  const lines: string[] = [];
+  const regular: string[] = [];
+
+  for (const { id, status } of skipped) {
+    if (status === 'finalizing' || status === 'publish_pending') {
+      lines.push(`  Skipped: ${id}`);
+      lines.push(`  Recover it: loom finalize --resume ${id}`);
+    } else if (status === 'in_progress') {
+      lines.push(`  Skipped: ${id}`);
+      lines.push(`  (another run may be processing ${id} — check with \`loom status\`)`);
+    } else {
+      regular.push(id);
+    }
+  }
+  if (regular.length > 0) {
+    lines.push(`  Skipped (not approved / not found): ${regular.join(', ')}`);
+  }
+  return lines;
+}
+
 /**
  * Renders the run-end PR tail. For each processed epic that recorded an epic PR
  * URL (the finalizer's durable `epic_pr_url`), print the real URL. When no epic
@@ -535,16 +560,16 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
 
   if (result.epicsProcessed.length === 0) {
     console.log('  No approved epics to run. Approve a plan first: `loom approve`.');
-    if (result.epicsSkipped.length > 0) {
-      console.log(`  Skipped (not approved / not found): ${result.epicsSkipped.join(', ')}`);
+    for (const line of renderSkipLines(result.epicsSkipped.map((id) => ({ id, status: epicStore.get(id)?.status ?? null })))) {
+      console.log(line);
     }
     return;
   }
 
   // ids are already in display form (story-NNN for standalone, epic-NNN for regular).
   console.log(`  Epics processed: ${result.epicsProcessed.join(', ')}`);
-  if (result.epicsSkipped.length > 0) {
-    console.log(`  Skipped: ${result.epicsSkipped.join(', ')}`);
+  for (const line of renderSkipLines(result.epicsSkipped.map((id) => ({ id, status: epicStore.get(id)?.status ?? null })))) {
+    console.log(line);
   }
   console.log('');
   console.log(`  Stories: ${result.storiesTotal} total`);
