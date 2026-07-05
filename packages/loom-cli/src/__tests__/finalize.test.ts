@@ -199,7 +199,7 @@ describe('runFinalize — not stranded (status not in recoverable set)', () => {
 // ─── Happy path — lands done ──────────────────────────────────────────────────
 
 describe('runFinalize — happy path (stranded epic lands done)', () => {
-  it('calls resume() exactly once and exits 0 for a finalizing epic', async () => {
+  it('calls resume() exactly once and exits 0 for a finalizing epic, landing it as done', async () => {
     seedFinalizingEpic();
     let callCount = 0;
     let calledWith: string | undefined;
@@ -218,6 +218,10 @@ describe('runFinalize — happy path (stranded epic lands done)', () => {
     assert.equal(exitCode, null, 'must not call process.exit on success');
     assert.equal(callCount, 1, 'resume() must be called exactly once');
     assert.equal(calledWith, 'epic-001', 'resume() must be called with the correct epic id');
+    // Acceptance criterion: the command lands the epic as done in the DB.
+    const db = openDatabase(loomDir);
+    const epic = new EpicStore(db).get('epic-001');
+    assert.equal(epic?.status, 'done', 'epic must be in done status after successful resume');
   });
 
   it('prints PR URL and note on success', async () => {

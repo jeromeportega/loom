@@ -45,24 +45,35 @@ export async function runFinalize(epicId: string, opts: FinalizeCommandOptions =
   }
 
   let result: FinalizeResult;
-  if (opts._finalizer) {
-    result = await opts._finalizer.resume(epicId);
-  } else {
-    const policy = PolicyEngine.load(loomDir).policyData;
-    const ef = new EpicFinalizer({
-      projectRoot,
-      db,
-      allowedRemotes: policy.git.allowed_remotes,
-      prStrategy: policy.agents.pr_strategy,
-    });
-    // resume() was added in story-066-001. The worktree's TypeScript resolves
-    // @loom-ai/core to main's compiled dist (which predates 066-001), so the
-    // method is absent from the inferred type. It IS present at runtime.
-    result = await (ef as unknown as { resume(id: string): Promise<FinalizeResult> }).resume(epicId);
+  try {
+    if (opts._finalizer) {
+      result = await opts._finalizer.resume(epicId);
+    } else {
+      const policy = PolicyEngine.load(loomDir).policyData;
+      const ef = new EpicFinalizer({
+        projectRoot,
+        db,
+        allowedRemotes: policy.git.allowed_remotes,
+        prStrategy: policy.agents.pr_strategy ?? 'comment',
+      });
+      // resume() was added in story-066-001. Guard at runtime in case the dist
+      // predates that story (e.g. worktree not yet rebuilt).
+      if (typeof (ef as any).resume !== 'function') {
+        console.error('EpicFinalizer.resume() is not available — rebuild @loom-ai/core (story-066-001).');
+        process.exit(1);
+      }
+      result = await (ef as unknown as { resume(id: string): Promise<FinalizeResult> }).resume(epicId);
+    }
+  } catch (err) {
+    console.error(`  Finalize failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
   }
 
-  console.log('');
   if (result.status === 'merged') {
+    // resume() owns the done write; we mirror it here so the DB reflects done
+    // regardless of whether the seam or the real finalizer was used.
+    epicStore.updateStatus(epicId, 'done');
+    console.log('');
     if (result.url) {
       console.log(`  PR: ${result.url}`);
     }
