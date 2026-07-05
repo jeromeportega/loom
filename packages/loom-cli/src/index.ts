@@ -245,8 +245,8 @@ export function buildProgram(): Command {
 
   // ─── loom publish ────────────────────────────────────────────────────────────
   applySpec(program.command('publish'), publishSpec)
-    .action((epicId: string) => {
-      runPublish(epicId);
+    .action(async (epicId: string) => {
+      await runPublish(epicId);
     });
 
   // ─── loom release ────────────────────────────────────────────────────────────

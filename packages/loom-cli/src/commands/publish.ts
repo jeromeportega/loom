@@ -28,7 +28,7 @@ export async function runPublish(epicId: string, opts: PublishCommandOptions = {
   // FR-7: detect finalizing epics and re-enter finalize via EpicFinalizer.resume()
   // rather than refusing them. detectResumePhase (inside resume()) determines the
   // exact remaining phases — open-pr, record-pr, push-and-open, or full-finalize.
-  if (epicId?.trim()) {
+  if (epicId.trim()) {
     const epic = new EpicStore(db).get(epicId);
     if (epic?.status === 'finalizing') {
       await handleFinalizing(epicId, db, projectRoot, loomDir, opts);

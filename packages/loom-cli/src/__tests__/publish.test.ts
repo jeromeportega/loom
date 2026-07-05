@@ -70,6 +70,8 @@ afterEach(() => {
 
 interface Captured { logs: string[]; errors: string[]; exitCode: number | null }
 
+class ExitSignal extends Error {}
+
 async function capture(fn: () => Promise<void>): Promise<Captured> {
   const origExit = process.exit as (code?: number) => never;
   const origLog = console.log;
@@ -77,7 +79,6 @@ async function capture(fn: () => Promise<void>): Promise<Captured> {
   const logs: string[] = [];
   const errors: string[] = [];
   let exitCode: number | null = null;
-  class ExitSignal extends Error {}
   (process as NodeJS.Process & { exit: (code?: number) => never }).exit = (code?: number) => {
     exitCode = code ?? 0;
     throw new ExitSignal();
@@ -123,7 +124,7 @@ function makeMockResume(prUrl = PR_URL): (epicId: string) => Promise<FinalizeRes
     conflicted: [],
     merged: [],
     cleaned: [],
-    note: `Epic _epicId published — opened PR: ${prUrl}`,
+    note: `Epic ${_epicId} published — opened PR: ${prUrl}`,
   });
 }
 
@@ -336,7 +337,8 @@ describe('deleted branch — publish.ts no longer reimplements gh pr view probe'
     // The probe was in EpicPublisher._publish() for the finalizing path.
     // Now detectResumePhase inside EpicFinalizer.resume() handles it.
     // Assert that the CLI-level publish command does not re-implement the probe.
-    const src = fs.readFileSync(path.join(__dirname, '..', 'commands', 'publish.js'), 'utf8');
+    // Read the TypeScript source (dist/__tests__ → package root → src/commands)
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'commands', 'publish.ts'), 'utf8');
     assert.ok(
       !src.includes("'pr', 'view'") && !src.includes('"pr", "view"'),
       'publish.ts must not reimplement a gh pr view probe — detectResumePhase handles this',
