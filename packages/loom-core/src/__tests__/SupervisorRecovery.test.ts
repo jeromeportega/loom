@@ -62,7 +62,7 @@ function fakeFinalizer(
   resumeImpl: (epicId: string) => Promise<FinalizeResult>
 ): EpicFinalizer {
   return {
-    finalize: async (_epicId: string) => mergedResult(_epicId),
+    finalize: async (epicId: string) => mergedResult(epicId),
     resume: resumeImpl,
   } as unknown as EpicFinalizer;
 }
