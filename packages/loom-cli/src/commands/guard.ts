@@ -1,6 +1,7 @@
 import type { CommandDescription } from '../describe/schema.js';
 import path from 'node:path';
-import { PolicyEngine, AuditLog } from '@loom-ai/core';
+import { execFileSync } from 'node:child_process';
+import { PolicyEngine, AuditLog, type ReadScopeContext } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
 const LOOM_DIR = '.loom';
@@ -12,6 +13,9 @@ const LOOM_DIR = '.loom';
 const EXIT_ALLOW = 0;
 const EXIT_BLOCK = 1;
 const EXIT_BLOCK_WITH_FEEDBACK = 2;
+
+/** Native Claude Code tools whose path args are enforced by checkReadScope. */
+const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 
 export function runGuardCheck(command: string): void {
   const result = evaluateCommand(command);
@@ -27,38 +31,160 @@ export function runGuardCheck(command: string): void {
  * Claude Code hook input shape:
  *   { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "..." }, ... }
  * On block: exit code 2 prints stderr to Claude and aborts the tool call.
+ *
+ * Dispatch:
+ *  - Read/Grep/Glob → checkReadScope on the path arg
+ *  - Bash → existing write/git checks, then checkReadScopeCommand
+ *  - All other tools → allowed
  */
 export async function runGuardHook(): Promise<void> {
   const raw = await readStdin();
-  let payload: { tool_name?: string; tool_input?: { command?: string } } = {};
+  let payload: { tool_name?: string; tool_input?: Record<string, unknown> } = {};
   try {
     payload = JSON.parse(raw) as typeof payload;
   } catch {
-    // Not JSON — allow (we only enforce on parseable Bash payloads)
+    // Not JSON — allow (we only enforce on parseable payloads)
     process.exit(EXIT_ALLOW);
   }
 
-  // Only act on Bash tool calls
-  if (payload.tool_name !== 'Bash') {
+  const toolName = payload.tool_name ?? '';
+  const projectRoot = process.cwd();
+  const loomDir = path.join(projectRoot, LOOM_DIR);
+
+  // ── Native read-tool dispatch (Read / Grep / Glob) ────────────────────────
+  if (READ_TOOLS.has(toolName)) {
+    const toolInput = payload.tool_input ?? {};
+    const targetPath =
+      (toolInput.file_path as string | undefined) ??
+      (toolInput.path as string | undefined) ??
+      '';
+
+    // Empty path → resolves to cwd → in-scope by definition
+    if (!targetPath) {
+      process.exit(EXIT_ALLOW);
+    }
+
+    let engine: PolicyEngine;
+    try {
+      engine = PolicyEngine.load(loomDir);
+    } catch {
+      // Policy unavailable (pre-loom-init, worktree without .loom/) — allow
+      process.exit(EXIT_ALLOW);
+    }
+    const ctx = buildReadScopeCtx(engine, projectRoot);
+    const result = engine.checkReadScope(targetPath, ctx);
+    if (!result.allowed) {
+      process.stderr.write(
+        JSON.stringify({ loom_guard: 'blocked', rule: result.rule, reason: result.reason }) + '\n',
+      );
+      process.exit(EXIT_BLOCK_WITH_FEEDBACK);
+    }
     process.exit(EXIT_ALLOW);
   }
 
-  const command = payload.tool_input?.command ?? '';
-  if (!command) {
+  // ── Bash dispatch ─────────────────────────────────────────────────────────
+  if (toolName === 'Bash') {
+    const command = (payload.tool_input?.command as string | undefined) ?? '';
+    if (!command) {
+      process.exit(EXIT_ALLOW);
+    }
+
+    // Existing write/git checks run first
+    const evalResult = evaluateCommand(command);
+    if (evalResult.blockExitCode !== EXIT_ALLOW) {
+      process.stderr.write(
+        `loom blocked this command: ${evalResult.message.reason}\n` +
+          `Rule: ${evalResult.message.rule}\n` +
+          `Command: ${evalResult.message.command}\n`,
+      );
+      process.exit(EXIT_BLOCK_WITH_FEEDBACK);
+    }
+
+    // Read-scope check appended after write/git checks
+    let engine: PolicyEngine;
+    try {
+      engine = PolicyEngine.load(loomDir);
+    } catch {
+      // Policy unavailable (pre-loom-init, worktree without .loom/) — allow
+      process.exit(EXIT_ALLOW);
+    }
+    const ctx = buildReadScopeCtx(engine, projectRoot);
+    const readResult = engine.checkReadScopeCommand(command, ctx);
+    if (!readResult.allowed) {
+      process.stderr.write(
+        JSON.stringify({ loom_guard: 'blocked', rule: readResult.rule, reason: readResult.reason }) + '\n',
+      );
+      process.exit(EXIT_BLOCK_WITH_FEEDBACK);
+    }
     process.exit(EXIT_ALLOW);
   }
 
-  const result = evaluateCommand(command);
-  if (result.blockExitCode !== EXIT_ALLOW) {
-    // Use exit code 2 so Claude Code displays the reason
-    process.stderr.write(
-      `loom blocked this command: ${result.message.reason}\n` +
-        `Rule: ${result.message.rule}\n` +
-        `Command: ${result.message.command}\n`
-    );
-    process.exit(EXIT_BLOCK_WITH_FEEDBACK);
-  }
+  // All other tools — not intercepted
   process.exit(EXIT_ALLOW);
+}
+
+/** Builds a ReadScopeContext from the engine's policy, resolving readRoot against projectRoot. */
+function buildReadScopeCtx(engine: PolicyEngine, projectRoot: string): ReadScopeContext {
+  const worktreeRoot = projectRoot;
+  const readRoot = path.resolve(
+    projectRoot,
+    engine.policyData?.filesystem?.allowed_read_root ?? '.',
+  );
+
+  // In a git worktree, the DB lives in the main repo (not the worktree directory).
+  // Resolve the main repo root via git so DB open finds the right path.
+  const mainRepoRoot = resolveMainRepoRoot(projectRoot);
+
+  let audit: AuditLog | undefined;
+  try {
+    const db = openProjectDatabase(mainRepoRoot);
+    audit = new AuditLog(db);
+  } catch {
+    // No DB yet (loom init hasn't run) — still enforce policy
+  }
+
+  return {
+    worktreeRoot,
+    readRoot,
+    audit: audit ?? makeNoopAudit(),
+  };
+}
+
+/**
+ * Returns the main repo root from any directory inside a git repo or worktree.
+ * In a linked worktree `git rev-parse --git-common-dir` returns the path to the
+ * main .git directory, whose parent is the main repo root.
+ */
+function resolveMainRepoRoot(cwd: string): string {
+  try {
+    const gitCommonDir = execFileSync('git', ['rev-parse', '--git-common-dir'], {
+      cwd,
+      encoding: 'utf8',
+    }).trim();
+    const absGitDir = path.isAbsolute(gitCommonDir)
+      ? gitCommonDir
+      : path.resolve(cwd, gitCommonDir);
+    return path.dirname(absGitDir);
+  } catch {
+    return cwd;
+  }
+}
+
+/**
+ * No-op audit used when the DB is unavailable (pre-loom-init).
+ * Uses a Proxy so any unexpected method call beyond `record()` throws immediately
+ * rather than silently returning undefined — making interface drift visible.
+ */
+function makeNoopAudit(): AuditLog {
+  const handler: ProxyHandler<object> = {
+    get(_target, prop: string | symbol) {
+      if (prop === 'record') return () => undefined;
+      throw new TypeError(
+        `makeNoopAudit: AuditLog.${String(prop)}() called but no database is available`,
+      );
+    },
+  };
+  return new Proxy({}, handler) as unknown as AuditLog;
 }
 
 interface EvaluatedCommand {
