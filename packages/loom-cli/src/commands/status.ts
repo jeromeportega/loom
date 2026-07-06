@@ -290,11 +290,11 @@ function computeIntegrationLag(
   threshold: number,
   repoRoot: string,
   spawnFn: SpawnSyncFn
-): { commits_behind: number; threshold: number; warn: boolean } | null {
-  const result = spawnFn('git', ['rev-list', '--count', `main..epic/${epicId}`], { cwd: repoRoot, encoding: 'utf8' });
-  if (result.status !== 0) return null;
+): { commits_behind: number; threshold: number; warn: boolean } {
+  const result = spawnFn('git', ['rev-list', '--count', `epic/${epicId}..main`], { cwd: repoRoot, encoding: 'utf8' });
+  if (result.status !== 0) return { commits_behind: 0, threshold, warn: false };
   const count = parseInt(result.stdout.trim(), 10);
-  if (isNaN(count)) return null;
+  if (isNaN(count)) return { commits_behind: 0, threshold, warn: false };
   return { commits_behind: count, threshold, warn: count >= threshold };
 }
 
@@ -423,7 +423,7 @@ function collectJsonEpics(
         };
       });
       const integrationLag =
-        integrationBranch === 'rolling'
+        integrationBranch === 'rolling' && !epic.archived_at
           ? computeIntegrationLag(epic.id, lagThreshold, repoRoot, spawnFn)
           : undefined;
       const stalePlanning =

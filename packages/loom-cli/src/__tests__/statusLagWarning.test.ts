@@ -121,7 +121,7 @@ describe('loom status — integration_lag JSON (AC2)', () => {
     assert.equal(epic.integration_lag.threshold, 10);
     assert.equal(epic.integration_lag.warn, true);
     assert.equal(calls.length, 1, 'spawnSync called once');
-    assert.ok(calls[0].args.includes('main..epic/epic-075'), 'args must reference the epic branch');
+    assert.ok(calls[0].args.includes('epic/epic-075..main'), 'args must measure commits behind main');
   });
 
   it('[AC5] stub returns 5, threshold 10 → warn=false', () => {
@@ -146,6 +146,20 @@ describe('loom status — integration_lag JSON (AC2)', () => {
     assert.ok(epic?.integration_lag, 'integration_lag present when branch is current');
     assert.equal(epic.integration_lag.warn, false);
     assert.equal(epic.integration_lag.commits_behind, 0);
+  });
+
+  it('[AC2] branch not yet created (git exits non-zero) → integration_lag present with commits_behind=0, warn=false', () => {
+    seedEpicWithAgent('epic-075', 'New rolling epic');
+    writePolicyYaml('version: 1\nagents:\n  integration_branch: rolling\n  integration_branch_lag_threshold: 10\n');
+
+    const { fn, calls } = makeStub('', 128); // non-zero exit, branch doesn't exist
+    const payload = captureJson({ _spawnSync: fn });
+    const epic = payload.epics.find((e) => e.id === 'epic-075');
+    assert.ok(epic, 'epic-075 must appear in JSON');
+    assert.ok(epic.integration_lag, 'integration_lag must be present even when branch missing');
+    assert.equal(epic.integration_lag.commits_behind, 0);
+    assert.equal(epic.integration_lag.warn, false);
+    assert.equal(calls.length, 1, 'spawnSync was called');
   });
 
   it('[AC6] integration_branch !== rolling → no field, no git subprocess call', () => {
