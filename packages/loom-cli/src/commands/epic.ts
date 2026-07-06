@@ -352,8 +352,8 @@ function firstCritiqueLine(refinement: {
 
 export const spec: CommandDescription = {
   name: 'epic',
-  summary: 'Plan an epic from a brief using the Analyst→PM→Architect pipeline',
-  whenToUse: 'Use when you have a clear feature idea to plan. Pass a one-paragraph brief; loom runs the planning pipeline and outputs a structured epic YAML.',
+  summary: 'Alias for `loom weave` — plan an epic from a brief using the Analyst→PM→Architect pipeline',
+  whenToUse: 'Use `loom weave` instead — `loom epic` is an alias with identical behavior. Pass a one-paragraph brief; loom runs the planning pipeline and outputs a structured epic YAML.',
   arguments: [
     { name: 'brief', type: 'string', required: true, description: 'One paragraph describing what to build' },
   ],
