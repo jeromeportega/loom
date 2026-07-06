@@ -26,7 +26,7 @@ function makeRunner(
     calls.push({ cmd, cwd, timeoutMs });
     const s = scripts[idx++] ?? {};
     return {
-      exitCode:   s.exitCode ?? 0,
+      exitCode:   s.exitCode !== undefined ? s.exitCode : 0,
       timedOut:   s.timedOut ?? false,
       output:     s.output ?? '',
       durationMs: s.durationMs ?? 10,
@@ -123,7 +123,7 @@ describe('runTestCommandEntries — glob matching', () => {
     assert.equal(results[0].status, 'skipped');
     assert.equal(results[0].exitCode, null);
     assert.equal(results[0].stdout, '');
-    assert.equal(results[0].stderr, '');
+    assert.equal(results[0].timedOut, false);
     assert.equal(runner.calls.length, 0, 'runner must not be called for skipped entry');
   });
 
@@ -274,7 +274,7 @@ describe('runTestCommandEntries — aggregation', () => {
 // ─── runTestCommandEntries — result shape ──────────────────────────────────
 
 describe('runTestCommandEntries — structured result shape', () => {
-  it('ran entry has name, command, status passed/failed, non-null exitCode, string stdout/stderr', async () => {
+  it('ran entry has name, command, status passed/failed, non-null exitCode, and stdout', async () => {
     const runner = makeRunner([{ exitCode: 0, output: 'ok output', durationMs: 42 }]);
     const { results } = await runTestCommandEntries({
       entries:      [entry('mytest', ['**/*.ts'], 'run-mytest')],
@@ -289,12 +289,12 @@ describe('runTestCommandEntries — structured result shape', () => {
     assert.equal(r.status, 'passed');
     assert.equal(r.exitCode, 0);
     assert.equal(typeof r.stdout, 'string');
-    assert.equal(typeof r.stderr, 'string');
     assert.equal(r.stdout, 'ok output');
+    assert.equal(r.timedOut, false);
     assert.equal(r.durationMs, 42);
   });
 
-  it('skipped entry has status:skipped, exitCode:null, empty stdout/stderr', async () => {
+  it('skipped entry has status:skipped, exitCode:null, empty stdout, and timedOut:false', async () => {
     const runner = makeRunner([]);
     const { results } = await runTestCommandEntries({
       entries:      [entry('noop', ['**/*.py'])],
@@ -307,7 +307,7 @@ describe('runTestCommandEntries — structured result shape', () => {
     assert.equal(r.status, 'skipped');
     assert.equal(r.exitCode, null);
     assert.equal(r.stdout, '');
-    assert.equal(r.stderr, '');
+    assert.equal(r.timedOut, false);
   });
 
   it('failed entry (non-zero exit) has status:failed and captures output', async () => {
@@ -323,6 +323,23 @@ describe('runTestCommandEntries — structured result shape', () => {
     assert.equal(r.status, 'failed');
     assert.equal(r.exitCode, 2);
     assert.equal(r.stdout, 'FAIL output');
+    assert.equal(r.timedOut, false);
+  });
+
+  it('timed-out entry has status:failed, timedOut:true, and anyFailed:true', async () => {
+    const runner = makeRunner([{ exitCode: null, timedOut: true, output: '' }]);
+    const { results, anyFailed } = await runTestCommandEntries({
+      entries:      [entry('slow', ['**/*.ts'])],
+      changedPaths: ['src/a.ts'],
+      projectRoot:  ROOT,
+      runner,
+      timeoutMs:    TIMEOUT_MS,
+    });
+    const r = results[0];
+    assert.equal(r.status, 'failed');
+    assert.equal(r.timedOut, true);
+    assert.equal(r.exitCode, null);
+    assert.equal(anyFailed, true);
   });
 
   it('runner receives the configured command, projectRoot, and timeoutMs', async () => {

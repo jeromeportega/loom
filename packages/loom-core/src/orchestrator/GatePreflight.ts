@@ -43,8 +43,6 @@ export interface ResolvedGatePlan {
   source: 'configured' | 'auto-detected' | 'none' | 'test_commands';
   /** Detected project root. */
   cwd: string;
-  /** Populated by IntegrationGate.run() after runTestCommandEntries() completes. */
-  testCommandResults?: TestCommandResult[];
 }
 
 /** Per-entry result for the test_commands execution path. */
@@ -53,8 +51,10 @@ export interface TestCommandResult {
   command:    string;
   status:     'passed' | 'failed' | 'skipped';
   exitCode:   number | null;
+  /** Combined stdout+stderr (runner merges streams). */
   stdout:     string;
-  stderr:     string;
+  /** true when the command was killed due to timeout. */
+  timedOut:   boolean;
   durationMs: number;
 }
 
@@ -564,7 +564,7 @@ export async function runTestCommandEntries(opts: {
         status:     'skipped',
         exitCode:   null,
         stdout:     '',
-        stderr:     '',
+        timedOut:   false,
         durationMs: 0,
       });
       continue;
@@ -579,7 +579,7 @@ export async function runTestCommandEntries(opts: {
       status:     passed ? 'passed' : 'failed',
       exitCode:   result.exitCode,
       stdout:     result.output,
-      stderr:     '',
+      timedOut:   result.timedOut,
       durationMs: result.durationMs,
     });
   }

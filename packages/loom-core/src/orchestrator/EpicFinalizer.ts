@@ -1728,13 +1728,19 @@ function emitFinalizeGateDiagnostics(result: FinalizeGatesResult): void {
   }
 }
 
-/** Structural equality for TestCommandEntry arrays (JSON round-trip for simplicity). */
+/** Structural equality for TestCommandEntry arrays (field-by-field, order-sensitive). */
 function sameTestCommandsArr(
   a: TestCommandEntry[] | undefined,
   b: TestCommandEntry[]
 ): boolean {
   if (!a) return b.length === 0;
-  return JSON.stringify(a) === JSON.stringify(b);
+  if (a.length !== b.length) return false;
+  return a.every(
+    (ae, i) =>
+      ae.name === b[i].name &&
+      ae.command === b[i].command &&
+      sameStringArr(ae.paths, b[i].paths),
+  );
 }
 
 /** Order-insensitive equality for string arrays (allowed_remotes globs). */

@@ -281,9 +281,9 @@ export class IntegrationGate {
         name:       r.name,
         kind:       'unit' as GateStepKind,
         command:    r.command,
-        ok:         r.status === 'passed',
+        ok:         r.status !== 'failed',
         exitCode:   r.exitCode,
-        timedOut:   false,
+        timedOut:   r.timedOut,
         durationMs: r.durationMs,
         output:     r.stdout,
       }));
@@ -295,6 +295,8 @@ export class IntegrationGate {
       for (const r of results) {
         if (r.status === 'skipped') {
           parts.push(`${r.name} skipped (no matching paths)`);
+        } else if (r.timedOut) {
+          parts.push(`${r.name} timed out after ${Math.round(r.durationMs / 1000)}s`);
         } else if (r.status === 'failed') {
           parts.push(`${r.name} failed (exit ${r.exitCode})`);
         } else {
