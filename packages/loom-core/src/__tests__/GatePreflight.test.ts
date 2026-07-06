@@ -101,8 +101,8 @@ describe('resolveGateCommand', () => {
     const resolved = resolveGateCommand('/repo', probes);
 
     const calls: { command: string; cwd: string }[] = [];
-    const runner: CommandRunner = (command, opts) => {
-      calls.push({ command, cwd: opts.cwd });
+    const runner: CommandRunner = (command, cwd) => {
+      calls.push({ command, cwd });
       return { exitCode: 0, timedOut: false, output: '', durationMs: 1 };
     };
     const gate = new IntegrationGate({ runner, ...probes });

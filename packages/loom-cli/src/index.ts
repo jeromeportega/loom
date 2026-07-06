@@ -80,7 +80,7 @@ export function buildProgram(): Command {
         runCapabilitiesMode({ program });
         return;
       }
-      runDoctor();
+      await runDoctor();
     });
 
   // ─── loom init ─────────────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { resolveGateCommand } from './GatePreflight.js';
+import { resolveGatePlan } from './GatePreflight.js';
+import type { GateStep, GateStepKind } from './GatePreflight.js';
 
 /**
  * The integration gate is the objective answer to "is this epic actually
@@ -32,9 +33,16 @@ export interface CommandResult {
   durationMs: number;
 }
 
+/**
+ * Injectable command runner. Positional signature: (cmd, cwd, timeoutMs).
+ * The default runner is an async spawn-based executor; tests pass a stub.
+ * Note: functions returning a sync CommandResult are also accepted
+ * (TypeScript assignability — `CommandResult` satisfies `CommandResult | Promise<CommandResult>`).
+ */
 export type CommandRunner = (
-  command: string,
-  opts: { cwd: string; timeoutMs: number }
+  cmd: string,
+  cwd: string,
+  timeoutMs: number
 ) => CommandResult | Promise<CommandResult>;
 
 export interface IntegrationGateOptions {
@@ -55,17 +63,36 @@ export interface IntegrationGateOptions {
   fileReader?: (p: string) => string | null;
 }
 
-export interface GateOutcome {
-  /** Whether the integrated epic is healthy (no amputation AND tests pass / none ran). */
+/** Per-step execution outcome. */
+export interface GateStepOutcome {
+  name: string;
+  kind: GateStepKind;
+  command: string;
   ok: boolean;
-  /** Whether a build/test command actually ran. */
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  /** Tail-truncated combined stdout + stderr. */
+  output: string;
+}
+
+export interface GateOutcome {
+  /** Whether the integrated epic is healthy (no amputation AND every step ok). */
+  ok: boolean;
+  /** Whether a build/test command actually ran (≥1 step executed). */
   ran: boolean;
-  /** The resolved command, when one was found. */
+  /** Per-step outcomes (NEW). Empty on amputation-only gate; omitted by legacy stubs. */
+  steps?: GateStepOutcome[];
+  // ── Legacy aggregate fields (ADR-6) ─────────────────────────────────────
+  // Populated from the FIRST FAILING step; when all pass, from the LAST step.
+  // EpicFinalizer.renderGateSection() and the audit_log row read only these.
+  /** The resolved command of the aggregate step. */
   command?: string;
   exitCode?: number | null;
   timedOut: boolean;
+  /** Sum of durationMs across all steps. */
   durationMs: number;
-  /** Tail of the command output (for the audit row + PR annotation). */
+  /** Tail of the aggregate step's output. */
   output: string;
   /** Story ids missing from the integrated branch (dropped merge conflicts). */
   amputated: string[];
@@ -88,7 +115,7 @@ const KILL_GRACE_MS = 5_000;
  * reaps grandchildren (the test runner the suite launches), with a
  * SIGTERM→SIGKILL escalation so a child that ignores SIGTERM can't hang us.
  */
-const defaultRunner: CommandRunner = (command, { cwd, timeoutMs }) =>
+const defaultRunner: CommandRunner = (command, cwd, timeoutMs) =>
   new Promise<CommandResult>((resolve) => {
     const started = Date.now();
     let child: ReturnType<typeof spawn>;
@@ -146,39 +173,65 @@ const defaultRunner: CommandRunner = (command, { cwd, timeoutMs }) =>
     child.on('close', (code) => finish(code));
   });
 
+/**
+ * Execute an ordered list of gate steps via the given runner.
+ *
+ * Runs EVERY step (no short-circuit — ADR-3): this ensures per-step reporting
+ * is complete even when an earlier step fails. Returns one GateStepOutcome per
+ * step in the same order.
+ */
+export async function runGateSteps(
+  steps: GateStep[],
+  opts: { runner?: CommandRunner; timeoutMs?: number }
+): Promise<GateStepOutcome[]> {
+  const runner = opts.runner ?? defaultRunner;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  const outcomes: GateStepOutcome[] = [];
+  for (const step of steps) {
+    const result = await runner(step.command, step.cwd, timeoutMs);
+    outcomes.push({
+      name: step.name,
+      kind: step.kind,
+      command: step.command,
+      ok: !result.timedOut && result.exitCode === 0,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      durationMs: result.durationMs,
+      output: result.output,
+    });
+  }
+  return outcomes;
+}
+
 export class IntegrationGate {
   constructor(private readonly opts: IntegrationGateOptions = {}) {}
 
   /**
    * Evaluate the integrated epic. `conflicted` is the finalizer's set of
    * stories that failed to merge (the amputation signal). Runs the resolved
-   * test command on `projectRoot`, which the finalizer has already checked out
+   * gate steps on `projectRoot`, which the finalizer has already checked out
    * to the merged `epic/<id>`.
+   *
+   * Signature is UNCHANGED — EpicFinalizer calls this without modification.
    */
   async run(input: { projectRoot: string; conflicted?: string[] }): Promise<GateOutcome> {
     const amputated = input.conflicted ?? [];
-    // Resolved command + cwd, delegated to GatePreflight so the gate and the
-    // preflight surfaces resolve identically by construction (ADR-2). When
-    // `policy.agents.test_command` is set, the operator's word is law: run it
-    // from projectRoot (their command is expected to encode any `cd <subdir>`
-    // it needs). When unset, auto-detection scopes to the smallest changed
-    // subdirectory with its own test config (monorepo scoping).
-    const resolved = resolveGateCommand(input.projectRoot, {
+
+    const plan = resolveGatePlan(input.projectRoot, {
       testCommand: this.opts.testCommand,
       fileExists: this.opts.fileExists,
       fileReader: this.opts.fileReader,
     });
-    const command = resolved.command;
-    const cwd = resolved.cwd;
 
-    // No command resolvable: we cannot test, so don't manufacture a failure —
-    // fall back to the (free) amputation check only. This keeps the default
-    // `warn` mode safe in repos with no detectable suite.
-    if (!command) {
+    // No command resolvable: fall back to the (free) amputation check only.
+    // This keeps the default `warn` mode safe in repos with no detectable suite.
+    if (plan.steps.length === 0) {
       const ok = amputated.length === 0;
       return {
         ok,
         ran: false,
+        steps: [],
         timedOut: false,
         durationMs: 0,
         output: '',
@@ -189,32 +242,42 @@ export class IntegrationGate {
       };
     }
 
-    const runner = this.opts.runner ?? defaultRunner;
-    const timeoutMs = this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const res = await runner(command, { cwd, timeoutMs });
-    const testsPassed = !res.timedOut && res.exitCode === 0;
-    const ok = amputated.length === 0 && testsPassed;
+    const stepOutcomes = await runGateSteps(plan.steps, {
+      runner: this.opts.runner,
+      timeoutMs: this.opts.timeoutMs,
+    });
+
+    const firstFailing = stepOutcomes.find((s) => !s.ok);
+    const allPassed = stepOutcomes.every((s) => s.ok);
+    // Aggregate comes from first failing step; when all pass, from the last step.
+    const aggregate = firstFailing ?? stepOutcomes[stepOutcomes.length - 1];
+    const ok = amputated.length === 0 && allPassed;
+    const totalDurationMs = stepOutcomes.reduce((sum, s) => sum + s.durationMs, 0);
 
     const parts: string[] = [];
     if (amputated.length > 0) {
       parts.push(`${amputated.length} story(ies) missing from the epic (${amputated.join(', ')})`);
     }
-    if (res.timedOut) {
-      parts.push(`\`${command}\` timed out after ${Math.round(res.durationMs / 1000)}s`);
-    } else if (res.exitCode !== 0) {
-      parts.push(`\`${command}\` failed (exit ${res.exitCode})`);
-    } else {
-      parts.push(`\`${command}\` passed in ${Math.round(res.durationMs / 1000)}s`);
+    for (const s of stepOutcomes) {
+      if (s.timedOut) {
+        parts.push(`${s.name} timed out after ${Math.round(s.durationMs / 1000)}s`);
+      } else if (!s.ok) {
+        parts.push(`${s.name} failed (exit ${s.exitCode})`);
+      } else {
+        parts.push(`${s.name} passed in ${Math.round(s.durationMs / 1000)}s`);
+      }
     }
 
     return {
       ok,
       ran: true,
-      command,
-      exitCode: res.exitCode,
-      timedOut: res.timedOut,
-      durationMs: res.durationMs,
-      output: res.output,
+      steps: stepOutcomes,
+      // Legacy aggregate fields (ADR-6): first failing step wins; else last step.
+      command: aggregate.command,
+      exitCode: aggregate.exitCode,
+      timedOut: aggregate.timedOut,
+      durationMs: totalDurationMs,
+      output: aggregate.output,
       amputated,
       summary: `${ok ? 'Integration gate passed' : 'Integration gate failed'}: ${parts.join('; ')}.`,
     };

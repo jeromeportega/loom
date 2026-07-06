@@ -18,6 +18,31 @@ import path from 'node:path';
  * still fail at runtime (missing env, flaky suite); a command reported
  * non-viable is one that cannot work in a bare worktree as configured.
  */
+
+// ── Core plan & outcome types (shared contract — stories 002/003 import these) ──
+
+export type GateStepKind = 'unit' | 'typecheck' | 'build';
+
+export interface GateStep {
+  /** Canonical id — e.g. 'unit' | 'typecheck:tsc' | 'build:next' */
+  name: string;
+  kind: GateStepKind;
+  /** Exact shell string, binary already resolved. */
+  command: string;
+  /** unit → changed-subdir scope; toolchain → ResolvedGatePlan.cwd */
+  cwd: string;
+}
+
+export interface ResolvedGatePlan {
+  /** Ordered steps; see composition-order contract (§5). */
+  steps: GateStep[];
+  source: 'configured' | 'auto-detected' | 'none';
+  /** Detected project root. */
+  cwd: string;
+}
+
+// ── Legacy single-command interface (retained for out-of-epic callers) ──
+
 export interface ResolvedGateCommand {
   /** undefined => no command resolvable (amputation-only gate). */
   command?: string;
@@ -65,30 +90,206 @@ function probesFrom(opts: GatePreflightOptions): Probes {
   };
 }
 
+// ── SIGNAL TABLES — stories 002/003 append new const arrays in this region ──
+
+const NPM_LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json'];
+const PYTEST_CONFIG_FILES = ['pyproject.toml', 'setup.cfg', 'tox.ini'];
+const TS_SIGNAL    = 'tsconfig.json';
+const NEXT_CONFIGS = ['next.config.js', 'next.config.mjs', 'next.config.ts', 'next.config.cjs'];
+const GO_SIGNAL    = 'go.mod';
+const RUST_SIGNAL  = 'Cargo.toml';
+const UV_LOCK      = 'uv.lock';
+// 003: scan pyproject.toml RAW text for /\[tool\.uv\.workspace\]/m (→ --all-packages) and /\[tool\.uv\]/m (→ uv run)
+
+// ── END SIGNAL TABLES ──
+
 /**
- * Resolve the command the integration gate would run. When
- * `policy.agents.test_command` is set, the operator's word is law: it runs
- * from projectRoot (the command is expected to encode any `cd <subdir>` it
- * needs). When unset, auto-detection scopes to the smallest changed-files
- * subdirectory with its own test config (see `detectCommand`).
+ * Resolve the gate plan: ordered steps the integration gate would run.
+ *
+ * Composition order (§5):
+ *   - opts.testCommand set → source:'configured', steps=[unit(testCommand)], detection NEVER runs.
+ *   - no signals → source:'none', steps=[].
+ *   - auto-detect → source:'auto-detected', steps=[ unit ] ++ toolchain steps (002/003).
+ */
+export function resolveGatePlan(projectRoot: string, opts: GatePreflightOptions): ResolvedGatePlan {
+  const explicit = opts.testCommand?.trim();
+
+  // Hard override branch (FR-12/NFR-3): configured test_command suppresses ALL detection.
+  // This is a top-of-function short-circuit — no probes, no detection calls below.
+  if (explicit) {
+    return {
+      steps: [{ name: 'unit', kind: 'unit', command: explicit, cwd: projectRoot }],
+      source: 'configured',
+      cwd: projectRoot,
+    };
+  }
+
+  const probes = probesFrom(opts);
+  const detected = detectUnitCommand(projectRoot, probes);
+
+  if (!detected) {
+    return { steps: [], source: 'none', cwd: projectRoot };
+  }
+
+  // uv unit-step variant rewrite (story-068-003): when uv signals are present and the
+  // unit command is `pytest`, replace the command with the appropriate uv variant.
+  const resolvedUnitCommand =
+    detected.command === 'pytest'
+      ? (detectUvCommand(detected.cwd, projectRoot, probes) ?? detected.command)
+      : detected.command;
+
+  const unitStep: GateStep = {
+    name: 'unit',
+    kind: 'unit',
+    command: resolvedUnitCommand,
+    cwd: detected.cwd,
+  };
+
+  // ── TOOLCHAIN DETECTORS — stories 002/003 append new detector branches in this region ──
+  const toolchainSteps = detectToolchainSteps(projectRoot, detected.cwd, probes);
+  // ── END TOOLCHAIN DETECTORS ──
+
+  return {
+    steps: [unitStep, ...toolchainSteps],
+    source: 'auto-detected',
+    cwd: detected.cwd,
+  };
+}
+
+// ── TOOLCHAIN DETECTORS (stories 002/003 replace this stub) ──
+
+/**
+ * Detect toolchain steps (typecheck, build) to append after the unit step.
+ * Steps are added in fixed order: typecheck:tsc, build:next, build:go, build:cargo.
+ * Every step's cwd is anchored to projectRoot (FR-5).
+ */
+function detectToolchainSteps(
+  projectRoot: string,
+  _unitCwd: string,
+  probes: Probes
+): GateStep[] {
+  const steps: GateStep[] = [];
+
+  // typecheck:tsc — tsconfig.json present.
+  // A solution-style tsconfig that uses project references ({"files":[],
+  // "references":[...]}, the standard TS-monorepo layout) is a NO-OP under
+  // `tsc --noEmit` — it checks nothing and exits 0, a false green in exactly the
+  // repos that most need typechecking. When the tsconfig declares `references`,
+  // use `tsc --build`, which builds and typechecks every referenced project.
+  const tsconfigRaw = probes.read(path.join(projectRoot, TS_SIGNAL));
+  if (tsconfigRaw !== null) {
+    const usesReferences = /"references"\s*:/.test(tsconfigRaw);
+    steps.push({
+      name: 'typecheck:tsc',
+      kind: 'typecheck',
+      command: usesReferences ? 'npx --no-install tsc --build' : 'npx --no-install tsc --noEmit',
+      cwd: projectRoot,
+    });
+  }
+
+  // build:next — next.config.* present OR `next` dependency in package.json
+  const hasNextConfig = NEXT_CONFIGS.some((cfg) => probes.exists(path.join(projectRoot, cfg)));
+  let hasNext = hasNextConfig;
+  if (!hasNext) {
+    const raw = probes.read(path.join(projectRoot, 'package.json'));
+    if (raw) {
+      try {
+        const pkg = JSON.parse(raw) as {
+          dependencies?: Record<string, string>;
+          devDependencies?: Record<string, string>;
+        };
+        hasNext = !!((pkg.dependencies?.['next']) || (pkg.devDependencies?.['next']));
+      } catch {
+        // Unparseable package.json — treat as no next dependency.
+      }
+    }
+  }
+  if (hasNext) {
+    steps.push({
+      name: 'build:next',
+      kind: 'build',
+      command: 'npx --no-install next build',
+      cwd: projectRoot,
+    });
+  }
+
+  // build:go — go.mod present
+  if (probes.exists(path.join(projectRoot, GO_SIGNAL))) {
+    steps.push({
+      name: 'build:go',
+      kind: 'build',
+      command: 'go build ./...',
+      cwd: projectRoot,
+    });
+  }
+
+  // build:cargo — Cargo.toml present
+  // --workspace covers both single-package crates and virtual-manifest workspace roots,
+  // where bare `cargo build` errors with "manifest path does not describe a package".
+  if (probes.exists(path.join(projectRoot, RUST_SIGNAL))) {
+    steps.push({
+      name: 'build:cargo',
+      kind: 'build',
+      command: 'cargo build --workspace',
+      cwd: projectRoot,
+    });
+  }
+
+  return steps;
+}
+
+// ── END TOOLCHAIN DETECTORS ──
+
+/**
+ * When the unit command resolved to `pytest`, check for uv project signals and
+ * return the appropriate uv-prefixed command, or undefined if no uv signals.
+ *
+ * Precedence: [tool.uv.workspace] wins over plain [tool.uv] / uv.lock.
+ * Detection is raw-string regex on pyproject.toml — no TOML parser.
+ *
+ * Checks BOTH the unit step's (possibly member-scoped) cwd AND the workspace
+ * root: `uv.lock` and `[tool.uv.workspace]` live at the root, but changed-subdir
+ * scoping can anchor the unit step to a member dir, so a member-scoped gate
+ * inside a uv workspace must still provision via uv (FR-7).
+ *
+ * The table regexes are line-anchored (`^\s*\[…\]`) so a `[tool.uv]` string in a
+ * comment (`# see [tool.uv]`) or another value does not false-positive — TOML
+ * comments start with `#`, which the `^\s*\[` anchor excludes.
+ */
+function detectUvCommand(cwd: string, projectRoot: string, probes: Probes): string | undefined {
+  const roots = cwd === projectRoot ? [cwd] : [cwd, projectRoot];
+  let hasWorkspace = false;
+  let hasUv = false;
+  for (const root of roots) {
+    const raw = probes.read(path.join(root, 'pyproject.toml'));
+    if (raw !== null && /^\s*\[tool\.uv\.workspace\]/m.test(raw)) hasWorkspace = true;
+    if (raw !== null && /^\s*\[tool\.uv\]/m.test(raw)) hasUv = true;
+    if (probes.exists(path.join(root, UV_LOCK))) hasUv = true;
+  }
+
+  // Workspace takes precedence: every member's deps must be provisioned.
+  if (hasWorkspace) return 'uv run --all-packages pytest';
+  if (hasUv) return 'uv run pytest';
+  return undefined;
+}
+
+/**
+ * Thin adapter for out-of-epic callers (e.g. gatePreflightWarning). Returns
+ * only the unit step so existing callers keep compiling without modification.
+ * New code should call resolveGatePlan() directly.
  */
 export function resolveGateCommand(
   projectRoot: string,
   opts: GatePreflightOptions
 ): ResolvedGateCommand {
-  const explicit = opts.testCommand?.trim();
-  if (explicit) {
-    return { command: explicit, cwd: projectRoot, source: 'configured' };
-  }
-  const detected = detectCommand(projectRoot, probesFrom(opts));
-  if (detected) {
-    return { command: detected.command, cwd: detected.cwd, source: 'auto-detected' };
-  }
-  return { cwd: projectRoot, source: 'none' };
+  const plan = resolveGatePlan(projectRoot, opts);
+  const unitStep = plan.steps.find((s) => s.kind === 'unit');
+  return {
+    command: unitStep?.command,
+    cwd: plan.cwd,
+    source: plan.source,
+  };
 }
-
-const NPM_LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json'];
-const PYTEST_CONFIG_FILES = ['pyproject.toml', 'setup.cfg', 'tox.ini'];
 
 /**
  * Check the resolved gate command against bare-worktree structural
@@ -188,16 +389,15 @@ function hasPytestConfig(cwd: string, probes: Probes): boolean {
 }
 
 /**
- * Best-effort test-command discovery (moved verbatim from IntegrationGate).
- * Conservative on purpose: an undetectable suite yields no command
- * (amputation-only) rather than a wrong command that fails falsely.
+ * Best-effort unit test-command discovery. Conservative on purpose: an
+ * undetectable suite yields no command (amputation-only) rather than a wrong
+ * command that fails falsely.
  *
  * Monorepo scoping: walk the changed files relative to the integration tree
  * and find the smallest enclosing directory that has its own test config —
- * that's where the suite should run. This avoids a repo-root command that
- * runs unrelated suites failing at collection time.
+ * that's where the suite should run.
  */
-function detectCommand(
+function detectUnitCommand(
   projectRoot: string,
   probes: Probes
 ): { command: string; cwd: string } | undefined {

@@ -14,7 +14,7 @@ import {
   formatPolicyError,
   validateCursorModels,
 } from '@loom-ai/core';
-import { gateCommandCheck } from './doctorGateCheck.js';
+import { gateCommandCheck, gateRunnableCheck } from './doctorGateCheck.js';
 import { reportPolicyDrift } from './init.js';
 import { checkCapabilitiesCoverage } from '../describe/coverage-check.js';
 
@@ -138,7 +138,7 @@ function probe(bin: string, args: string[]): string | null {
  * `loom doctor` — checks the light prerequisites for running loom and reports
  * exactly what is missing. Exits non-zero if a required prerequisite is absent.
  */
-export function runDoctor(): void {
+export async function runDoctor(): Promise<void> {
   const checks: Check[] = [];
 
   const nodeMajor = parseInt(process.versions.node.split('.')[0], 10);
@@ -182,6 +182,7 @@ export function runDoctor(): void {
   });
 
   checks.push(gateCommandCheck(process.cwd()));
+  checks.push(await gateRunnableCheck(process.cwd()));
 
   const loomDir = path.join(process.cwd(), '.loom');
   const initialized = fs.existsSync(path.join(loomDir, 'policy.yaml'));

@@ -8,13 +8,13 @@ interface RunnerCall {
   timeoutMs: number;
 }
 
-/** A runner that records each call (command + opts) and returns a scripted result. */
+/** A runner that records each call (command + cwd + timeoutMs) and returns a scripted result. */
 function fakeRunner(
   script: { exitCode?: number | null; timedOut?: boolean; output?: string; durationMs?: number } = {}
 ): CommandRunner & { calls: RunnerCall[] } {
   const calls: RunnerCall[] = [];
-  const run: CommandRunner = (command, opts) => {
-    calls.push({ command, cwd: opts.cwd, timeoutMs: opts.timeoutMs });
+  const run: CommandRunner = (command, cwd, timeoutMs) => {
+    calls.push({ command, cwd, timeoutMs });
     return {
       exitCode: script.exitCode ?? 0,
       timedOut: script.timedOut ?? false,
@@ -103,7 +103,9 @@ describe('IntegrationGate', () => {
     const gate = new IntegrationGate({
       runner,
       fileExists: (p) => p.endsWith('package.json'),
-      fileReader: () => JSON.stringify({ scripts: { test: 'node --test' } }),
+      // Path-aware: only package.json has content; tsconfig.json etc. are absent
+      // (a path-agnostic stub would falsely trigger the tsc toolchain step).
+      fileReader: (p) => (p.endsWith('package.json') ? JSON.stringify({ scripts: { test: 'node --test' } }) : null),
     });
     const out = await gate.run({ projectRoot: '/repo' });
     assert.equal(out.command, 'npm test');
@@ -127,7 +129,8 @@ describe('IntegrationGate', () => {
     const gate = new IntegrationGate({
       runner,
       fileExists: (p) => p.endsWith('Makefile'),
-      fileReader: () => 'build:\n\tgo build ./...\ntest:\n\tgo test ./...\n',
+      // Path-aware: only the Makefile has content (see npm-test case above).
+      fileReader: (p) => (p.endsWith('Makefile') ? 'build:\n\tgo build ./...\ntest:\n\tgo test ./...\n' : null),
     });
     const out = await gate.run({ projectRoot: '/repo' });
     assert.equal(out.command, 'make test');

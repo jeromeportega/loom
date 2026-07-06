@@ -20,16 +20,20 @@ export { NO_OP_CHANNEL, MAX_GUIDANCE_BYTES } from './WorkerInputChannel.js';
 export type { WorkerInputChannel } from './WorkerInputChannel.js';
 export { EpicFinalizer } from './EpicFinalizer.js';
 export type { EpicFinalizerOptions, FinalizeResult } from './EpicFinalizer.js';
-export { IntegrationGate } from './IntegrationGate.js';
+export { IntegrationGate, runGateSteps } from './IntegrationGate.js';
 export type {
   IntegrationGateOptions,
   GateOutcome,
+  GateStepOutcome,
   GateMode,
   CommandResult,
   CommandRunner,
 } from './IntegrationGate.js';
-export { resolveGateCommand, preflightGateCommand } from './GatePreflight.js';
+export { resolveGatePlan, resolveGateCommand, preflightGateCommand } from './GatePreflight.js';
 export type {
+  GateStepKind,
+  GateStep,
+  ResolvedGatePlan,
   ResolvedGateCommand,
   GatePreflightResult,
   GatePreflightOptions,

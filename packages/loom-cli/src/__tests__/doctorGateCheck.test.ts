@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { preflightGateCommand } from '@loom-ai/core';
 import type { GatePreflightResult } from '@loom-ai/core';
-import { gateCommandCheck } from '../commands/doctorGateCheck.js';
+import { gateCommandCheck, gateRunnableCheck } from '../commands/doctorGateCheck.js';
 
 type Preflight = typeof preflightGateCommand;
 
@@ -164,5 +164,139 @@ describe('loom doctor renders the gate check (subprocess)', () => {
       .find((l) => l.includes('integration gate command'));
     assert.ok(line, 'doctor output includes the gate check');
     assert.ok(line!.includes('[ok  ]'));
+  });
+});
+
+// ── gateRunnableCheck — unit tests with injected deps ────────────────────────
+
+/** A minimal passing ResolvedGatePlan for injection into gateRunnableCheck. */
+function passingPlan(command = 'npm test') {
+  return {
+    steps: [{ name: 'unit', kind: 'unit' as const, command, cwd: '/repo' }],
+    source: 'configured' as const,
+    cwd: '/repo',
+  };
+}
+
+describe('gateRunnableCheck — verifies lead binaries resolve on the gate PATH (FR-9/10/11)', () => {
+  let tmpDir: string;
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-'));
+  });
+  after(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('ok:true when every step lead binary resolves on the gate PATH', async () => {
+    const result = await gateRunnableCheck(tmpDir, {
+      resolve: () => passingPlan('make test'),
+      binaryResolves: () => true,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.name, 'gate-runnable');
+    assert.equal(result.required, false);
+  });
+
+  it('ok:false naming a binary that does NOT resolve (the uv-off-the-gate-PATH friction)', async () => {
+    const result = await gateRunnableCheck(tmpDir, {
+      resolve: () => passingPlan('uv run pytest'),
+      binaryResolves: (b) => b !== 'uv',
+    });
+    assert.equal(result.ok, false, 'a missing lead binary must set ok:false');
+    assert.ok(result.detail.includes('"uv"'), `detail must name the missing binary: ${result.detail}`);
+    assert.ok(
+      result.detail.toLowerCase().includes("gate's path"),
+      `detail must mention the gate's PATH: ${result.detail}`
+    );
+    assert.equal(result.required, false);
+  });
+
+  it('does NOT execute the suite (side-effect-free) — points at --dry-run-gate for real exec', async () => {
+    // The new check only probes binary resolution; it must never run the command.
+    // A command that would fail if executed still yields ok:true because it is not run.
+    const result = await gateRunnableCheck(tmpDir, {
+      resolve: () => passingPlan('false'),
+      binaryResolves: () => true,
+    });
+    assert.equal(result.ok, true, 'binary-resolution check must not execute the command');
+    assert.ok(
+      result.detail.includes('--dry-run-gate'),
+      `detail should point at --dry-run-gate for real execution: ${result.detail}`
+    );
+  });
+
+  it('ok:true when source is none (no steps) — amputation-only gate', async () => {
+    const result = await gateRunnableCheck(tmpDir, {
+      resolve: () => ({ steps: [], source: 'none' as const, cwd: '/repo' }),
+      binaryResolves: () => true,
+    });
+    assert.equal(result.ok, true);
+    assert.ok(result.detail.includes('amputation'), `detail should mention amputation: ${result.detail}`);
+    assert.equal(result.required, false);
+  });
+
+  it('required:false in every branch (advisory)', async () => {
+    const pass = await gateRunnableCheck(tmpDir, {
+      resolve: () => passingPlan('make test'),
+      binaryResolves: () => true,
+    });
+    const missing = await gateRunnableCheck(tmpDir, {
+      resolve: () => passingPlan('uv run pytest'),
+      binaryResolves: () => false,
+    });
+    assert.equal(pass.required, false);
+    assert.equal(missing.required, false);
+  });
+
+  it('dedupes lead binaries across steps (npx probed once)', async () => {
+    let probeCount = 0;
+    const plan = {
+      steps: [
+        { name: 'unit', kind: 'unit' as const, command: 'npx --no-install jest', cwd: '/repo' },
+        { name: 'typecheck:tsc', kind: 'typecheck' as const, command: 'npx --no-install tsc --noEmit', cwd: '/repo' },
+      ],
+      source: 'auto-detected' as const,
+      cwd: '/repo',
+    };
+    await gateRunnableCheck(tmpDir, {
+      resolve: () => plan,
+      binaryResolves: () => { probeCount++; return true; },
+    });
+    assert.equal(probeCount, 1, 'the shared lead binary (npx) is probed once, not per step');
+  });
+});
+
+describe('gateRunnableCheck — integration: real /bin/sh binary resolution', () => {
+  it('ok:true when the lead binary resolves (test_command: "true")', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-int-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.loom', 'policy.yaml'), 'agents:\n  test_command: "true"\n');
+      const result = await gateRunnableCheck(root);
+      assert.equal(result.ok, true, `'true' resolves on PATH → ok:true, got: ${result.detail}`);
+      assert.equal(result.required, false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ok:false when the lead binary is missing (nonexistent command)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-int-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, '.loom', 'policy.yaml'),
+        'agents:\n  test_command: "loom-nonexistent-binary-xyz --run"\n'
+      );
+      const result = await gateRunnableCheck(root);
+      assert.equal(result.ok, false, `a missing binary → ok:false, got: ${result.detail}`);
+      assert.ok(
+        result.detail.includes('loom-nonexistent-binary-xyz'),
+        `detail names the missing binary: ${result.detail}`
+      );
+      assert.equal(result.required, false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
