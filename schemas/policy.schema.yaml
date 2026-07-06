@@ -405,6 +405,22 @@ properties:
                        not yet active (wired in story-045-002).
             confirm  — value is accepted and validated; interactive checkpoint
                        is not yet active (wired in story-045-003).
+      integration_branch_lag_threshold:
+        type: integer
+        default: 10
+        minimum: 1
+        description: |
+          Commits-behind threshold for the integration-branch lag warning in
+          `loom status`. When an epic's integration branch is >= this many
+          commits behind main, a warning is emitted. Only checked when
+          integration_branch='rolling'. Default 10.
+      stale_planning_minutes:
+        type: integer
+        default: 30
+        minimum: 1
+        description: |
+          Wall-clock minutes of idle 'planning' status before `loom status`
+          emits a stale-planning hint. Default 30.
 
   mcp:
     type: object

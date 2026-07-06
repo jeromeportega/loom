@@ -616,6 +616,8 @@ export const PolicySchema = z.object({
       // API credits while workers stay on the session (NEVER put the key
       // here; it lives in the outer agent's environment).
       worker_auth: z.enum(['inherit', 'session']).default('inherit'),
+      integration_branch_lag_threshold: z.number().int().min(1).default(10),
+      stale_planning_minutes:           z.number().int().min(1).default(30),
     })
     .default({}),
   mcp: z

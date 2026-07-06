@@ -1,6 +1,7 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync as nodeSpawnSync } from 'node:child_process';
 import {
   createDatabase,
   EpicStore,
@@ -19,7 +20,19 @@ import {
   type IntakeVerdict,
   type EpicRecord,
   type LandingReport,
+  type Policy,
 } from '@loom-ai/core';
+
+type SpawnSyncFn = (
+  cmd: string,
+  args: string[],
+  opts: { cwd?: string; encoding: 'utf8' }
+) => { stdout: string; status: number | null };
+
+const _realSpawnSync: SpawnSyncFn = (cmd, args, opts) => {
+  const r = nodeSpawnSync(cmd, args, { ...opts });
+  return { stdout: r.stdout as string, status: r.status };
+};
 
 /**
  * Resolves the canonical DB path for a loom project directory (story-053).
@@ -96,6 +109,8 @@ export interface StatusOptions {
   project?: string;
   /** Override the project root (defaults to process.cwd()). Avoids process.chdir() in tests. */
   projectRoot?: string;
+  /** Injectable spawnSync for testing. Defaults to the real spawnSync. */
+  _spawnSync?: SpawnSyncFn;
 }
 
 export function runStatus(options: StatusOptions): void {
@@ -126,10 +141,11 @@ export function runStatus(options: StatusOptions): void {
   }
 
   function render(): void {
+    const spawnFn = options._spawnSync ?? _realSpawnSync;
     if (projectLoomDir) {
       const resolved = path.resolve(options.project!);
       console.log(`\n━━ ${path.basename(resolved)}  (${resolved})`);
-      renderLoomDir(projectLoomDir, options.epicId, options.archived);
+      renderLoomDir(projectLoomDir, options.epicId, options.archived, spawnFn);
       console.log('');
       return;
     }
@@ -141,7 +157,7 @@ export function runStatus(options: StatusOptions): void {
       }
       for (const project of projects) {
         console.log(`\n━━ ${path.basename(project.root)}  (${project.root})`);
-        renderLoomDir(path.join(project.root, '.loom'), options.epicId, options.archived);
+        renderLoomDir(path.join(project.root, '.loom'), options.epicId, options.archived, spawnFn);
       }
       console.log('');
       return;
@@ -157,7 +173,7 @@ export function runStatus(options: StatusOptions): void {
     const loomHomePath = resolveLoomHomePath(cwd, policy);
     const existsNote = fs.existsSync(loomHomePath) ? '' : ' (will be created on first use)';
     console.log(`   loom-home: ${loomHomePath}${existsNote}`);
-    renderLoomDir(loomDir, options.epicId, options.archived);
+    renderLoomDir(loomDir, options.epicId, options.archived, spawnFn);
     console.log('');
   }
 
@@ -212,6 +228,16 @@ interface JsonEpic {
   blocked?: true;
   blocked_reason?: 'integration_gate';
   intake_verdict: IntakeVerdict | null;
+  integration_lag?: {
+    commits_behind: number;
+    threshold:      number;
+    warn:           boolean;
+  };
+  stale_planning?: {
+    idle_minutes:      number;
+    threshold_minutes: number;
+    warn:              boolean;
+  };
   stories: JsonStory[];
 }
 
@@ -238,8 +264,9 @@ function buildJsonStatus(options: StatusOptions, projectLoomDir?: string): JsonS
   }
 
   const epics: JsonEpic[] = [];
+  const spawnFn = options._spawnSync ?? _realSpawnSync;
   for (const loomDir of loomDirs) {
-    epics.push(...collectJsonEpics(loomDir, options.epicId, options.archived));
+    epics.push(...collectJsonEpics(loomDir, options.epicId, options.archived, spawnFn));
   }
 
   // Include resolved loom-home only for a single-project view (not --all).
@@ -258,14 +285,53 @@ function buildJsonStatus(options: StatusOptions, projectLoomDir?: string): JsonS
   return { epics };
 }
 
+function computeIntegrationLag(
+  epicId: string,
+  threshold: number,
+  repoRoot: string,
+  spawnFn: SpawnSyncFn
+): { commits_behind: number; threshold: number; warn: boolean } {
+  const result = spawnFn('git', ['rev-list', '--count', `epic/${epicId}..main`], { cwd: repoRoot, encoding: 'utf8' });
+  if (result.status !== 0) return { commits_behind: 0, threshold, warn: false };
+  const count = parseInt(result.stdout.trim(), 10);
+  if (isNaN(count)) return { commits_behind: 0, threshold, warn: false };
+  return { commits_behind: count, threshold, warn: count >= threshold };
+}
+
+function computeStalePlanning(
+  updatedAt: string,
+  thresholdMinutes: number
+): { idle_minutes: number; threshold_minutes: number; warn: boolean } {
+  const idleMs = Date.now() - new Date(updatedAt).getTime();
+  return {
+    idle_minutes: Math.round(idleMs / 60000),
+    threshold_minutes: thresholdMinutes,
+    warn: idleMs / 60000 >= thresholdMinutes,
+  };
+}
+
+function loadPolicy(loomDir: string): Policy {
+  try {
+    return PolicyEngine.load(loomDir).policyData;
+  } catch {
+    return PolicyEngine.defaultPolicy();
+  }
+}
+
 function collectJsonEpics(
   loomDir: string,
   epicId?: string,
-  includeArchived?: boolean
+  includeArchived?: boolean,
+  spawnFn: SpawnSyncFn = _realSpawnSync,
 ): JsonEpic[] {
   const dbPath = resolveDbPath(loomDir);
   if (!fs.existsSync(dbPath)) return [];
   const db = createDatabase(dbPath);
+  const policy = loadPolicy(loomDir);
+  const repoRoot = path.dirname(loomDir);
+  const integrationBranch = policy.agents.integration_branch;
+  const lagThreshold = policy.agents.integration_branch_lag_threshold;
+  const stalePlanningMinutes = policy.agents.stale_planning_minutes;
   try {
     const epicStore = new EpicStore(db);
     const agentStore = new AgentStore(db);
@@ -356,6 +422,14 @@ function collectJsonEpics(
           ...(recoveryCount > 0 ? { recovery_count: recoveryCount } : {}),
         };
       });
+      const integrationLag =
+        integrationBranch === 'rolling' && !epic.archived_at
+          ? computeIntegrationLag(epic.id, lagThreshold, repoRoot, spawnFn)
+          : undefined;
+      const stalePlanning =
+        epic.status === 'planning'
+          ? computeStalePlanning(epic.updated_at, stalePlanningMinutes)
+          : undefined;
       out.push({
         id: epic.id,
         title: epic.title,
@@ -363,6 +437,8 @@ function collectJsonEpics(
         ...(epic.archived_at ? { archived: true } : {}),
         ...(deriveBlocked(epic) ?? {}),
         intake_verdict: verdicts.get(epic.id) ?? null,
+        ...(integrationLag != null ? { integration_lag: integrationLag } : {}),
+        ...(stalePlanning != null ? { stale_planning: stalePlanning } : {}),
         stories,
       });
     }
@@ -409,13 +485,23 @@ function renderLandingReport(report: LandingReport): void {
 }
 
 /** Renders one loom project's epic/agent tree. */
-function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boolean): void {
+function renderLoomDir(
+  loomDir: string,
+  epicId?: string,
+  includeArchived?: boolean,
+  spawnFn: SpawnSyncFn = _realSpawnSync,
+): void {
   const dbPath = resolveDbPath(loomDir);
   if (!fs.existsSync(dbPath)) {
     console.log('   Not yet planned — run `loom epic "<brief>"` here.');
     return;
   }
   const db = createDatabase(dbPath);
+  const policy = loadPolicy(loomDir);
+  const repoRoot = path.dirname(loomDir);
+  const integrationBranch = policy.agents.integration_branch;
+  const lagThreshold = policy.agents.integration_branch_lag_threshold;
+  const stalePlanningMinutes = policy.agents.stale_planning_minutes;
   try {
     const epicStore = new EpicStore(db);
     const agentStore = new AgentStore(db);
@@ -460,6 +546,19 @@ function renderLoomDir(loomDir: string, epicId?: string, includeArchived?: boole
       console.log(
         `\n   ${icon} Epic ${epic.id}: ${epic.title}  [${statusLabel}${phase}]${archivedTag}`
       );
+
+      if (integrationBranch === 'rolling') {
+        const lag = computeIntegrationLag(epic.id, lagThreshold, repoRoot, spawnFn);
+        if (lag?.warn) {
+          console.log(`        ⚠  Integration branch is ${lag.commits_behind} commits behind main (threshold: ${lag.threshold})`);
+        }
+      }
+      if (epic.status === 'planning') {
+        const stale = computeStalePlanning(epic.updated_at, stalePlanningMinutes);
+        if (stale.warn) {
+          console.log(`        ⚠  Planning has been idle for ${stale.idle_minutes} minutes (threshold: ${stale.threshold_minutes}m)`);
+        }
+      }
 
       if (epic.epic_pr_url) {
         console.log(`        PR: ${epic.epic_pr_url}`);
