@@ -1,5 +1,4 @@
 import path from 'node:path';
-import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { PolicyEngine, preflightGateCommand, resolveGatePlan, runGateSteps } from '@loom-ai/core';
 import type { GateStep } from '@loom-ai/core';
@@ -85,7 +84,7 @@ export function gateCommandCheck(
 // ── gate-runnable: real-execution check (FR-9, FR-10, FR-11) ─────────────────
 
 /** Extract the lead binary name from a shell command (not an absolute/relative path). */
-function getLeadBinary(command: string): string | null {
+export function getLeadBinary(command: string): string | null {
   const parts = command.trim().split(/\s+/);
   for (const part of parts) {
     if (part.includes('=')) continue; // skip env var assignments like FOO=bar
@@ -99,7 +98,9 @@ function getLeadBinary(command: string): string | null {
 function binaryOnPath(binary: string, envPath: string): boolean {
   try {
     execFileSync('/bin/sh', ['-c', 'command -v "$1"', '--', binary], {
-      env: { PATH: envPath, HOME: process.env.HOME ?? os.homedir() },
+      // Use full process.env with the specified PATH so the probe reflects the same
+      // environment that spawn({ shell: true }) sees (which inherits process.env).
+      env: { ...process.env, PATH: envPath },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
@@ -110,19 +111,13 @@ function binaryOnPath(binary: string, envPath: string): boolean {
 }
 
 /**
- * Get the PATH that /bin/sh sees in a non-interactive (non-login) invocation —
- * the same shell environment the gate runner uses via spawn(cmd, { shell: true }).
+ * Return the PATH that the gate runner will see. The gate uses
+ * spawn(cmd, { shell: true }) with no explicit env, so it inherits process.env.PATH
+ * exactly. Using the inherited PATH avoids false-positive divergence warnings for
+ * tools installed via nvm, pyenv, uv, or rbenv.
  */
 function getShNonInteractivePath(): string {
-  try {
-    return execFileSync('/bin/sh', ['-c', 'echo $PATH'], {
-      env: { HOME: process.env.HOME ?? os.homedir() },
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    return '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
-  }
+  return process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
 }
 
 export interface PathDivergenceProbe {
@@ -134,10 +129,12 @@ export interface PathDivergenceProbe {
 function defaultProbePathDivergence(steps: GateStep[]): PathDivergenceProbe[] {
   const loginPath = process.env.PATH ?? '';
   const shPath = getShNonInteractivePath();
+  const seen = new Set<string>();
   const results: PathDivergenceProbe[] = [];
   for (const step of steps) {
     const binary = getLeadBinary(step.command);
-    if (!binary) continue;
+    if (!binary || seen.has(binary)) continue;
+    seen.add(binary);
     results.push({
       binary,
       onLogin: binaryOnPath(binary, loginPath),

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { preflightGateCommand } from '@loom-ai/core';
 import type { GatePreflightResult, GateStep, GateStepOutcome } from '@loom-ai/core';
-import { gateCommandCheck, gateRunnableCheck } from '../commands/doctorGateCheck.js';
+import { gateCommandCheck, gateRunnableCheck, getLeadBinary } from '../commands/doctorGateCheck.js';
 import type { PathDivergenceProbe } from '../commands/doctorGateCheck.js';
 
 type Preflight = typeof preflightGateCommand;
@@ -209,7 +209,11 @@ async function allFailRunner(steps: GateStep[]): Promise<GateStepOutcome[]> {
 
 /** Probe stub: no PATH divergence (binary on both login and sh PATH). */
 const noDivergenceProbe = (_steps: GateStep[]): PathDivergenceProbe[] =>
-  _steps.map((s) => ({ binary: s.command.split(/\s+/)[0], onLogin: true, onSh: true }));
+  _steps.flatMap((s) => {
+    const binary = getLeadBinary(s.command);
+    if (!binary) return [];
+    return [{ binary, onLogin: true, onSh: true }];
+  });
 
 describe('gateRunnableCheck — passes iff gate passes (FR-10)', () => {
   let tmpDir: string;
