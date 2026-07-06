@@ -18,6 +18,31 @@ import path from 'node:path';
  * still fail at runtime (missing env, flaky suite); a command reported
  * non-viable is one that cannot work in a bare worktree as configured.
  */
+
+// ── Core plan & outcome types (shared contract — stories 002/003 import these) ──
+
+export type GateStepKind = 'unit' | 'typecheck' | 'build';
+
+export interface GateStep {
+  /** Canonical id — e.g. 'unit' | 'typecheck:tsc' | 'build:next' */
+  name: string;
+  kind: GateStepKind;
+  /** Exact shell string, binary already resolved. */
+  command: string;
+  /** unit → changed-subdir scope; toolchain → ResolvedGatePlan.cwd */
+  cwd: string;
+}
+
+export interface ResolvedGatePlan {
+  /** Ordered steps; see composition-order contract (§5). */
+  steps: GateStep[];
+  source: 'configured' | 'auto-detected' | 'none';
+  /** Detected project root. */
+  cwd: string;
+}
+
+// ── Legacy single-command interface (retained for out-of-epic callers) ──
+
 export interface ResolvedGateCommand {
   /** undefined => no command resolvable (amputation-only gate). */
   command?: string;
@@ -65,30 +90,95 @@ function probesFrom(opts: GatePreflightOptions): Probes {
   };
 }
 
+// ── SIGNAL TABLES — stories 002/003 append new const arrays in this region ──
+
+const NPM_LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json'];
+const PYTEST_CONFIG_FILES = ['pyproject.toml', 'setup.cfg', 'tox.ini'];
+
+// ── END SIGNAL TABLES ──
+
 /**
- * Resolve the command the integration gate would run. When
- * `policy.agents.test_command` is set, the operator's word is law: it runs
- * from projectRoot (the command is expected to encode any `cd <subdir>` it
- * needs). When unset, auto-detection scopes to the smallest changed-files
- * subdirectory with its own test config (see `detectCommand`).
+ * Resolve the gate plan: ordered steps the integration gate would run.
+ *
+ * Composition order (§5):
+ *   - opts.testCommand set → source:'configured', steps=[unit(testCommand)], detection NEVER runs.
+ *   - no signals → source:'none', steps=[].
+ *   - auto-detect → source:'auto-detected', steps=[ unit ] ++ toolchain steps (002/003).
+ */
+export function resolveGatePlan(projectRoot: string, opts: GatePreflightOptions): ResolvedGatePlan {
+  const explicit = opts.testCommand?.trim();
+
+  // Hard override branch (FR-12/NFR-3): configured test_command suppresses ALL detection.
+  // This is a top-of-function short-circuit — no probes, no detection calls below.
+  if (explicit) {
+    return {
+      steps: [{ name: 'unit', kind: 'unit', command: explicit, cwd: projectRoot }],
+      source: 'configured',
+      cwd: projectRoot,
+    };
+  }
+
+  const probes = probesFrom(opts);
+  const detected = detectUnitCommand(projectRoot, probes);
+
+  if (!detected) {
+    return { steps: [], source: 'none', cwd: projectRoot };
+  }
+
+  const unitStep: GateStep = {
+    name: 'unit',
+    kind: 'unit',
+    command: detected.command,
+    cwd: detected.cwd,
+  };
+
+  // ── TOOLCHAIN DETECTORS — stories 002/003 append new detector branches in this region ──
+  const toolchainSteps = detectToolchainSteps(projectRoot, detected.cwd, probes);
+  // ── END TOOLCHAIN DETECTORS ──
+
+  return {
+    steps: [unitStep, ...toolchainSteps],
+    source: 'auto-detected',
+    cwd: detected.cwd,
+  };
+}
+
+// ── TOOLCHAIN DETECTORS (stories 002/003 replace this stub) ──
+
+/**
+ * Detect toolchain steps (typecheck, build) to append after the unit step.
+ * Stories 002 and 003 extend this region — do not modify the unit step or
+ * override branch above.
+ */
+function detectToolchainSteps(
+  _projectRoot: string,
+  _cwd: string,
+  _probes: Probes
+): GateStep[] {
+  // Story 002 appends: typecheck:tsc, build:next, build:go, build:cargo detectors.
+  // Story 003 appends: uv unit-step variant rewrite.
+  return [];
+}
+
+// ── END TOOLCHAIN DETECTORS ──
+
+/**
+ * Thin adapter for out-of-epic callers (e.g. gatePreflightWarning). Returns
+ * only the unit step so existing callers keep compiling without modification.
+ * New code should call resolveGatePlan() directly.
  */
 export function resolveGateCommand(
   projectRoot: string,
   opts: GatePreflightOptions
 ): ResolvedGateCommand {
-  const explicit = opts.testCommand?.trim();
-  if (explicit) {
-    return { command: explicit, cwd: projectRoot, source: 'configured' };
-  }
-  const detected = detectCommand(projectRoot, probesFrom(opts));
-  if (detected) {
-    return { command: detected.command, cwd: detected.cwd, source: 'auto-detected' };
-  }
-  return { cwd: projectRoot, source: 'none' };
+  const plan = resolveGatePlan(projectRoot, opts);
+  const unitStep = plan.steps.find((s) => s.kind === 'unit');
+  return {
+    command: unitStep?.command,
+    cwd: plan.cwd,
+    source: plan.source,
+  };
 }
-
-const NPM_LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json'];
-const PYTEST_CONFIG_FILES = ['pyproject.toml', 'setup.cfg', 'tox.ini'];
 
 /**
  * Check the resolved gate command against bare-worktree structural
@@ -188,16 +278,15 @@ function hasPytestConfig(cwd: string, probes: Probes): boolean {
 }
 
 /**
- * Best-effort test-command discovery (moved verbatim from IntegrationGate).
- * Conservative on purpose: an undetectable suite yields no command
- * (amputation-only) rather than a wrong command that fails falsely.
+ * Best-effort unit test-command discovery. Conservative on purpose: an
+ * undetectable suite yields no command (amputation-only) rather than a wrong
+ * command that fails falsely.
  *
  * Monorepo scoping: walk the changed files relative to the integration tree
  * and find the smallest enclosing directory that has its own test config —
- * that's where the suite should run. This avoids a repo-root command that
- * runs unrelated suites failing at collection time.
+ * that's where the suite should run.
  */
-function detectCommand(
+function detectUnitCommand(
   projectRoot: string,
   probes: Probes
 ): { command: string; cwd: string } | undefined {
