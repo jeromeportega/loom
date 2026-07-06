@@ -28,9 +28,11 @@ Tracking deferred work and known edge cases. Each item has a deferral reason and
 - `checkFilesystemWrite` finds path-like tokens via `startsWith('/') || startsWith('~')`. Misses paths starting with relative segments that resolve to protected areas (rare).
 - **Revisit when**: we see a real-world bypass. For MVP the `rm` and program-specific checks cover the common cases.
 
-**Read-scope enforcement applies to the Claude Code hook only**
-- `policy.filesystem.allowed_read_root` confines worker `Read`, `Grep`, `Glob`, and Bash searches to the agent's own worktree and the resolved repo root (default `.` = repo root, resolved on init; on by default; independent of `cross_repo.enabled`). Enforcement is via the Claude Code PreToolUse hook (`loom guard hook`). A `cursor-cli` worker does not receive the read-scope hook check — the same structural gap as write-scope enforcement documented in the Cursor CLI backend section.
-- **Revisit when**: wiring read-scope enforcement into a Cursor-native hook alongside write-scope parity.
+**Read-scope enforcement applies to the Claude Code hook only, and is best-effort on the Bash channel**
+- `policy.filesystem.allowed_read_root` confines worker `Read`, `Grep`, `Glob`, and the common Bash search commands (`grep`/`rg`/`find`/`cat`/`ls`) to the agent's own worktree and the resolved `allowed_read_root` (default `.`, resolved relative to the worktree at hook time — not pre-resolved at init; on by default; independent of `cross_repo.enabled`). Enforcement is via the Claude Code PreToolUse hook (`loom guard hook`); the generated `settings.json` carries only `allow` globs and no broad `deny` (a `deny` beats `allow` under `bypassPermissions` and would block in-worktree reads).
+- **Bash read channel is best-effort**: the hook scopes the common file readers by their path arguments, but a determined worker can still read arbitrary paths through an interpreter (`python -c 'open("/etc/passwd")'`, `node -e`, `perl`/`ruby`), an uncovered reader, or shell redirection (`od < /etc/passwd`). These cannot be scoped by argument inspection without breaking legitimate interpreter use; fully closing the channel requires an OS-level sandbox (seccomp/landlock/container). The native `Read`/`Grep`/`Glob` tools — the actual over-scan surface — are fully hook-enforced.
+- A `cursor-cli` worker does not receive the read-scope hook check — the same structural gap as write-scope enforcement documented in the Cursor CLI backend section.
+- **Revisit when**: wiring read-scope enforcement into a Cursor-native hook alongside write-scope parity, or adding an OS-level sandbox to close the Bash read channel.
 
 ---
 

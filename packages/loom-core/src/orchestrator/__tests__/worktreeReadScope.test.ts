@@ -142,38 +142,37 @@ describe('materializeWorktreeReadScope — permissions allow globs (defense-in-d
   });
 });
 
-describe('materializeWorktreeReadScope — permissions deny globs (defense-in-depth)', () => {
-  let deny: string[];
+describe('materializeWorktreeReadScope — NO deny block (deny would brick all reads)', () => {
+  // Claude Code deny rules are honored in every mode (including bypassPermissions)
+  // and beat any narrower allow, so a broad Read(//**)/Grep(//**)/Glob(//**) deny
+  // would veto the worker's reads of its OWN worktree and brick every run. The
+  // PreToolUse hook is the sole out-of-scope control; the settings file must emit
+  // NO deny block.
+  let settings: SettingsJson;
 
   beforeEach(() => {
     materializeWorktreeReadScope({ worktreePath, readRoot, loomScriptPath: FAKE_LOOM_SCRIPT });
     const settingsPath = path.join(worktreePath, '.claude', 'settings.json');
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as SettingsJson;
-    deny = settings.permissions?.deny ?? [];
+    settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as SettingsJson;
   });
 
-  it('permissions.deny contains Read(//**) — absolute path backstop', () => {
-    assert.ok(deny.some(g => g === 'Read(//**)'), 'deny should include Read(//**)');
+  it('emits no permissions.deny block at all', () => {
+    assert.equal(settings.permissions?.deny, undefined, 'must not emit a deny block');
   });
 
-  it('permissions.deny contains Read(~/**) — home path backstop', () => {
-    assert.ok(deny.some(g => g === 'Read(~/**)'), 'deny should include Read(~/**)');
+  it('does not deny native reads of the worktree via a broad backstop', () => {
+    const deny = settings.permissions?.deny ?? [];
+    for (const g of ['Read(//**)', 'Grep(//**)', 'Glob(//**)', 'Read(~/**)']) {
+      assert.ok(!deny.includes(g), `deny must NOT include ${g} — it would block in-worktree reads`);
+    }
   });
 
-  it('permissions.deny contains Grep(//**) — absolute path backstop', () => {
-    assert.ok(deny.some(g => g === 'Grep(//**)'), 'deny should include Grep(//**)');
-  });
-
-  it('permissions.deny contains Grep(~/**) — home path backstop', () => {
-    assert.ok(deny.some(g => g === 'Grep(~/**)'), 'deny should include Grep(~/**)');
-  });
-
-  it('permissions.deny contains Glob(//**) — absolute path backstop', () => {
-    assert.ok(deny.some(g => g === 'Glob(//**)'), 'deny should include Glob(//**)');
-  });
-
-  it('permissions.deny contains Glob(~/**) — home path backstop', () => {
-    assert.ok(deny.some(g => g === 'Glob(~/**)'), 'deny should include Glob(~/**)');
+  it('still enforces out-of-scope reads via the PreToolUse hook, not a deny rule', () => {
+    const matchers = (settings.hooks?.PreToolUse ?? []).map(h => h.matcher);
+    assert.ok(
+      matchers.some(m => m?.includes('Read') && m?.includes('Grep') && m?.includes('Glob')),
+      'the hook matcher must cover Read|Grep|Glob so the hook is the enforcement path',
+    );
   });
 });
 

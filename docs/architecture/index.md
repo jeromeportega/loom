@@ -268,7 +268,7 @@ const PolicySchema = z.object({
   filesystem: z.object({
     protected_paths: z.array(z.string()).default(['~/.ssh', '~/.aws', '~/.gnupg', '/etc', '/usr', '.git']),
     allowed_write_root: z.string().default('.'),
-    allowed_read_root: z.string().default('.'),   // repo root resolved on init; on-by-default; independent of cross_repo.enabled
+    allowed_read_root: z.string().default('.'),   // resolved relative to the worktree at hook time; on-by-default; independent of cross_repo.enabled
   }),
   agents: z.object({
     max_concurrent: z.number().int().min(1).max(10).default(3),

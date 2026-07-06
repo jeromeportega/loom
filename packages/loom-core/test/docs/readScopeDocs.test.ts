@@ -127,21 +127,18 @@ describe('README.md — read-scope enforcement (story-067-005)', () => {
     );
   });
 
-  it('states the default is repo root resolved at loom init', () => {
-    // Check both phrases appear in a window around "allowed_read_root"
+  it('states the default "." resolves relative to the worktree at hook time (not at init)', () => {
     const idx = body.indexOf('allowed_read_root');
-    const window = body.slice(Math.max(0, idx - 50), idx + 400);
+    const window = body.slice(Math.max(0, idx - 100), idx + 400);
     assert.ok(
-      window.includes('repo root') && /loom init/i.test(window),
-      'README.md must state that default is repo root resolved at loom init'
+      /worktree/i.test(window) && /hook time|relative to the worktree/i.test(window),
+      'README.md must state the default resolves relative to the worktree at hook time'
     );
   });
 
   it('states read-scope is on by default', () => {
-    const nearReadScope = body.slice(
-      Math.max(0, body.search(/read.scope/i) - 100),
-      body.search(/read.scope/i) + 500
-    );
+    const idx = body.indexOf('allowed_read_root');
+    const nearReadScope = body.slice(Math.max(0, idx - 100), idx + 500);
     assert.ok(
       /on by default/i.test(nearReadScope),
       'README.md must state read-scope is on by default'
@@ -181,14 +178,14 @@ describe('docs/architecture/index.md — allowed_read_root policy reference (sto
     );
   });
 
-  it('states allowed_read_root is resolved on init', () => {
+  it('states allowed_read_root resolves relative to the worktree at hook time', () => {
     const nearAllowedReadRoot = body.slice(
       Math.max(0, body.indexOf('allowed_read_root') - 50),
       body.indexOf('allowed_read_root') + 300
     );
     assert.ok(
-      /resolved on init|resolved.*on init|on init/i.test(nearAllowedReadRoot),
-      'policy reference must state that allowed_read_root is resolved on init'
+      /hook time|relative to the worktree/i.test(nearAllowedReadRoot),
+      'policy reference must state allowed_read_root resolves relative to the worktree at hook time'
     );
   });
 
@@ -256,14 +253,14 @@ describe('docs/operations/known-limitations.md — read-scope enforcement (story
     );
   });
 
-  it('states the default is repo root resolved on init', () => {
+  it('states the default resolves relative to the worktree at hook time (not at init)', () => {
     const nearAllowedReadRoot = body.slice(
       Math.max(0, body.indexOf('allowed_read_root') - 50),
       body.indexOf('allowed_read_root') + 400
     );
     assert.ok(
-      /repo root.*resolved on init|resolved on init.*repo root|resolved.*init/i.test(nearAllowedReadRoot),
-      'must state that default "." = repo root resolved on init'
+      /relative to the worktree|hook time/i.test(nearAllowedReadRoot),
+      'must state the default resolves relative to the worktree at hook time'
     );
   });
 

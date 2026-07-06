@@ -204,7 +204,7 @@ then the legacy single `CodeReviewAgent` remains the active reviewer.
 | **Pre-tool-use hook** | Auto-installed by `loom init` | Claude Code's `PreToolUse` hook calls `loom guard hook` before any shell command. Blocked commands exit non-zero — the model cannot bypass by ignoring instructions. |
 | **Cross-repo retrieval** | `loom retrieve search --repo <slug> --query <q> [--glob <g>]` / `loom retrieve read --repo <slug> --path <p> [--lines <a>:<b>]` | Enables a worker agent to explicitly pull a bounded, read-only slice from a registered sibling repository. Context is **pull-only** — never injected ambiently; retrieval only occurs on an explicit call. **Three hard constraints:** (1) **Read-only** — the retrieval surface has no write code path of any kind; writes resolving outside the worker's own worktree are denied by the cross-repo access guard. (2) **Registered-only / manifest scoping** — only repos recorded in the workspace manifest (`<loom-home>/workspace.yaml` via `loom init`) are accessible; an unregistered slug is refused immediately (`cross_repo.unregistered`). (3) **Secret-excluded** — paths matching `cross_repo.secret_globs` (default: `**/.env`, `**/.env.*`, `**/*.pem`, `**/*.key`, `**/id_rsa*`, `**/secrets/**`, `**/*.tfstate`) are excluded from both search results and reads; matched paths are refused, not silently omitted. **Bounds** (all configurable under `cross_repo.bounds`): max line window (default 200 lines), max file bytes (default 256 KiB), max files per search (default 20), max matches per file (default 10). Requires `cross_repo.enabled=true` in `policy.yaml`; single-repo workspaces are unaffected when disabled (the default). A refusal prints `{ rule, reason }` to stderr and exits non-zero. Every call — success or refusal — is audit-logged before returning. |
 | **Worktree isolation** | Automatic | Every story runs in its own git worktree on its own branch. Agents physically cannot touch the main branch. |
-| **Read-scope enforcement** | `policy.filesystem.allowed_read_root` (default `"."`) | Limits each worker agent's `Read`, `Grep`, `Glob`, and Bash search commands to two allowed zones: the agent's own worktree and the resolved `allowed_read_root` (default `.` = repo root, resolved to an absolute path at `loom init`). Attempts to read outside both zones are blocked by the pre-tool-use hook and audit-logged with `action: read_scope_denied`. On by default; independent of `cross_repo.enabled`. Mirrors `allowed_write_root` — the same two-zone mental model, applied to the read path. |
+| **Read-scope enforcement** | `policy.filesystem.allowed_read_root` (default `"."`) | Limits each worker agent's `Read`, `Grep`, `Glob`, and common Bash search commands (`grep`/`rg`/`find`/`cat`/`ls`) to two allowed zones: the agent's own worktree and the resolved `allowed_read_root`. The default `.` is resolved **relative to the worker's worktree at hook time** (the literal `.` is stored in policy, not pre-resolved at init), so by default the two zones coincide on the worktree — a worker reads its own checkout but not the wider machine. Blocked by the PreToolUse hook (the **sole** enforcement path — the generated `settings.json` carries **no broad `deny`**, which under `bypassPermissions` would beat its own `allow` and block in-worktree reads) and audit-logged with `action: read_scope_denied`. On by default; independent of `cross_repo.enabled`. **Best-effort on the Bash channel:** interpreters (`python -c`, `node -e`, …) and shell redirection (`< file`) can still read arbitrary paths — closing those needs an OS-level sandbox (see known-limitations). Mirrors `allowed_write_root`'s two-zone model, applied to the read path. |
 | **PR-only landings** | `policy.git.agents_must_use_pr=true` (default) | Agents open PRs; a human reviews and merges. |
 | **One PR per epic** | `policy.agents.pr_strategy=per-epic` | The EpicFinalizer merges story branches in dependency order onto `epic/<id>` and opens a single PR. |
 | **Cross-repo execution** | Automatic — assign `repo: <slug>` to individual stories in the epic YAML | A single brief can coordinate work across N registered repos (any number ≥ 2). Each story carries an optional `repo` field (a manifest slug); stories with no `repo` resolve to the primary repo. The `CrossRepoCoordinator` partitions stories into per-repo stages, builds a dependency DAG from story-level `dependencies`, topologically sorts the stages so every producer repo lands before its consumers, and dispatches each stage through the Supervisor's `repoFilter` seam. One PR is opened per repo via the existing `EpicFinalizer`; cross-repo dependencies gate the consumer stage's PR on the producer's PR landing (merged) first. A cross-repo integration gate runs in the consumer repo after the producer PR merges to verify the integrated build before the consumer PR opens. On gate failure the producer PR is left merged and the consumer is blocked (`partial_landing`), surfaced via `loom status` and a note on the producer PR. **Single-repo epics are byte-identical to today** — no manifest change, no worktree-path change, no branch-name change, no extra PR; the generalization is invisible when only one repo is in scope. Per-repo policy and guardrails are enforced structurally: each story worktree loads its own repo's `policy.yaml`, and workers are confined to their own repo's worktree by the confinement guard (`cross_repo.read_only` deny reason on writes outside the story's worktree). Requires repos to be registered in the workspace manifest (`loom init` or `loom migrate`). |
@@ -219,13 +219,24 @@ then the legacy single `CodeReviewAgent` remains the active reviewer.
 ### Read-scope enforcement
 
 Each worker agent may read and search within two zones: its own worktree and
-`policy.filesystem.allowed_read_root` (default `.` = repo root, resolved to an
-absolute path at `loom init`). The pre-tool-use hook intercepts all `Read`,
-`Grep`, `Glob`, and Bash search commands; any path outside both zones is blocked
-and audit-logged as `read_scope_denied` on the `filesystem.allowed_read_root` rule.
-The scope is on by default and independent of `cross_repo.enabled`. Adjust the
-root with `policy.filesystem.allowed_read_root`; the semantics and two-zone mental
-model mirror `allowed_write_root`.
+`policy.filesystem.allowed_read_root`, resolved **relative to the worker's
+worktree at hook time** (the literal default `.` is stored in policy, not
+pre-resolved at `loom init`). With the default `.`, the two zones coincide on the
+worktree, so a worker reads its own checkout but not the wider machine. The
+PreToolUse hook (`loom guard hook`) is the **sole** enforcement path — it
+intercepts `Read`, `Grep`, `Glob`, and the common Bash search commands
+(`grep`/`rg`/`find`/`cat`/`ls`); any path resolving outside both zones is blocked
+and audit-logged as `read_scope_denied` on the `filesystem.allowed_read_root`
+rule. The generated worktree `settings.json` carries only `allow` globs and **no
+broad `deny`**: Claude Code honors `deny` in every mode (including the workers'
+`bypassPermissions`) and lets it beat any narrower `allow`, so a `Read(//**)`
+backstop would block the worker's reads of its own worktree — enforcement lives in
+the hook instead. **Coverage is best-effort on the Bash channel:** interpreters
+(`python -c`, `node -e`) and shell redirection (`< file`) can still read arbitrary
+paths; fully closing that requires an OS-level sandbox (see
+`docs/operations/known-limitations.md`). The scope is on by default and
+independent of `cross_repo.enabled`; the two-zone mental model mirrors
+`allowed_write_root`.
 
 ## Evaluation (developer tools)
 
