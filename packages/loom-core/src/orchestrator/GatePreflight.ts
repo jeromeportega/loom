@@ -94,6 +94,10 @@ function probesFrom(opts: GatePreflightOptions): Probes {
 
 const NPM_LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json'];
 const PYTEST_CONFIG_FILES = ['pyproject.toml', 'setup.cfg', 'tox.ini'];
+const TS_SIGNAL    = 'tsconfig.json';
+const NEXT_CONFIGS = ['next.config.js', 'next.config.mjs', 'next.config.ts', 'next.config.cjs'];
+const GO_SIGNAL    = 'go.mod';
+const RUST_SIGNAL  = 'Cargo.toml';
 
 // ── END SIGNAL TABLES ──
 
@@ -147,17 +151,74 @@ export function resolveGatePlan(projectRoot: string, opts: GatePreflightOptions)
 
 /**
  * Detect toolchain steps (typecheck, build) to append after the unit step.
- * Stories 002 and 003 extend this region — do not modify the unit step or
- * override branch above.
+ * Steps are added in fixed order: typecheck:tsc, build:next, build:go, build:cargo.
+ * Every step's cwd is anchored to projectRoot (FR-5).
  */
 function detectToolchainSteps(
-  _projectRoot: string,
-  _cwd: string,
-  _probes: Probes
+  projectRoot: string,
+  _unitCwd: string,
+  probes: Probes
 ): GateStep[] {
-  // Story 002 appends: typecheck:tsc, build:next, build:go, build:cargo detectors.
+  const steps: GateStep[] = [];
+
+  // typecheck:tsc — tsconfig.json present
+  if (probes.exists(path.join(projectRoot, TS_SIGNAL))) {
+    steps.push({
+      name: 'typecheck:tsc',
+      kind: 'typecheck',
+      command: 'npx --no-install tsc --noEmit',
+      cwd: projectRoot,
+    });
+  }
+
+  // build:next — next.config.* present OR `next` dependency in package.json
+  const hasNextConfig = NEXT_CONFIGS.some((cfg) => probes.exists(path.join(projectRoot, cfg)));
+  let hasNext = hasNextConfig;
+  if (!hasNext) {
+    const raw = probes.read(path.join(projectRoot, 'package.json'));
+    if (raw) {
+      try {
+        const pkg = JSON.parse(raw) as {
+          dependencies?: Record<string, string>;
+          devDependencies?: Record<string, string>;
+        };
+        hasNext = !!((pkg.dependencies?.['next']) || (pkg.devDependencies?.['next']));
+      } catch {
+        // Unparseable package.json — treat as no next dependency.
+      }
+    }
+  }
+  if (hasNext) {
+    steps.push({
+      name: 'build:next',
+      kind: 'build',
+      command: 'npx --no-install next build',
+      cwd: projectRoot,
+    });
+  }
+
+  // build:go — go.mod present
+  if (probes.exists(path.join(projectRoot, GO_SIGNAL))) {
+    steps.push({
+      name: 'build:go',
+      kind: 'build',
+      command: 'go build ./...',
+      cwd: projectRoot,
+    });
+  }
+
+  // build:cargo — Cargo.toml present
+  if (probes.exists(path.join(projectRoot, RUST_SIGNAL))) {
+    steps.push({
+      name: 'build:cargo',
+      kind: 'build',
+      command: 'cargo build',
+      cwd: projectRoot,
+    });
+  }
+
   // Story 003 appends: uv unit-step variant rewrite.
-  return [];
+  return steps;
 }
 
 // ── END TOOLCHAIN DETECTORS ──
