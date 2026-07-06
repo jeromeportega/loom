@@ -1728,7 +1728,13 @@ function emitFinalizeGateDiagnostics(result: FinalizeGatesResult): void {
   }
 }
 
-/** Structural equality for TestCommandEntry arrays (field-by-field, order-sensitive). */
+/**
+ * Structural equality for TestCommandEntry arrays.
+ * Entry order IS significant — test_commands run in declaration order, so reordering
+ * entries is treated as a real policy change and triggers a gate rebuild.
+ * Path-glob order within a single entry is intentionally insensitive (ANY-match
+ * semantics; sameStringArr sorts before comparing).
+ */
 function sameTestCommandsArr(
   a: TestCommandEntry[] | undefined,
   b: TestCommandEntry[]
@@ -1743,7 +1749,7 @@ function sameTestCommandsArr(
   );
 }
 
-/** Order-insensitive equality for string arrays (allowed_remotes globs). */
+/** Order-insensitive equality for string arrays (globs and remotes). */
 function sameStringArr(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   const sa = [...a].sort();

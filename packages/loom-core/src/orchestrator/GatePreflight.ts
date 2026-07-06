@@ -51,7 +51,11 @@ export interface TestCommandResult {
   command:    string;
   status:     'passed' | 'failed' | 'skipped';
   exitCode:   number | null;
-  /** Combined stdout+stderr (runner merges streams). */
+  /**
+   * Combined stdout+stderr — the underlying runner merges streams into a
+   * single `output` buffer. The field is named `stdout` for schema compatibility;
+   * no separate `stderr` is available from the default runner.
+   */
   stdout:     string;
   /** true when the command was killed due to timeout. */
   timedOut:   boolean;
@@ -539,10 +543,12 @@ function resolveDiffRange(projectRoot: string): string | undefined {
  *
  * Uses minimatch for glob evaluation against repo-root-relative changedPaths.
  * An empty changedPaths array → every entry is skipped (no files changed = no match).
+ * A null changedPaths → every entry is selected unconditionally (git base unresolvable).
  */
 export async function runTestCommandEntries(opts: {
   entries:      TestCommandEntry[];
-  changedPaths: string[];
+  /** null means git base was unresolvable — run all entries unconditionally. */
+  changedPaths: string[] | null;
   projectRoot:  string;
   runner:       CommandRunner;
   timeoutMs:    number;
@@ -551,11 +557,13 @@ export async function runTestCommandEntries(opts: {
   let anyFailed = false;
 
   for (const entry of opts.entries) {
+    // null changedPaths: git base unresolvable → run unconditionally (safe default).
     const matched =
-      opts.changedPaths.length > 0 &&
-      opts.changedPaths.some((changedPath) =>
-        entry.paths.some((glob) => minimatch(changedPath, glob))
-      );
+      opts.changedPaths === null ||
+      (opts.changedPaths.length > 0 &&
+        opts.changedPaths.some((changedPath) =>
+          entry.paths.some((glob) => minimatch(changedPath, glob))
+        ));
 
     if (!matched) {
       results.push({

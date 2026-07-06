@@ -67,8 +67,9 @@ export interface IntegrationGateOptions {
   /**
    * Injectable changed-paths resolver for the test_commands path. Defaults to a
    * git diff --name-only probe. Tests inject a stub to avoid real git calls.
+   * Returns null when no git base can be resolved — all entries run unconditionally.
    */
-  getChangedPaths?: (projectRoot: string) => string[];
+  getChangedPaths?: (projectRoot: string) => string[] | null;
 }
 
 /** Per-step execution outcome. */
@@ -214,9 +215,11 @@ export async function runGateSteps(
 
 /**
  * Resolves repo-root-relative changed file paths by running `git diff --name-only`
- * against the nearest known base branch. Returns [] on any error (no git, no base).
+ * against the nearest known base branch. Returns null when no base branch is
+ * resolvable (detached HEAD, no remote, CI without origin/main) — callers treat
+ * null as "run all entries unconditionally" to avoid silent skip-all in block mode.
  */
-function getChangedPathsFromGit(projectRoot: string): string[] {
+function getChangedPathsFromGit(projectRoot: string): string[] | null {
   for (const base of ['origin/main', 'origin/master', 'main', 'master']) {
     try {
       execFileSync('git', ['rev-parse', '--verify', base], {
@@ -233,7 +236,8 @@ function getChangedPathsFromGit(projectRoot: string): string[] {
       // try next base
     }
   }
-  return [];
+  // No base resolved — return null so callers run all entries unconditionally.
+  return null;
 }
 
 export class IntegrationGate {
@@ -306,15 +310,20 @@ export class IntegrationGate {
 
       const firstFailing = stepOutcomes.find((s) => !s.ok);
       const aggregate = firstFailing ?? stepOutcomes[stepOutcomes.length - 1];
+      // Concatenate output from every non-skipped entry so diagnostics are complete.
+      const combinedOutput = results
+        .filter((r) => r.status !== 'skipped')
+        .map((r) => `--- ${r.name} ---\n${r.stdout}`)
+        .join('\n') || '';
       return {
         ok,
         ran: results.some((r) => r.status !== 'skipped'),
         steps: stepOutcomes,
         command:    aggregate?.command,
         exitCode:   aggregate?.exitCode ?? null,
-        timedOut:   false,
+        timedOut:   aggregate?.timedOut ?? false,
         durationMs: totalDurationMs,
-        output:     aggregate?.output ?? '',
+        output:     combinedOutput,
         amputated,
         summary:    `${ok ? 'Integration gate passed' : 'Integration gate failed'}: ${parts.join('; ')}.`,
       };

@@ -472,4 +472,29 @@ describe('IntegrationGate.run() — test_commands path', () => {
     assert.equal(step.durationMs, 42);
     assert.equal(step.output, 'test ok');
   });
+
+  it('timed-out entry → out.ok false AND out.timedOut true', async () => {
+    const runner = makeRunner([{ exitCode: null, timedOut: true, durationMs: 5000 }]);
+    const gate = new IntegrationGate({
+      testCommands:    [entry('slow', ['**/*.ts'])],
+      runner,
+      getChangedPaths: () => ['src/foo.ts'],
+    });
+    const out = await gate.run({ projectRoot: ROOT, conflicted: [] });
+    assert.equal(out.ok, false);
+    assert.equal(out.timedOut, true);
+  });
+
+  it('null changedPaths (git base unresolvable) → all entries run unconditionally', async () => {
+    const runner = makeRunner([{ exitCode: 0, durationMs: 5 }, { exitCode: 0, durationMs: 5 }]);
+    const gate = new IntegrationGate({
+      testCommands:    [entry('a', ['**/*.ts']), entry('b', ['**/*.go'])],
+      runner,
+      getChangedPaths: () => null,
+    });
+    const out = await gate.run({ projectRoot: ROOT, conflicted: [] });
+    assert.equal(out.ok, true);
+    assert.equal(runner.calls.length, 2, 'both entries must run when git base unresolvable');
+    assert.equal(out.ran, true);
+  });
 });
