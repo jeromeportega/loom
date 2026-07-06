@@ -94,7 +94,7 @@ If any pre-condition fails, the command exits 1 with a human-readable error on s
 ## Audit trail
 
 ```bash
-loom audit --story <epic-id>
+loom audit
 ```
 
-Git merge operations from `syncWithMain` are recorded in the audit log alongside story dispatch events.
+Git merge operations from `syncWithMain` are recorded in the audit log. Use `loom audit` to review all events for the current project. To filter by a specific story's dispatch and integration events, use `loom audit --story <story-id>`.
