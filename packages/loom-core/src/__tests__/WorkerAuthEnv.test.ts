@@ -17,10 +17,14 @@ class TestableWorker extends ClaudeCodeWorker {
 describe('worker spawn env — policy.agents.worker_auth', () => {
   const priorKey = process.env.ANTHROPIC_API_KEY;
   const priorToken = process.env.ANTHROPIC_AUTH_TOKEN;
+  const priorWorkerCtx = process.env.LOOM_WORKER_CONTEXT;
 
   beforeEach(() => {
     process.env.ANTHROPIC_API_KEY = 'sk-test-credits-key';
     process.env.ANTHROPIC_AUTH_TOKEN = 'tok-test';
+    // Ensure LOOM_WORKER_CONTEXT starts unset so the mutation guard in test 3
+    // gives a meaningful signal even when running inside a loom worker session.
+    delete process.env.LOOM_WORKER_CONTEXT;
   });
 
   afterEach(() => {
@@ -28,6 +32,8 @@ describe('worker spawn env — policy.agents.worker_auth', () => {
     else process.env.ANTHROPIC_API_KEY = priorKey;
     if (priorToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
     else process.env.ANTHROPIC_AUTH_TOKEN = priorToken;
+    if (priorWorkerCtx === undefined) delete process.env.LOOM_WORKER_CONTEXT;
+    else process.env.LOOM_WORKER_CONTEXT = priorWorkerCtx;
   });
 
   it("'session' strips ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the worker env", () => {
