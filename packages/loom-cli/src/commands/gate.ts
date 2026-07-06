@@ -209,8 +209,8 @@ export function runReject(epicId: string, reason: string | undefined): void {
     console.error(`${label} "${epicId}" not found.`);
     process.exit(1);
   }
-  if (epic.status !== 'planned') {
-    console.error(`Epic "${displayId}" is "${epic.status}", not "planned" — cannot reject.`);
+  if (epic.status !== 'planned' && epic.status !== 'planning') {
+    console.error(`Epic "${displayId}" is "${epic.status}", not "planned" or "planning" — cannot reject.`);
     process.exit(1);
   }
   store.updateStatus(internalId, 'rejected', reason);
