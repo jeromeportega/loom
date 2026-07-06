@@ -19,34 +19,43 @@ export interface FindingJsonEntry {
 
 const SEVERITY_ORDER: StoredFinding['severity'][] = ['blocking', 'medium', 'low', 'info'];
 
+// Compile-time exhaustiveness: if StoredFinding['severity'] gains a new member, this object
+// literal will fail to compile, surfacing the missing case here rather than silently dropping it.
+const _SEVERITY_COVERAGE: { [K in StoredFinding['severity']]: true } = {
+  blocking: true,
+  medium:   true,
+  low:      true,
+  info:     true,
+};
+
 /**
  * Renders the FINDINGS block for text output.
- * Returns an empty string when there are no findings (block is omitted).
- * Grouped by severity: blocking → medium → low → info.
+ * Returns an empty string when there are no findings or all have unrecognised severities
+ * (block is omitted). Grouped by severity: blocking → medium → low → info.
  */
 export function renderFindingsBlock(findings: StoredFinding[]): string {
   if (findings.length === 0) return '';
 
-  const lines: string[] = ['  FINDINGS', '  ────────'];
+  const renderedGroups: string[] = [];
 
   for (const sev of SEVERITY_ORDER) {
     const group = findings.filter((f) => f.severity === sev);
     if (group.length === 0) continue;
 
-    lines.push(`  [${sev}]`);
+    const groupLines: string[] = [`  [${sev}]`];
     for (const f of group) {
       const loc = f.line !== null ? `${f.file}:${f.line}` : f.file;
-      lines.push(`    ${loc} — ${f.message}`);
+      groupLines.push(`    ${loc} — ${f.message}`);
       if (f.suggestion !== null && f.suggestion !== undefined) {
-        lines.push(`      suggestion: ${f.suggestion}`);
+        groupLines.push(`      suggestion: ${f.suggestion}`);
       }
     }
-    lines.push('');
+    renderedGroups.push(groupLines.join('\n'));
   }
 
-  if (lines[lines.length - 1] === '') lines.pop();
+  if (renderedGroups.length === 0) return '';
 
-  return lines.join('\n');
+  return ['  FINDINGS', '  ────────', renderedGroups.join('\n\n')].join('\n');
 }
 
 /**
@@ -86,13 +95,12 @@ export function runReview(storyId: string, opts: ReviewOptions = {}): void {
     return;
   }
 
-  const findings = new FindingStore(db).getByStory(storyId);
-
   if (!agent.review_status && !agent.review_summary) {
     if (opts.json) {
+      const findings = new FindingStore(db).getByStory(storyId);
       console.log(
         JSON.stringify(
-          { story_id: storyId, review_status: null, review_summary: null, findings: [] },
+          { story_id: storyId, review_status: null, review_summary: null, findings: findings.map(findingToJson) },
           null,
           2
         )
@@ -102,6 +110,8 @@ export function runReview(storyId: string, opts: ReviewOptions = {}): void {
     console.log(`No review recorded for ${storyId} — review_strategy may be off or the worker has not finished.`);
     return;
   }
+
+  const findings = new FindingStore(db).getByStory(storyId);
 
   if (opts.json) {
     console.log(

@@ -103,6 +103,18 @@ describe('renderFindingsBlock — empty findings', () => {
   });
 });
 
+describe('renderFindingsBlock — unrecognised severity', () => {
+  it('silently omits a finding whose severity is not in SEVERITY_ORDER', () => {
+    // Guard against a future enum member ('high', etc.) being silently dropped.
+    // The intended contract is silent omission (not an error); this test makes
+    // that behaviour explicit so a reader can decide to add the new tier.
+    const unknown = makeFixture({ severity: 'high' as StoredFinding['severity'] });
+    const out = renderFindingsBlock([unknown]);
+    // Block will be empty — the unrecognised group has no heading to render.
+    assert.equal(out, '', 'unrecognised severity must be silently omitted (no output)');
+  });
+});
+
 describe('renderFindingsBlock — FINDINGS header present when non-empty', () => {
   it('includes FINDINGS header and separator', () => {
     const out = renderFindingsBlock(MIXED_FINDINGS);
