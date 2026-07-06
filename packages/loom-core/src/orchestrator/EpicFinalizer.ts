@@ -598,9 +598,11 @@ export class EpicFinalizer {
     }
 
     // ── Finalize correctness gates ────────────────────────────────────────────
-    // Run symbol-drift, undocumented-env-var, and cross-epic-regression checks
-    // on the assembled epic diff. Respects the same policy mode as the
-    // integration gate: 'block' withholds the PR; 'warn' annotates but proceeds.
+    // Run symbol-drift, undocumented-env-var, and cross-epic-regression checks.
+    // Symbol presence is tested against the integrated tree (git grep at head /
+    // base), NOT the diff; only the env-var gate reads the diff. Respects the
+    // same policy knob as the integration gate, but only the precise env-var
+    // gate can 'block' (withhold the PR) — drift and regression are advisory.
     const epicDiff = (() => {
       const r = gitSafe(gitRoot, ['diff', epic.base_sha!, epicBranch]);
       return r.ok ? r.output : '';

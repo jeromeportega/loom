@@ -27,7 +27,9 @@ export interface FinalizeGatesResult {
   symbolDrift: SymbolDriftFinding[];
   undocumentedEnvVars: EnvVarFinding[];
   regressions: RegressionFinding[];
-  /** true only when mode === 'block' AND at least one finding exists */
+  /** true only when mode === 'block' AND the (precise) env-var gate found an
+   *  undocumented variable. Symbol drift and cross-epic regression are advisory
+   *  and never contribute to hardFail. */
   hardFail: boolean;
 }
 
@@ -136,45 +138,55 @@ export function symbolsPresentInTree(
 ): Set<string> | null {
   if (symbols.length === 0) return new Set();
 
-  const patternArgs: string[] = [];
-  for (const s of symbols) patternArgs.push('-e', s);
-
-  let out: string;
-  try {
-    out = execFileSync(
-      'git',
-      // -w whole-word, -F fixed-string (symbols are literal identifiers),
-      // -o only the matched token, -h no filename prefix, -I skip binary.
-      ['grep', '-w', '-F', '-o', '-h', '-I', ...patternArgs, ref],
-      {
-        cwd: treeRoot,
-        encoding: 'utf8',
-        maxBuffer: 64 * 1024 * 1024,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }
-    );
-  } catch (err) {
-    const e = err as { status?: number };
-    // Exit 1 = pattern matched nothing: a legitimate "none present" answer.
-    if (e.status === 1) return new Set();
-    // Exit 2+ (bad ref, grep failure) = we genuinely do not know. Signal the
-    // caller to skip the gate instead of flagging everything as absent.
-    return null;
-  }
-
+  // Chunk the patterns. A single git-grep over a ~1.5k-symbol alternation on a
+  // real repo measured ~130s per ref; the same query in 50-symbol chunks yields
+  // an identical present-set in ~13s. Any chunk that errors (bad ref, git
+  // failure) fails the whole call to null — the caller then skips the gate
+  // rather than treating "unknown" as "absent". A bad ref fails every chunk, so
+  // this loses nothing; per-chunk maxBuffer overflow is now implausible at 50.
+  const CHUNK = 50;
   const requested = new Set(symbols);
   const present = new Set<string>();
-  for (const rawLine of out.split('\n')) {
-    // With -o -h each line is a matched token, but guard against any residual
-    // `path:token` prefix by also checking the last colon-delimited field.
-    const line = rawLine.trim();
-    if (!line) continue;
-    if (requested.has(line)) {
-      present.add(line);
-      continue;
+
+  for (let i = 0; i < symbols.length; i += CHUNK) {
+    const chunk = symbols.slice(i, i + CHUNK);
+    const patternArgs: string[] = [];
+    for (const s of chunk) patternArgs.push('-e', s);
+
+    let out: string;
+    try {
+      out = execFileSync(
+        'git',
+        // -w whole-word, -F fixed-string (symbols are literal identifiers),
+        // -o only the matched token, -h no filename prefix, -I skip binary.
+        ['grep', '-w', '-F', '-o', '-h', '-I', ...patternArgs, ref],
+        {
+          cwd: treeRoot,
+          encoding: 'utf8',
+          maxBuffer: 64 * 1024 * 1024,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }
+      );
+    } catch (err) {
+      const e = err as { status?: number };
+      // Exit 1 = this chunk matched nothing: a legitimate "none present".
+      if (e.status === 1) continue;
+      // Any other failure = we genuinely do not know. Signal the caller to skip.
+      return null;
     }
-    const tail = line.slice(line.lastIndexOf(':') + 1).trim();
-    if (requested.has(tail)) present.add(tail);
+
+    for (const rawLine of out.split('\n')) {
+      // With -o -h each line is a matched token, but guard against any residual
+      // `path:token` prefix by also checking the last colon-delimited field.
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (requested.has(line)) {
+        present.add(line);
+        continue;
+      }
+      const tail = line.slice(line.lastIndexOf(':') + 1).trim();
+      if (requested.has(tail)) present.add(tail);
+    }
   }
   return present;
 }
@@ -226,6 +238,9 @@ export async function runFinalizeGates(opts: {
     contractSymbols.length > 0
       ? symbolsPresentInTree(opts.treeRoot, opts.headRef, contractSymbols)
       : new Set<string>();
+  if (ownPresent === null && contractSymbols.length > 0) {
+    console.warn(`[finalize] contract-drift gate skipped for ${opts.epicId} — git grep unavailable at ${opts.headRef}`);
+  }
   const symbolDrift =
     ownPresent === null
       ? [] // grep unavailable → skip rather than flag every pinned symbol
@@ -263,6 +278,8 @@ export async function runFinalizeGates(opts: {
     const headPresent = symbolsPresentInTree(opts.treeRoot, opts.headRef, union);
     if (basePresent !== null && headPresent !== null) {
       regressions = checkCrossEpicRegressions({ priorContracts, basePresent, headPresent });
+    } else {
+      console.warn(`[finalize] cross-epic regression gate skipped for ${opts.epicId} — git grep unavailable`);
     }
   }
 
