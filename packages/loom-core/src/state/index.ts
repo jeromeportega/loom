@@ -31,3 +31,5 @@ export {
 export type { LimiterSlot } from './GlobalLimiter.js';
 export { MetricsStore } from './MetricsStore.js';
 export type { RunMetricsRecord, PhaseMetricsRecord } from '../metrics/types.js';
+export { FindingStore } from './FindingStore.js';
+export type { StoredFinding } from './FindingStore.js';

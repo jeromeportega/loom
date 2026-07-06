@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -273,6 +273,25 @@ CREATE TABLE IF NOT EXISTS run_metrics_phase (
 CREATE INDEX IF NOT EXISTS idx_run_metrics_epic      ON run_metrics(epic_id);
 CREATE INDEX IF NOT EXISTS idx_run_metrics_scope     ON run_metrics(scope);
 CREATE INDEX IF NOT EXISTS idx_run_metrics_phase_run ON run_metrics_phase(run_id);
+
+-- v30: structured review findings (epic-076 story-076-001).
+-- One row per finding per agent review invocation; replaces prior approach of
+-- storing findings as a JSON blob on the agent row. revise_round is added to
+-- agents via ALTER TABLE in runMigrations().
+CREATE TABLE IF NOT EXISTS review_findings (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    TEXT    NOT NULL REFERENCES agents(id),
+  story_id    TEXT    NOT NULL,
+  severity    TEXT    NOT NULL,   -- 'blocking' | 'medium' | 'low' | 'info'
+  file        TEXT    NOT NULL,
+  line        INTEGER,            -- nullable
+  message     TEXT    NOT NULL,
+  suggestion  TEXT,               -- nullable
+  recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_findings_agent ON review_findings(agent_id);
+CREATE INDEX IF NOT EXISTS idx_review_findings_story ON review_findings(story_id);
 `;
 
 let _db: Database.Database | null = null;
@@ -492,6 +511,14 @@ export function runMigrations(db: Database.Database): void {
   // and must never be backfilled (NFR-1).
   if (!agentCols.some((c) => c.name === 'model')) {
     db.exec('ALTER TABLE agents ADD COLUMN model TEXT');
+  }
+  // v30: revise_round — how many review-driven revision cycles this agent
+  // attempt has completed. Integer ≥ 0; DEFAULT 0 so pre-migration rows read
+  // correctly without backfill (ADR-005 additive-only rule).
+  if (!agentCols.some((c) => c.name === 'revise_round')) {
+    db.exec(
+      'ALTER TABLE agents ADD COLUMN revise_round INTEGER NOT NULL DEFAULT 0'
+    );
   }
   if (!epicCols.some((c) => c.name === 'planner_model')) {
     db.exec('ALTER TABLE epics ADD COLUMN planner_model TEXT');

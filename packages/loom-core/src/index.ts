@@ -24,3 +24,5 @@ export { resolvePrimaryRepo } from './home/primaryRepo.js';
 export { RetrievalService } from './retrieval/RetrievalService.js';
 export { RetrievalRefused, CROSS_REPO_RULES } from './retrieval/types.js';
 export type { RetrievalRequest, SearchResult, ReadResult, ResolvedRepo, SliceBounds } from './retrieval/types.js';
+export { FindingStore } from './state/FindingStore.js';
+export type { StoredFinding } from './state/FindingStore.js';
