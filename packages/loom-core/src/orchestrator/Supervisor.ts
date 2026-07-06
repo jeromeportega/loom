@@ -2571,6 +2571,9 @@ export class Supervisor {
       // count, so `loom review` renders findings and `loom status` shows
       // `(revise N)`. These come from BaseCliWorker's real block-and-revise loop
       // (ReviewOutcome.findings / .revisions) — the only place they are produced.
+      // Clear the story's prior findings first so a clean retry doesn't leave an
+      // earlier attempt's blockers as the "latest" (getByStory is per-story).
+      this.findings.clearByStory(task.story.id);
       if (result.review.findings && result.review.findings.length > 0) {
         this.findings.saveFindings(task.agentId, task.story.id, result.review.findings);
       }

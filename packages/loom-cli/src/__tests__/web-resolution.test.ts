@@ -120,6 +120,26 @@ describe('resolveWebRoot — registry first entry wins', () => {
   });
 });
 
+describe('resolveWebRoot — skips a registered-but-uninitialized entry', () => {
+  it('skips a registered project whose .loom/policy.yaml is gone and returns the next valid one', () => {
+    // A registered root that still EXISTS but is no longer initialized (its
+    // .loom/policy.yaml was removed) — must not be served with a fresh empty DB.
+    const staleRepo = fs.mkdtempSync(path.join(tmpDir, 'stale-repo-'));
+    fs.mkdirSync(path.join(staleRepo, '.loom'), { recursive: true }); // .loom exists, no policy.yaml
+    const validRepo = makeInitializedDir();
+
+    const registry = makeRegistry();
+    registry.register(staleRepo);
+    registry.register(validRepo);
+
+    const nonRepoDir = fs.mkdtempSync(path.join(tmpDir, 'non-repo-'));
+    const result = resolveWebRoot(nonRepoDir, registry, emptyMachineConfigPath);
+
+    assert.equal(result.projectRoot, validRepo, 'must skip the stale entry and return the valid one');
+    assert.notEqual(result.projectRoot, staleRepo, 'must not serve the uninitialized (empty-DB) root');
+  });
+});
+
 describe('resolveWebRoot — machine config resolution', () => {
   it('returns machine config project_root when registry is empty and CWD is not a repo', () => {
     const machineRepo = makeInitializedDir();

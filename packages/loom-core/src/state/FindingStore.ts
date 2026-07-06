@@ -92,6 +92,16 @@ export class FindingStore {
     });
   }
 
+  /**
+   * Deletes every persisted finding for a story, across all agent attempts.
+   * Called when a review completes with zero findings so a clean (re)try doesn't
+   * leave a prior attempt's findings as the "latest" — otherwise `loom review`
+   * would show `passed` beside stale blockers.
+   */
+  clearByStory(storyId: string): void {
+    this.db.prepare('DELETE FROM review_findings WHERE story_id = ?').run(storyId);
+  }
+
   /** Returns all findings for a specific agent attempt. For tests. */
   getByAgent(agentId: string): StoredFinding[] {
     return this.db.prepare(`

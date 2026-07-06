@@ -127,6 +127,21 @@ describe('FindingStore', () => {
 
       assert.equal(store.getByAgent('agent-clear').length, 0, 'empty save must clear all findings');
     });
+
+    it('clearByStory removes findings across ALL attempts of a story (clean-retry case)', () => {
+      const db = makeDb();
+      seedAgent(db, 'attempt-1', 'story-007-001');
+      seedAgent(db, 'attempt-2', 'story-007-002'); // different story — must survive
+      const store = new FindingStore(db);
+
+      store.saveFindings('attempt-1', 'story-007-001', SAMPLE_FINDINGS);
+      store.saveFindings('attempt-2', 'story-007-002', SAMPLE_FINDINGS);
+
+      store.clearByStory('story-007-001');
+
+      assert.equal(store.getByStory('story-007-001').length, 0, 'the cleared story has no findings');
+      assert.equal(store.getByStory('story-007-002').length, 3, 'other stories are untouched');
+    });
   });
 
   describe('getByStory — latest-agent semantics', () => {
