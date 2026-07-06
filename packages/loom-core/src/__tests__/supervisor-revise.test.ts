@@ -39,10 +39,9 @@ function seedAgent(
   storyId = 'story-001-001',
   epicId = 'epic-001'
 ): void {
-  db.exec(`
-    INSERT OR IGNORE INTO epics (id, title, status)
-    VALUES ('${epicId}', 'Test Epic', 'approved');
-  `);
+  db.prepare(
+    'INSERT OR IGNORE INTO epics (id, title, status) VALUES (?, ?, ?)'
+  ).run(epicId, 'Test Epic', 'approved');
   db.prepare(`
     INSERT OR IGNORE INTO agents (id, epic_id, story_id, status, updated_at)
     VALUES (?, ?, ?, 'pending', datetime('now'))
@@ -237,7 +236,7 @@ describe('Supervisor.runRevisionLoop — block-and-revise instrumentation (story
     assert.equal(reviseIndexReceived, 1, 'revision index 1 on the first revision');
   });
 
-  it('[AC-S4] revise callback returning false aborts the loop early', async () => {
+  it('[AC-S4] revise callback returning false aborts the loop without incrementing revise_round', async () => {
     const db = makeDb();
     seedAgent(db, 'agent-abort', 'story-007-001');
 
@@ -249,11 +248,16 @@ describe('Supervisor.runRevisionLoop — block-and-revise instrumentation (story
       blockAndRevise: true,
       maxRevisions: 3,
       runPass: async () => { passCount++; return [BLOCKER]; },
-      revise: async () => false, // abort immediately
+      revise: async () => false, // abort immediately — no revision round executes
     });
 
     assert.equal(passCount, 1, 'only the initial pass runs when revise aborts');
-    assert.equal(result.revisions, 1, 'revisions counter reflects the aborted round');
+    assert.equal(result.revisions, 0, 'no revisions when revise aborts before runPass');
+    assert.equal(
+      new AgentStore(db).getReviseRound('agent-abort'),
+      0,
+      'revise_round must not increment when revise aborts'
+    );
   });
 
   it('[AC-S5] blockAndRevise=false: only the initial pass runs, no revisions', async () => {
@@ -297,10 +301,17 @@ describe('FindingStore.getByStory ordering (story-076-002)', () => {
     ];
     store.saveFindings('agent-ord', 'story-009-001', findings);
 
+    // 'info' has no upstream ReviewFinding source; insert directly to verify ordering.
+    db.prepare(
+      `INSERT INTO review_findings (agent_id, story_id, severity, file, line, message, suggestion)
+       VALUES (?, ?, 'info', ?, NULL, ?, NULL)`
+    ).run('agent-ord', 'story-009-001', 'd.ts', 'Info');
+
     const rows = store.getByStory('story-009-001');
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 4);
     assert.equal(rows[0].severity, 'blocking', 'blocking must come first');
     assert.equal(rows[1].severity, 'medium',   'medium must come second');
     assert.equal(rows[2].severity, 'low',       'low must come third');
+    assert.equal(rows[3].severity, 'info',      'info must come last');
   });
 });

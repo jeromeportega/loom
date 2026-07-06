@@ -2797,20 +2797,7 @@ export class Supervisor {
     });
   }
 
-  /**
-   * Block-and-revise instrumentation loop. Runs the injected `runPass` once for
-   * the initial review, persists findings via `FindingStore.saveFindings`, then
-   * enters a revision loop while `shouldRevise` is true and the cap allows.
-   *
-   * Calling contract:
-   *   - `saveFindings` is called immediately after every `runPass` resolves.
-   *   - `incrementReviseRound` is called at the start of each revision round
-   *     (i.e. NOT for the initial pass at index 0).
-   *   - A story that passes on first review therefore keeps `revise_round = 0`.
-   *
-   * The `runPass` and optional `revise` callbacks are injectable for testing;
-   * production callers wire them to the real review infrastructure.
-   */
+  // Runs review passes and drives block-and-revise; revise_round increments only when a revision pass actually executes.
   async runRevisionLoop(
     agentId: string,
     storyId: string,
@@ -2831,12 +2818,12 @@ export class Supervisor {
     this.findings.saveFindings(agentId, storyId, findings);
 
     while (opts.blockAndRevise && revisions < opts.maxRevisions && shouldRevise(findings)) {
-      this.agents.incrementReviseRound(agentId);
-      revisions++;
       if (opts.revise) {
-        const proceeded = await opts.revise(findings, revisions);
+        const proceeded = await opts.revise(findings, revisions + 1);
         if (!proceeded) break;
       }
+      this.agents.incrementReviseRound(agentId);
+      revisions++;
       findings = await opts.runPass(revisions);
       this.findings.saveFindings(agentId, storyId, findings);
     }
