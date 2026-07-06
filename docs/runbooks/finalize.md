@@ -207,9 +207,10 @@ do not contribute a failure.
 
 **Per-entry result reporting:** each entry produces an individual result record —
 name, command, status (`passed` | `failed` | `skipped`), exit code, stdout tail,
-and duration — stored in the audit log under `epic_finalize_test_commands`. The
-overall gate fails when any selected entry exits non-zero; all-skipped counts as
-a pass.
+and duration — stored in the `epic_integration_gate` audit row as the `steps`
+field (`loom audit` surfaces this row; `detail.steps[]` contains per-entry
+results). The overall gate fails when any selected entry exits non-zero;
+all-skipped counts as a pass.
 
 **Precedence:** `test_command` (singular) takes precedence over `test_commands`
 when both are set. An empty `test_commands: []` falls through to auto-detection.

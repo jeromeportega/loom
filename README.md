@@ -338,10 +338,13 @@ agents:
 ```
 
 Each entry runs only when a changed file matches one of its glob patterns
-(repo-root-relative, minimatch semantics). Entries run in declaration order;
-all run to completion — no fail-fast. Unmatched entries are skipped without
-failing the gate. `test_command` (singular) takes precedence when both are set.
-`loom doctor` checks that every entry's binary resolves on PATH.
+(repo-root-relative, minimatch with `dot=false` and `nocase=false` —
+dotfiles and dot-directories are not matched by `**`). Entries run in
+declaration order; all run to completion — no fail-fast. Unmatched entries
+are skipped without failing the gate. When the base commit cannot be resolved
+(e.g. shallow clone), all entries run unconditionally. `test_command`
+(singular) takes precedence when both are set. `loom doctor` checks that
+every entry's binary resolves on PATH.
 
 Build steps (`next build`, `cargo build`) run full compilations and
 materially increase gate wall-clock — plan accordingly when enabling
