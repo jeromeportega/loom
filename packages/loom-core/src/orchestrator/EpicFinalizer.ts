@@ -126,7 +126,7 @@ export interface EpicFinalizerOptions {
    */
   loomHome?: string;
   /**
-   * Injectable PR-existence probe (FR-10). Defaults to `gh pr view --head <ref>`.
+   * Injectable PR-existence probe (FR-10). Defaults to `gh pr list --head <ref>`.
    * Returns `{ exists: true, url }` when a live PR is found for the given
    * finalizer-owned ref, or `{ exists: false }` when none is found or gh fails.
    */
@@ -918,6 +918,14 @@ export class EpicFinalizer {
     const lease = this.opts.leaseStore ?? new LeaseStore(this.opts.db);
     const acquired = lease.acquire(epicId);
     if (!acquired) {
+      // NFR-3: audit every recovery return, including the lease-contention skip.
+      audit.record({
+        agent_id: undefined,
+        action: 'epic_finalize_resume_skipped',
+        command: epicId,
+        allowed: true,
+        detail: { reason: 'lease_held' },
+      });
       return {
         status: 'skipped',
         conflicted: [],
@@ -928,7 +936,11 @@ export class EpicFinalizer {
     }
 
     try {
-      const plan = this.detectResumePhase(epic, remote);
+      // TOCTOU: re-load the row now that we hold the lease — a competing recovery
+      // may have completed between the pre-lease read and acquire, so the plan and
+      // the done-check must derive from post-lease state, not the stale snapshot.
+      const current = epicStore.get(epicId) ?? epic;
+      const plan = this.detectResumePhase(current, remote);
 
       // NFR-3: audit BEFORE publishPhase so the entry is written even if publishPhase throws.
       audit.record({
@@ -941,10 +953,10 @@ export class EpicFinalizer {
 
       // Build ctx after plan is known so finalizeRef is taken from the plan arm
       // that carries it rather than the nullable epic column (avoids silent '' for full-finalize).
-      const finalizeRef = 'finalizeRef' in plan ? plan.finalizeRef : (epic.finalize_ref ?? '');
+      const finalizeRef = 'finalizeRef' in plan ? plan.finalizeRef : (current.finalize_ref ?? '');
       return await this.publishPhase(
         epicId,
-        epic,
+        current,
         { finalizeRef, remote },
         plan,
         audit,
@@ -1021,7 +1033,25 @@ export class EpicFinalizer {
     epicStore: EpicStore
   ): Promise<FinalizeResult> {
     switch (plan.action) {
-      case 'already-done':
+      case 'already-done': {
+        // Remote confirms a live PR and the DB already has the URL. But if the
+        // crash landed between finalize()'s recordPrUrl and the Supervisor's
+        // done-write, status is still 'finalizing'/'publish_pending' — so complete
+        // the flip here (resume() owns the standalone done write) instead of
+        // returning "merged" over a row that stays stranded on every re-run.
+        if (epic.status !== 'done') {
+          this.opts.db.transaction(() => {
+            epicStore.clearFinalizePhase(epicId);
+            audit.record({
+              agent_id: undefined,
+              action: 'epic_published',
+              command: epicId,
+              allowed: true,
+              detail: { pr_url: plan.prUrl, via: 'already-done' },
+            });
+            epicStore.updateStatus(epicId, 'done');
+          })();
+        }
         return {
           status: 'merged',
           url: plan.prUrl,
@@ -1030,6 +1060,7 @@ export class EpicFinalizer {
           cleaned: [],
           note: `Epic ${epicId} is already done (PR: ${plan.prUrl})`,
         };
+      }
 
       case 'noop-terminal':
         return {
@@ -1220,11 +1251,15 @@ export class EpicFinalizer {
         return this.opts.openPr({ branch: finalizeRef, title, body: '' }) ?? undefined;
       }
       const execOpts = { cwd: this.opts.projectRoot, encoding: 'utf8' as const, timeout: 30_000 };
-      // Probe for an existing PR first (idempotent retry)
+      // Probe for an existing PR first (idempotent retry). Use `gh pr list --head`
+      // — `gh pr view --head` is NOT a valid invocation (view takes a positional
+      // branch and has no --head flag; it would error `unknown flag: --head` and
+      // the catch would misread that as "no PR", duplicating the PR on re-open).
+      // --state all so a merged/closed PR still resolves.
       try {
         const probeOut = execFileSync(
           'gh',
-          ['pr', 'view', '--head', finalizeRef, '--json', 'url', '-q', '.url'],
+          ['pr', 'list', '--head', finalizeRef, '--state', 'all', '--json', 'url', '-q', '.[0].url // ""'],
           execOpts
         ).trim();
         if (probeOut.startsWith('http')) return probeOut;
@@ -1246,9 +1281,13 @@ export class EpicFinalizer {
   private prForRefProbe(finalizeRef: string): { exists: boolean; url?: string } {
     if (this.opts.prForRef) return this.opts.prForRef(finalizeRef);
     try {
+      // `gh pr view` has no --head flag (it takes a positional branch and errors
+      // when no PR exists); `gh pr list --head` is the correct ref→PR probe and
+      // returns [] (exit 0) when there is none. --state all so a merged/closed PR
+      // still resolves (FR-12: the branch may be deleted after a squash-merge).
       const out = execFileSync(
         'gh',
-        ['pr', 'view', '--head', finalizeRef, '--json', 'url', '-q', '.url'],
+        ['pr', 'list', '--head', finalizeRef, '--state', 'all', '--json', 'url', '-q', '.[0].url // ""'],
         { cwd: this.opts.projectRoot, encoding: 'utf8', timeout: 30_000 }
       ).trim();
       if (out.startsWith('http')) return { exists: true, url: out };

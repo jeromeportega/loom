@@ -82,11 +82,27 @@ async function handleFinalizing(
     result = await opts._resume(epicId);
   } else {
     const policy = PolicyEngine.load(loomDir).policyData;
+    // Full gate/push config (mirrors reconcile.ts) so a full-finalize arm re-runs
+    // the integration gate and push gate under policy rather than silently off.
     const finalizer = new EpicFinalizer({
       projectRoot,
       db,
       allowedRemotes: policy.git.allowed_remotes,
       prStrategy: policy.agents.pr_strategy,
+      pushGate: policy.agents.push_gate,
+      integrationGate: policy.agents.integration_gate,
+      prAttribution: policy.agents.pr_attribution,
+      testCommand: policy.agents.test_command,
+      refreshPolicy: () => {
+        const live = PolicyEngine.load(loomDir).policyData;
+        return {
+          allowedRemotes: live.git.allowed_remotes,
+          testCommand: live.agents.test_command,
+          integrationGate: live.agents.integration_gate,
+          pushGate: live.agents.push_gate,
+          prAttribution: live.agents.pr_attribution,
+        };
+      },
     });
     result = await finalizer.resume(epicId);
   }

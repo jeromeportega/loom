@@ -2255,7 +2255,7 @@ npm run test -w @loom-ai/core   # SupervisorRecovery.test.ts
 ### Definition of done for Epic 66
 
 - [x] `loom finalize --resume <epic-id>` command exists and is registered
-- [x] `loom run` routes `finalizing`/`publish_pending` epics to `resume()` before dispatching new stories
+- [x] `loom run` routes `finalizing`/`publish_pending` epics to `resume()` within the same run (after the story-dispatch loop)
 - [x] `loom run` prints `  Recover it: loom finalize --resume <epic-id>` when auto-resume is impossible
 - [x] `loom publish` accepts `finalizing` and delegates to `resume()`
 - [x] `loom reconcile` accepts `finalizing` and delegates to `resume()`

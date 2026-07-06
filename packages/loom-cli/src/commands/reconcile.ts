@@ -2,24 +2,8 @@ import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { EpicReconciler, EpicFinalizer, EpicStore, AuditLog, PolicyEngine } from '@loom-ai/core';
+import type { FinalizeResult } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
-
-// FinalizeResult is defined in story-066-001's EpicFinalizer. The worktree resolves
-// @loom-ai/core from the main repo (via node_modules symlink) which predates that
-// story's merge into the epic branch, so the type is declared locally as a structural
-// alias rather than imported. The shape matches EpicFinalizer.ts exactly.
-interface FinalizeResult {
-  url?: string;
-  status: 'skipped' | 'merged' | 'partial' | 'failed' | 'gated' | 'publish_pending';
-  conflicted: string[];
-  merged: string[];
-  cleaned: string[];
-  note: string;
-}
-
-// Structural interface for the resume() method added in story-066-001.
-// EpicFinalizer is typed from the main repo's dist which predates resume().
-type WithResume = { resume(epicId: string): Promise<FinalizeResult> };
 
 export interface ReconcileCommandOptions {
   pr?: string;
@@ -76,12 +60,6 @@ export async function runReconcile(epicId: string, opts: ReconcileCommandOptions
         console.error(`  Failed to load policy: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
-      // runtime guard: resume() is added by story-066-001; check before constructing
-      // to avoid allocating resources the constructor may hold (DB handles, etc.).
-      if (typeof (EpicFinalizer.prototype as unknown as WithResume).resume !== 'function') {
-        console.error('  EpicFinalizer.resume() is not available — rebuild @loom-ai/core (story-066-001 must be built into the dist).');
-        process.exit(1);
-      }
       const finalizer = new EpicFinalizer({
         projectRoot,
         db,
@@ -103,7 +81,7 @@ export async function runReconcile(epicId: string, opts: ReconcileCommandOptions
           };
         },
       });
-      finalizeResult = await (finalizer as unknown as WithResume).resume(epicId);
+      finalizeResult = await finalizer.resume(epicId);
     }
 
     const audit = new AuditLog(db);

@@ -210,6 +210,10 @@ describe('runFinalize — happy path (stranded epic lands done)', () => {
           resume: async (epicId: string) => {
             callCount++;
             calledWith = epicId;
+            // resume() owns the done write (the CLI must NOT write done itself —
+            // that could set status=done with epic_pr_url=NULL). Mirror the real
+            // state machine here so the DB assertion reflects resume()'s behavior.
+            new EpicStore(openDatabase(loomDir)).updateStatus(epicId, 'done');
             return mergedResult(epicId);
           },
         },
@@ -218,7 +222,7 @@ describe('runFinalize — happy path (stranded epic lands done)', () => {
     assert.equal(exitCode, null, 'must not call process.exit on success');
     assert.equal(callCount, 1, 'resume() must be called exactly once');
     assert.equal(calledWith, 'epic-001', 'resume() must be called with the correct epic id');
-    // Acceptance criterion: the command lands the epic as done in the DB.
+    // Acceptance criterion: the command lands the epic as done in the DB (via resume()).
     const db = openDatabase(loomDir);
     const epic = new EpicStore(db).get('epic-001');
     assert.equal(epic?.status, 'done', 'epic must be in done status after successful resume');

@@ -105,7 +105,10 @@ export class EpicPublisher {
         const execOpts = { cwd: this.opts.projectRoot, encoding: 'utf8' as const, timeout: 30_000 };
         let probeUrl: string | undefined;
         try {
-          const probeOut = execFileSync('gh', ['pr', 'view', '--head', finalizeRef, '--json', 'url', '-q', '.url'], execOpts).trim();
+          // `gh pr list --head` — NOT `gh pr view --head` (view has no --head flag;
+          // it would exit `unknown flag: --head`, the catch would misread it as
+          // "no PR", and `gh pr create` would then fail on the already-existing PR).
+          const probeOut = execFileSync('gh', ['pr', 'list', '--head', finalizeRef, '--state', 'all', '--json', 'url', '-q', '.[0].url // ""'], execOpts).trim();
           if (probeOut.startsWith('http')) probeUrl = probeOut;
         } catch {
           // No existing PR — will create below

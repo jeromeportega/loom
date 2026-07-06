@@ -706,14 +706,15 @@ describe('Stranding + resume end-to-end: push-fail and PR-open-fail reach recove
     assert.equal(audit.getByCommand('epic-001', ['epic_published']).length, 1);
   });
 
-  it('already-done scenario: resume returns merged without changing epic status or PR url', async () => {
+  it('already-done scenario: a crash between recordPrUrl and the done-write is flipped to done on resume', async () => {
     const { db, store, audit } = freshDb();
     store.create('epic-001', 'Test Epic');
+    store.beginFinalizing('epic-001', 'pushing');
     store.recordFinalizeRef('epic-001', FINALIZE_REF);
     store.recordPrUrl('epic-001', PR_URL);
-
-    // Snapshot status before
-    const beforeStatus = store.get('epic-001')!.status;
+    // Reachable crash window: finalize() recorded the PR url, but the process died
+    // before the Supervisor done-write — status is still 'finalizing'.
+    assert.equal(store.get('epic-001')!.status, 'finalizing');
 
     const result = await makeFinalizer(db, {
       prForRef: () => ({ exists: true, url: PR_URL }), // already-done plan
@@ -722,13 +723,38 @@ describe('Stranding + resume end-to-end: push-fail and PR-open-fail reach recove
     assert.equal(result.status, 'merged');
     assert.equal(result.url, PR_URL);
 
-    // Status and PR URL unchanged (resume returns early for already-done)
+    // resume() completes the flip the Supervisor never reached — no longer stranded.
     const after = store.get('epic-001')!;
-    assert.equal(after.status, beforeStatus, 'already-done must not change epic status');
+    assert.equal(after.status, 'done', 'already-done must complete the done flip when not yet done');
     assert.equal(after.epic_pr_url, PR_URL, 'already-done must not change epic_pr_url');
+    assert.equal(after.finalize_phase, null, 'already-done clears finalize_phase');
 
-    // NFR-3: resume audit row is written even for already-done
-    const resumeRows = audit.getByCommand('epic-001', ['epic_finalize_resume']);
-    assert.equal(resumeRows.length, 1, 'epic_finalize_resume audit must be written');
+    // NFR-3: resume + published audit rows written
+    assert.equal(audit.getByCommand('epic-001', ['epic_finalize_resume']).length, 1);
+    assert.equal(audit.getByCommand('epic-001', ['epic_published']).length, 1);
+  });
+
+  it('already-done scenario: a genuinely-done epic is an idempotent no-op', async () => {
+    const { db, store, audit } = freshDb();
+    store.create('epic-001', 'Test Epic');
+    store.beginFinalizing('epic-001', 'pushing');
+    store.recordFinalizeRef('epic-001', FINALIZE_REF);
+    store.recordPrUrl('epic-001', PR_URL);
+    store.updateStatus('epic-001', 'done');
+
+    const result = await makeFinalizer(db, {
+      prForRef: () => ({ exists: true, url: PR_URL }),
+    }).resume('epic-001');
+
+    assert.equal(result.status, 'merged');
+    const after = store.get('epic-001')!;
+    assert.equal(after.status, 'done', 'stays done');
+    assert.equal(after.epic_pr_url, PR_URL);
+    // Already done → the arm skips the transaction, so no second publish audit row.
+    assert.equal(
+      audit.getByCommand('epic-001', ['epic_published']).length,
+      0,
+      'no re-publish audit when already done'
+    );
   });
 });

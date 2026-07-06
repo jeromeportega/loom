@@ -774,10 +774,13 @@ export class Supervisor {
         for (const epicId of recoverable) {
           try {
             const fin = await this.opts.epicFinalizer.resume(epicId);
-            if (fin.status === 'skipped') {
-              recoverableSkipped.push(epicId);
-            } else {
+            if (fin.status === 'merged') {
               recoveredEpics.push(epicId);
+            } else {
+              // Not landed — skipped (noop/lease), publish_pending, failed, gated,
+              // or partial. Route to skipped so it counts as unprocessed and FR-9
+              // prints the recovery hint, instead of falsely reporting "processed".
+              recoverableSkipped.push(epicId);
             }
           } catch (err) {
             this.audit.record({

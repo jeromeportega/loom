@@ -50,29 +50,42 @@ export async function runFinalize(epicId: string, opts: FinalizeCommandOptions =
       result = await opts._finalizer.resume(epicId);
     } else {
       const policy = PolicyEngine.load(loomDir).policyData;
+      // Construct with the full gate/push config (mirrors reconcile.ts). If resume
+      // takes the full-finalize arm it re-runs the gate and push — omitting these
+      // would silently disable the integration gate and push gate, bypassing policy.
       const ef = new EpicFinalizer({
         projectRoot,
         db,
         allowedRemotes: policy.git.allowed_remotes,
-        prStrategy: policy.agents.pr_strategy ?? 'comment',
+        prStrategy: policy.agents.pr_strategy,
+        pushGate: policy.agents.push_gate,
+        integrationGate: policy.agents.integration_gate,
+        prAttribution: policy.agents.pr_attribution,
+        testCommand: policy.agents.test_command,
+        // Late-bound rebind — re-read from disk so a mid-run policy edit takes effect.
+        refreshPolicy: () => {
+          const live = PolicyEngine.load(loomDir).policyData;
+          return {
+            allowedRemotes: live.git.allowed_remotes,
+            testCommand: live.agents.test_command,
+            integrationGate: live.agents.integration_gate,
+            pushGate: live.agents.push_gate,
+            prAttribution: live.agents.pr_attribution,
+          };
+        },
       });
-      // resume() was added in story-066-001. Guard at runtime in case the dist
-      // predates that story (e.g. worktree not yet rebuilt).
-      if (typeof (ef as any).resume !== 'function') {
-        console.error('EpicFinalizer.resume() is not available — rebuild @loom-ai/core (story-066-001).');
-        process.exit(1);
-      }
-      result = await (ef as unknown as { resume(id: string): Promise<FinalizeResult> }).resume(epicId);
+      result = await ef.resume(epicId);
     }
   } catch (err) {
     console.error(`  Finalize failed: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
 
+  // resume() owns the done write — it flips status to 'done' atomically inside the
+  // state machine, gated on a recorded PR URL. The CLI never writes 'done' itself:
+  // doing so could set status=done with epic_pr_url=NULL, violating the
+  // done ⇒ epic_pr_url invariant the Supervisor done-gate exists to protect.
   if (result.status === 'merged') {
-    // resume() owns the done write; we mirror it here so the DB reflects done
-    // regardless of whether the seam or the real finalizer was used.
-    epicStore.updateStatus(epicId, 'done');
     console.log('');
     if (result.url) {
       console.log(`  PR: ${result.url}`);
