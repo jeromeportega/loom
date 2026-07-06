@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { PolicyEngine, preflightGateCommand, resolveGatePlan, runGateSteps } from '@loom-ai/core';
-import type { GateStep } from '@loom-ai/core';
+import { PolicyEngine, preflightGateCommand, resolveGatePlan } from '@loom-ai/core';
 
 /**
  * The exact Check shape `doctor.ts` renders, with `required` pinned to the
@@ -110,57 +109,28 @@ function binaryOnPath(binary: string, envPath: string): boolean {
   }
 }
 
-/**
- * Return the PATH that the gate runner will see. The gate uses
- * spawn(cmd, { shell: true }) with no explicit env, so it inherits process.env.PATH
- * exactly. Using the inherited PATH avoids false-positive divergence warnings for
- * tools installed via nvm, pyenv, uv, or rbenv.
- */
-function getShNonInteractivePath(): string {
-  return process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
-}
-
-export interface PathDivergenceProbe {
-  binary: string;
-  onLogin: boolean;
-  onSh: boolean;
-}
-
-function defaultProbePathDivergence(steps: GateStep[]): PathDivergenceProbe[] {
-  const loginPath = process.env.PATH ?? '';
-  const shPath = getShNonInteractivePath();
-  const seen = new Set<string>();
-  const results: PathDivergenceProbe[] = [];
-  for (const step of steps) {
-    const binary = getLeadBinary(step.command);
-    if (!binary || seen.has(binary)) continue;
-    seen.add(binary);
-    results.push({
-      binary,
-      onLogin: binaryOnPath(binary, loginPath),
-      onSh: binaryOnPath(binary, shPath),
-    });
-  }
-  return results;
-}
-
 export interface GateRunnableDeps {
   resolve?: typeof resolveGatePlan;
-  run?: typeof runGateSteps;
   /**
-   * Injectable for PATH-divergence tests. Returns per-step binary probe results.
-   * Production implementation uses execFileSync; test stubs return controlled data.
+   * Injectable binary-resolution probe (tests). Returns whether `binary`
+   * resolves on the gate's PATH. Production uses `/bin/sh -c 'command -v'`.
    */
-  probePathDivergence?: (steps: GateStep[]) => PathDivergenceProbe[];
+  binaryResolves?: (binary: string) => boolean;
 }
 
 /**
- * `loom doctor` gate-runnable check: executes the resolved gate plan through
- * the same executor the real integration gate uses (/bin/sh via shell:true)
- * and reports whether it passes. Advisory — required is always false.
+ * `loom doctor` gate-runnable check: resolves the gate plan and verifies each
+ * step's lead binary actually resolves on the PATH the gate will inherit — the
+ * gate runs `spawn(cmd, { shell: true })` with no explicit env, so it inherits
+ * `process.env.PATH`. This catches the classic false-green where doctor said a
+ * command "looks runnable" but the real gate failed with `command not found`
+ * because the tool (e.g. `uv`) was not on the gate's PATH (FR-9/FR-10/FR-11).
  *
- * FR-11: when a step's lead binary is on the login-shell PATH but not on the
- * gate's non-interactive /bin/sh PATH, returns ok:false with an explicit warning.
+ * Fast and side-effect-free: it does NOT execute the suite (running a full
+ * `next build`/`cargo build`/test suite in the operator's working tree on every
+ * `loom doctor` would be a surprising, slow, artifact-writing regression). To
+ * actually execute the gate for real — in a throwaway worktree — use
+ * `loom doctor --dry-run-gate`. Advisory: `required` is always false.
  */
 export async function gateRunnableCheck(
   projectRoot: string,
@@ -178,8 +148,10 @@ export async function gateRunnableCheck(
     }
 
     const resolveGatePlanFn = deps?.resolve ?? resolveGatePlan;
-    const runGateStepsFn = deps?.run ?? runGateSteps;
-    const probePathDivergenceFn = deps?.probePathDivergence ?? defaultProbePathDivergence;
+    // The gate inherits process.env.PATH exactly (spawn with shell:true, no env),
+    // so the meaningful check is "does each lead binary resolve on THAT PATH".
+    const gatePath = process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+    const binaryResolvesFn = deps?.binaryResolves ?? ((b: string) => binaryOnPath(b, gatePath));
 
     const plan = resolveGatePlanFn(projectRoot, { testCommand });
 
@@ -192,45 +164,35 @@ export async function gateRunnableCheck(
       };
     }
 
-    // FR-11: PATH-divergence probe — warn if a lead binary is available on the
-    // login-shell PATH but not on the gate's non-interactive /bin/sh PATH.
-    const probes = probePathDivergenceFn(plan.steps);
-    const diverged = probes.filter((p) => p.onLogin && !p.onSh);
+    // Verify each unique lead binary resolves on the PATH the gate will inherit.
+    const missing: string[] = [];
+    const seen = new Set<string>();
+    for (const step of plan.steps) {
+      const binary = getLeadBinary(step.command);
+      if (!binary || seen.has(binary)) continue;
+      seen.add(binary);
+      if (!binaryResolvesFn(binary)) missing.push(binary);
+    }
 
-    if (diverged.length > 0) {
-      const binaries = diverged.map((p) => `"${p.binary}"`).join(', ');
+    if (missing.length > 0) {
+      const bins = missing.map((b) => `"${b}"`).join(', ');
       return {
         name,
         ok: false,
         detail:
-          `PATH divergence: ${binaries} resolve on your login PATH but not on the gate's ` +
-          `non-interactive /bin/sh PATH — add them to /etc/paths or /etc/profile, ` +
-          `or set policy.agents.test_command to a fully-qualified command`,
+          `${bins} not found on the gate's PATH — the integration gate will fail with ` +
+          `"command not found". Install the tool and add it to PATH, or set ` +
+          `policy.agents.test_command to a fully-qualified command`,
         required: false,
       };
     }
 
-    // FR-9/NFR-2: execute through the same runner the real gate uses.
-    const stepOutcomes = await runGateStepsFn(plan.steps, {});
-    const allPassed = stepOutcomes.every((s) => s.ok);
-
-    if (allPassed) {
-      const totalMs = stepOutcomes.reduce((sum, s) => sum + s.durationMs, 0);
-      return {
-        name,
-        ok: true,
-        detail: `gate ran and passed (${stepOutcomes.length} step(s) in ${Math.round(totalMs / 1000)}s)`,
-        required: false,
-      };
-    }
-
-    const failed = stepOutcomes.filter((s) => !s.ok);
     return {
       name,
-      ok: false,
-      detail: `gate failed: ${failed
-        .map((s) => (s.timedOut ? `${s.name} (timed out)` : `${s.name} (exit ${s.exitCode})`))
-        .join(', ')}`,
+      ok: true,
+      detail:
+        `${seen.size} gate step(s); every lead binary resolves on the gate's PATH ` +
+        '(run `loom doctor --dry-run-gate` to execute the gate for real)',
       required: false,
     };
   } catch (err) {

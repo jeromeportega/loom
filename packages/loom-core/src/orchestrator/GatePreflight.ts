@@ -135,7 +135,7 @@ export function resolveGatePlan(projectRoot: string, opts: GatePreflightOptions)
   // unit command is `pytest`, replace the command with the appropriate uv variant.
   const resolvedUnitCommand =
     detected.command === 'pytest'
-      ? (detectUvCommand(detected.cwd, probes) ?? detected.command)
+      ? (detectUvCommand(detected.cwd, projectRoot, probes) ?? detected.command)
       : detected.command;
 
   const unitStep: GateStep = {
@@ -170,12 +170,19 @@ function detectToolchainSteps(
 ): GateStep[] {
   const steps: GateStep[] = [];
 
-  // typecheck:tsc — tsconfig.json present
-  if (probes.exists(path.join(projectRoot, TS_SIGNAL))) {
+  // typecheck:tsc — tsconfig.json present.
+  // A solution-style tsconfig that uses project references ({"files":[],
+  // "references":[...]}, the standard TS-monorepo layout) is a NO-OP under
+  // `tsc --noEmit` — it checks nothing and exits 0, a false green in exactly the
+  // repos that most need typechecking. When the tsconfig declares `references`,
+  // use `tsc --build`, which builds and typechecks every referenced project.
+  const tsconfigRaw = probes.read(path.join(projectRoot, TS_SIGNAL));
+  if (tsconfigRaw !== null) {
+    const usesReferences = /"references"\s*:/.test(tsconfigRaw);
     steps.push({
       name: 'typecheck:tsc',
       kind: 'typecheck',
-      command: 'npx --no-install tsc --noEmit',
+      command: usesReferences ? 'npx --no-install tsc --build' : 'npx --no-install tsc --noEmit',
       cwd: projectRoot,
     });
   }
@@ -239,21 +246,30 @@ function detectToolchainSteps(
  *
  * Precedence: [tool.uv.workspace] wins over plain [tool.uv] / uv.lock.
  * Detection is raw-string regex on pyproject.toml — no TOML parser.
+ *
+ * Checks BOTH the unit step's (possibly member-scoped) cwd AND the workspace
+ * root: `uv.lock` and `[tool.uv.workspace]` live at the root, but changed-subdir
+ * scoping can anchor the unit step to a member dir, so a member-scoped gate
+ * inside a uv workspace must still provision via uv (FR-7).
+ *
+ * The table regexes are line-anchored (`^\s*\[…\]`) so a `[tool.uv]` string in a
+ * comment (`# see [tool.uv]`) or another value does not false-positive — TOML
+ * comments start with `#`, which the `^\s*\[` anchor excludes.
  */
-function detectUvCommand(cwd: string, probes: Probes): string | undefined {
-  const pyprojectRaw = probes.read(path.join(cwd, 'pyproject.toml'));
+function detectUvCommand(cwd: string, projectRoot: string, probes: Probes): string | undefined {
+  const roots = cwd === projectRoot ? [cwd] : [cwd, projectRoot];
+  let hasWorkspace = false;
+  let hasUv = false;
+  for (const root of roots) {
+    const raw = probes.read(path.join(root, 'pyproject.toml'));
+    if (raw !== null && /^\s*\[tool\.uv\.workspace\]/m.test(raw)) hasWorkspace = true;
+    if (raw !== null && /^\s*\[tool\.uv\]/m.test(raw)) hasUv = true;
+    if (probes.exists(path.join(root, UV_LOCK))) hasUv = true;
+  }
 
   // Workspace takes precedence: every member's deps must be provisioned.
-  if (pyprojectRaw !== null && /\[tool\.uv\.workspace\]/m.test(pyprojectRaw)) {
-    return 'uv run --all-packages pytest';
-  }
-
-  const hasUvLock = probes.exists(path.join(cwd, UV_LOCK));
-  const hasUvTable = pyprojectRaw !== null && /\[tool\.uv\]/m.test(pyprojectRaw);
-  if (hasUvLock || hasUvTable) {
-    return 'uv run pytest';
-  }
-
+  if (hasWorkspace) return 'uv run --all-packages pytest';
+  if (hasUv) return 'uv run pytest';
   return undefined;
 }
 

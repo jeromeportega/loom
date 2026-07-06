@@ -79,9 +79,13 @@ beforeEach(() => {
 });
 
 describe('loom doctor — gate execution behaviour', () => {
-  it('plain `loom doctor` runs the gate command via gate-runnable (no worktree)', () => {
+  it('plain `loom doctor` does NOT execute the gate command (binary-resolution only, no worktree)', () => {
     loom(['doctor']);
-    assert.equal(gateRunCount(), 1, 'plain doctor runs the gate command once via gate-runnable check');
+    assert.equal(
+      gateRunCount(),
+      0,
+      'plain doctor must NOT execute the gate command — it only checks that lead binaries resolve on the gate PATH; real execution is `--dry-run-gate` only'
+    );
     assert.ok(
       !fs.existsSync(path.join(tmpDir, '.loom', 'integration')),
       'plain doctor must not create an integration worktree'

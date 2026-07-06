@@ -349,7 +349,7 @@ stop / per-worker kill. No external services — local only.
 
 | Command | Purpose |
 |---|---|
-| `loom doctor` | Check prerequisites, machine config, and run the integration gate against the current project (`gate-runnable` check) |
+| `loom doctor` | Check prerequisites, machine config, and verify the gate command's binaries resolve on the gate's PATH (`gate-runnable` check — fast, no execution); `loom doctor --dry-run-gate` actually runs the gate once in a throwaway worktree |
 | `loom init [--cursor]` | Initialize loom in a repo |
 | `loom epic "<brief>"` | Plan an epic from a brief (always gated by the brief-quality refiner) |
 | `loom web` | Open the local dashboard (planning artifacts, live worker output, controls) |

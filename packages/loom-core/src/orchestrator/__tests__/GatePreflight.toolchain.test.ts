@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import {
   resolveGatePlan,
   type GatePreflightOptions,
@@ -51,6 +55,68 @@ describe('toolchain detection — typecheck:tsc', () => {
   it('no tsconfig.json → no typecheck:tsc step', () => {
     const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': REAL_PKG }));
     assert.equal(findStep(plan.steps, 'typecheck:tsc'), undefined);
+  });
+
+  it('solution-style tsconfig (files:[] + references) → tsc --build, not the no-op --noEmit', () => {
+    const solution = JSON.stringify({ files: [], references: [{ path: './pkg' }] });
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': REAL_PKG, 'tsconfig.json': solution }));
+    assert.equal(
+      findStep(plan.steps, 'typecheck:tsc')?.command,
+      'npx --no-install tsc --build',
+      'a tsconfig with project references must use tsc --build (which typechecks the references); --noEmit checks nothing there'
+    );
+  });
+
+  it('plain tsconfig (no references) still uses tsc --noEmit', () => {
+    const plain = JSON.stringify({ compilerOptions: { strict: true }, include: ['src'] });
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': REAL_PKG, 'tsconfig.json': plain }));
+    assert.equal(findStep(plan.steps, 'typecheck:tsc')?.command, 'npx --no-install tsc --noEmit');
+  });
+});
+
+// ─── REAL tsc execution: proves the solution-style fix eliminates the false green ───
+// This is a real-seam test (no mocked runner): it runs the actual TypeScript
+// compiler the same way the gate would, proving that `tsc --noEmit` is a silent
+// no-op on a solution tsconfig (the bug) while `tsc --build` catches the error.
+describe('toolchain detection — REAL tsc proves solution-style false-green elimination', () => {
+  it('tsc --noEmit is a no-op on a solution tsconfig (exit 0) but tsc --build catches the referenced error (exit != 0)', () => {
+    let tscPath: string;
+    try {
+      const req = createRequire(__filename);
+      tscPath = path.join(path.dirname(req.resolve('typescript/package.json')), 'bin', 'tsc');
+    } catch {
+      return; // typescript not resolvable here — toolchain-gated, skip
+    }
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-tsc-solution-'));
+    try {
+      // Root solution tsconfig: files:[] + references → `tsc --noEmit` checks nothing.
+      fs.writeFileSync(
+        path.join(dir, 'tsconfig.json'),
+        JSON.stringify({ files: [], references: [{ path: './pkg' }] })
+      );
+      fs.mkdirSync(path.join(dir, 'pkg'));
+      fs.writeFileSync(
+        path.join(dir, 'pkg', 'tsconfig.json'),
+        JSON.stringify({ compilerOptions: { composite: true, strict: true, outDir: 'dist' }, include: ['*.ts'] })
+      );
+      // A hard type error in the referenced project.
+      fs.writeFileSync(path.join(dir, 'pkg', 'broken.ts'), 'export const n: number = "not a number";\n');
+
+      const run = (args: string[]): number => {
+        try {
+          execFileSync('node', [tscPath, ...args], { cwd: dir, stdio: 'pipe' });
+          return 0;
+        } catch {
+          return 1;
+        }
+      };
+
+      assert.equal(run(['--noEmit']), 0, 'the BUG: tsc --noEmit on a solution tsconfig exits 0 (checks nothing)');
+      assert.equal(run(['--build']), 1, 'the FIX: tsc --build builds the referenced project and catches the type error');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -183,25 +249,26 @@ describe('toolchain detection — no signals (negative)', () => {
 // ─── FR-1 reuse: detection uses injected probes, not real fs ─────────────
 
 describe('toolchain detection — probe injection (FR-1)', () => {
-  it('fileExists calls are made for toolchain signals (proves probes are used)', () => {
+  it('injected probes are used for all toolchain signals (proves probes, not real fs)', () => {
     const checkedPaths: string[] = [];
     const opts: GatePreflightOptions = {
       fileExists: (p) => {
         checkedPaths.push(path.basename(p));
-        if (path.basename(p) === 'package.json') return true;
-        if (path.basename(p) === 'tsconfig.json') return true;
-        return false;
+        return path.basename(p) === 'package.json';
       },
       fileReader: (p) => {
+        // tsconfig.json is read (not just existence-checked) so solution-style
+        // references can be detected — record it as a probe too.
+        checkedPaths.push(path.basename(p));
         if (path.basename(p) === 'package.json') return REAL_PKG;
         return null;
       },
     };
     resolveGatePlan('/repo', opts);
-    assert.ok(checkedPaths.includes('tsconfig.json'), 'tsconfig.json must be probed via injected fileExists');
-    assert.ok(checkedPaths.some((p) => p.startsWith('next.config.')), 'next.config.* must be probed via injected fileExists');
-    assert.ok(checkedPaths.includes('go.mod'), 'go.mod must be probed via injected fileExists');
-    assert.ok(checkedPaths.includes('Cargo.toml'), 'Cargo.toml must be probed via injected fileExists');
+    assert.ok(checkedPaths.includes('tsconfig.json'), 'tsconfig.json must be probed via an injected probe (fileReader)');
+    assert.ok(checkedPaths.some((p) => p.startsWith('next.config.')), 'next.config.* must be probed');
+    assert.ok(checkedPaths.includes('go.mod'), 'go.mod must be probed');
+    assert.ok(checkedPaths.includes('Cargo.toml'), 'Cargo.toml must be probed');
   });
 
   it('detection never touches real disk when probes are injected', () => {

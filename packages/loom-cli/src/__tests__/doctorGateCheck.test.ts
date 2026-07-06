@@ -5,9 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { preflightGateCommand } from '@loom-ai/core';
-import type { GatePreflightResult, GateStep, GateStepOutcome } from '@loom-ai/core';
-import { gateCommandCheck, gateRunnableCheck, getLeadBinary } from '../commands/doctorGateCheck.js';
-import type { PathDivergenceProbe } from '../commands/doctorGateCheck.js';
+import type { GatePreflightResult } from '@loom-ai/core';
+import { gateCommandCheck, gateRunnableCheck } from '../commands/doctorGateCheck.js';
 
 type Preflight = typeof preflightGateCommand;
 
@@ -179,193 +178,122 @@ function passingPlan(command = 'npm test') {
   };
 }
 
-/** Run stub: every step passes. */
-async function allGreenRunner(steps: GateStep[]): Promise<GateStepOutcome[]> {
-  return steps.map((s) => ({
-    name: s.name,
-    kind: s.kind,
-    command: s.command,
-    ok: true,
-    exitCode: 0,
-    timedOut: false,
-    durationMs: 50,
-    output: '',
-  }));
-}
-
-/** Run stub: every step fails with exit 1. */
-async function allFailRunner(steps: GateStep[]): Promise<GateStepOutcome[]> {
-  return steps.map((s) => ({
-    name: s.name,
-    kind: s.kind,
-    command: s.command,
-    ok: false,
-    exitCode: 1,
-    timedOut: false,
-    durationMs: 50,
-    output: 'error output',
-  }));
-}
-
-/** Probe stub: no PATH divergence (binary on both login and sh PATH). */
-const noDivergenceProbe = (_steps: GateStep[]): PathDivergenceProbe[] =>
-  _steps.flatMap((s) => {
-    const binary = getLeadBinary(s.command);
-    if (!binary) return [];
-    return [{ binary, onLogin: true, onSh: true }];
-  });
-
-describe('gateRunnableCheck — passes iff gate passes (FR-10)', () => {
+describe('gateRunnableCheck — verifies lead binaries resolve on the gate PATH (FR-9/10/11)', () => {
   let tmpDir: string;
   before(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-fr10-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-'));
   });
   after(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('ok:true when all steps pass', async () => {
+  it('ok:true when every step lead binary resolves on the gate PATH', async () => {
     const result = await gateRunnableCheck(tmpDir, {
-      resolve: () => passingPlan(),
-      run: allGreenRunner,
-      probePathDivergence: noDivergenceProbe,
+      resolve: () => passingPlan('make test'),
+      binaryResolves: () => true,
     });
     assert.equal(result.ok, true);
     assert.equal(result.name, 'gate-runnable');
     assert.equal(result.required, false);
   });
 
-  it('ok:false when any step fails', async () => {
+  it('ok:false naming a binary that does NOT resolve (the uv-off-the-gate-PATH friction)', async () => {
     const result = await gateRunnableCheck(tmpDir, {
-      resolve: () => passingPlan(),
-      run: allFailRunner,
-      probePathDivergence: noDivergenceProbe,
+      resolve: () => passingPlan('uv run pytest'),
+      binaryResolves: (b) => b !== 'uv',
     });
-    assert.equal(result.ok, false);
+    assert.equal(result.ok, false, 'a missing lead binary must set ok:false');
+    assert.ok(result.detail.includes('"uv"'), `detail must name the missing binary: ${result.detail}`);
+    assert.ok(
+      result.detail.toLowerCase().includes("gate's path"),
+      `detail must mention the gate's PATH: ${result.detail}`
+    );
     assert.equal(result.required, false);
-    assert.ok(result.detail.includes('gate failed'), `detail should describe failure: ${result.detail}`);
   });
 
-  it('required:false in both pass and fail branches', async () => {
-    const pass = await gateRunnableCheck(tmpDir, {
-      resolve: () => passingPlan(),
-      run: allGreenRunner,
-      probePathDivergence: noDivergenceProbe,
+  it('does NOT execute the suite (side-effect-free) — points at --dry-run-gate for real exec', async () => {
+    // The new check only probes binary resolution; it must never run the command.
+    // A command that would fail if executed still yields ok:true because it is not run.
+    const result = await gateRunnableCheck(tmpDir, {
+      resolve: () => passingPlan('false'),
+      binaryResolves: () => true,
     });
-    const fail = await gateRunnableCheck(tmpDir, {
-      resolve: () => passingPlan(),
-      run: allFailRunner,
-      probePathDivergence: noDivergenceProbe,
-    });
-    assert.equal(pass.required, false, 'pass case: required must be false');
-    assert.equal(fail.required, false, 'fail case: required must be false');
+    assert.equal(result.ok, true, 'binary-resolution check must not execute the command');
+    assert.ok(
+      result.detail.includes('--dry-run-gate'),
+      `detail should point at --dry-run-gate for real execution: ${result.detail}`
+    );
   });
 
-  it('consumes runGateSteps output — run dep is called with the resolved plan steps', async () => {
-    let receivedSteps: GateStep[] | undefined;
-    const plan = passingPlan('make test');
-    await gateRunnableCheck(tmpDir, {
-      resolve: () => plan,
-      run: async (steps) => {
-        receivedSteps = steps;
-        return allGreenRunner(steps);
-      },
-      probePathDivergence: noDivergenceProbe,
-    });
-    assert.deepEqual(receivedSteps, plan.steps, 'run dep must receive the plan steps');
-  });
-
-  it('ok:true when source is none (no steps)', async () => {
+  it('ok:true when source is none (no steps) — amputation-only gate', async () => {
     const result = await gateRunnableCheck(tmpDir, {
       resolve: () => ({ steps: [], source: 'none' as const, cwd: '/repo' }),
-      run: allGreenRunner,
-      probePathDivergence: noDivergenceProbe,
+      binaryResolves: () => true,
     });
     assert.equal(result.ok, true);
     assert.ok(result.detail.includes('amputation'), `detail should mention amputation: ${result.detail}`);
     assert.equal(result.required, false);
   });
-});
 
-describe('gateRunnableCheck — PATH-divergence warning (FR-11)', () => {
-  let tmpDir: string;
-  before(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-fr11-'));
-  });
-  after(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('ok:false with explicit warning when binary on login PATH but not gate sh PATH', async () => {
-    const result = await gateRunnableCheck(tmpDir, {
-      resolve: () => passingPlan('uv run pytest'),
-      run: allGreenRunner,
-      probePathDivergence: (_steps) => [{ binary: 'uv', onLogin: true, onSh: false }],
+  it('required:false in every branch (advisory)', async () => {
+    const pass = await gateRunnableCheck(tmpDir, {
+      resolve: () => passingPlan('make test'),
+      binaryResolves: () => true,
     });
-    assert.equal(result.ok, false, 'PATH divergence must set ok:false');
-    assert.ok(result.detail.includes('"uv"'), `detail must name the diverged binary: ${result.detail}`);
-    assert.ok(
-      result.detail.toLowerCase().includes('path divergence'),
-      `detail must mention PATH divergence: ${result.detail}`
-    );
-    assert.equal(result.required, false);
+    const missing = await gateRunnableCheck(tmpDir, {
+      resolve: () => passingPlan('uv run pytest'),
+      binaryResolves: () => false,
+    });
+    assert.equal(pass.required, false);
+    assert.equal(missing.required, false);
   });
 
-  it('no warning and run is called when binary is on both paths', async () => {
-    let runCalled = false;
-    const result = await gateRunnableCheck(tmpDir, {
-      resolve: () => passingPlan('uv run pytest'),
-      run: async (steps) => {
-        runCalled = true;
-        return allGreenRunner(steps);
-      },
-      probePathDivergence: (_steps) => [{ binary: 'uv', onLogin: true, onSh: true }],
+  it('dedupes lead binaries across steps (npx probed once)', async () => {
+    let probeCount = 0;
+    const plan = {
+      steps: [
+        { name: 'unit', kind: 'unit' as const, command: 'npx --no-install jest', cwd: '/repo' },
+        { name: 'typecheck:tsc', kind: 'typecheck' as const, command: 'npx --no-install tsc --noEmit', cwd: '/repo' },
+      ],
+      source: 'auto-detected' as const,
+      cwd: '/repo',
+    };
+    await gateRunnableCheck(tmpDir, {
+      resolve: () => plan,
+      binaryResolves: () => { probeCount++; return true; },
     });
-    assert.equal(result.ok, true);
-    assert.ok(runCalled, 'run dep must be called when no PATH divergence');
-    assert.ok(
-      !result.detail.toLowerCase().includes('path divergence'),
-      `detail must not mention PATH divergence: ${result.detail}`
-    );
-  });
-
-  it('required:false in PATH-divergence branch', async () => {
-    const result = await gateRunnableCheck(tmpDir, {
-      resolve: () => passingPlan('uv run pytest'),
-      run: allGreenRunner,
-      probePathDivergence: (_steps) => [{ binary: 'uv', onLogin: true, onSh: false }],
-    });
-    assert.equal(result.required, false);
+    assert.equal(probeCount, 1, 'the shared lead binary (npx) is probed once, not per step');
   });
 });
 
-describe('gateRunnableCheck — integration: real /bin/sh execution', () => {
-  it('ok:true for `true` — end-to-end /bin/sh execution via defaultRunner', async () => {
+describe('gateRunnableCheck — integration: real /bin/sh binary resolution', () => {
+  it('ok:true when the lead binary resolves (test_command: "true")', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-int-'));
     try {
       fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
-      fs.writeFileSync(
-        path.join(root, '.loom', 'policy.yaml'),
-        'agents:\n  test_command: "true"\n'
-      );
+      fs.writeFileSync(path.join(root, '.loom', 'policy.yaml'), 'agents:\n  test_command: "true"\n');
       const result = await gateRunnableCheck(root);
-      assert.equal(result.ok, true, `expected ok:true for 'true', got: ${result.detail}`);
+      assert.equal(result.ok, true, `'true' resolves on PATH → ok:true, got: ${result.detail}`);
       assert.equal(result.required, false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('ok:false for `false` — exit code 1 reflects real gate failure', async () => {
+  it('ok:false when the lead binary is missing (nonexistent command)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-int-'));
     try {
       fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
       fs.writeFileSync(
         path.join(root, '.loom', 'policy.yaml'),
-        'agents:\n  test_command: "false"\n'
+        'agents:\n  test_command: "loom-nonexistent-binary-xyz --run"\n'
       );
       const result = await gateRunnableCheck(root);
-      assert.equal(result.ok, false, `expected ok:false for 'false', got: ${result.detail}`);
+      assert.equal(result.ok, false, `a missing binary → ok:false, got: ${result.detail}`);
+      assert.ok(
+        result.detail.includes('loom-nonexistent-binary-xyz'),
+        `detail names the missing binary: ${result.detail}`
+      );
       assert.equal(result.required, false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

@@ -2267,7 +2267,7 @@ npm run test -w @loom-ai/core   # SupervisorRecovery.test.ts
 
 ## Epic 68 — Toolchain-Aware Integration Gate
 
-**What was delivered:** The integration gate is now multi-step and toolchain-aware. Instead of running only a single unit-test command, the gate resolves an ordered `GateStep[]` plan — one unit step plus zero or more toolchain steps — and runs every step independently, reporting per-step pass/fail and wall-clock. `loom doctor` now also executes the gate on the current project via a `gate-runnable` real-exec check.
+**What was delivered:** The integration gate is now multi-step and toolchain-aware. Instead of running only a single unit-test command, the gate resolves an ordered `GateStep[]` plan — one unit step plus zero or more toolchain steps — and runs every step independently, reporting per-step pass/fail and wall-clock. `loom doctor`'s `gate-runnable` check resolves that plan and verifies each step's lead binary resolves on the gate's PATH (fast, no execution); `loom doctor --dry-run-gate` runs the whole plan for real in a throwaway worktree.
 
 ### New toolchain step detection
 
@@ -2295,20 +2295,20 @@ Build steps run full compilations and materially increase gate time. `build:next
 
 ### Gate-runnable doctor check
 
-`loom doctor` now includes a `gate-runnable` check that actually executes the resolved gate plan via `resolveGatePlan` + `runGateSteps` on the current project directory. The check:
+`loom doctor` includes a `gate-runnable` check that resolves the gate plan (`resolveGatePlan` — the same detection the EpicFinalizer runs) and verifies each step's lead binary resolves on the PATH the gate will inherit. It does **not** execute the suite — running `next build`/`cargo build`/the full test suite in the working tree on every `loom doctor` would be slow and write build artifacts. The check:
 
 - Resolves the same steps the EpicFinalizer would run (configured override or auto-detected)
-- Runs every step and collects per-step outcomes
-- Reports `ok` when all steps pass; reports `failed: <step-name> exited <N>` on failure
+- Probes each step's lead binary via `/bin/sh -c 'command -v'` on the gate's inherited PATH
+- Reports `ok` when every lead binary resolves; reports the missing binary name(s) when one does not (the classic "gate fails with `command not found`" false-green, e.g. `uv` off the gate PATH)
 - Is advisory only (`required: false`) — never flips doctor's own exit code
-- Detects PATH divergence (a binary found on the login shell but absent in the gate's non-interactive `/bin/sh`) and reports it explicitly
+- Is fast and side-effect-free; `loom doctor --dry-run-gate` is the opt-in that actually executes the whole plan once in a throwaway worktree
 
 ```
-# Example doctor output when all steps pass:
-✓ gate-runnable: gate ran and passed (2 step(s) in 14s)
+# Example doctor output when every lead binary resolves:
+✓ gate-runnable: 2 gate step(s); every lead binary resolves on the gate's PATH (run `loom doctor --dry-run-gate` to execute the gate for real)
 
-# Example output when a step fails:
-✗ gate-runnable: gate failed: typecheck:tsc exited 1 (...)
+# Example output when a required binary is missing from the gate's PATH:
+✗ gate-runnable: "uv" not found on the gate's PATH — the integration gate will fail with "command not found" ...
 ```
 
 ### Automated tests
@@ -2323,11 +2323,13 @@ npm run test -w loom-ai         # doctorGateCheck.test.ts
 ```bash
 # In a TypeScript + Next.js repo:
 loom doctor
-# Expect a gate-runnable check that shows typecheck:tsc + build:next steps
+# Expect gate-runnable to confirm the lead binaries (npx) resolve on the gate PATH
+loom doctor --dry-run-gate
+# Expect the real run to show typecheck:tsc + build:next steps
 
-# In a Python uv workspace:
+# In a Python uv workspace (uv NOT on PATH):
 loom doctor
-# Expect gate-runnable to run `uv run --all-packages pytest`
+# Expect gate-runnable to FAIL naming "uv" as missing from the gate's PATH
 
 # In a repo with no detectable test suite:
 loom doctor
