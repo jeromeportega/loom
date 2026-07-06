@@ -33,6 +33,9 @@ export const MERGE_STRATEGY: Record<string, MergeStrategy> = {
   // Its name starts with 'allowed_' so the registry-coverage test requires an
   // explicit entry here; the 'scalar' strategy is the intentional choice.
   'filesystem.allowed_write_root': 'scalar',
+  // allowed_read_root mirrors allowed_write_root: scalar path string, higher layer wins.
+  // See allowed_write_root comment above for the design rationale.
+  'filesystem.allowed_read_root':  'scalar',
 
   // ── Guard boolean — true wins regardless of precedence (ADR-004) ──
   // agents_must_use_pr=true is the more restrictive value; once any layer asserts

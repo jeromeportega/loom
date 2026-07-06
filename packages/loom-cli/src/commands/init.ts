@@ -499,6 +499,9 @@ filesystem:
   # Root directory agents are allowed to write within (default: project root)
   allowed_write_root: "."
 
+  # Root directory agents may read/search within (default: project root)
+  allowed_read_root: "."
+
 agents:
   # Max number of story agents running simultaneously
   max_concurrent: 5
