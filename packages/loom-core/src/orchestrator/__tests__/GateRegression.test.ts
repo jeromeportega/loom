@@ -154,6 +154,50 @@ describe('checkCrossEpicRegressions', () => {
     });
     assert.deepEqual(result, [], 'symbol in context lines must suppress the regression finding');
   });
+
+  it('no duplicate: symbol removed in both storyDiff and epicDiff produces exactly one finding', () => {
+    const removedLine = '-export interface UserRecord { id: string; }';
+    const storyDiff = [removedLine, '+// removed in story'].join('\n');
+    const epicDiff  = [removedLine, '+// removed in aggregate'].join('\n');
+
+    const result = checkCrossEpicRegressions({
+      epicDiff,
+      storyDiffs: new Map([['story-001', storyDiff]]),
+      priorContracts: new Map([['epic-A', ['UserRecord']]]),
+    });
+
+    assert.equal(result.length, 1, 'one finding expected, not two');
+    assert.equal(result[0].storyId, 'story-001', 'finding must be attributed to story, not aggregate epicDiff');
+    assert.equal(result[0].symbol, 'UserRecord');
+    assert.equal(result[0].priorEpicId, 'epic-A');
+  });
+
+  it('cross-file: symbol removed in one file is not suppressed by context lines in another file', () => {
+    const diff = [
+      'diff --git a/definitions.ts b/definitions.ts',
+      '--- a/definitions.ts',
+      '+++ b/definitions.ts',
+      '@@ -1,2 +1,1 @@',
+      '-export interface UserRecord { id: string; }',
+      '+// definition removed',
+      'diff --git a/usage.ts b/usage.ts',
+      '--- a/usage.ts',
+      '+++ b/usage.ts',
+      '@@ -5,3 +5,4 @@',
+      ' const u: UserRecord = load();',  // context line in a different file
+      '+// unrelated addition',
+    ].join('\n');
+
+    const result = checkCrossEpicRegressions({
+      epicDiff: diff,
+      storyDiffs: new Map(),
+      priorContracts: new Map([['epic-A', ['UserRecord']]]),
+    });
+
+    assert.equal(result.length, 1, 'regression must be found even when context lines appear in another file');
+    assert.equal(result[0].symbol, 'UserRecord');
+    assert.equal(result[0].priorEpicId, 'epic-A');
+  });
 });
 
 // ── runFinalizeGates — regression gate policy wiring ─────────────────────────
