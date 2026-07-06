@@ -269,4 +269,32 @@ export class AgentStore {
       .prepare('UPDATE agents SET model = ?, updated_at = ? WHERE id = ?')
       .run(model, new Date().toISOString(), id);
   }
+
+  /**
+   * Increments revise_round by 1 for the given agent attempt.
+   * SQL: UPDATE agents SET revise_round = revise_round + 1 WHERE id = ?
+   * Throws if agentId is not in the table.
+   */
+  incrementReviseRound(agentId: string): void {
+    const result = this.db
+      .prepare(
+        'UPDATE agents SET revise_round = revise_round + 1, updated_at = ? WHERE id = ?'
+      )
+      .run(new Date().toISOString(), agentId);
+    if (result.changes === 0) {
+      throw new Error(`AgentNotFoundError: agent '${agentId}' not found`);
+    }
+  }
+
+  /**
+   * Returns the current revise_round for an agent attempt.
+   * SQL: SELECT revise_round FROM agents WHERE id = ?
+   * Returns 0 defensively if not found.
+   */
+  getReviseRound(agentId: string): number {
+    const row = this.db
+      .prepare('SELECT revise_round FROM agents WHERE id = ?')
+      .get(agentId) as { revise_round: number } | undefined;
+    return row?.revise_round ?? 0;
+  }
 }
