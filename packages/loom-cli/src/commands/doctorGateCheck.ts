@@ -173,16 +173,16 @@ export async function gateRunnableCheck(
   try {
     let testCommand: string | undefined;
     let testCommandEntries: TestCommandEntry[] = [];
+    const loomDir = path.join(projectRoot, '.loom');
     try {
-      const loomDir = path.join(projectRoot, '.loom');
       const policy = PolicyEngine.load(loomDir).policyData;
       testCommand = policy.agents.test_command;
-      // Read test_commands from raw YAML so the field is not silently stripped
-      // when the resolved @loom-ai/core dist predates story-078-001's schema change.
-      testCommandEntries = loadTestCommandsFromYaml(loomDir);
     } catch {
       // No .loom directory or unreadable policy — proceed with no override.
     }
+    // loadTestCommandsFromYaml has its own error handling; always run it so
+    // test_commands binaries are checked even when PolicyEngine.load() fails.
+    testCommandEntries = loadTestCommandsFromYaml(loomDir);
 
     const resolveGatePlanFn = deps?.resolve ?? resolveGatePlan;
     // The gate inherits process.env.PATH exactly (spawn with shell:true, no env),
@@ -212,10 +212,14 @@ export async function gateRunnableCheck(
     }
 
     // Verify lead binary for each test_commands entry.
+    // Re-use `seen` for cross-loop dedup: a binary already checked for gate steps
+    // gives the same PATH result and does not need a separate TC entry report.
+    const stepsCheckedCount = seen.size;
     const missingEntries: Array<{ entryName: string; binary: string }> = [];
     for (const entry of testCommandEntries) {
       const binary = getLeadBinary(entry.command);
-      if (!binary) continue;
+      if (!binary || seen.has(binary)) continue;
+      seen.add(binary);
       if (!binaryResolvesFn(binary)) {
         missingEntries.push({ entryName: entry.name, binary });
       }
@@ -246,7 +250,7 @@ export async function gateRunnableCheck(
       name,
       ok: true,
       detail:
-        `${seen.size} gate step(s); every lead binary resolves on the gate's PATH ` +
+        `${stepsCheckedCount} gate step(s), ${testCommandEntries.length} test_commands entr${testCommandEntries.length === 1 ? 'y' : 'ies'} checked; every lead binary resolves on the gate's PATH ` +
         '(run `loom doctor --dry-run-gate` to execute the gate for real)',
       required: false,
     };

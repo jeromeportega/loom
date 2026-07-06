@@ -502,6 +502,7 @@ describe('gateRunnableCheck — doctor call path integration (story-078-003)', (
         ].join('\n') + '\n'
       );
       let stdout = '';
+      let stderr = '';
       try {
         const out = execSync(`node "${LOOM_CLI}" doctor`, {
           cwd: root,
@@ -512,10 +513,11 @@ describe('gateRunnableCheck — doctor call path integration (story-078-003)', (
         stdout = out;
       } catch (err: unknown) {
         stdout = (err as { stdout?: string }).stdout ?? '';
+        stderr = (err as { stderr?: string }).stderr ?? '';
       }
       assert.ok(
-        stdout.includes('loom-nonexistent-tc-binary-xyz'),
-        `doctor output names the missing binary: ${stdout}`
+        (stdout + stderr).includes('loom-nonexistent-tc-binary-xyz'),
+        `doctor output names the missing binary:\nstdout: ${stdout}\nstderr: ${stderr}`
       );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
