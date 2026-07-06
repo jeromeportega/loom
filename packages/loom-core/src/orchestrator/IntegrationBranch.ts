@@ -12,6 +12,23 @@ export interface IntegrationBranchInfo {
   tip: string;
 }
 
+/**
+ * Result of {@link IntegrationBranch.syncWithMain} — merging the latest main
+ * into the epic's rolling integration branch on demand.
+ *
+ * @internal Do not depend on this from third-party code.
+ */
+export interface SyncResult {
+  /** True when integration HEAD was already a descendant of main HEAD. */
+  alreadyCurrent: boolean;
+  /** Number of commits pulled from main; 0 when alreadyCurrent=true. */
+  mergedCommits: number;
+  /** True when the merge was aborted due to conflict or fetch failure. */
+  conflicted: boolean;
+  /** Human-readable error when conflicted=true. */
+  diagnostic?: string;
+}
+
 export interface MergeOutcome {
   /** True when the story branch is now part of epic/<id> (merged or already in). */
   ok: boolean;
@@ -274,6 +291,62 @@ export class IntegrationBranch {
   /** Aborts an in-progress merge in the integration worktree (best-effort). */
   abortMerge(epicId: string): void {
     gitSafe(this.path(epicId), ['merge', '--abort']);
+  }
+
+  /**
+   * Merges the latest `mainBranch` (default: `'main'`) into `epic/<epicId>`
+   * inside the integration worktree. Returns {@link SyncResult}.
+   *
+   * Exits early (alreadyCurrent=true) when the integration branch HEAD is
+   * already a descendant of `origin/<mainBranch>`. On fetch failure or merge
+   * conflict the method aborts the merge, leaving the worktree clean.
+   *
+   * @internal — semi-public for the `loom sync` CLI command; not a stable API
+   *   for third-party consumers.
+   */
+  async syncWithMain(epicId: string, mainBranch = 'main'): Promise<SyncResult> {
+    const wtPath = this.path(epicId);
+    const remote = `origin/${mainBranch}`;
+
+    // ── 1. Fetch origin/<mainBranch> ────────────────────────────────────────
+    const fetch = gitSafe(wtPath, ['fetch', 'origin', mainBranch]);
+    if (!fetch.ok) {
+      return {
+        alreadyCurrent: false,
+        mergedCommits: 0,
+        conflicted: true,
+        diagnostic: `git fetch origin ${mainBranch} failed: ${fetch.output}`,
+      };
+    }
+
+    // ── 2. Already up to date? ───────────────────────────────────────────────
+    // The integration branch HEAD is already a descendant of remote/main when
+    // `merge-base --is-ancestor <remote> HEAD` exits 0.
+    const isAncestor = gitSafe(wtPath, ['merge-base', '--is-ancestor', remote, 'HEAD']);
+    if (isAncestor.ok) {
+      return { alreadyCurrent: true, mergedCommits: 0, conflicted: false };
+    }
+
+    // ── 3. Count commits to be merged ────────────────────────────────────────
+    // `git rev-list HEAD..remote/main --count` gives the number of commits on
+    // main that are not yet reachable from HEAD.
+    const countRes = gitSafe(wtPath, ['rev-list', '--count', `HEAD..${remote}`]);
+    const mergedCommits = countRes.ok ? parseInt(countRes.output, 10) || 0 : 0;
+
+    // ── 4. Merge ─────────────────────────────────────────────────────────────
+    const merge = gitSafe(wtPath, ['merge', '--no-edit', remote]);
+    if (merge.ok) {
+      return { alreadyCurrent: false, mergedCommits, conflicted: false };
+    }
+
+    // Merge failed — abort so the worktree stays clean.
+    this.abortMerge(epicId);
+    return {
+      alreadyCurrent: false,
+      mergedCommits: 0,
+      conflicted: true,
+      diagnostic: `git merge ${remote} failed: ${merge.output.slice(-512)}`,
+    };
   }
 
   /** Hard-resets the integration worktree (and the epic branch) to `sha`. */

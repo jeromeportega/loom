@@ -34,6 +34,7 @@ import { spec as migrateSpec } from '../commands/migrate.js';
 import { specSearch as retrieveSearchSpec, specRead as retrieveReadSpec } from '../commands/retrieve.js';
 import { spec as costSpec } from '../commands/cost.js';
 import { spec as finalizeSpec } from '../commands/finalize.js';
+import { syncSpec } from '../commands/sync.js';
 // <command specs>
 
 /**
@@ -82,6 +83,7 @@ export function collectSpecs(): CommandDescription[] {
     retrieveReadSpec,
     costSpec,
     finalizeSpec,
+    syncSpec,
     // <command specs>
   ];
 }

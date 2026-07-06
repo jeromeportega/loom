@@ -271,3 +271,112 @@ describe('IntegrationBranch', () => {
     assert.equal(exists, '', 'branch removed');
   });
 });
+
+// ─── syncWithMain ──────────────────────────────────────────────────────────────
+
+describe('IntegrationBranch.syncWithMain', () => {
+  let remote: string;
+
+  beforeEach(() => {
+    // Create a bare remote repo and register it as origin in the shared test repo.
+    // The integration worktree inherits the same .git config, so fetch runs against
+    // this same remote.
+    remote = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'loom-remote-')));
+    execFileSync('git', ['init', '--bare', '-q'], { cwd: remote, encoding: 'utf8' });
+    gitc(['remote', 'add', 'origin', remote]);
+    // Seed the remote with the initial commit on branch 'main'.
+    gitc(['push', '-q', 'origin', `${base}:refs/heads/main`]);
+  });
+
+  afterEach(() => {
+    fs.rmSync(remote, { recursive: true, force: true });
+  });
+
+  it('returns alreadyCurrent when integration HEAD is already a descendant of origin/main', async () => {
+    const ib = new IntegrationBranch(repo);
+    ib.ensure('epic-001', base);
+    // The integration branch is at the same commit as origin/main — already current.
+    const result = await ib.syncWithMain('epic-001', 'main');
+    assert.equal(result.alreadyCurrent, true);
+    assert.equal(result.mergedCommits, 0);
+    assert.equal(result.conflicted, false);
+    assert.equal(result.diagnostic, undefined);
+  });
+
+  it('fetches and merges N new commits from main and returns mergedCommits=N', async () => {
+    const ib = new IntegrationBranch(repo);
+    ib.ensure('epic-001', base);
+
+    // Add 2 commits to the main repo's default branch and push to origin/main.
+    fs.writeFileSync(path.join(repo, 'new1.txt'), 'commit 1\n');
+    gitc(['add', 'new1.txt']);
+    gitc(['commit', '-q', '-m', 'main: commit 1']);
+    fs.writeFileSync(path.join(repo, 'new2.txt'), 'commit 2\n');
+    gitc(['add', 'new2.txt']);
+    gitc(['commit', '-q', '-m', 'main: commit 2']);
+    gitc(['push', '-q', 'origin', 'HEAD:refs/heads/main']);
+
+    const result = await ib.syncWithMain('epic-001', 'main');
+    assert.equal(result.alreadyCurrent, false);
+    assert.equal(result.mergedCommits, 2);
+    assert.equal(result.conflicted, false);
+
+    // Verify the integration worktree received the merged files.
+    const wtPath = ib.path('epic-001');
+    assert.ok(fs.existsSync(path.join(wtPath, 'new1.txt')), 'new1.txt merged in');
+    assert.ok(fs.existsSync(path.join(wtPath, 'new2.txt')), 'new2.txt merged in');
+  });
+
+  it('aborts on merge conflict, returns conflicted=true, leaves integration branch clean', async () => {
+    const ib = new IntegrationBranch(repo);
+    const info = ib.ensure('epic-001', base);
+
+    // Commit a conflicting change to the integration branch.
+    fs.writeFileSync(path.join(info.path, 'shared.txt'), 'from integration\n');
+    execFileSync('git', ['add', 'shared.txt'], { cwd: info.path, encoding: 'utf8' });
+    execFileSync('git', ['commit', '-q', '-m', 'integration: write shared'], {
+      cwd: info.path,
+      encoding: 'utf8',
+    });
+
+    // Commit the same file with different content on the main repo and push.
+    fs.writeFileSync(path.join(repo, 'shared.txt'), 'from main\n');
+    gitc(['add', 'shared.txt']);
+    gitc(['commit', '-q', '-m', 'main: write shared']);
+    gitc(['push', '-q', 'origin', 'HEAD:refs/heads/main']);
+
+    const result = await ib.syncWithMain('epic-001', 'main');
+    assert.equal(result.conflicted, true);
+    assert.ok(typeof result.diagnostic === 'string' && result.diagnostic.length > 0, 'diagnostic present');
+    assert.equal(result.alreadyCurrent, false);
+    // The merge must be aborted — no unmerged paths and no MERGE_HEAD.
+    assert.deepEqual(ib.unmergedPaths('epic-001'), []);
+    assert.ok(!mergeInProgress(info.path), 'merge aborted — no MERGE_HEAD');
+    const status = gitc(['status', '--porcelain'], info.path);
+    assert.equal(status, '', 'integration worktree is clean');
+  });
+
+  it('returns conflicted=true with fetch diagnostic when git fetch fails (unreachable remote)', async () => {
+    const ib = new IntegrationBranch(repo);
+    ib.ensure('epic-001', base);
+
+    // Point origin at a path that does not exist so the fetch fails.
+    gitc(['remote', 'set-url', 'origin', '/nonexistent/loom-remote-does-not-exist']);
+
+    const result = await ib.syncWithMain('epic-001', 'main');
+    assert.equal(result.conflicted, true);
+    assert.ok(typeof result.diagnostic === 'string' && result.diagnostic.length > 0, 'diagnostic present');
+    assert.ok(result.diagnostic!.includes('git fetch'), `expected 'git fetch' in diagnostic, got: ${result.diagnostic}`);
+    // No merge was attempted, so mergedCommits is 0.
+    assert.equal(result.mergedCommits, 0);
+  });
+
+  it('defaults mainBranch to "main" when the param is omitted', async () => {
+    const ib = new IntegrationBranch(repo);
+    ib.ensure('epic-001', base);
+    // Omit mainBranch — should behave identically to passing 'main'.
+    const result = await ib.syncWithMain('epic-001');
+    assert.equal(result.alreadyCurrent, true);
+    assert.equal(result.conflicted, false);
+  });
+});
