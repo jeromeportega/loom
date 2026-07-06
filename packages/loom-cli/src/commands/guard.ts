@@ -93,15 +93,18 @@ export async function runGuardHook(): Promise<void> {
       process.exit(EXIT_ALLOW);
     }
 
-    // Load policy from the MAIN repo's .loom, not cwd/.loom: a worker's cwd is a
-    // `.loom/worktrees/<story>` worktree that has no committed `.loom/policy.yaml`,
-    // so loading from cwd would fail and fall through to ALLOW — silently
-    // disabling read-scope for exactly the worker sessions it must protect.
+    // Load policy from the MAIN repo's .loom, not cwd/.loom. A worker's cwd is a
+    // `.loom/worktrees/<story>` worktree with no committed `.loom/policy.yaml`, so
+    // `PolicyEngine.load(cwd)` silently returns SCHEMA DEFAULTS instead of the
+    // operator's real policy — enforcing a default read-scope while ignoring a
+    // configured `allowed_read_root` (e.g. a broadened root or cross-repo grants).
+    // Loading from the main repo makes workers honor the actual policy.
     let engine: PolicyEngine;
     try {
       engine = PolicyEngine.load(path.join(mainRepoRoot, LOOM_DIR));
     } catch {
-      // Policy genuinely unavailable (pre-loom-init) — allow.
+      // load only throws on a malformed policy / IO error (a missing file yields
+      // defaults) — allow, as before. (Follow-up: fail closed on invalid policy.)
       process.exit(EXIT_ALLOW);
     }
     const ctx = buildReadScopeCtx(engine, projectRoot);
@@ -141,13 +144,14 @@ export async function runGuardHook(): Promise<void> {
     }
 
     // Load policy from the MAIN repo's .loom (see the Read-tool path above): a
-    // worker worktree has no committed `.loom/policy.yaml`, so cwd/.loom would
-    // fail-open and disable the Bash read-scope check for workers.
+    // worker worktree has no committed `.loom/policy.yaml`, so `load(cwd)` returns
+    // schema defaults rather than the operator's configured read-scope policy.
     let engine: PolicyEngine;
     try {
       engine = PolicyEngine.load(path.join(mainRepoRoot, LOOM_DIR));
     } catch {
-      // Policy genuinely unavailable (pre-loom-init) — allow.
+      // load only throws on a malformed policy / IO error (missing → defaults) —
+      // allow, as before. (Follow-up: fail closed on invalid policy.)
       process.exit(EXIT_ALLOW);
     }
     const ctx = buildReadScopeCtx(engine, projectRoot);

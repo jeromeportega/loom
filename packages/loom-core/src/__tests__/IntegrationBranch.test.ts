@@ -379,4 +379,34 @@ describe('IntegrationBranch.syncWithMain', () => {
     assert.equal(result.alreadyCurrent, true);
     assert.equal(result.conflicted, false);
   });
+
+  it('refuses to sync when the integration path is a stale plain dir (protects the operator checkout)', async () => {
+    const ib = new IntegrationBranch(repo);
+    // A stale PLAIN directory at the integration worktree path — a crash between
+    // mkdir and `worktree add`, NOT a real linked worktree. (No ensure() call.)
+    const wtPath = ib.path('epic-001');
+    fs.mkdirSync(wtPath, { recursive: true });
+    fs.writeFileSync(path.join(wtPath, 'stale.txt'), 'leftover\n');
+
+    // Operator has another branch checked out with a local commit. Without the
+    // worktree validation, every git call in syncWithMain resolves UP to this
+    // checkout and merges origin/main into `operator-work` (the reproduced bug).
+    gitc(['checkout', '-q', '-b', 'operator-work']);
+    fs.writeFileSync(path.join(repo, 'operator.txt'), 'operator work\n');
+    gitc(['add', 'operator.txt']);
+    gitc(['commit', '-q', '-m', 'operator commit']);
+    const headBefore = gitc(['rev-parse', 'HEAD']);
+
+    const result = await ib.syncWithMain('epic-001', 'main');
+
+    assert.equal(result.conflicted, true, 'a stale non-worktree dir must be refused');
+    assert.equal(result.alreadyCurrent, false);
+    assert.equal(result.mergedCommits, 0);
+    assert.match(result.diagnostic ?? '', /not a valid integration worktree|stale/i);
+
+    // The operator's checkout was NOT mutated — no silent merge into their branch.
+    assert.equal(gitc(['rev-parse', 'HEAD']), headBefore, 'operator HEAD must be unchanged');
+    assert.equal(gitc(['rev-parse', '--abbrev-ref', 'HEAD']), 'operator-work', 'operator branch unchanged');
+    assert.equal(mergeInProgress(repo), false, 'no merge left in progress in the operator checkout');
+  });
 });
