@@ -1,6 +1,38 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import jsYaml from 'js-yaml';
 import { PolicyEngine, preflightGateCommand, resolveGatePlan } from '@loom-ai/core';
+
+/** Matches TestCommandEntry from @loom-ai/core (story-078-001). */
+interface TestCommandEntry {
+  name: string;
+  command: string;
+  paths: string[];
+}
+
+/**
+ * Read test_commands from the raw policy YAML, bypassing Zod validation so the
+ * field is not stripped when the resolved @loom-ai/core dist predates story-078-001.
+ */
+function loadTestCommandsFromYaml(loomDir: string): TestCommandEntry[] {
+  try {
+    const raw = jsYaml.load(
+      fs.readFileSync(path.join(loomDir, 'policy.yaml'), 'utf8')
+    ) as Record<string, unknown> | null;
+    const entries = (raw?.agents as Record<string, unknown> | undefined)?.test_commands;
+    if (!Array.isArray(entries)) return [];
+    return entries.filter(
+      (e): e is TestCommandEntry =>
+        e != null &&
+        typeof e === 'object' &&
+        typeof (e as { name?: unknown }).name === 'string' &&
+        typeof (e as { command?: unknown }).command === 'string'
+    );
+  } catch {
+    return [];
+  }
+}
 
 /**
  * The exact Check shape `doctor.ts` renders, with `required` pinned to the
@@ -140,12 +172,17 @@ export async function gateRunnableCheck(
 
   try {
     let testCommand: string | undefined;
+    let testCommandEntries: TestCommandEntry[] = [];
+    const loomDir = path.join(projectRoot, '.loom');
     try {
-      const policy = PolicyEngine.load(path.join(projectRoot, '.loom')).policyData;
+      const policy = PolicyEngine.load(loomDir).policyData;
       testCommand = policy.agents.test_command;
     } catch {
       // No .loom directory or unreadable policy — proceed with no override.
     }
+    // loadTestCommandsFromYaml has its own error handling; always run it so
+    // test_commands binaries are checked even when PolicyEngine.load() fails.
+    testCommandEntries = loadTestCommandsFromYaml(loomDir);
 
     const resolveGatePlanFn = deps?.resolve ?? resolveGatePlan;
     // The gate inherits process.env.PATH exactly (spawn with shell:true, no env),
@@ -155,7 +192,7 @@ export async function gateRunnableCheck(
 
     const plan = resolveGatePlanFn(projectRoot, { testCommand });
 
-    if (plan.steps.length === 0) {
+    if (plan.steps.length === 0 && testCommandEntries.length === 0) {
       return {
         name,
         ok: true,
@@ -164,7 +201,7 @@ export async function gateRunnableCheck(
       };
     }
 
-    // Verify each unique lead binary resolves on the PATH the gate will inherit.
+    // Verify each unique lead binary from auto-detected/configured steps resolves on PATH.
     const missing: string[] = [];
     const seen = new Set<string>();
     for (const step of plan.steps) {
@@ -174,15 +211,37 @@ export async function gateRunnableCheck(
       if (!binaryResolvesFn(binary)) missing.push(binary);
     }
 
-    if (missing.length > 0) {
-      const bins = missing.map((b) => `"${b}"`).join(', ');
+    // Verify lead binary for each test_commands entry.
+    // Re-use `seen` for cross-loop dedup: a binary already checked for gate steps
+    // gives the same PATH result and does not need a separate TC entry report.
+    const stepsCheckedCount = seen.size;
+    const missingEntries: Array<{ entryName: string; binary: string }> = [];
+    for (const entry of testCommandEntries) {
+      const binary = getLeadBinary(entry.command);
+      if (!binary || seen.has(binary)) continue;
+      seen.add(binary);
+      if (!binaryResolvesFn(binary)) {
+        missingEntries.push({ entryName: entry.name, binary });
+      }
+    }
+
+    if (missing.length > 0 || missingEntries.length > 0) {
+      const parts: string[] = [];
+      if (missing.length > 0) {
+        const bins = missing.map((b) => `"${b}"`).join(', ');
+        parts.push(
+          `${bins} not found on the gate's PATH — the integration gate will fail with ` +
+          `"command not found". Install the tool and add it to PATH, or set ` +
+          `policy.agents.test_command to a fully-qualified command`
+        );
+      }
+      for (const { entryName, binary } of missingEntries) {
+        parts.push(`test_commands entry "${entryName}": "${binary}" not found on PATH`);
+      }
       return {
         name,
         ok: false,
-        detail:
-          `${bins} not found on the gate's PATH — the integration gate will fail with ` +
-          `"command not found". Install the tool and add it to PATH, or set ` +
-          `policy.agents.test_command to a fully-qualified command`,
+        detail: parts.join('\n'),
         required: false,
       };
     }
@@ -191,7 +250,7 @@ export async function gateRunnableCheck(
       name,
       ok: true,
       detail:
-        `${seen.size} gate step(s); every lead binary resolves on the gate's PATH ` +
+        `${stepsCheckedCount} gate step(s), ${testCommandEntries.length} test_commands entr${testCommandEntries.length === 1 ? 'y' : 'ies'} checked; every lead binary resolves on the gate's PATH ` +
         '(run `loom doctor --dry-run-gate` to execute the gate for real)',
       required: false,
     };
