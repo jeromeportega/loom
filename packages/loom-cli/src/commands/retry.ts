@@ -29,6 +29,13 @@ export interface RetryOptions {
    * directly via `loom retry --force`.
    */
   force?: boolean;
+  /**
+   * Override the project root used by `runRetry` when opening the database and
+   * resolving the loom directory. Defaults to `process.cwd()`. Injected by
+   * `loom stop --and-retry` so the retry step uses the same project root as the
+   * stop step rather than opening a second DB from the real cwd.
+   */
+  projectRoot?: string;
 }
 
 /**
@@ -220,7 +227,7 @@ export function prepareRetry(
  * auto-retry budget are reset.
  */
 export async function runRetry(storyId: string, opts: RetryOptions = {}): Promise<void> {
-  const projectRoot = process.cwd();
+  const projectRoot = opts.projectRoot ?? process.cwd();
   const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');

@@ -598,30 +598,22 @@ describe('pollUntilTerminal', () => {
   });
 });
 
-// ─── prepareRetry --force flag ────────────────────────────────────────────────
-// (These live here rather than retry.test.ts for colocation with the --and-retry
-//  tests that exercise the stop→retry handoff.)
-
-describe('prepareRetry --force flag (via stop.test.ts for colocation)', () => {
-  // Thin adapter to import prepareRetry inline without a separate describe block.
-});
-
 // ─── runStop --and-retry ──────────────────────────────────────────────────────
 
-let projectDir: string;
-
-beforeEach(() => {
-  projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-stop-andretry-'));
-  const loomDir = path.join(projectDir, '.loom');
-  fs.mkdirSync(loomDir, { recursive: true });
-  fs.writeFileSync(path.join(loomDir, 'policy.yaml'), 'agents:\n  max_concurrent: 2\n');
-});
-
-afterEach(() => {
-  fs.rmSync(projectDir, { recursive: true, force: true });
-});
-
 describe('runStop --and-retry', () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-stop-andretry-'));
+    const loomDir = path.join(projectDir, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    fs.writeFileSync(path.join(loomDir, 'policy.yaml'), 'agents:\n  max_concurrent: 2\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
   it('calls retryFn after pollUntilTerminal resolves and exits 0 on success', async () => {
     const agentId = seedAgent('epic-006', 'story-ar-1');
     new AgentStore(db).updateStatus(agentId, 'failed');
@@ -726,29 +718,36 @@ describe('runStop --and-retry', () => {
 });
 
 describe('runStop backward compat — no new flags', () => {
-  it('does NOT call pollClock.nowMs when --and-retry is absent (no blocking poll)', async () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-stop-compat-'));
+    const loomDir = path.join(projectDir, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    fs.writeFileSync(path.join(loomDir, 'policy.yaml'), 'agents:\n  max_concurrent: 2\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it('polls for terminal status but does NOT call retryFn without --and-retry', async () => {
     const agentId = seedAgent('epic-006', 'story-compat-1');
-    new AgentStore(db).updateStatus(agentId, 'running');
-    new AgentStore(db).updateWorkerPid(agentId, 99998);
+    new AgentStore(db).updateStatus(agentId, 'failed'); // already terminal — poll resolves immediately
 
-    let nowCalled = false;
-    const spyClock: PollClock = {
-      nowMs: () => { nowCalled = true; return 0; },
-      sleep: () => {},
-    };
+    const retriedStories: string[] = [];
 
-    // process.kill to 99998 will fail with ESRCH — that's fine, the important
-    // thing is that pollClock.nowMs is never called.
     await runStop(
       ['story-compat-1'],
-      {},
+      {}, // no --and-retry
       {
         projectRoot: projectDir,
         db,
-        pollClock: spyClock,
+        retryFn: async (storyId) => { retriedStories.push(storyId); },
+        exitFn: () => {},
       }
     );
 
-    assert.equal(nowCalled, false, 'pollUntilTerminal was NOT called without --and-retry');
+    assert.deepEqual(retriedStories, [], 'retryFn was NOT called without --and-retry');
   });
 });

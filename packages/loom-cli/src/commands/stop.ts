@@ -91,7 +91,8 @@ export function pollUntilTerminal(
       return { reached: true, finalStatus: status };
     }
 
-    if (pollClock.nowMs() >= deadline) {
+    const now = pollClock.nowMs();
+    if (now >= deadline) {
       if (agent) {
         agents.updateStatus(agent.id, 'failed', {
           log_tail: 'stop timeout: forced failed',
@@ -100,7 +101,7 @@ export function pollUntilTerminal(
       return { reached: false, finalStatus: 'failed' };
     }
 
-    const remaining = deadline - pollClock.nowMs();
+    const remaining = deadline - now;
     pollClock.sleep(Math.min(POLL_INTERVAL_MS, remaining > 0 ? remaining : 0));
   }
 }
@@ -409,10 +410,12 @@ export async function runStop(
   }
 
   // Per-story stop — SIGTERM the specific worker process.
+  const TERMINAL_STATUSES_SET = new Set<AgentStatus>(['done', 'failed']);
   const agents = new AgentStore(db);
   const audit = new AuditLog(db);
   let stopped = 0;
-  const sigtermedStories: string[] = [];
+  // Stories to poll for terminal status after SIGTERM (or already terminal).
+  const pollingStories: string[] = [];
 
   for (const storyId of storyIds) {
     const agent = agents.getByStory(storyId);
@@ -421,9 +424,15 @@ export async function runStop(
       continue;
     }
     if (agent.status !== 'running') {
-      console.log(`  ${storyId}: not running (status: ${agent.status})`);
-      // For --and-retry, a non-running story is still eligible for retry.
-      if (opts?.andRetry) sigtermedStories.push(storyId);
+      if (TERMINAL_STATUSES_SET.has(agent.status as AgentStatus)) {
+        // Already terminal — no SIGTERM needed; poll resolves immediately.
+        console.log(`  ${storyId}: already terminal (status: ${agent.status})`);
+        pollingStories.push(storyId);
+      } else {
+        // Non-running, non-terminal (queued, pending, etc.) — do not attempt to
+        // stop or retry; polling would spin out and corrupt the story to 'failed'.
+        console.log(`  ${storyId}: not running (status: ${agent.status}) — stop is a no-op`);
+      }
       continue;
     }
     if (!agent.worker_pid) {
@@ -441,37 +450,49 @@ export async function runStop(
       });
       console.log(`  ${storyId}: SIGTERM sent (pid ${agent.worker_pid})`);
       stopped++;
-      sigtermedStories.push(storyId);
+      pollingStories.push(storyId);
     } catch (err) {
       const isGone = (err as NodeJS.ErrnoException).code === 'ESRCH';
       const msg = isGone ? 'worker process already gone' : (err as Error).message;
       console.log(`  ${storyId}: could not signal — ${msg}`);
-      // If the worker is already gone and --and-retry is requested, we still
-      // poll (the DB may still show 'running' if the worker crashed without
-      // cleanup) so the retry can proceed once the status is confirmed terminal.
-      if (isGone && opts?.andRetry) sigtermedStories.push(storyId);
+      if (isGone) {
+        // Worker is gone; DB may still show 'running' if it crashed without cleanup.
+        // Poll until the status reaches a terminal state before proceeding.
+        if (opts?.andRetry) {
+          console.log(`  ${storyId}: worker already gone; polling for terminal status before retry…`);
+        }
+        pollingStories.push(storyId);
+      }
     }
   }
   console.log(`\n  ${stopped} of ${storyIds.length} requested worker(s) stopped.\n`);
 
-  if (!opts?.andRetry || sigtermedStories.length === 0) return;
+  if (pollingStories.length === 0) return;
 
-  // ─── --and-retry path ────────────────────────────────────────────────────
-  // Poll each story until terminal, then enqueue a retry.
-  const retryFn = runDeps.retryFn ?? runRetry;
+  // ─── Poll each stopped story until it reaches a terminal state (AC#1). ───
+  // This runs for every per-story stop — not only when --and-retry is set —
+  // so `loom stop <story>` blocks until the DB status is confirmed terminal.
+  // The retry enqueue below is gated separately on opts?.andRetry.
   const pollClock = runDeps.pollClock;
-  let andRetryFailed = false;
+  // Default retryFn closes over the already-resolved projectRoot so the retry
+  // step opens the same logical database as the stop step.
+  const retryFn =
+    runDeps.retryFn ??
+    ((sid: string, retryOpts: RetryOptions) => runRetry(sid, { ...retryOpts, projectRoot }));
+  let exitNonZero = false;
 
-  for (const storyId of sigtermedStories) {
-    const pollResult = pollUntilTerminal(storyId, db, 30_000, pollClock ?? realPollClock);
+  for (const storyId of pollingStories) {
+    const pollResult = pollUntilTerminal(storyId, db, 30_000, pollClock);
     if (!pollResult.reached) {
       console.error(
         `\n  ${storyId}: stop timed out — force-wrote "failed" after 30 s.` +
         `\n  Run \`loom retry ${storyId}\` when you are ready to re-dispatch it.\n`
       );
-      andRetryFailed = true;
+      exitNonZero = true;
       continue;
     }
+
+    if (!opts?.andRetry) continue;
 
     try {
       await retryFn(storyId, { reason });
@@ -481,11 +502,11 @@ export async function runStop(
         `${(err as Error).message}\n` +
         `  Run \`loom retry ${storyId}\` to re-dispatch it.\n`
       );
-      andRetryFailed = true;
+      exitNonZero = true;
     }
   }
 
-  if (andRetryFailed) {
+  if (exitNonZero) {
     doExit(1);
   }
 }
