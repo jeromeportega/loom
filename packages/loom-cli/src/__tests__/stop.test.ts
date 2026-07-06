@@ -717,6 +717,49 @@ describe('runStop --and-retry', () => {
   });
 });
 
+describe('runStop --epic + --and-retry rejection', () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-stop-epic-andretry-'));
+    const loomDir = path.join(projectDir, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    fs.writeFileSync(path.join(loomDir, 'policy.yaml'), 'agents:\n  max_concurrent: 2\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it('exits non-zero with an error when --epic and --and-retry are combined', async () => {
+    const exits: number[] = [];
+    const stderrLines: string[] = [];
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      stderrLines.push(String(chunk));
+      return true;
+    };
+
+    try {
+      await runStop(
+        [],
+        { epic: 'epic-006', andRetry: true },
+        {
+          projectRoot: projectDir,
+          db,
+          exitFn: (code) => { exits.push(code); },
+        }
+      );
+    } finally {
+      process.stderr.write = origStderrWrite;
+    }
+
+    assert.deepEqual(exits, [1], 'exits non-zero for the --epic + --and-retry combination');
+    const combined = stderrLines.join('');
+    assert.match(combined, /--and-retry is not supported with --epic/);
+  });
+});
+
 describe('runStop backward compat — no new flags', () => {
   let projectDir: string;
 

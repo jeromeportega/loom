@@ -20,6 +20,9 @@ import type { RetryOptions } from './retry.js';
  */
 const STOP_CHECKPOINT_TIMEOUT_MS = 30_000;
 
+// Mirrors AgentStore.TERMINAL_STATUSES (not exported there; kept in sync manually).
+const STOP_TERMINAL_STATUSES = new Set<AgentStatus>(['done', 'failed']);
+
 /**
  * Minimal structural mirror of the injectable `RetryClock` from the epic-006
  * resilience module (`packages/loom-core/src/orchestrator/resilience/RetryClock.ts`,
@@ -64,15 +67,13 @@ const realPollClock: PollClock = {
 };
 
 /**
- * Synchronous poll loop that blocks until the story's DB status reaches a
- * terminal state (`done` or `failed`), or until `timeoutMs` elapses. Uses
- * `Date.now()` delta — no `setTimeout` — so tests advance the fake clock
+ * Synchronous poll loop that blocks until the story's DB status is in
+ * `STOP_TERMINAL_STATUSES` (`done` or `failed`), or until `timeoutMs` elapses.
+ * Uses `Date.now()` delta — no `setTimeout` — so tests advance the fake clock
  * synchronously without real sleeps.
  *
- * On timeout: issues a single atomic `UPDATE agents SET status='failed',
- * log_tail=? WHERE id=?` and returns `{ reached: false, finalStatus: 'failed' }`.
- * The timeout write uses the authoritative terminal set from `AgentStore`
- * (`TERMINAL_STATUSES = new Set(['done', 'failed'])`).
+ * On timeout: issues a single atomic `updateStatus('failed')` and returns
+ * `{ reached: false, finalStatus: 'failed' }`.
  */
 export function pollUntilTerminal(
   storyId: string,
@@ -87,7 +88,7 @@ export function pollUntilTerminal(
   for (;;) {
     const agent = agents.getByStory(storyId);
     const status = agent?.status;
-    if (status === 'done' || status === 'failed') {
+    if (status !== undefined && STOP_TERMINAL_STATUSES.has(status)) {
       return { reached: true, finalStatus: status };
     }
 
@@ -102,7 +103,7 @@ export function pollUntilTerminal(
     }
 
     const remaining = deadline - now;
-    pollClock.sleep(Math.min(POLL_INTERVAL_MS, remaining > 0 ? remaining : 0));
+    pollClock.sleep(Math.min(POLL_INTERVAL_MS, remaining));
   }
 }
 
@@ -374,6 +375,14 @@ export async function runStop(
 
   // ─── loom stop --epic <id> ───────────────────────────────────────────────
   if (opts?.epic) {
+    if (opts?.andRetry) {
+      console.error(
+        '  --and-retry is not supported with --epic.\n' +
+        '  Stop individual story IDs and retry them separately.'
+      );
+      doExit(1);
+      return;
+    }
     const epicId = opts.epic;
     const result = stopEpicWorkers(db, epicId, reason);
     if (result.status === 'not_found') {
@@ -410,7 +419,6 @@ export async function runStop(
   }
 
   // Per-story stop — SIGTERM the specific worker process.
-  const TERMINAL_STATUSES_SET = new Set<AgentStatus>(['done', 'failed']);
   const agents = new AgentStore(db);
   const audit = new AuditLog(db);
   let stopped = 0;
@@ -424,7 +432,7 @@ export async function runStop(
       continue;
     }
     if (agent.status !== 'running') {
-      if (TERMINAL_STATUSES_SET.has(agent.status as AgentStatus)) {
+      if (STOP_TERMINAL_STATUSES.has(agent.status as AgentStatus)) {
         // Already terminal — no SIGTERM needed; poll resolves immediately.
         console.log(`  ${storyId}: already terminal (status: ${agent.status})`);
         pollingStories.push(storyId);
@@ -437,6 +445,9 @@ export async function runStop(
     }
     if (!agent.worker_pid) {
       console.log(`  ${storyId}: running, but no worker_pid recorded`);
+      if (opts?.andRetry) {
+        console.log(`  ${storyId}: --and-retry skipped (no worker_pid to wait on)`);
+      }
       continue;
     }
     try {

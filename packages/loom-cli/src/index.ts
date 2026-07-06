@@ -191,8 +191,8 @@ export function buildProgram(): Command {
 
   // ─── loom retry ───────────────────────────────────────────────────────────────
   applySpec(program.command('retry'), retrySpec)
-    .action(async (storyId: string, opts: { clean?: boolean; reason?: string }) => {
-      await runRetry(storyId, { clean: opts.clean, reason: opts.reason });
+    .action(async (storyId: string, opts: { clean?: boolean; reason?: string; force?: boolean }) => {
+      await runRetry(storyId, { clean: opts.clean, reason: opts.reason, force: opts.force });
     });
 
   // ─── loom web ───────────────────────────────────────────────────────────────
