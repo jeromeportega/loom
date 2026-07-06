@@ -22,6 +22,21 @@ export interface WorktreeContext {
   audit: AuditLog;
 }
 
+/**
+ * Context for read-scope enforcement. Parallel to WorktreeContext but carries
+ * no workspace/cross-repo manifest — read scoping is independent of cross_repo.enabled.
+ */
+export interface ReadScopeContext {
+  /** Agent's own worktree, canonicalized, no trailing slash. In the hook: process.cwd(). */
+  worktreeRoot: string;
+  /** Resolved allowed_read_root (absolute, canonicalized). Defaults to repo root. */
+  readRoot: string;
+  /** Audit logger — every denial recorded before return (invariant #5). */
+  audit: AuditLog;
+  /** Attributes the audit row when known. */
+  agentId?: string;
+}
+
 export class PolicyEngine {
   private policy: Policy;
 
@@ -415,6 +430,91 @@ export class PolicyEngine {
       return path.resolve(os.homedir(), p.slice(2));
     }
     return path.resolve(p);
+  }
+
+  /**
+   * Canonicalizes targetPath (fs.realpathSync → path.resolve fallback) and
+   * admits it iff it is under worktreeRoot or readRoot — never their common
+   * parent. Runs regardless of cross_repo.enabled. Every denial is logged to
+   * ctx.audit before returning.
+   *
+   * Note: realpathSync only follows symlinks for paths that exist on disk. A
+   * not-yet-created path falls back to path.resolve (lexical normalization) —
+   * acceptable for a read control.
+   */
+  checkReadScope(targetPath: string, ctx: ReadScopeContext): PolicyCheckResult {
+    const base = ctx.worktreeRoot;
+    const resolved = resolveArg(targetPath === '' ? '.' : targetPath, base);
+
+    if (isUnder(resolved, ctx.worktreeRoot) || isUnder(resolved, ctx.readRoot)) {
+      return { allowed: true };
+    }
+
+    const result: PolicyCheckResult = {
+      allowed: false,
+      rule: 'filesystem.allowed_read_root',
+      reason: `Path "${targetPath}" (resolved: "${resolved}") is outside the allowed read scope — must be under worktree "${ctx.worktreeRoot}" or read root "${ctx.readRoot}"`,
+    };
+    ctx.audit.record({
+      agent_id: ctx.agentId,
+      action: 'read_scope_denied',
+      command: `read ${targetPath}`,
+      allowed: false,
+      policy_rule: 'filesystem.allowed_read_root',
+      detail: {
+        tool: 'read',
+        requestedPath: targetPath,
+        resolvedPath: resolved,
+        reason: result.reason,
+        worktreeRoot: ctx.worktreeRoot,
+        readRoot: ctx.readRoot,
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Extracts path args from a parsed command for the enumerated readers
+   * (grep, rg, find, cat, ls) and applies checkReadScope to each.
+   * Returns the first denial, else { allowed: true }.
+   * Runs regardless of cross_repo.enabled.
+   */
+  checkReadScopeCommand(command: string, ctx: ReadScopeContext): PolicyCheckResult {
+    const READ_TOOLS = new Set(['grep', 'rg', 'find', 'cat', 'ls']);
+    const cmd = parseCommand(command);
+
+    if (!READ_TOOLS.has(cmd.program)) {
+      return { allowed: true };
+    }
+
+    const candidates = extractArgPaths(cmd.argv, ctx.worktreeRoot);
+    for (const [original, resolved] of candidates) {
+      if (!isUnder(resolved, ctx.worktreeRoot) && !isUnder(resolved, ctx.readRoot)) {
+        const result: PolicyCheckResult = {
+          allowed: false,
+          rule: 'filesystem.allowed_read_root',
+          reason: `Path "${original}" (resolved: "${resolved}") is outside the allowed read scope — must be under worktree "${ctx.worktreeRoot}" or read root "${ctx.readRoot}"`,
+        };
+        ctx.audit.record({
+          agent_id: ctx.agentId,
+          action: 'read_scope_denied',
+          command,
+          allowed: false,
+          policy_rule: 'filesystem.allowed_read_root',
+          detail: {
+            tool: cmd.program,
+            requestedPath: original,
+            resolvedPath: resolved,
+            reason: result.reason,
+            worktreeRoot: ctx.worktreeRoot,
+            readRoot: ctx.readRoot,
+          },
+        });
+        return result;
+      }
+    }
+
+    return { allowed: true };
   }
 }
 
