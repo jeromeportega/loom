@@ -174,6 +174,24 @@ describe('PolicyEngine — checkReadScope (story-067-002)', () => {
     const result = engine.checkReadScope('', ctx);
     assert.equal(result.allowed, true, 'empty path maps to worktreeRoot and is in-scope');
   });
+
+  // Trailing slash on ctx roots — isUnder must still work correctly
+  it('trailing slash on worktreeRoot/readRoot in ctx does not break in-scope check', () => {
+    const trailingCtx: ReadScopeContext = {
+      ...ctx,
+      worktreeRoot: worktreeRoot + '/',
+      readRoot: readRoot + '/',
+    };
+    const inFile = path.join(worktreeRoot, 'src', 'file.ts');
+    spy.entries.length = 0;
+    assert.equal(engine.checkReadScope(inFile, trailingCtx).allowed, true,
+      'trailing slash on worktreeRoot must not cause false denials');
+
+    const sharedFile = path.join(readRoot, 'shared.ts');
+    spy.entries.length = 0;
+    assert.equal(engine.checkReadScope(sharedFile, trailingCtx).allowed, true,
+      'trailing slash on readRoot must not cause false denials');
+  });
 });
 
 // ── checkReadScopeCommand ──────────────────────────────────────────────────────
@@ -195,6 +213,12 @@ describe('PolicyEngine — checkReadScopeCommand (story-067-002)', () => {
     fs.writeFileSync(path.join(readRoot, 'shared.ts'), '');
     fs.writeFileSync(path.join(outsideDir, 'secret.txt'), '');
 
+    // symlink inside worktree pointing to outsideDir/secret.txt
+    fs.symlinkSync(
+      path.join(outsideDir, 'secret.txt'),
+      path.join(worktreeRoot, 'link-out'),
+    );
+
     spy = makeAuditSpy();
     engine = makeEngine();
     ctx = { worktreeRoot, readRoot, audit: spy.audit };
@@ -211,7 +235,8 @@ describe('PolicyEngine — checkReadScopeCommand (story-067-002)', () => {
   for (const tool of readers) {
     it(`"${tool}" with out-of-scope path arg is denied`, () => {
       const outFile = path.join(outsideDir, 'secret.txt');
-      const cmd = tool === 'grep' ? `grep pattern ${outFile}` : `${tool} ${outFile}`;
+      // grep and rg require a pattern before file args; other tools take paths directly.
+      const cmd = (tool === 'grep' || tool === 'rg') ? `${tool} pattern ${outFile}` : `${tool} ${outFile}`;
       spy.entries.length = 0;
       const result = engine.checkReadScopeCommand(cmd, ctx);
       assert.equal(result.allowed, false, `${tool} with out-of-scope path must be denied`);
@@ -222,7 +247,7 @@ describe('PolicyEngine — checkReadScopeCommand (story-067-002)', () => {
 
     it(`"${tool}" with in-scope path arg (worktreeRoot) is allowed`, () => {
       const inFile = path.join(worktreeRoot, 'in.ts');
-      const cmd = tool === 'grep' ? `grep pattern ${inFile}` : `${tool} ${inFile}`;
+      const cmd = (tool === 'grep' || tool === 'rg') ? `${tool} pattern ${inFile}` : `${tool} ${inFile}`;
       spy.entries.length = 0;
       const result = engine.checkReadScopeCommand(cmd, ctx);
       assert.equal(result.allowed, true, `${tool} with in-scope path must be allowed`);
@@ -230,7 +255,7 @@ describe('PolicyEngine — checkReadScopeCommand (story-067-002)', () => {
 
     it(`"${tool}" with in-scope path arg (readRoot) is allowed`, () => {
       const sharedFile = path.join(readRoot, 'shared.ts');
-      const cmd = tool === 'grep' ? `grep pattern ${sharedFile}` : `${tool} ${sharedFile}`;
+      const cmd = (tool === 'grep' || tool === 'rg') ? `${tool} pattern ${sharedFile}` : `${tool} ${sharedFile}`;
       spy.entries.length = 0;
       const result = engine.checkReadScopeCommand(cmd, ctx);
       assert.equal(result.allowed, true, `${tool} with readRoot path must be allowed`);
@@ -254,6 +279,79 @@ describe('PolicyEngine — checkReadScopeCommand (story-067-002)', () => {
     spy.entries.length = 0;
     const result = engine.checkReadScopeCommand(`cp ${outFile} /tmp/x`, ctx);
     assert.equal(result.allowed, true, 'non-reader command is not subject to read-scope check');
+  });
+
+  // grep/rg: first positional arg is pattern, not a file — must not be denied
+  // even when the pattern text looks like an absolute out-of-scope path.
+  it('grep with an absolute-path-shaped pattern and in-scope file is allowed', () => {
+    const inFile = path.join(worktreeRoot, 'in.ts');
+    // Pattern "/usr/local/lib/node_modules" looks like an out-of-scope path
+    // but is just a regex pattern — the actual file being read is in scope.
+    const cmd = `grep /usr/local/lib/node_modules ${inFile}`;
+    spy.entries.length = 0;
+    const result = engine.checkReadScopeCommand(cmd, ctx);
+    assert.equal(result.allowed, true,
+      'grep pattern must not be checked as a file path — only file args matter');
+  });
+
+  it('rg with an absolute-path-shaped pattern and in-scope file is allowed', () => {
+    const inFile = path.join(worktreeRoot, 'in.ts');
+    spy.entries.length = 0;
+    const result = engine.checkReadScopeCommand(`rg /etc/passwd ${inFile}`, ctx);
+    assert.equal(result.allowed, true,
+      'rg pattern must not be checked as a file path');
+  });
+
+  // grep with out-of-scope FILE (after the pattern) must still be denied
+  it('grep with in-scope pattern but out-of-scope file arg is denied', () => {
+    const outFile = path.join(outsideDir, 'secret.txt');
+    spy.entries.length = 0;
+    const result = engine.checkReadScopeCommand(`grep somepattern ${outFile}`, ctx);
+    assert.equal(result.allowed, false,
+      'grep out-of-scope file arg must be denied even when pattern is innocuous');
+    assert.equal(result.rule, 'filesystem.allowed_read_root');
+  });
+
+  // Symlink inside worktree pointing outside scope — command path must be denied
+  it('symlink arg inside worktree pointing outside scope is denied via checkReadScopeCommand', () => {
+    const linkPath = path.join(worktreeRoot, 'link-out');
+    spy.entries.length = 0;
+    const result = engine.checkReadScopeCommand(`cat ${linkPath}`, ctx);
+    assert.equal(result.allowed, false,
+      'symlink target outside scope must be denied (resolveArg follows the link)');
+    assert.equal(result.rule, 'filesystem.allowed_read_root');
+  });
+
+  // Extended READ_TOOLS: head, tail, awk, sed, tee
+  for (const tool of ['head', 'tail', 'awk', 'sed', 'tee']) {
+    it(`"${tool}" with out-of-scope path is denied`, () => {
+      const outFile = path.join(outsideDir, 'secret.txt');
+      spy.entries.length = 0;
+      const result = engine.checkReadScopeCommand(`${tool} ${outFile}`, ctx);
+      assert.equal(result.allowed, false, `${tool} out-of-scope path must be denied`);
+      assert.equal(result.rule, 'filesystem.allowed_read_root');
+    });
+
+    it(`"${tool}" with in-scope path is allowed`, () => {
+      const inFile = path.join(worktreeRoot, 'in.ts');
+      spy.entries.length = 0;
+      const result = engine.checkReadScopeCommand(`${tool} ${inFile}`, ctx);
+      assert.equal(result.allowed, true, `${tool} in-scope path must be allowed`);
+    });
+  }
+
+  // Trailing slash on ctx roots — isUnder must still work correctly
+  it('trailing slash on worktreeRoot in ctx does not break in-scope check', () => {
+    const trailingCtx: ReadScopeContext = {
+      ...ctx,
+      worktreeRoot: worktreeRoot + '/',
+      readRoot: readRoot + '/',
+    };
+    const inFile = path.join(worktreeRoot, 'in.ts');
+    spy.entries.length = 0;
+    const result = engine.checkReadScopeCommand(`cat ${inFile}`, trailingCtx);
+    assert.equal(result.allowed, true,
+      'trailing slash on ctx roots must not cause false denials');
   });
 });
 

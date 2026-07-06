@@ -443,10 +443,13 @@ export class PolicyEngine {
    * acceptable for a read control.
    */
   checkReadScope(targetPath: string, ctx: ReadScopeContext): PolicyCheckResult {
-    const base = ctx.worktreeRoot;
-    const resolved = resolveArg(targetPath === '' ? '.' : targetPath, base);
+    // Strip trailing separators so isUnder works correctly regardless of how
+    // the caller obtained the root paths (e.g. from path.join or a config value).
+    const wt = ctx.worktreeRoot.replace(/[/\\]+$/, '');
+    const rr = ctx.readRoot.replace(/[/\\]+$/, '');
+    const resolved = resolveArg(targetPath === '' ? '.' : targetPath, wt);
 
-    if (isUnder(resolved, ctx.worktreeRoot) || isUnder(resolved, ctx.readRoot)) {
+    if (isUnder(resolved, wt) || isUnder(resolved, rr)) {
       return { allowed: true };
     }
 
@@ -474,22 +477,39 @@ export class PolicyEngine {
   }
 
   /**
-   * Extracts path args from a parsed command for the enumerated readers
-   * (grep, rg, find, cat, ls) and applies checkReadScope to each.
-   * Returns the first denial, else { allowed: true }.
+   * Extracts path args from a parsed command for the enumerated readers and
+   * applies checkReadScope to each. Returns the first denial, else { allowed: true }.
    * Runs regardless of cross_repo.enabled.
+   *
+   * Note: READ_TOOLS is a best-effort blocklist. Callers should layer OS-level
+   * sandbox enforcement on top — tools not listed here bypass this check.
    */
   checkReadScopeCommand(command: string, ctx: ReadScopeContext): PolicyCheckResult {
-    const READ_TOOLS = new Set(['grep', 'rg', 'find', 'cat', 'ls']);
-    const cmd = parseCommand(command);
+    // grep, rg, find, cat, ls + common single-file readers; best-effort set.
+    const READ_TOOLS = new Set([
+      'grep', 'rg', 'find', 'cat', 'ls',
+      'head', 'tail', 'awk', 'sed', 'tee',
+    ]);
+    // For these tools the FIRST non-flag positional arg is a search PATTERN,
+    // not a file path — skip it to prevent false denials for patterns that look
+    // like absolute paths (e.g. `grep /usr/include/stdio.h src/main.ts`).
+    const PATTERN_FIRST_TOOLS = new Set(['grep', 'rg']);
 
+    const wt = ctx.worktreeRoot.replace(/[/\\]+$/, '');
+    const rr = ctx.readRoot.replace(/[/\\]+$/, '');
+
+    const cmd = parseCommand(command);
     if (!READ_TOOLS.has(cmd.program)) {
       return { allowed: true };
     }
 
-    const candidates = extractArgPaths(cmd.argv, ctx.worktreeRoot);
+    let candidates = extractArgPaths(cmd.argv, wt);
+    if (PATTERN_FIRST_TOOLS.has(cmd.program)) {
+      candidates = candidates.slice(1);
+    }
+
     for (const [original, resolved] of candidates) {
-      if (!isUnder(resolved, ctx.worktreeRoot) && !isUnder(resolved, ctx.readRoot)) {
+      if (!isUnder(resolved, wt) && !isUnder(resolved, rr)) {
         const result: PolicyCheckResult = {
           allowed: false,
           rule: 'filesystem.allowed_read_root',
@@ -583,9 +603,13 @@ function isUnder(resolved: string, root: string): boolean {
 
 /**
  * Resolve a path argument to its canonical absolute form.
- * Follows symlinks via realpathSync when the path exists; falls back to
- * path.resolve (normalizes `..` without a filesystem call) for non-existent
- * paths (write destinations that don't yet exist).
+ * Follows symlinks via realpathSync when the path exists; for a dangling
+ * symlink, resolves the raw link target lexically (so link-out → /outside/x
+ * is NOT admitted as worktreeRoot/link-out); falls back to path.resolve
+ * (lexical normalization) only when the path is not a symlink at all.
+ *
+ * Trade-off: a not-yet-created non-symlink path is compared lexically.
+ * Acceptable for a read control — document this at call sites.
  */
 function resolveArg(p: string, base: string): string {
   let normalized: string;
@@ -599,7 +623,15 @@ function resolveArg(p: string, base: string): string {
   try {
     return fs.realpathSync(normalized);
   } catch {
-    return normalized;
+    // Path doesn't exist or is a dangling symlink. Try to resolve the symlink
+    // target lexically so that a dangling link pointing outside scope is denied.
+    try {
+      const linkTarget = fs.readlinkSync(normalized);
+      return path.resolve(path.dirname(normalized), linkTarget);
+    } catch {
+      // Not a symlink — lexical normalization is the best we can do.
+      return normalized;
+    }
   }
 }
 
