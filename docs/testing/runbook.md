@@ -2195,6 +2195,76 @@ Remaining (specced, not built):
 
 ---
 
+## Epic 66 — Durable, Recoverable Epic Finalization
+
+**What was delivered:** `loom finalize --resume <epic-id>`, plus automatic recovery routing inside `loom run`, `loom publish`, and `loom reconcile`. An epic that was interrupted mid-finalization (network drop between push and PR-open, force-killed process, concurrent lock failure) can now be carried to `done` without redoing merged work.
+
+### Recovery flow (strand → resume)
+
+When the EpicFinalizer is interrupted after pushing the integration branch but before opening the PR, the epic is left in `finalizing` (or `publish_pending` if the push succeeded but PR-open failed). The operator-visible recovery path:
+
+```
+# loom run reports:
+  Skipped: epic-001
+  Recover it: loom finalize --resume epic-001
+
+# Operator runs:
+loom finalize --resume epic-001
+
+# Output on success:
+  PR: https://github.com/org/repo/pull/42
+  Epic epic-001 driven to done.
+```
+
+`EpicFinalizer.resume()` reads git and gh state to detect which phases remain:
+
+| Detected state | Action taken |
+|---|---|
+| PR already open for the pushed ref | Records the PR URL and flips to `done` |
+| Branch pushed, no PR | Opens the PR, records URL, flips to `done` |
+| Integration tree built but not pushed | Pushes the branch, opens the PR, flips to `done` |
+| Epic already `done` | No-op |
+| No recoverable state (no remote, or remote not in `allowed_remotes`) | Exits non-zero; prints reason (e.g. `no remote configured` or `remote "…" is not in policy.git.allowed_remotes`) |
+
+### Automatic recovery in `loom run`
+
+`loom run` automatically routes `finalizing` and `publish_pending` epics through `EpicFinalizer.resume()` **before** dispatching new stories. If auto-resume succeeds, the epic moves to `done` and appears in `epicsProcessed`. If it fails (no remote, concurrent lease, or a gate block), the epic is moved to `epicsSkipped` and `loom run` prints:
+
+```
+  Skipped: epic-001
+  Recover it: loom finalize --resume epic-001
+```
+
+The recovery command string in this output is byte-identical to the `loom finalize` invocation so operators can copy-paste it directly.
+
+### Changed command behavior
+
+| Command | Before epic-066 | After epic-066 |
+|---|---|---|
+| `loom run` | Skipped `finalizing`/`publish_pending` epics with no recovery hint | Automatically resumes them via `resume()`; prints copy-paste recovery hint on failure |
+| `loom publish <epic-id>` | Accepted only `publish_pending` epics | Also accepts `finalizing`; delegates to `resume()` |
+| `loom reconcile <epic-id>` | Accepted `in_progress` epics; required branch to be pre-merged | Also accepts `finalizing`; delegates to `resume()` which detects merge state |
+
+### Automated tests
+
+```bash
+npm run test -w loom-ai    # runRecovery.test.ts, finalize.test.ts, publish.test.ts, reconcile.test.ts
+npm run test -w @loom-ai/core   # SupervisorRecovery.test.ts
+```
+
+### Definition of done for Epic 66
+
+- [x] `loom finalize --resume <epic-id>` command exists and is registered
+- [x] `loom run` routes `finalizing`/`publish_pending` epics to `resume()` within the same run (after the story-dispatch loop)
+- [x] `loom run` prints `  Recover it: loom finalize --resume <epic-id>` when auto-resume is impossible
+- [x] `loom publish` accepts `finalizing` and delegates to `resume()`
+- [x] `loom reconcile` accepts `finalizing` and delegates to `resume()`
+- [x] `docs/capabilities.md` documents `loom finalize --resume` and updated `run`/`publish`/`reconcile` surfaces
+- [x] `README.md` reflects the new and changed command surface
+- [x] `npm test` passes
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

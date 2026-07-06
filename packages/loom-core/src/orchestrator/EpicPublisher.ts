@@ -7,6 +7,10 @@ export interface EpicPublisherOptions {
   db: Database.Database;
   // Injectable PR-open seam (tests). Defaults to probe-then-create via gh. Throws on failure.
   openPr?: (input: { branch: string }) => string | undefined;
+  // Injectable resume stub (tests). When the epic is `finalizing`, _publish() delegates here
+  // instead of refusing. Production callers bypass EpicPublisher for finalizing epics at the
+  // CLI layer (publish.ts routes them to EpicFinalizer.resume() before constructing this class).
+  _resume?: (epicId: string) => PublishResult;
 }
 
 export type PublishStatus = 'published' | 'refused' | 'failed';
@@ -55,6 +59,22 @@ export class EpicPublisher {
       };
     }
 
+    // FR-7: accept finalizing epics and route to the injectable resume stub.
+    // Production callers bypass EpicPublisher entirely for finalizing epics (publish.ts
+    // routes them to EpicFinalizer.resume() before constructing this class). The _resume
+    // seam here exists for EpicPublisher-level unit tests that assert the old precondition
+    // no longer rejects a finalizing epic.
+    if (epic.status === 'finalizing') {
+      if (this.opts._resume) {
+        return this.opts._resume(epicId);
+      }
+      return {
+        status: 'refused',
+        epicId,
+        note: `Epic "${epicId}" is finalizing — use \`loom publish ${epicId}\` (CLI wires up resume) or \`loom finalize --resume ${epicId}\`.`,
+      };
+    }
+
     if (epic.status !== 'publish_pending') {
       return {
         status: 'refused',
@@ -85,7 +105,10 @@ export class EpicPublisher {
         const execOpts = { cwd: this.opts.projectRoot, encoding: 'utf8' as const, timeout: 30_000 };
         let probeUrl: string | undefined;
         try {
-          const probeOut = execFileSync('gh', ['pr', 'view', '--head', finalizeRef, '--json', 'url', '-q', '.url'], execOpts).trim();
+          // `gh pr list --head` — NOT `gh pr view --head` (view has no --head flag;
+          // it would exit `unknown flag: --head`, the catch would misread it as
+          // "no PR", and `gh pr create` would then fail on the already-existing PR).
+          const probeOut = execFileSync('gh', ['pr', 'list', '--head', finalizeRef, '--state', 'all', '--json', 'url', '-q', '.[0].url // ""'], execOpts).trim();
           if (probeOut.startsWith('http')) probeUrl = probeOut;
         } catch {
           // No existing PR — will create below

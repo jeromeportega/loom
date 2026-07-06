@@ -565,7 +565,7 @@ export class Supervisor {
       }
     }
 
-    const { selected, skipped } = this.selectEpics(epicIds);
+    const { selected, skipped, recoverable } = this.selectEpics(epicIds);
 
     // Per-epic dispatch lease. Acquire each selected epic; an epic another
     // live supervisor already holds is deferred (reported as skipped) rather
@@ -764,10 +764,43 @@ export class Supervisor {
         }
       }
 
+      // FR-6: Resume stranded finalizing/publish_pending epics. resume() owns
+      // the done write and acquires the per-epic lease internally (NFR-1), so no
+      // run-local lock is needed here. Best-effort — a resume error never fails
+      // the run; the epic lands in epicsSkipped so FR-9 can print the recovery hint.
+      const recoveredEpics: string[] = [];
+      const recoverableSkipped: string[] = [];
+      if (this.opts.epicFinalizer && recoverable.length > 0) {
+        for (const epicId of recoverable) {
+          try {
+            const fin = await this.opts.epicFinalizer.resume(epicId);
+            if (fin.status === 'merged') {
+              recoveredEpics.push(epicId);
+            } else {
+              // Not landed — skipped (noop/lease), publish_pending, failed, gated,
+              // or partial. Route to skipped so it counts as unprocessed and FR-9
+              // prints the recovery hint, instead of falsely reporting "processed".
+              recoverableSkipped.push(epicId);
+            }
+          } catch (err) {
+            this.audit.record({
+              agent_id: undefined,
+              action: 'epic_finalize_resume_error',
+              command: epicId,
+              allowed: false,
+              detail: { error: (err as Error).message },
+            });
+            recoverableSkipped.push(epicId);
+          }
+        }
+      } else {
+        recoverableSkipped.push(...recoverable);
+      }
+
       const all = [...tasks.values()];
       result = {
-        epicsProcessed: leased,
-        epicsSkipped: allSkipped,
+        epicsProcessed: [...leased, ...recoveredEpics],
+        epicsSkipped: [...allSkipped, ...recoverableSkipped],
         storiesTotal: all.length,
         storiesDone: all.filter((t) => SUCCESS.has(t.status)).length,
         storiesFailed: all.filter((t) => t.status === 'failed').length,
@@ -908,22 +941,31 @@ export class Supervisor {
 
   // ─── Setup ─────────────────────────────────────────────────────────────────
 
-  private selectEpics(epicIds?: string[]): { selected: string[]; skipped: string[] } {
+  private selectEpics(epicIds?: string[]): { selected: string[]; skipped: string[]; recoverable: string[] } {
     const selected: string[] = [];
     const skipped: string[] = [];
+    const recoverable: string[] = [];
 
     // 'in_progress' is runnable too — it is an epic a prior run started but did
     // not finish (a halt, a checkpoint, or a failure). That is what resume needs.
     const RUNNABLE = new Set(['approved', 'in_progress']);
+    // FR-6: finalizing/publish_pending epics are stranded finalize-phase epics
+    // that EpicFinalizer.resume() can complete. Route them to recoverable so run()
+    // calls resume() rather than leaving them stuck and unhelpfully reporting them
+    // as skipped.
+    const RECOVERABLE_STATUSES = new Set(['finalizing', 'publish_pending']);
     const candidates = epicIds
       ? epicIds.map((id) => this.epics.get(id)).filter((e) => e !== undefined)
       : [
           ...this.epics.listByStatus('approved'),
           ...this.epics.listByStatus('in_progress'),
+          ...this.epics.listByStatus('finalizing'),
+          ...this.epics.listByStatus('publish_pending'),
         ];
 
     for (const epic of candidates) {
       if (RUNNABLE.has(epic!.status)) selected.push(epic!.id);
+      else if (RECOVERABLE_STATUSES.has(epic!.status)) recoverable.push(epic!.id);
       else skipped.push(epic!.id);
     }
     // Explicitly-named epics that do not exist at all are reported as skipped.
@@ -935,7 +977,8 @@ export class Supervisor {
     // Process epics in id order (epic-001, epic-002, ...) — dependencies flow
     // forward and checkpoint=epic should advance in sequence.
     selected.sort();
-    return { selected, skipped };
+    recoverable.sort();
+    return { selected, skipped, recoverable };
   }
 
   private loadStories(epicId: string): Story[] {

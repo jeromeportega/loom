@@ -403,10 +403,10 @@ describe('story-005-002 — finalize phase overlay + done-requires-PR-URL invari
     assert.equal(epic?.finalize_phase, null, 'skipped never enters the finalize overlay');
   });
 
-  // (7) push fails → publish_pending: the epic is left in 'finalizing' with the
-  //     push-failure message in reason. The phase stays at 'pushing' (not cleared).
-  //     No error field — this is a recoverable state, not a terminal infra failure.
-  it('push fails: epic lands finalizing (publish_pending), reason records the message', async () => {
+  // (7) push fails → publish_pending (FR-2): epicStore.publishPending() is called,
+  //     setting status='publish_pending', finalize_ref (FR-1 persisted before push),
+  //     and publish_note carrying the failure message. finalize_phase is cleared.
+  it('push fails: epic lands publish_pending (FR-2), finalize_ref persisted (FR-1)', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
     addAllowedRemote();
     const db = openDatabase(path.join(repo, '.loom'));
@@ -424,22 +424,28 @@ describe('story-005-002 — finalize phase overlay + done-requires-PR-URL invari
     }).run();
 
     const epic = new EpicStore(db).get('epic-001');
-    assert.equal(epic?.status, 'finalizing', 'push failure leaves epic recoverable (not failed)');
+    // FR-2: publishPending() sets status='publish_pending', not 'finalizing'
+    assert.equal(epic?.status, 'publish_pending', 'push failure uses publishPending → publish_pending status');
     assert.equal(epic?.error ?? null, null, 'publish_pending path does not set error');
-    assert.match(epic?.reason ?? '', /push failed/i, 'reason carries the push failure message');
-    assert.equal(epic?.finalize_phase, 'pushing', 'phase stays at pushing (not cleared)');
+    // FR-2: failure message goes into publish_note (not reason)
+    assert.match(epic?.publish_note ?? '', /push failed/i, 'publish_note carries the push failure message');
+    // FR-2: publishPending() clears finalize_phase
+    assert.equal(epic?.finalize_phase, null, 'publishPending clears finalize_phase');
+    // FR-1: finalize_ref was persisted before the push attempt
+    assert.ok(epic?.finalize_ref, 'FR-1: finalize_ref is persisted before push');
+    assert.match(epic?.finalize_ref ?? '', /^loom\/finalize\/epic-001-/, 'finalize_ref has expected format');
     assert.equal(epic?.epic_pr_url, null);
   });
 
-  // (8) gh pr create throws → publish_pending: push succeeded but PR open failed.
-  //     Epic is left recoverable in 'finalizing'; operator runs `loom publish`.
-  it('gh pr create throws: epic lands finalizing (publish_pending), reason references loom publish', async () => {
+  // (8) gh pr create throws → publish_pending (FR-2): push succeeded but PR open failed.
+  //     publishPending() records the ref + note; status='publish_pending'.
+  it('gh pr create throws: epic lands publish_pending (FR-2), finalize_ref set (FR-1)', async () => {
     seedEpic('epic-001', [story('story-001-001')]);
     addAllowedRemote();
     const db = openDatabase(path.join(repo, '.loom'));
 
     // Push succeeds but opening the PR throws. The finalizer records the pushed
-    // ref and returns publish_pending — the epic must NOT be 'done' or 'failed'.
+    // ref and calls publishPending — the epic must NOT be 'done' or 'failed'.
     await new Supervisor({
       projectRoot: repo,
       db,
@@ -455,14 +461,21 @@ describe('story-005-002 — finalize phase overlay + done-requires-PR-URL invari
     }).run();
 
     const epic0 = new EpicStore(db).get('epic-001');
+    // FR-2: status is 'publish_pending' (not 'finalizing', 'done', or 'failed')
+    assert.equal(epic0?.status, 'publish_pending', 'PR-open failure uses publishPending → publish_pending status');
     assert.notEqual(epic0?.status, 'done', 'a PR that fails to open must not be done');
     assert.notEqual(epic0?.status, 'failed', 'publish_pending is recoverable — not failed');
     assert.equal(epic0?.epic_pr_url, null);
+    // FR-2: failure message goes into publish_note
     assert.match(
-      epic0?.reason ?? '',
+      epic0?.publish_note ?? '',
       /loom publish/i,
-      'reason must reference the loom publish recovery command'
+      'publish_note must reference the loom publish recovery command'
     );
+    // FR-1: finalize_ref was persisted before the push attempt
+    assert.ok(epic0?.finalize_ref, 'FR-1: finalize_ref is persisted before push');
+    // FR-2: publishPending() clears finalize_phase
+    assert.equal(epic0?.finalize_phase, null, 'publishPending clears finalize_phase');
   });
 
   // (8) Crash-between-writes — failure after recordPrUrl but before the done

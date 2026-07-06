@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { minimatch } from 'minimatch';
 import type Database from 'better-sqlite3';
-import { EpicStore, AgentStore, AuditLog } from '../state/index.js';
-import type { Story } from '../types.js';
+import { EpicStore, AgentStore, AuditLog, LeaseStore } from '../state/index.js';
+import type { Story, EpicRecord } from '../types.js';
 import type { AutoRetrospective } from './AutoRetrospective.js';
 import { EpicYamlSchema } from '../types.js';
 import { gitSafe, defaultRemote, remoteUrl } from './git.js';
@@ -125,6 +125,34 @@ export interface EpicFinalizerOptions {
    * sibling-of-projectRoot heuristic in resolveLoomHomePath when omitted.
    */
   loomHome?: string;
+  /**
+   * Injectable PR-existence probe (FR-10). Defaults to `gh pr list --head <ref>`.
+   * Returns `{ exists: true, url }` when a live PR is found for the given
+   * finalizer-owned ref, or `{ exists: false }` when none is found or gh fails.
+   */
+  prForRef?: (finalizeRef: string) => { exists: boolean; url?: string };
+  /**
+   * Injectable remote-ref-existence probe (FR-12). Defaults to `git ls-remote`.
+   * Returns true when the given ref exists on the remote.
+   */
+  remoteRefExists?: (remote: string, finalizeRef: string) => boolean;
+  /**
+   * Injectable integration-head probe (FR-11). Defaults to `git rev-parse epic/<id>`.
+   * Returns true when the local `epic/<epicId>` branch HEAD starts with the
+   * sha7 suffix embedded in `ref` (`loom/finalize/<id>-<sha7>`).
+   */
+  integrationHeadMatchesRef?: (epicId: string, ref: string) => boolean;
+  /**
+   * Injectable LeaseStore for serialising concurrent resume() calls (NFR-1).
+   * Defaults to a fresh LeaseStore backed by the same db.
+   */
+  leaseStore?: LeaseStore;
+  /**
+   * Injectable remote resolver for resume() (tests). Defaults to
+   * `defaultRemote(projectRoot)`. Returning null means "no remote configured"
+   * and causes resume() to return a noop-terminal result.
+   */
+  resolveRemote?: () => string | null;
 }
 
 /** Subset of policy fields the finalizer re-reads at finalize entry. */
@@ -157,6 +185,26 @@ export interface FinalizeResult {
   cleaned: string[];
   /** Free-form message for the audit log / user output. */
   note: string;
+}
+
+/**
+ * The resume-plan union returned by detectResumePhase. Each arm represents the
+ * remaining work resume() must execute to land the epic as done. Arms are
+ * derived from persisted state + live remote queries with no session context
+ * (FR-4), so they are safe across process invocations.
+ */
+export type ResumePlan =
+  | { action: 'already-done'; prUrl: string }          // DB + remote agree: epic is done
+  | { action: 'record-pr'; prUrl: string }              // remote has PR, DB missing it (FR-10)
+  | { action: 'open-pr'; finalizeRef: string }          // ref pushed, no PR yet
+  | { action: 'push-and-open'; finalizeRef: string }    // local branch OK, ref not on remote
+  | { action: 'full-finalize' }                         // sha mismatch or no ref (FR-11)
+  | { action: 'noop-terminal'; note: string };          // no usable remote
+
+/** Context passed to publishPhase for the terminal push/PR/done sequence. */
+export interface PublishCtx {
+  finalizeRef: string;
+  remote: string | null;
 }
 
 /**
@@ -678,6 +726,10 @@ export class EpicFinalizer {
     const integratedHead = headResult.output.trim();
     const finalRef = this.finalizeRef(epicId, integratedHead);
 
+    // FR-1: persist the finalizer-owned ref BEFORE attempting to push, so the
+    // ref is durable even if the process dies between the push and the PR open.
+    epicStore.recordFinalizeRef(epicId, finalRef);
+
     // Push the local epicBranch to the finalizer-owned remote ref using a
     // src:dst refspec. The remote finalRef is a fresh name derived from the
     // integrated tree SHA, so this is always a fast-forward (or a new ref) on
@@ -686,8 +738,17 @@ export class EpicFinalizer {
       ? this.opts.pushBranch(remote, finalRef)
       : gitSafe(this.opts.projectRoot, ['push', remote, `${epicBranch}:${finalRef}`]);
     if (!push.ok) {
+      // FR-2: push failure → persist recoverable state via publishPending so the
+      // finalize_ref is durably associated and `loom finalize --resume` can retry.
       const note = `${epicBranch} merged but push failed: ${push.output}`;
-      epicStore.updateStatus(epicId, 'finalizing', note);
+      epicStore.publishPending(epicId, finalRef, note);
+      audit.record({
+        agent_id: undefined,
+        action: 'epic_publish_pending',
+        command: epicId,
+        allowed: true,
+        detail: { finalizeRef: finalRef, reason: 'push_failed', output: push.output.slice(-512) },
+      });
       return {
         status: 'publish_pending',
         conflicted,
@@ -755,11 +816,18 @@ export class EpicFinalizer {
         allowed: false,
         detail: { error: (err as Error).message },
       });
-      // Pushed but the PR didn't open. Record recoverable state — the operator
-      // can run `loom publish <epicId>` to open the PR against the already-pushed
-      // finalRef without re-merging or re-pushing.
+      // FR-2: PR-open failure → persist recoverable state via publishPending.
+      // The branch is already on the remote; `loom finalize --resume` re-opens
+      // the PR without re-merging or re-pushing.
       const note = `${epicBranch} pushed to ${finalRef}; PR open failed — run \`loom publish ${epicId}\` to retry.`;
-      epicStore.updateStatus(epicId, 'finalizing', note);
+      epicStore.publishPending(epicId, finalRef, note);
+      audit.record({
+        agent_id: undefined,
+        action: 'epic_publish_pending',
+        command: epicId,
+        allowed: true,
+        detail: { finalizeRef: finalRef, reason: 'pr_open_failed' },
+      });
       return {
         status: 'publish_pending',
         conflicted,
@@ -816,6 +884,440 @@ export class EpicFinalizer {
       cleaned,
       note: `Opened epic PR: ${prUrl}`,
     };
+  }
+
+  /**
+   * Reusable resume entry point. Derives the current finalize phase from
+   * persisted state + live remote queries, then completes ONLY the remaining
+   * phases — never re-merging or repeating completed work (FR-3/FR-4).
+   *
+   * Acquires the per-epic lease around the terminal phases so concurrent
+   * recovery commands on the same epic never double-push or double-open a PR
+   * (NFR-1). Writes `done` for the standalone recovery path (resume() owns the
+   * done write; finalize() does not).
+   */
+  async resume(epicId: string): Promise<FinalizeResult> {
+    const epicStore = new EpicStore(this.opts.db);
+    const audit = new AuditLog(this.opts.db);
+
+    const epic = epicStore.get(epicId);
+    if (!epic) {
+      return {
+        status: 'failed',
+        conflicted: [],
+        merged: [],
+        cleaned: [],
+        note: `Epic ${epicId} not found`,
+      };
+    }
+
+    const remoteResolver = this.opts.resolveRemote ?? (() => defaultRemote(this.opts.projectRoot));
+    const remote = remoteResolver() ?? null;
+
+    // NFR-1: acquire per-epic lease to serialise concurrent resume() calls.
+    const lease = this.opts.leaseStore ?? new LeaseStore(this.opts.db);
+    const acquired = lease.acquire(epicId);
+    if (!acquired) {
+      // NFR-3: audit every recovery return, including the lease-contention skip.
+      audit.record({
+        agent_id: undefined,
+        action: 'epic_finalize_resume_skipped',
+        command: epicId,
+        allowed: true,
+        detail: { reason: 'lease_held' },
+      });
+      return {
+        status: 'skipped',
+        conflicted: [],
+        merged: [],
+        cleaned: [],
+        note: `resume: epic ${epicId} lease held by another process — skipping to avoid double-push or double-PR`,
+      };
+    }
+
+    try {
+      // TOCTOU: re-load the row now that we hold the lease — a competing recovery
+      // may have completed between the pre-lease read and acquire, so the plan and
+      // the done-check must derive from post-lease state, not the stale snapshot.
+      const current = epicStore.get(epicId) ?? epic;
+      const plan = this.detectResumePhase(current, remote);
+
+      // NFR-3: audit BEFORE publishPhase so the entry is written even if publishPhase throws.
+      audit.record({
+        agent_id: undefined,
+        action: 'epic_finalize_resume',
+        command: epicId,
+        allowed: true,
+        detail: { plan: plan.action },
+      });
+
+      // Build ctx after plan is known so finalizeRef is taken from the plan arm
+      // that carries it rather than the nullable epic column (avoids silent '' for full-finalize).
+      const finalizeRef = 'finalizeRef' in plan ? plan.finalizeRef : (current.finalize_ref ?? '');
+      return await this.publishPhase(
+        epicId,
+        current,
+        { finalizeRef, remote },
+        plan,
+        audit,
+        epicStore
+      );
+    } finally {
+      lease.release(epicId);
+    }
+  }
+
+  /**
+   * Determines which terminal phases still need to run. Reads only the
+   * persisted `epics` row and injectable git/gh probes — never session state
+   * (FR-4), so results are identical across separate process invocations.
+   */
+  private detectResumePhase(epic: EpicRecord, remote: string | null): ResumePlan {
+    // noop-terminal: no remote or remote not in policy.git.allowed_remotes
+    if (!remote) {
+      return { action: 'noop-terminal', note: 'no remote configured' };
+    }
+    const url = remoteUrl(this.opts.projectRoot, remote);
+    if (url && !this.remoteAllowed(url)) {
+      return { action: 'noop-terminal', note: `remote "${url}" is not in policy.git.allowed_remotes` };
+    }
+
+    if (epic.finalize_ref) {
+      // FR-10: probe remote for a live PR — remote is the source of truth
+      const prResult = this.prForRefProbe(epic.finalize_ref);
+      if (prResult.exists && prResult.url) {
+        // Remote confirms a live PR for this ref
+        if (epic.epic_pr_url) {
+          // DB and remote agree: the epic is already published
+          return { action: 'already-done', prUrl: prResult.url };
+        }
+        // Remote has PR but DB didn't record it (e.g. transaction interrupted)
+        return { action: 'record-pr', prUrl: prResult.url };
+      }
+
+      // No live PR. Check whether the finalizer-owned ref is on the remote.
+      const pushed = this.remoteRefExistsProbe(remote, epic.finalize_ref);
+      if (pushed) {
+        // Ref is on remote but no PR: open the PR
+        return { action: 'open-pr', finalizeRef: epic.finalize_ref };
+      }
+
+      // Ref not on remote. FR-11: check if local epic branch is at the stored sha.
+      // Only if head matches can we trust the prior gate result and re-push.
+      const headMatches = this.integrationHeadMatchesRefProbe(epic.id, epic.finalize_ref);
+      if (headMatches) {
+        // Local branch is at the right sha — safe to re-push and open
+        return { action: 'push-and-open', finalizeRef: epic.finalize_ref };
+      }
+
+      // sha mismatch: treat gate as not-yet-satisfied (FR-11 — full re-finalize)
+      return { action: 'full-finalize' };
+    }
+
+    // No finalize_ref in DB: full finalize needed
+    return { action: 'full-finalize' };
+  }
+
+  /**
+   * Executes the remaining terminal phases dictated by the ResumePlan. For
+   * plans that open or record a PR, writes `done` atomically via the canonical
+   * order: recordPrUrl → clearFinalizePhase → audit(epic_published) →
+   * updateStatus('done'). resume() owns this done write; finalize() does not.
+   */
+  private async publishPhase(
+    epicId: string,
+    epic: EpicRecord,
+    ctx: PublishCtx,
+    plan: ResumePlan,
+    audit: AuditLog,
+    epicStore: EpicStore
+  ): Promise<FinalizeResult> {
+    switch (plan.action) {
+      case 'already-done': {
+        // Remote confirms a live PR and the DB already has the URL. But if the
+        // crash landed between finalize()'s recordPrUrl and the Supervisor's
+        // done-write, status is still 'finalizing'/'publish_pending' — so complete
+        // the flip here (resume() owns the standalone done write) instead of
+        // returning "merged" over a row that stays stranded on every re-run.
+        if (epic.status !== 'done') {
+          this.opts.db.transaction(() => {
+            epicStore.clearFinalizePhase(epicId);
+            audit.record({
+              agent_id: undefined,
+              action: 'epic_published',
+              command: epicId,
+              allowed: true,
+              detail: { pr_url: plan.prUrl, via: 'already-done' },
+            });
+            epicStore.updateStatus(epicId, 'done');
+          })();
+        }
+        return {
+          status: 'merged',
+          url: plan.prUrl,
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: `Epic ${epicId} is already done (PR: ${plan.prUrl})`,
+        };
+      }
+
+      case 'noop-terminal':
+        return {
+          status: 'skipped',
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: plan.note,
+        };
+
+      case 'full-finalize': {
+        // Re-run the full finalize flow (merge + gate + push + PR).
+        // finalize() records the prUrl but never writes 'done' (Supervisor owns that path).
+        // resume() owns the done write for standalone recovery, so complete it here if
+        // finalize() opened a PR successfully.
+        const result = await this.finalize(epicId);
+        if (result.url) {
+          const freshEpic = epicStore.get(epicId);
+          if (freshEpic?.epic_pr_url) {
+            this.opts.db.transaction(() => {
+              // recordPrUrl already done by finalize(); complete the canonical order.
+              epicStore.clearFinalizePhase(epicId);
+              audit.record({
+                agent_id: undefined,
+                action: 'epic_published',
+                command: epicId,
+                allowed: true,
+                detail: { pr_url: freshEpic.epic_pr_url, via: 'full-finalize' },
+              });
+              epicStore.updateStatus(epicId, 'done');
+            })();
+          }
+        }
+        return result;
+      }
+
+      case 'record-pr': {
+        // PR already exists on remote (FR-10 — remote wins); record and flip done
+        const prUrl = plan.prUrl;
+        this.opts.db.transaction(() => {
+          epicStore.recordPrUrl(epicId, prUrl);
+          epicStore.clearFinalizePhase(epicId);
+          audit.record({
+            agent_id: undefined,
+            action: 'epic_published',
+            command: epicId,
+            allowed: true,
+            detail: { finalize_ref: ctx.finalizeRef, pr_url: prUrl, via: 'record-pr' },
+          });
+          epicStore.updateStatus(epicId, 'done');
+        })();
+        return {
+          status: 'merged',
+          url: prUrl,
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: `Epic ${epicId} published — recorded existing PR: ${prUrl}`,
+        };
+      }
+
+      case 'open-pr': {
+        // Ref is on remote but no PR: open it
+        const prUrl = await this.openPrForResume(epic, plan.finalizeRef);
+        if (!prUrl) {
+          // NFR-3: audit the failure before returning (action is observable in the audit trail)
+          audit.record({
+            agent_id: undefined,
+            action: 'epic_publish_pending',
+            command: epicId,
+            allowed: true,
+            detail: { reason: 'pr_open_failed', via: plan.action, finalize_ref: plan.finalizeRef },
+          });
+          return {
+            status: 'publish_pending',
+            conflicted: [],
+            merged: [],
+            cleaned: [],
+            note: `Epic ${epicId}: PR open failed for ${plan.finalizeRef}`,
+          };
+        }
+        this.opts.db.transaction(() => {
+          epicStore.recordPrUrl(epicId, prUrl);
+          epicStore.clearFinalizePhase(epicId);
+          audit.record({
+            agent_id: undefined,
+            action: 'epic_published',
+            command: epicId,
+            allowed: true,
+            detail: { finalize_ref: plan.finalizeRef, pr_url: prUrl, via: 'open-pr' },
+          });
+          epicStore.updateStatus(epicId, 'done');
+        })();
+        return {
+          status: 'merged',
+          url: prUrl,
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: `Epic ${epicId} published — opened PR: ${prUrl}`,
+        };
+      }
+
+      case 'push-and-open': {
+        // Local branch at correct sha; push to remote then open the PR.
+        // ctx.remote is always non-null here: detectResumePhase returns noop-terminal
+        // when remote is null, making this arm unreachable without a valid remote.
+        const remote = ctx.remote as string;
+        const epicBranch = `epic/${epicId}`;
+        const push = this.opts.pushBranch
+          ? this.opts.pushBranch(remote, plan.finalizeRef)
+          : gitSafe(this.opts.projectRoot, ['push', remote, `${epicBranch}:${plan.finalizeRef}`]);
+        if (!push.ok) {
+          // NFR-3: audit the push failure before returning
+          audit.record({
+            agent_id: undefined,
+            action: 'epic_publish_pending',
+            command: epicId,
+            allowed: true,
+            detail: { reason: 'push_failed', via: plan.action, finalize_ref: plan.finalizeRef },
+          });
+          return {
+            status: 'publish_pending',
+            conflicted: [],
+            merged: [],
+            cleaned: [],
+            note: `Epic ${epicId}: push failed for ${plan.finalizeRef}: ${push.output}`,
+          };
+        }
+        const prUrl = await this.openPrForResume(epic, plan.finalizeRef);
+        if (!prUrl) {
+          // NFR-3: audit the PR-open failure before returning
+          audit.record({
+            agent_id: undefined,
+            action: 'epic_publish_pending',
+            command: epicId,
+            allowed: true,
+            detail: { reason: 'pr_open_failed', via: plan.action, finalize_ref: plan.finalizeRef },
+          });
+          return {
+            status: 'publish_pending',
+            conflicted: [],
+            merged: [],
+            cleaned: [],
+            note: `Epic ${epicId}: PR open failed for ${plan.finalizeRef} after push`,
+          };
+        }
+        this.opts.db.transaction(() => {
+          epicStore.recordPrUrl(epicId, prUrl);
+          epicStore.clearFinalizePhase(epicId);
+          audit.record({
+            agent_id: undefined,
+            action: 'epic_published',
+            command: epicId,
+            allowed: true,
+            detail: { finalize_ref: plan.finalizeRef, pr_url: prUrl, via: 'push-and-open' },
+          });
+          epicStore.updateStatus(epicId, 'done');
+        })();
+        return {
+          status: 'merged',
+          url: prUrl,
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: `Epic ${epicId} published — pushed and opened PR: ${prUrl}`,
+        };
+      }
+
+      default: {
+        const _exhaustive: never = plan;
+        throw new Error(`unhandled ResumePlan arm: ${(_exhaustive as { action: string }).action}`);
+      }
+    }
+  }
+
+  /**
+   * Opens a PR for the resume path using the injected seam or `gh pr create --fill`.
+   * Returns the PR URL or undefined on failure.
+   */
+  private async openPrForResume(
+    epic: EpicRecord,
+    finalizeRef: string
+  ): Promise<string | undefined> {
+    const title = `${epic.id}: ${epic.title ?? epic.id}`;
+    try {
+      if (this.opts.openPr) {
+        return this.opts.openPr({ branch: finalizeRef, title, body: '' }) ?? undefined;
+      }
+      const execOpts = { cwd: this.opts.projectRoot, encoding: 'utf8' as const, timeout: 30_000 };
+      // Probe for an existing PR first (idempotent retry). Use `gh pr list --head`
+      // — `gh pr view --head` is NOT a valid invocation (view takes a positional
+      // branch and has no --head flag; it would error `unknown flag: --head` and
+      // the catch would misread that as "no PR", duplicating the PR on re-open).
+      // --state all so a merged/closed PR still resolves.
+      try {
+        const probeOut = execFileSync(
+          'gh',
+          ['pr', 'list', '--head', finalizeRef, '--state', 'all', '--json', 'url', '-q', '.[0].url // ""'],
+          execOpts
+        ).trim();
+        if (probeOut.startsWith('http')) return probeOut;
+      } catch {
+        // No existing PR — create below
+      }
+      const out = execFileSync(
+        'gh',
+        ['pr', 'create', '--head', finalizeRef, '--fill'],
+        execOpts
+      );
+      return out.trim().split('\n').find((l) => l.startsWith('http'));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Remote probe: does a live PR exist for this finalizer-owned ref? (FR-10) */
+  private prForRefProbe(finalizeRef: string): { exists: boolean; url?: string } {
+    if (this.opts.prForRef) return this.opts.prForRef(finalizeRef);
+    try {
+      // `gh pr view` has no --head flag (it takes a positional branch and errors
+      // when no PR exists); `gh pr list --head` is the correct ref→PR probe and
+      // returns [] (exit 0) when there is none. --state all so a merged/closed PR
+      // still resolves (FR-12: the branch may be deleted after a squash-merge).
+      const out = execFileSync(
+        'gh',
+        ['pr', 'list', '--head', finalizeRef, '--state', 'all', '--json', 'url', '-q', '.[0].url // ""'],
+        { cwd: this.opts.projectRoot, encoding: 'utf8', timeout: 30_000 }
+      ).trim();
+      if (out.startsWith('http')) return { exists: true, url: out };
+      return { exists: false };
+    } catch {
+      return { exists: false };
+    }
+  }
+
+  /** Remote probe: does the finalizer-owned ref exist on the remote? (FR-12) */
+  private remoteRefExistsProbe(remote: string, finalizeRef: string): boolean {
+    if (this.opts.remoteRefExists) return this.opts.remoteRefExists(remote, finalizeRef);
+    // Branches pushed without a fully-qualified refspec land under refs/heads/ on the remote
+    // (git expands an unqualified push target to refs/heads/<name>). Querying the bare
+    // `refs/<name>` pattern would never match and always return false.
+    const result = gitSafe(this.opts.projectRoot, ['ls-remote', remote, `refs/heads/${finalizeRef}`]);
+    return result.ok && result.output.trim().length > 0;
+  }
+
+  /**
+   * Remote probe: does the local `epic/<epicId>` HEAD match the sha7 suffix
+   * embedded in `ref`? (FR-11 — only trust a prior gate if the sha still matches)
+   */
+  private integrationHeadMatchesRefProbe(epicId: string, ref: string): boolean {
+    if (this.opts.integrationHeadMatchesRef) return this.opts.integrationHeadMatchesRef(epicId, ref);
+    const sha7 = ref.slice(-7);
+    const epicBranch = `epic/${epicId}`;
+    const result = gitSafe(this.opts.projectRoot, ['rev-parse', '--verify', epicBranch]);
+    if (!result.ok) return false;
+    return result.output.trim().startsWith(sha7);
   }
 
   /**
