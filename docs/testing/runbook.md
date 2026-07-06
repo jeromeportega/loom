@@ -2349,6 +2349,134 @@ loom doctor
 
 ---
 
+---
+
+## Epic 70 — Self-describing `--help` parity and policy-validation fixes
+
+Stories 001–005 shipped four user-visible behavior changes:
+
+1. Enriched `--help` output (Values + Exit codes blocks, from the machine-readable spec).
+2. `loom autonomy <id>` without a level now echoes the current value AND the `Values:` block.
+3. `qa_planning: on` and `integration_branch: on` are accepted as aliases.
+4. Policy validation errors always show the received value; `max_concurrent` has no upper cap and emits a soft advisory when above the machine ceiling.
+
+### Automated tests
+
+```bash
+npm run test -w loom-ai         # describe/__tests__/helpSupplement.test.ts, autonomyHelp.test.ts, epicAlias.test.ts, migrate.test.ts
+npm run test -w @loom-ai/core   # aliasAdvisory.test.ts, guardrails/policyError.test.ts
+```
+
+### Manual verification
+
+#### Enriched `--help` for `loom autonomy`
+
+```bash
+# Build first if not already built:
+npm run build
+
+loom autonomy --help
+```
+
+Expected output includes a `Values:` block after the standard help text:
+
+```
+Values:
+  full-auto   — run continuously without pausing
+  checkpoint  — pause after each story for review
+  manual      — require explicit approval at each step
+
+Exit codes:
+  0  Level shown or updated successfully
+  1  Epic not found, invalid level, or loom not initialized
+```
+
+The `Values:` and `Exit codes:` blocks must appear in `--help`; they are generated from the machine-readable spec via `applySpec`.
+
+#### No-level read mode echoes enum values
+
+```bash
+# In a loom-init'ed repo with at least one epic:
+loom autonomy epic-001
+```
+
+Expected output: one line with the current level, then the same `Values:` block as `--help`:
+
+```
+  epic-001 — autonomy: manual
+Values:
+  full-auto   — run continuously without pausing
+  checkpoint  — pause after each story for review
+  manual      — require explicit approval at each step
+```
+
+#### `on` alias for `qa_planning` and `integration_branch`
+
+```bash
+# Add to .loom/policy.yaml:
+#   agents:
+#     qa_planning: on
+#     integration_branch: on
+
+loom guard check "echo test"   # any allowed command forces a policy reload
+# Must succeed (exit 0) — 'on' is a valid alias, not an unknown enum value.
+
+# To confirm the alias resolves correctly:
+node -e "
+const { PolicyEngine } = require('./packages/loom-core/dist/index.js');
+const p = PolicyEngine.load('.loom');
+console.log('qa_planning:', p.policy.agents.qa_planning);       // expect: advisory
+console.log('integration_branch:', p.policy.agents.integration_branch); // expect: rolling
+"
+```
+
+#### Policy validation error shows received value for numeric fields
+
+```bash
+# Add an invalid value to .loom/policy.yaml:
+#   agents:
+#     max_concurrent: -5
+
+loom guard check "echo test"
+# Expected: policy validation error showing:
+#   Field:      agents.max_concurrent
+#   Received:   -5
+#   Constraint: integer >= 1
+#   Fix:        Set agents.max_concurrent to a value of at least 1.
+#
+# The Received: line must show -5, not "undefined".
+
+# Restore: agents.max_concurrent: 5
+```
+
+#### `max_concurrent` soft advisory at `loom run` startup
+
+```bash
+# On a machine with, say, 8 CPUs (threshold = max(1, 8-2) = 6):
+# Set agents.max_concurrent: 16 in .loom/policy.yaml
+
+loom run
+# Expected: a warning line before dispatch:
+#   policy.agents.max_concurrent (16) exceeds the recommended ceiling of 6 for this machine (8 CPUs). Running more concurrent workers than available cores can degrade performance. Consider lowering max_concurrent to 6 or fewer.
+# The run still proceeds — the advisory is never blocking.
+```
+
+### Definition of done for Epic 70
+
+- [x] `loom autonomy --help` shows a `Values:` block and an `Exit codes:` block
+- [x] `loom autonomy <id>` (no level) echoes the current level and the `Values:` block
+- [x] `qa_planning: on` is accepted as a valid alias for `advisory`
+- [x] `integration_branch: on` is accepted as a valid alias for `rolling`
+- [x] Policy validation error shows the actual received value for numeric fields
+- [x] `agents.max_concurrent` accepts any integer ≥ 1 (no upper cap)
+- [x] A soft advisory is emitted when `max_concurrent` exceeds the machine ceiling
+- [x] `loom migrate` already-registered message points to `loom projects`
+- [x] `docs/capabilities.md` updated for all of the above
+- [x] `docs/configuration.md` updated for `on` alias, received-value error, and `max_concurrent` behavior
+- [x] `npm test` passes
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

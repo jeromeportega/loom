@@ -1,4 +1,5 @@
-import type { CommandDescription } from '../describe/schema.js';
+import type { CommandDescription, PositionalArg } from '../describe/schema.js';
+import { renderValueMeanings } from '../describe/helpSupplement.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -13,6 +14,19 @@ import { openProjectDatabase } from '../dbHelper.js';
 export interface AutonomyOptions {
   json?: boolean;
 }
+
+const levelArg: PositionalArg = {
+  name: 'level',
+  type: 'enum',
+  required: false,
+  description: 'Autonomy level to set; omit to show the current value',
+  values: ['full-auto', 'checkpoint', 'manual'],
+  valueMeanings: {
+    'full-auto': 'run continuously without pausing',
+    'checkpoint': 'pause after each story for review',
+    'manual': 'require explicit approval at each step',
+  },
+};
 
 /**
  * `loom autonomy <epic-id> [level]` — set the autonomy level for an epic
@@ -42,6 +56,8 @@ export function runAutonomy(epicId: string, level: string | undefined, opts: Aut
       return;
     }
     console.log(`  ${epicId} — autonomy: ${current}`);
+    const meanings = renderValueMeanings(levelArg);
+    if (meanings) console.log(meanings);
     return;
   }
 
@@ -76,7 +92,7 @@ export const spec: CommandDescription = {
   whenToUse: 'Use to control how much human oversight the supervisor applies: full-auto runs continuously, checkpoint pauses after each story, manual requires explicit approval at each step.',
   arguments: [
     { name: 'epic-id', type: 'string', required: true, description: 'Epic id (e.g. epic-001)' },
-    { name: 'level', type: 'enum', required: false, description: 'Autonomy level to set; omit to show the current value', values: ['full-auto', 'checkpoint', 'manual'] },
+    levelArg,
   ],
   options: [
     { name: '--json', type: 'boolean', description: 'Emit JSON: { id, autonomy_level }', changesOutputShape: true },

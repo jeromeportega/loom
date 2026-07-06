@@ -9,12 +9,16 @@ export const PositionalArgSchema = z.object({
   required: z.boolean(),
   description: z.string().min(1),
   values: z.array(z.string()).optional(),
+  valueMeanings: z.record(z.string(), z.string()).optional(),
 }).refine(
   (arg) => arg.type !== 'enum' || (arg.values !== undefined && arg.values.length > 0),
   { message: 'enum type requires a non-empty values array', path: ['values'] }
 ).refine(
   (arg) => arg.type === 'enum' || arg.values === undefined,
   { message: 'values may only be set when type is enum', path: ['values'] }
+).refine(
+  (arg) => !arg.valueMeanings || Object.keys(arg.valueMeanings).every(k => arg.values?.includes(k)),
+  { message: 'valueMeanings keys must be a subset of values' }
 );
 export type PositionalArg = z.infer<typeof PositionalArgSchema>;
 

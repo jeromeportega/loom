@@ -170,6 +170,23 @@ describe('loadTeamConfigLayer — invalid config throws PolicyValidationError', 
     );
   });
 
+  it('a numeric out-of-range error echoes the received value, not "Received: undefined"', () => {
+    // The team-config layer must match the policy.yaml layer's error quality:
+    // max_concurrent: 0 violates `>= 1` and Zod omits `received` for too_small,
+    // so the rawInput-by-path fallback must supply the operator's actual value.
+    write(tmp, 'agents:\n  max_concurrent: 0\n');
+    assert.throws(
+      () => loadTeamConfigLayer(tmp),
+      (err: unknown) => {
+        assert.ok(err instanceof PolicyValidationError, `expected PolicyValidationError, got ${err}`);
+        assert.match(err.message, /max_concurrent/, 'message must name the field');
+        assert.match(err.message, /Received:\s*0\b/, 'must echo the actual received value (0)');
+        assert.doesNotMatch(err.message, /Received:\s*undefined/, 'must not print "Received: undefined"');
+        return true;
+      },
+    );
+  });
+
   it('PolicyValidationError carries the file path', () => {
     write(tmp, 'agents:\n  model: 123\n');
     assert.throws(

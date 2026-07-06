@@ -286,7 +286,7 @@ export function runMigrate(opts: {
   if (!alreadyInManifest) {
     console.log(`  manifest   registered as ${entry.slug} in ${path.join(loomHome, 'workspace.yaml')}`);
   } else {
-    console.log(`  manifest   already registered as ${entry.slug}`);
+    console.log(`  manifest   already registered as ${entry.slug} — run loom projects to see all registered repos`);
   }
 
   // 3. Relocate committed .loom_outputs artifacts (opt-in)

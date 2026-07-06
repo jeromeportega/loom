@@ -211,3 +211,58 @@ the same one that blocks workers from running unsafe commands. Use it to
 confirm that guard-list changes (new `protected_branches`, updated
 `allowed_remotes`, etc.) took effect exactly as expected before dispatching
 a run.
+
+---
+
+## Convenience aliases
+
+Two knobs accept the literal string `on` as a convenience alias for their
+most-permissive named value:
+
+| Knob | `on` maps to | Full value set |
+|---|---|---|
+| `agents.qa_planning` | `advisory` | `off`, `advisory` |
+| `agents.integration_branch` | `rolling` | `off`, `rolling` |
+
+The alias is resolved at parse time by a `z.preprocess` step before Zod
+validation runs — the canonical value (`advisory`, `rolling`) is what all
+downstream code sees. `on` never appears after validation. This makes
+`qa_planning: on` and `qa_planning: advisory` byte-identical in effect.
+
+---
+
+## `agents.max_concurrent` — no upper cap, soft advisory
+
+`agents.max_concurrent` accepts any integer ≥ 1. The previous upper cap was
+removed. When the configured value exceeds `max(1, cpuCount − 2)` — two
+cores below the machine's detected CPU count, reserved for the OS and the
+loom supervisor — loom emits a **soft advisory** at the start of `loom run`:
+
+```
+policy.agents.max_concurrent (N) exceeds the recommended ceiling of M for this machine (K CPUs). Running more concurrent workers than available cores can degrade performance. Consider lowering max_concurrent to M or fewer.
+```
+
+The advisory is informational only — the configured value is **never
+modified**. To silence it, lower `max_concurrent` to the recommended
+threshold in your `.loom/policy.yaml`. The threshold is computed at runtime from
+`os.cpus().length` and may differ between machines.
+
+---
+
+## Policy validation error format
+
+When `.loom/policy.yaml` fails Zod validation (at `PolicyEngine.load` time or
+during `loom doctor`), each invalid field is reported as a four-line block:
+
+```
+Field:      agents.max_concurrent
+Received:   -1
+Constraint: integer >= 1
+Fix:        Set agents.max_concurrent to a value of at least 1.
+```
+
+`Received:` is always populated. For numeric knobs that fail a `min` or
+`max` constraint, Zod does not expose the raw value on the issue object
+directly; loom extracts it from the **pre-parse config tree** via path
+lookup, so the error always reflects the operator's actual input rather than
+reporting `undefined`.

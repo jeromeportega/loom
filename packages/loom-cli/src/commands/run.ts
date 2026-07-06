@@ -20,6 +20,7 @@ import {
   EpicFinalizer,
   CodeReviewAgent,
   stallConfigWarning,
+  maxConcurrentAdvisory,
   validateCursorModels,
   registerReviewerSkills,
   prepareRepoState,
@@ -253,6 +254,8 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   const policy = PolicyEngine.load(loomDir).policyData;
   const stallWarning = stallConfigWarning(policy);
   if (stallWarning) console.warn(`  ${stallWarning}`);
+  const concurrentAdvisory = maxConcurrentAdvisory(policy);
+  if (concurrentAdvisory) console.warn(`  ${concurrentAdvisory}`);
 
   // Fail fast on a bad cursor_model before any worker spawns. Exit only on a
   // confirmed-invalid id; an 'unavailable' probe (FR-8) or a boundary-prefix

@@ -499,7 +499,7 @@ filesystem:
   # Root directory agents are allowed to write within (default: project root)
   allowed_write_root: "."
 
-  # Root directory agents may read/search within (default: project root)
+  # Root directory agents may read/search within, resolved relative to the worktree at hook time (not on init) (default: project root)
   allowed_read_root: "."
 
 agents:

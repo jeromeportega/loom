@@ -40,7 +40,10 @@ export function loadTeamConfigLayer(loomHomeDir: string): ConfigLayer {
 
   const result = TeamConfigSchema.safeParse(raw);
   if (!result.success) {
-    throw new PolicyValidationError(filePath, describePolicyIssues(result.error));
+    // Pass the raw tree so numeric out-of-range errors echo the operator's actual
+    // value (the rawInput-by-path fallback) instead of "Received: undefined" — the
+    // team-config layer must match the policy.yaml layer's error quality.
+    throw new PolicyValidationError(filePath, describePolicyIssues(result.error, raw));
   }
 
   // Return raw (not result.data) so defaults are not injected into the layer
