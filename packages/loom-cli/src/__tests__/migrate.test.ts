@@ -238,6 +238,48 @@ describe('loom migrate — idempotent no-op re-run', () => {
   });
 });
 
+// ─── Suite: already-registered → loom projects pointer ───────────────────────
+
+describe('loom migrate — already-registered message references loom projects', () => {
+  const suite = makeSuite();
+
+  before(() => {
+    suite._setup('loom-migrate-alreadyreg-');
+    // Register the repo on the first run
+    const first = suite.loom('migrate');
+    assert.equal(first.status, 0, `first run must succeed; stderr: ${first.stderr}`);
+  });
+
+  after(() => suite._teardown());
+
+  it('already-registered output contains loom projects pointer', () => {
+    const result = suite.loom('migrate');
+    assert.equal(result.status, 0, `must exit 0; stderr: ${result.stderr}`);
+    assert.ok(
+      result.stdout.includes('loom projects'),
+      `already-registered message must reference 'loom projects'; got: ${result.stdout}`
+    );
+  });
+
+  it('fresh registration does not emit the loom projects pointer', () => {
+    // A brand-new project should not show the already-registered message
+    const freshSuite = makeSuite();
+    freshSuite._setup('loom-migrate-fresh2-');
+    try {
+      const result = freshSuite.loom('migrate');
+      assert.equal(result.status, 0, `must exit 0; stderr: ${result.stderr}`);
+      // On first run the repo is NOT already registered — pointer must not appear
+      // in the newly-registered manifest line
+      assert.ok(
+        !result.stdout.includes('run loom projects'),
+        `first-run output must not emit the already-registered pointer; got: ${result.stdout}`
+      );
+    } finally {
+      freshSuite._teardown();
+    }
+  });
+});
+
 // ─── Suite: dry-run makes no changes ─────────────────────────────────────────
 
 describe('loom migrate --dry-run', () => {
