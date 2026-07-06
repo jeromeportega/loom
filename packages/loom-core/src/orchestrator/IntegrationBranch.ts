@@ -307,6 +307,51 @@ export class IntegrationBranch {
   async syncWithMain(epicId: string, mainBranch = 'main'): Promise<SyncResult> {
     const wtPath = this.path(epicId);
     const remote = `origin/${mainBranch}`;
+    const branch = this.branchName(epicId);
+
+    // ── 0. Validate the target is a real integration worktree ────────────────
+    // Every git call below runs in `wtPath`. If `wtPath` is a stale PLAIN
+    // directory (a crash between mkdir and `worktree add`, or a manual copy) it
+    // still reports "inside a work tree" but resolves UP to the main checkout —
+    // so `git merge origin/main` would silently merge into whatever branch the
+    // operator has checked out (data corruption + false "synced" success).
+    // Require: the dir exists, is the ROOT of its own worktree, and is checked
+    // out on `epic/<id>` — otherwise refuse without mutating anything.
+    if (!fs.existsSync(wtPath)) {
+      return {
+        alreadyCurrent: false,
+        mergedCommits: 0,
+        conflicted: true,
+        diagnostic: `integration worktree for ${epicId} not found at ${wtPath}`,
+      };
+    }
+    const top = gitSafe(wtPath, ['rev-parse', '--show-toplevel']);
+    const isWorktreeRoot =
+      top.ok &&
+      (() => {
+        try {
+          return fs.realpathSync(top.output.trim()) === fs.realpathSync(wtPath);
+        } catch {
+          return false;
+        }
+      })();
+    if (!isWorktreeRoot) {
+      return {
+        alreadyCurrent: false,
+        mergedCommits: 0,
+        conflicted: true,
+        diagnostic: `${wtPath} is not a valid integration worktree (stale directory?) — refusing to sync to avoid merging into the wrong checkout`,
+      };
+    }
+    const head = gitSafe(wtPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (!head.ok || head.output.trim() !== branch) {
+      return {
+        alreadyCurrent: false,
+        mergedCommits: 0,
+        conflicted: true,
+        diagnostic: `integration worktree for ${epicId} is on '${head.ok ? head.output.trim() : '?'}', not '${branch}' — refusing to sync`,
+      };
+    }
 
     // ── 1. Fetch origin/<mainBranch> ────────────────────────────────────────
     const fetch = gitSafe(wtPath, ['fetch', 'origin', mainBranch]);

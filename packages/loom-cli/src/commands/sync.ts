@@ -1,7 +1,7 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EpicStore, IntegrationBranch } from '@loom-ai/core';
+import { EpicStore, IntegrationBranch, AuditLog } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
 export interface SyncOptions {
@@ -49,6 +49,20 @@ export async function runSync(epicId: string, opts: SyncOptions = {}): Promise<v
 
   const mainBranch = opts.mainBranch ?? 'main';
   const result = await ib.syncWithMain(epicId, mainBranch);
+
+  // Audit the sync outcome (repo invariant: operator actions are logged).
+  new AuditLog(db).record({
+    action: 'epic_sync',
+    command: epicId,
+    allowed: !result.conflicted,
+    detail: {
+      main_branch: mainBranch,
+      already_current: result.alreadyCurrent,
+      merged_commits: result.mergedCommits,
+      conflicted: result.conflicted,
+      ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
+    },
+  });
 
   if (result.alreadyCurrent) {
     console.log(`epic/${epicId} is already up to date with ${mainBranch}.`);

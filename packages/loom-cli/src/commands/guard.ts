@@ -93,11 +93,15 @@ export async function runGuardHook(): Promise<void> {
       process.exit(EXIT_ALLOW);
     }
 
+    // Load policy from the MAIN repo's .loom, not cwd/.loom: a worker's cwd is a
+    // `.loom/worktrees/<story>` worktree that has no committed `.loom/policy.yaml`,
+    // so loading from cwd would fail and fall through to ALLOW — silently
+    // disabling read-scope for exactly the worker sessions it must protect.
     let engine: PolicyEngine;
     try {
-      engine = PolicyEngine.load(loomDir);
+      engine = PolicyEngine.load(path.join(mainRepoRoot, LOOM_DIR));
     } catch {
-      // Policy unavailable (pre-loom-init, worktree without .loom/) — allow
+      // Policy genuinely unavailable (pre-loom-init) — allow.
       process.exit(EXIT_ALLOW);
     }
     const ctx = buildReadScopeCtx(engine, projectRoot);
@@ -136,11 +140,14 @@ export async function runGuardHook(): Promise<void> {
       process.exit(EXIT_ALLOW);
     }
 
+    // Load policy from the MAIN repo's .loom (see the Read-tool path above): a
+    // worker worktree has no committed `.loom/policy.yaml`, so cwd/.loom would
+    // fail-open and disable the Bash read-scope check for workers.
     let engine: PolicyEngine;
     try {
-      engine = PolicyEngine.load(loomDir);
+      engine = PolicyEngine.load(path.join(mainRepoRoot, LOOM_DIR));
     } catch {
-      // Policy unavailable (pre-loom-init, worktree without .loom/) — allow
+      // Policy genuinely unavailable (pre-loom-init) — allow.
       process.exit(EXIT_ALLOW);
     }
     const ctx = buildReadScopeCtx(engine, projectRoot);

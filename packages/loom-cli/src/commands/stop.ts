@@ -6,7 +6,8 @@ import { ControlStore, AgentStore, EpicStore, AuditLog } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 import type { AgentRecord, AgentStatus } from '@loom-ai/core';
 import type Database from 'better-sqlite3';
-import { runRetry } from './retry.js';
+import { prepareRetry } from './retry.js';
+import { runRun } from './run.js';
 import type { RetryOptions } from './retry.js';
 
 /**
@@ -94,8 +95,15 @@ export function pollUntilTerminal(
 
     const now = pollClock.nowMs();
     if (now >= deadline) {
-      if (agent) {
-        agents.updateStatus(agent.id, 'failed', {
+      // Re-read immediately before forcing: a worker that reached a terminal
+      // status (e.g. committed `done`) between the poll above and now must NOT be
+      // clobbered to `failed` by the timeout write.
+      const fresh = agents.getByStory(storyId);
+      if (fresh && STOP_TERMINAL_STATUSES.has(fresh.status)) {
+        return { reached: true, finalStatus: fresh.status };
+      }
+      if (fresh) {
+        agents.updateStatus(fresh.id, 'failed', {
           log_tail: 'stop timeout: forced failed',
         });
       }
@@ -489,12 +497,38 @@ export async function runStop(
   // step opens the same logical database as the stop step.
   const retryFn =
     runDeps.retryFn ??
-    ((sid: string, retryOpts: RetryOptions) => runRetry(sid, { ...retryOpts, projectRoot }));
+    (async (sid: string, retryOpts: RetryOptions) => {
+      // Use prepareRetry (NOT runRetry, which process.exits on a non-ready prep):
+      // a failed retry enqueue must be CATCHABLE by the loop below so remaining
+      // stories are still attempted and the recovery hint is printed. force:true
+      // mirrors `loom retry --force` — the story was just stopped, but a live
+      // supervisor could flip it back to running between the poll and the retry.
+      const prep = prepareRetry(db, projectRoot, sid, { ...retryOpts, force: true });
+      if (prep.status !== 'ready') {
+        throw new Error(prep.message);
+      }
+      if (prep.dispatch === 'self') {
+        await runRun([prep.epicId!]);
+      }
+      // dispatch === 'queue' → a live run re-dispatches the reset story itself.
+    });
   let exitNonZero = false;
 
   for (const storyId of pollingStories) {
     const pollResult = pollUntilTerminal(storyId, db, 30_000, pollClock);
     if (!pollResult.reached) {
+      // The worker ignored SIGTERM for 30 s and we force-wrote "failed". Escalate
+      // to SIGKILL so a subsequent `loom retry` (or the --and-retry below) cannot
+      // race a still-alive worker on the same idempotent worktree.
+      const stale = new AgentStore(db).getByStory(storyId);
+      if (stale?.worker_pid) {
+        try {
+          process.kill(stale.worker_pid, 'SIGKILL');
+          console.error(`  ${storyId}: escalated to SIGKILL (pid ${stale.worker_pid}).`);
+        } catch {
+          // ESRCH — the process is already gone; nothing to kill.
+        }
+      }
       console.error(
         `\n  ${storyId}: stop timed out — force-wrote "failed" after 30 s.` +
         `\n  Run \`loom retry ${storyId}\` when you are ready to re-dispatch it.\n`

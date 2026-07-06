@@ -140,18 +140,21 @@ export class EpicStore {
   /** Marks planning complete — clears phase, optionally updates title. */
   completePlanning(id: string, title?: string): void {
     const now = new Date().toISOString();
+    // Guard on status = 'planning': if the epic was rejected (or failed) while the
+    // planner was still running — e.g. `loom reject` on a stalled-but-alive plan —
+    // a late completePlanning must NOT resurrect it to 'planned'.
     if (title !== undefined) {
       this.db
         .prepare(
           `UPDATE epics SET status = 'planned', planning_phase = NULL,
-                            title = ?, updated_at = ? WHERE id = ?`
+                            title = ?, updated_at = ? WHERE id = ? AND status = 'planning'`
         )
         .run(title, now, id);
     } else {
       this.db
         .prepare(
           `UPDATE epics SET status = 'planned', planning_phase = NULL,
-                            updated_at = ? WHERE id = ?`
+                            updated_at = ? WHERE id = ? AND status = 'planning'`
         )
         .run(now, id);
     }
