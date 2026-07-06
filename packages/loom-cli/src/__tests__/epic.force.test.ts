@@ -14,7 +14,7 @@ import {
 } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 import type { LLMRequest, BriefRefinement } from '@loom-ai/core';
-import { runEpic } from '../commands/epic.js';
+import { runEpic, formatTechNotesMetric } from '../commands/epic.js';
 
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
 
@@ -381,5 +381,30 @@ describe('three-outcome gate routing', () => {
     const llm = new MockLLMClient(pipelineResponder({ ready: true, score: 6 }));
     const exitCode = await runEpicCapture(BRIEF, { force: false, llm });
     assert.equal(exitCode, null, 'boundary score (=== threshold) with ready: true exits 0');
+  });
+});
+
+// ── formatTechNotesMetric — planner summary label (story-077-001) ─────────────
+
+describe('formatTechNotesMetric', () => {
+  it('happy path: produces tech_notes N of M for typical values', () => {
+    const result = formatTechNotesMetric(2, 5);
+    assert.match(result, /tech_notes 2 of 5/);
+  });
+
+  it('zero enriched: produces tech_notes 0 of M', () => {
+    const result = formatTechNotesMetric(0, 3);
+    assert.match(result, /tech_notes 0 of 3/);
+  });
+
+  it('old label is absent for any input', () => {
+    assert.ok(!formatTechNotesMetric(2, 5).includes('enriched with tech notes'));
+    assert.ok(!formatTechNotesMetric(0, 3).includes('enriched with tech notes'));
+    assert.ok(!formatTechNotesMetric(5, 5).includes('enriched with tech notes'));
+  });
+
+  it('all enriched: produces tech_notes N of N', () => {
+    const result = formatTechNotesMetric(5, 5);
+    assert.match(result, /tech_notes 5 of 5/);
   });
 });
