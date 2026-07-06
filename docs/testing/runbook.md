@@ -2265,6 +2265,88 @@ npm run test -w @loom-ai/core   # SupervisorRecovery.test.ts
 
 ---
 
+## Epic 68 — Toolchain-Aware Integration Gate
+
+**What was delivered:** The integration gate is now multi-step and toolchain-aware. Instead of running only a single unit-test command, the gate resolves an ordered `GateStep[]` plan — one unit step plus zero or more toolchain steps — and runs every step independently, reporting per-step pass/fail and wall-clock. `loom doctor` now also executes the gate on the current project via a `gate-runnable` real-exec check.
+
+### New toolchain step detection
+
+The gate appends toolchain steps after the unit step, in fixed order:
+
+| Signal file | Step name | Command |
+|---|---|---|
+| `tsconfig.json` | `typecheck:tsc` | `npx --no-install tsc --noEmit` |
+| `next.config.*` or `next` dep in `package.json` | `build:next` | `npx --no-install next build` |
+| `go.mod` | `build:go` | `go build ./...` |
+| `Cargo.toml` | `build:cargo` | `cargo build --workspace` |
+
+uv-managed Python projects rewrite the unit step command:
+
+| Signal | Command |
+|---|---|
+| `[tool.uv.workspace]` in `pyproject.toml` | `uv run --all-packages pytest` |
+| `[tool.uv]` section or `uv.lock` present | `uv run pytest` |
+
+When `policy.agents.test_command` is set, all auto-detection is suppressed and only the configured command runs as the single unit step.
+
+### Operator wall-clock note
+
+Build steps run full compilations and materially increase gate time. `build:next` (`next build`) and `build:cargo` (`cargo build --workspace`) can each add minutes on non-trivial projects. When `integration_gate: block` is configured on a repo with Next.js or Rust in scope, budget for the additional compilation time.
+
+### Gate-runnable doctor check
+
+`loom doctor` now includes a `gate-runnable` check that actually executes the resolved gate plan via `resolveGatePlan` + `runGateSteps` on the current project directory. The check:
+
+- Resolves the same steps the EpicFinalizer would run (configured override or auto-detected)
+- Runs every step and collects per-step outcomes
+- Reports `ok` when all steps pass; reports `failed: <step-name> exited <N>` on failure
+- Is advisory only (`required: false`) — never flips doctor's own exit code
+- Detects PATH divergence (a binary found on the login shell but absent in the gate's non-interactive `/bin/sh`) and reports it explicitly
+
+```
+# Example doctor output when all steps pass:
+✓ gate-runnable: gate ran and passed (2 step(s) in 14s)
+
+# Example output when a step fails:
+✗ gate-runnable: gate failed: typecheck:tsc exited 1 (...)
+```
+
+### Automated tests
+
+```bash
+npm run test -w @loom-ai/core   # GatePreflight.plan.test.ts, GatePreflight.toolchain.test.ts, GatePreflight.uv.test.ts, IntegrationGate.steps.test.ts
+npm run test -w loom-ai         # doctorGateCheck.test.ts
+```
+
+### Manual verification
+
+```bash
+# In a TypeScript + Next.js repo:
+loom doctor
+# Expect a gate-runnable check that shows typecheck:tsc + build:next steps
+
+# In a Python uv workspace:
+loom doctor
+# Expect gate-runnable to run `uv run --all-packages pytest`
+
+# In a repo with no detectable test suite:
+loom doctor
+# gate-runnable: no gate steps to run; gate runs amputation check only
+```
+
+### Definition of done for Epic 68
+
+- [x] `resolveGatePlan()` returns ordered steps: unit + toolchain (tsc/next/go/cargo) based on detected signals
+- [x] uv-aware Python detection rewrites the unit step to `uv run pytest` or `uv run --all-packages pytest`
+- [x] All steps run independently (no short-circuit on failure — ADR-3)
+- [x] `loom doctor` includes the `gate-runnable` real-exec check (advisory, `required: false`)
+- [x] `docs/capabilities.md` documents all four: toolchain auto-detection, uv gate, per-step reporting, gate-runnable check
+- [x] `README.md` mirrors the gate behavior at overview depth
+- [x] Operator wall-clock note for build steps is present in capabilities and README
+- [x] `npm test` passes
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

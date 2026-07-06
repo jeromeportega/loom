@@ -116,7 +116,7 @@ if you need a roll-up today.
 | Capability | How |
 |---|---|
 | **Plan** | Analyst → PM → Architect personas turn a brief into a PRD, an architecture, and a story breakdown |
-| **Build** | Parallel story agents implement, test, and merge — each isolated in its own git worktree. A single-repo epic produces one pull request; a cross-repo epic produces one pull request per repository, landed in dependency order with all-ready-or-none staging. |
+| **Build** | Parallel story agents implement, test, and merge — each isolated in its own git worktree. A single-repo epic produces one pull request; a cross-repo epic produces one pull request per repository, landed in dependency order with all-ready-or-none staging. Before any PR opens, a toolchain-aware integration gate runs on the merged tree (unit tests + tsc typecheck + Next.js / Go / Cargo build as detected). |
 | **Learn** | A curated skill library auto-injects into worker agents; new skills are extracted from successful work and gated by an eval harness (the lifecycle runs internally — no user-facing CRUD surface today) |
 | **Supervise** | `loom status`, checkpoints, and `loom stop` keep you in control; `loom status --all` spans every repo on the machine |
 | **Observe** | Local web dashboard (`loom web`) for visibility into running agents, planning artifacts, and history; `loom cost` for per-epic cost and token breakdown |
@@ -312,6 +312,18 @@ branch so reviewers can see each unit. On a merge conflict, the finalizer
 aborts that specific merge and lists the conflicted story in the epic PR
 description for follow-up — the rest of the epic still ships.
 
+After merging, the **integration gate** runs on the merged tree before opening
+the PR. The gate auto-detects what to run: unit tests (`npm test` / `make test`
+/ `pytest`), TypeScript typecheck (`npx tsc --noEmit` when `tsconfig.json` is
+present), and build steps (`next build`, `go build ./...`, or `cargo build
+--workspace` based on project signals). Each step runs independently and
+reports its own pass/fail and duration. uv-managed Python projects use `uv run
+pytest` (or `uv run --all-packages pytest` for workspaces). Set
+`policy.agents.test_command` to override all detection with a single configured
+command. Build steps (`next build`, `cargo build`) run full compilations and
+materially increase gate wall-clock — plan accordingly when enabling
+`integration_gate: block`.
+
 `policy.agents.pr_strategy` is the knob; only `per-epic` is accepted (one PR per repository for cross-repo epics; the landing order is controlled by the coordinator, not this knob).
 
 ### The local web dashboard — `loom web`
@@ -337,7 +349,7 @@ stop / per-worker kill. No external services — local only.
 
 | Command | Purpose |
 |---|---|
-| `loom doctor` | Check prerequisites and the machine config |
+| `loom doctor` | Check prerequisites, machine config, and run the integration gate against the current project (`gate-runnable` check) |
 | `loom init [--cursor]` | Initialize loom in a repo |
 | `loom epic "<brief>"` | Plan an epic from a brief (always gated by the brief-quality refiner) |
 | `loom web` | Open the local dashboard (planning artifacts, live worker output, controls) |
