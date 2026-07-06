@@ -135,6 +135,13 @@ describe('guard hook — Bash read-scope (grep/rg/find/cat/ls)', () => {
     assert.equal(status, 2, 'grep to out-of-scope path should exit 2');
   });
 
+  it('blocks rg against an out-of-scope absolute path (exit 2)', () => {
+    const cmd = `rg pattern "${path.join(outsidePath, 'file.txt')}"`;
+    const payload = hookPayload('Bash', { command: cmd });
+    const { status } = runHook(payload);
+    assert.equal(status, 2, 'rg to out-of-scope path should exit 2');
+  });
+
   it('blocks find against an out-of-scope absolute path (exit 2)', () => {
     const cmd = `find "${path.join(outsidePath, 'secret')}" -name "*.ts"`;
     const payload = hookPayload('Bash', { command: cmd });

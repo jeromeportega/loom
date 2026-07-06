@@ -128,33 +128,52 @@ describe('materializeWorktreeReadScope — permissions allow globs (defense-in-d
     const settingsPath = path.join(worktreePath, '.claude', 'settings.json');
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as SettingsJson;
     const allow = settings.permissions?.allow ?? [];
-    // An in-repo file should match one of the allow globs
+    // An in-repo file should match one of the allow globs.
+    // Globs use the format Read(//<prefix>/**) where <prefix> is the absolute
+    // path with its leading slash stripped (e.g. "tmp/wt-abc/"). Re-add "/" when
+    // comparing against the absolute inRepoFile path.
     const inRepoFile = path.join(worktreePath, 'src', 'index.ts');
     const covered = allow.some(g => {
-      // Glob is of the form Read(//<prefix>/**) — check the prefix matches
       const match = g.match(/^Read\(\/\/(.+?)\*\*\)$/);
       if (!match) return false;
-      return inRepoFile.startsWith(match[1]);
+      return inRepoFile.startsWith('/' + match[1]);
     });
     assert.ok(covered, 'an absolute in-repo path should be covered by an allow glob');
   });
 });
 
 describe('materializeWorktreeReadScope — permissions deny globs (defense-in-depth)', () => {
-  it('permissions.deny contains the //** backstop', () => {
+  let deny: string[];
+
+  beforeEach(() => {
     materializeWorktreeReadScope({ worktreePath, readRoot, loomScriptPath: FAKE_LOOM_SCRIPT });
     const settingsPath = path.join(worktreePath, '.claude', 'settings.json');
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as SettingsJson;
-    const deny = settings.permissions?.deny ?? [];
+    deny = settings.permissions?.deny ?? [];
+  });
+
+  it('permissions.deny contains Read(//**) — absolute path backstop', () => {
     assert.ok(deny.some(g => g === 'Read(//**)'), 'deny should include Read(//**)');
   });
 
-  it('permissions.deny contains the ~/** backstop', () => {
-    materializeWorktreeReadScope({ worktreePath, readRoot, loomScriptPath: FAKE_LOOM_SCRIPT });
-    const settingsPath = path.join(worktreePath, '.claude', 'settings.json');
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as SettingsJson;
-    const deny = settings.permissions?.deny ?? [];
+  it('permissions.deny contains Read(~/**) — home path backstop', () => {
     assert.ok(deny.some(g => g === 'Read(~/**)'), 'deny should include Read(~/**)');
+  });
+
+  it('permissions.deny contains Grep(//**) — absolute path backstop', () => {
+    assert.ok(deny.some(g => g === 'Grep(//**)'), 'deny should include Grep(//**)');
+  });
+
+  it('permissions.deny contains Grep(~/**) — home path backstop', () => {
+    assert.ok(deny.some(g => g === 'Grep(~/**)'), 'deny should include Grep(~/**)');
+  });
+
+  it('permissions.deny contains Glob(//**) — absolute path backstop', () => {
+    assert.ok(deny.some(g => g === 'Glob(//**)'), 'deny should include Glob(//**)');
+  });
+
+  it('permissions.deny contains Glob(~/**) — home path backstop', () => {
+    assert.ok(deny.some(g => g === 'Glob(~/**)'), 'deny should include Glob(~/**)');
   });
 });
 

@@ -48,16 +48,21 @@ export function materializeWorktreeReadScope(
       ],
     },
     permissions: {
+      // Workers run --permission-mode bypassPermissions so this block is advisory
+      // (defense-in-depth). The hook above is the real enforcement mechanism.
+      // Allow globs use the //path/** format where path has no leading slash.
       allow: [
-        `Read(//${worktreePath}/**)`,
-        `Read(//${readRoot}/**)`,
-        `Grep(//${worktreePath}/**)`,
-        `Glob(//${worktreePath}/**)`,
+        `Read(//${worktreePath.replace(/^\//, '')}/**)`,
+        `Read(//${readRoot.replace(/^\//, '')}/**)`,
+        `Grep(//${worktreePath.replace(/^\//, '')}/**)`,
+        `Glob(//${worktreePath.replace(/^\//, '')}/**)`,
       ],
       deny: [
         'Read(//**)',
         'Read(~/**)',
         'Grep(//**)',
+        'Grep(~/**)',
+        'Glob(//**)',
         'Glob(~/**)',
       ],
     },

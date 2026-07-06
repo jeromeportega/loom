@@ -63,7 +63,13 @@ export async function runGuardHook(): Promise<void> {
       process.exit(EXIT_ALLOW);
     }
 
-    const engine = PolicyEngine.load(loomDir);
+    let engine: PolicyEngine;
+    try {
+      engine = PolicyEngine.load(loomDir);
+    } catch {
+      // Policy unavailable (pre-loom-init, worktree without .loom/) — allow
+      process.exit(EXIT_ALLOW);
+    }
     const ctx = buildReadScopeCtx(engine, projectRoot);
     const result = engine.checkReadScope(targetPath, ctx);
     if (!result.allowed) {
@@ -94,7 +100,13 @@ export async function runGuardHook(): Promise<void> {
     }
 
     // Read-scope check appended after write/git checks
-    const engine = PolicyEngine.load(loomDir);
+    let engine: PolicyEngine;
+    try {
+      engine = PolicyEngine.load(loomDir);
+    } catch {
+      // Policy unavailable (pre-loom-init, worktree without .loom/) — allow
+      process.exit(EXIT_ALLOW);
+    }
     const ctx = buildReadScopeCtx(engine, projectRoot);
     const readResult = engine.checkReadScopeCommand(command, ctx);
     if (!readResult.allowed) {
@@ -115,7 +127,7 @@ function buildReadScopeCtx(engine: PolicyEngine, projectRoot: string): ReadScope
   const worktreeRoot = projectRoot;
   const readRoot = path.resolve(
     projectRoot,
-    engine.policyData.filesystem.allowed_read_root,
+    engine.policyData?.filesystem?.allowed_read_root ?? '.',
   );
 
   let audit: AuditLog | undefined;
