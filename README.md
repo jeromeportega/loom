@@ -193,7 +193,7 @@ npm install && npm run build && npm link -w loom-ai
 cd your-git-repo
 loom doctor                       # check prerequisites
 loom init                         # set up .loom/, the guard hook, Claude Code config
-loom epic "Add a /health endpoint that returns build info, with a test"
+loom weave "Add a /health endpoint that returns build info, with a test"
 #   → plans the epic (Analyst → PM → Architect); a few minutes, headless
 loom status                       # review the planned epic
 loom approve epic-001             # release it for execution
@@ -351,7 +351,8 @@ stop / per-worker kill. No external services — local only.
 |---|---|
 | `loom doctor` | Check prerequisites, machine config, and verify the gate command's binaries resolve on the gate's PATH (`gate-runnable` check — fast, no execution); `loom doctor --dry-run-gate` actually runs the gate once in a throwaway worktree |
 | `loom init [--cursor]` | Initialize loom in a repo |
-| `loom epic "<brief>"` | Plan an epic from a brief (always gated by the brief-quality refiner) |
+| `loom weave "<brief>"` | Plan an epic from a brief via the weave intake path (always gated by the brief-quality refiner) |
+| `loom epic "<brief>"` | Alias for `loom weave` — plan an epic from a brief |
 | `loom web` | Open the local dashboard (planning artifacts, live worker output, controls) |
 | `loom approve [epic-id]` / `loom reject <epic-id>` | The human gate |
 | `loom run [--checkpoint story\|epic] [--verbose]` | Dispatch story agents; automatically resumes any `finalizing`/`publish_pending` epic it encounters before dispatching new work; `--verbose` streams live worker stdout/stderr |
