@@ -85,6 +85,25 @@ describe('autonomy spec — valueMeanings on level arg', () => {
     assert.equal(result.success, true, 'level arg must pass PositionalArgSchema validation');
   });
 
+  it('rejects valueMeanings with a key not present in values', () => {
+    const result = PositionalArgSchema.safeParse({
+      name: 'level',
+      type: 'enum',
+      required: false,
+      description: 'Autonomy level',
+      values: ['full-auto', 'checkpoint', 'manual'],
+      valueMeanings: {
+        'full-auto': 'run continuously without pausing',
+        'unknown-level': 'this key is not in values',
+      },
+    });
+    assert.equal(result.success, false, 'valueMeanings key not in values must fail refinement');
+    if (!result.success) {
+      const msg = result.error.issues.map((i: { message: string }) => i.message).join('\n');
+      assert.match(msg, /valueMeanings keys must be a subset of values/);
+    }
+  });
+
   it('each level has a non-empty one-line meaning', () => {
     const meanings = spec.arguments[1].valueMeanings!;
     for (const [level, meaning] of Object.entries(meanings)) {
