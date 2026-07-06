@@ -322,8 +322,8 @@ describe('PolicyEngine — checkReadScopeCommand (story-067-002)', () => {
     assert.equal(result.rule, 'filesystem.allowed_read_root');
   });
 
-  // Extended READ_TOOLS: head, tail, awk, sed, tee
-  for (const tool of ['head', 'tail', 'awk', 'sed', 'tee']) {
+  // Extended READ_TOOLS: head, tail (no script-prefix arg)
+  for (const tool of ['head', 'tail']) {
     it(`"${tool}" with out-of-scope path is denied`, () => {
       const outFile = path.join(outsideDir, 'secret.txt');
       spy.entries.length = 0;
@@ -339,6 +339,59 @@ describe('PolicyEngine — checkReadScopeCommand (story-067-002)', () => {
       assert.equal(result.allowed, true, `${tool} in-scope path must be allowed`);
     });
   }
+
+  // awk/sed: first positional is a script/expression, second is the file.
+  // The script may look like an absolute path — must not cause false denials.
+  it('awk with out-of-scope file arg (after script) is denied', () => {
+    const outFile = path.join(outsideDir, 'secret.txt');
+    spy.entries.length = 0;
+    const result = engine.checkReadScopeCommand(`awk '{print}' ${outFile}`, ctx);
+    assert.equal(result.allowed, false, 'awk with out-of-scope file must be denied');
+    assert.equal(result.rule, 'filesystem.allowed_read_root');
+  });
+
+  it('awk with in-scope file arg (after script) is allowed', () => {
+    const inFile = path.join(worktreeRoot, 'in.ts');
+    spy.entries.length = 0;
+    const result = engine.checkReadScopeCommand(`awk '{print}' ${inFile}`, ctx);
+    assert.equal(result.allowed, true, 'awk with in-scope file must be allowed');
+  });
+
+  it('awk with absolute-path-shaped script expression and in-scope file is allowed', () => {
+    const inFile = path.join(worktreeRoot, 'in.ts');
+    spy.entries.length = 0;
+    // Script "/usr/bin/" looks like an out-of-scope path but is an awk program —
+    // must not be checked as a file path.
+    const result = engine.checkReadScopeCommand(`awk /usr/bin/ ${inFile}`, ctx);
+    assert.equal(result.allowed, true,
+      'awk script expression must not be checked as a file path');
+  });
+
+  it('sed with out-of-scope file arg (after expression) is denied', () => {
+    const outFile = path.join(outsideDir, 'secret.txt');
+    spy.entries.length = 0;
+    const result = engine.checkReadScopeCommand(`sed 's/x/y/' ${outFile}`, ctx);
+    assert.equal(result.allowed, false, 'sed with out-of-scope file must be denied');
+    assert.equal(result.rule, 'filesystem.allowed_read_root');
+  });
+
+  it('sed with absolute-path-shaped expression and in-scope file is allowed', () => {
+    const inFile = path.join(worktreeRoot, 'in.ts');
+    spy.entries.length = 0;
+    // Expression "/usr/local/d" looks like an out-of-scope path but is a sed command.
+    const result = engine.checkReadScopeCommand(`sed /usr/local/d ${inFile}`, ctx);
+    assert.equal(result.allowed, true,
+      'sed expression must not be checked as a file path');
+  });
+
+  // tee is a WRITE tool — it must not be subject to the read-scope check.
+  it('tee with out-of-scope path is NOT denied (tee is a write tool, not a read tool)', () => {
+    const outFile = path.join(outsideDir, 'secret.txt');
+    spy.entries.length = 0;
+    const result = engine.checkReadScopeCommand(`tee ${outFile}`, ctx);
+    assert.equal(result.allowed, true,
+      'tee writes to its path args; read-scope check must not block it');
+  });
 
   // Trailing slash on ctx roots — isUnder must still work correctly
   it('trailing slash on worktreeRoot in ctx does not break in-scope check', () => {

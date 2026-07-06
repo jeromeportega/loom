@@ -445,8 +445,10 @@ export class PolicyEngine {
   checkReadScope(targetPath: string, ctx: ReadScopeContext): PolicyCheckResult {
     // Strip trailing separators so isUnder works correctly regardless of how
     // the caller obtained the root paths (e.g. from path.join or a config value).
-    const wt = ctx.worktreeRoot.replace(/[/\\]+$/, '');
-    const rr = ctx.readRoot.replace(/[/\\]+$/, '');
+    // Guard against '' (e.g. root configured as '/') — '' admits every absolute
+    // path via startsWith('/').
+    const wt = ctx.worktreeRoot.replace(/[/\\]+$/, '') || path.sep;
+    const rr = ctx.readRoot.replace(/[/\\]+$/, '') || path.sep;
     const resolved = resolveArg(targetPath === '' ? '.' : targetPath, wt);
 
     if (isUnder(resolved, wt) || isUnder(resolved, rr)) {
@@ -486,17 +488,22 @@ export class PolicyEngine {
    */
   checkReadScopeCommand(command: string, ctx: ReadScopeContext): PolicyCheckResult {
     // grep, rg, find, cat, ls + common single-file readers; best-effort set.
+    // tee is intentionally excluded — it writes to its path args, not reads;
+    // write-scope enforcement is a separate concern.
     const READ_TOOLS = new Set([
       'grep', 'rg', 'find', 'cat', 'ls',
-      'head', 'tail', 'awk', 'sed', 'tee',
+      'head', 'tail', 'awk', 'sed',
     ]);
-    // For these tools the FIRST non-flag positional arg is a search PATTERN,
-    // not a file path — skip it to prevent false denials for patterns that look
-    // like absolute paths (e.g. `grep /usr/include/stdio.h src/main.ts`).
-    const PATTERN_FIRST_TOOLS = new Set(['grep', 'rg']);
+    // For these tools the FIRST non-flag positional arg is a script/pattern,
+    // not a file path — skip it to prevent false denials for expressions that
+    // look like absolute paths (e.g. `grep /usr/include/ src/main.ts`,
+    // `awk '/usr/bin/' src/main.ts`, `sed '/^foo/d' src/main.ts`).
+    const PATTERN_FIRST_TOOLS = new Set(['grep', 'rg', 'awk', 'sed']);
 
-    const wt = ctx.worktreeRoot.replace(/[/\\]+$/, '');
-    const rr = ctx.readRoot.replace(/[/\\]+$/, '');
+    // Guard against a root that normalizes to '' (e.g. configured as '/');
+    // '' would cause isUnder to admit every absolute path via startsWith('/').
+    const wt = ctx.worktreeRoot.replace(/[/\\]+$/, '') || path.sep;
+    const rr = ctx.readRoot.replace(/[/\\]+$/, '') || path.sep;
 
     const cmd = parseCommand(command);
     if (!READ_TOOLS.has(cmd.program)) {
@@ -604,9 +611,10 @@ function isUnder(resolved: string, root: string): boolean {
 /**
  * Resolve a path argument to its canonical absolute form.
  * Follows symlinks via realpathSync when the path exists; for a dangling
- * symlink, resolves the raw link target lexically (so link-out → /outside/x
- * is NOT admitted as worktreeRoot/link-out); falls back to path.resolve
- * (lexical normalization) only when the path is not a symlink at all.
+ * symlink chain, iteratively follows readlinkSync hops (up to MAX_SYMLINK_HOPS)
+ * so that link1→link2→/outside/target is denied even when intermediate links
+ * exist inside the worktree; falls back to path.resolve (lexical normalization)
+ * only when the path is not a symlink at all.
  *
  * Trade-off: a not-yet-created non-symlink path is compared lexically.
  * Acceptable for a read control — document this at call sites.
@@ -623,15 +631,26 @@ function resolveArg(p: string, base: string): string {
   try {
     return fs.realpathSync(normalized);
   } catch {
-    // Path doesn't exist or is a dangling symlink. Try to resolve the symlink
-    // target lexically so that a dangling link pointing outside scope is denied.
-    try {
-      const linkTarget = fs.readlinkSync(normalized);
-      return path.resolve(path.dirname(normalized), linkTarget);
-    } catch {
-      // Not a symlink — lexical normalization is the best we can do.
-      return normalized;
+    // Path doesn't exist — may be a dangling symlink chain. Follow hops
+    // iteratively so multi-hop chains (link1→link2→/outside) are fully traced.
+    const MAX_SYMLINK_HOPS = 40; // Linux default MAXSYMLINKS
+    let current = normalized;
+    for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
+      let target: string;
+      try {
+        target = fs.readlinkSync(current);
+      } catch {
+        // Not a symlink — lexical normalization is the best we can do.
+        return current;
+      }
+      current = path.resolve(path.dirname(current), target);
+      try {
+        return fs.realpathSync(current);
+      } catch {
+        // Next hop is also missing or dangling — keep iterating.
+      }
     }
+    return current;
   }
 }
 
