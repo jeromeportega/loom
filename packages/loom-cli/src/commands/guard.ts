@@ -1,10 +1,31 @@
 import type { CommandDescription } from '../describe/schema.js';
+import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { PolicyEngine, AuditLog, type ReadScopeContext } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
 const LOOM_DIR = '.loom';
+
+const LOOM_WORKER_CONTEXT_KEY = 'LOOM_WORKER_CONTEXT';
+const LOOM_WORKER_CONTEXT_VALUE = '1';
+
+/**
+ * Returns true when the current process is running in a loom worker context:
+ * either (1) the process cwd resolves to a path under the loom worktrees
+ * directory (primary check), or (2) the LOOM_WORKER_CONTEXT env marker is '1'
+ * (defense-in-depth for env-marker-based worker detection).
+ *
+ * Exported for unit testing; not part of the public CLI API.
+ */
+export function isWorkerContext(worktreesDir: string): boolean {
+  try {
+    const cwd = fs.realpathSync(process.cwd());
+    const wt  = fs.realpathSync(worktreesDir);
+    if (cwd.startsWith(wt + path.sep) || cwd === wt) return true;
+  } catch { /* worktreesDir may not exist in operator sessions */ }
+  return process.env[LOOM_WORKER_CONTEXT_KEY] === LOOM_WORKER_CONTEXT_VALUE;
+}
 
 // Exit codes:
 //   0 — allowed
@@ -33,8 +54,8 @@ export function runGuardCheck(command: string): void {
  * On block: exit code 2 prints stderr to Claude and aborts the tool call.
  *
  * Dispatch:
- *  - Read/Grep/Glob → checkReadScope on the path arg
- *  - Bash → existing write/git checks, then checkReadScopeCommand
+ *  - Read/Grep/Glob → checkReadScope on the path arg (worker sessions only)
+ *  - Bash → write/git checks for all sessions, then checkReadScopeCommand for workers
  *  - All other tools → allowed
  */
 export async function runGuardHook(): Promise<void> {
@@ -64,6 +85,14 @@ export async function runGuardHook(): Promise<void> {
       process.exit(EXIT_ALLOW);
     }
 
+    // Read-scope is only enforced in worker sessions. Operator sessions pass
+    // through unrestricted so they are never blocked by containment policy.
+    const mainRepoRoot = resolveMainRepoRoot(projectRoot);
+    const worktreesDir = path.join(mainRepoRoot, LOOM_DIR, 'worktrees');
+    if (!isWorkerContext(worktreesDir)) {
+      process.exit(EXIT_ALLOW);
+    }
+
     let engine: PolicyEngine;
     try {
       engine = PolicyEngine.load(loomDir);
@@ -89,7 +118,7 @@ export async function runGuardHook(): Promise<void> {
       process.exit(EXIT_ALLOW);
     }
 
-    // Existing write/git checks run first
+    // Write/git checks run for ALL sessions (operators and workers alike).
     const evalResult = evaluateCommand(command);
     if (evalResult.blockExitCode !== EXIT_ALLOW) {
       process.stderr.write(
@@ -100,7 +129,13 @@ export async function runGuardHook(): Promise<void> {
       process.exit(EXIT_BLOCK_WITH_FEEDBACK);
     }
 
-    // Read-scope check appended after write/git checks
+    // Read-scope check: only enforced in worker sessions.
+    const mainRepoRoot = resolveMainRepoRoot(projectRoot);
+    const worktreesDir = path.join(mainRepoRoot, LOOM_DIR, 'worktrees');
+    if (!isWorkerContext(worktreesDir)) {
+      process.exit(EXIT_ALLOW);
+    }
+
     let engine: PolicyEngine;
     try {
       engine = PolicyEngine.load(loomDir);
