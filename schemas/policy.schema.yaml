@@ -57,6 +57,10 @@ properties:
         description: |
           Root directory agents are allowed to write within.
           '.' means the project directory (resolved to absolute path on init).
+      allowed_read_root:
+        type: string
+        default: "."
+        description: Root directory agents may read/search within, in addition to their own worktree. '.' = repo root. On by default; independent of cross_repo.enabled.
 
   agents:
     type: object

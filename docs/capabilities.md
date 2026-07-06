@@ -376,6 +376,7 @@ truth.
 `policy.agents.test_command`
 `policy.agents.worker_backend`
 `policy.agents.worktree_isolation`
+`policy.filesystem.allowed_read_root`
 `policy.filesystem.allowed_write_root`
 `policy.filesystem.protected_paths`
 `policy.git.agents_must_use_pr`

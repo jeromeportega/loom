@@ -327,6 +327,7 @@ export const PolicySchema = z.object({
           '.git',
         ]),
       allowed_write_root: z.string().default('.'),
+      allowed_read_root: z.string().default('.'),   // '.' = repo root, resolved on init; on-by-default; independent of cross_repo.enabled
     })
     .default({}),
   agents: z
