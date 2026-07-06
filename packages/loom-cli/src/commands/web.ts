@@ -57,10 +57,15 @@ export function resolveWebRoot(
   }
 
   const reg = registry ?? new ProjectRegistry();
-  const projects = reg.list();
-  if (projects.length > 0) {
-    const projectRoot = projects[0].root;
-    return { projectRoot, loomDir: path.join(projectRoot, '.loom') };
+  // Pick the first REGISTERED project that is still initialized. A registered
+  // root whose `.loom/` was removed (or whose directory was recreated) would
+  // otherwise be served with a freshly-minted empty DB — a silently blank
+  // dashboard. Skip such entries and fall through to machine config / error.
+  for (const project of reg.list()) {
+    const projLoomDir = path.join(project.root, '.loom');
+    if (fs.existsSync(path.join(projLoomDir, 'policy.yaml'))) {
+      return { projectRoot: project.root, loomDir: projLoomDir };
+    }
   }
 
   const cfgPath = machineConfigPath ?? defaultMachineConfigPath();

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { ReviewFinding } from '../review/types.js';
+import type { Finding, Severity } from '../findings/schema.js';
 
 export interface StoredFinding {
   id: number;
@@ -13,10 +13,15 @@ export interface StoredFinding {
   recorded_at: string; // ISO 8601
 }
 
-export const SEVERITY_MAP: Record<ReviewFinding['severity'], StoredFinding['severity']> = {
-  'blocker':    'blocking',
-  'should-fix': 'medium',
-  'nit':        'low',
+// Map the production Review-Forge severity vocabulary (findings/schema.ts) onto
+// the stored display severity. `high` folds into `blocking` because loom already
+// treats blocker+high as the blocking tier (see BaseCliWorker.blockerCount).
+export const SEVERITY_MAP: Record<Severity, StoredFinding['severity']> = {
+  blocker: 'blocking',
+  high:    'blocking',
+  medium:  'medium',
+  low:     'low',
+  info:    'info',
 };
 
 // Severity rank used for ordering findings by importance.
@@ -35,7 +40,7 @@ export class FindingStore {
    * Maps ReviewFinding.severity → StoredFinding.severity via SEVERITY_MAP.
    * Wrapped in a single transaction.
    */
-  saveFindings(agentId: string, storyId: string, findings: ReviewFinding[]): void {
+  saveFindings(agentId: string, storyId: string, findings: Finding[]): void {
     const del = this.db.prepare('DELETE FROM review_findings WHERE agent_id = ?');
     const ins = this.db.prepare(`
       INSERT INTO review_findings (agent_id, story_id, severity, file, line, message, suggestion)
@@ -49,10 +54,10 @@ export class FindingStore {
           agentId,
           storyId,
           SEVERITY_MAP[f.severity],
-          f.file,
-          f.line ?? null,
-          f.issue,
-          f.suggestion ?? null,
+          f.location.file,
+          f.location.line ?? null,
+          f.description,
+          f.suggested_fix ?? null,
         );
       }
     });

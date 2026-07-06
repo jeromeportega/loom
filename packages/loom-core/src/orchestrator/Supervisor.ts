@@ -15,7 +15,6 @@ import {
   MetricsStore,
 } from '../state/index.js';
 import { FindingStore } from '../state/FindingStore.js';
-import type { ReviewFinding } from '../review/types.js';
 import type { GlobalLimiter, LimiterSlot } from '../state/index.js';
 import { withRunMetrics } from '../metrics/withRunMetrics.js';
 import { activeCollector } from '../metrics/activeCollector.js';
@@ -2568,6 +2567,14 @@ export class Supervisor {
           summary: result.review.summary,
         },
       });
+      // Persist the real review's structured findings + the actual revise-round
+      // count, so `loom review` renders findings and `loom status` shows
+      // `(revise N)`. These come from BaseCliWorker's real block-and-revise loop
+      // (ReviewOutcome.findings / .revisions) — the only place they are produced.
+      if (result.review.findings && result.review.findings.length > 0) {
+        this.findings.saveFindings(task.agentId, task.story.id, result.review.findings);
+      }
+      this.agents.setReviseRound(task.agentId, result.review.revisions);
     }
     // Story signal ledger — record heuristics + tier to both sinks (story-010-002).
     // Best-effort: SignalLedger.record never throws. Runs regardless of
@@ -2797,37 +2804,4 @@ export class Supervisor {
     });
   }
 
-  // Runs review passes and drives block-and-revise; revise_round increments only when a revision pass actually executes.
-  async runRevisionLoop(
-    agentId: string,
-    storyId: string,
-    opts: {
-      blockAndRevise: boolean;
-      maxRevisions: number;
-      runPass: (revisionIndex: number) => Promise<ReviewFinding[]>;
-      shouldRevise?: (findings: ReviewFinding[]) => boolean;
-      revise?: (findings: ReviewFinding[], revisionIndex: number) => Promise<boolean>;
-    }
-  ): Promise<{ revisions: number }> {
-    const shouldRevise =
-      opts.shouldRevise ??
-      ((findings: ReviewFinding[]) => findings.some((f) => f.severity === 'blocker'));
-
-    let revisions = 0;
-    let findings = await opts.runPass(0);
-    this.findings.saveFindings(agentId, storyId, findings);
-
-    while (opts.blockAndRevise && revisions < opts.maxRevisions && shouldRevise(findings)) {
-      if (opts.revise) {
-        const proceeded = await opts.revise(findings, revisions + 1);
-        if (!proceeded) break;
-      }
-      this.agents.incrementReviseRound(agentId);
-      revisions++;
-      findings = await opts.runPass(revisions);
-      this.findings.saveFindings(agentId, storyId, findings);
-    }
-
-    return { revisions };
-  }
 }
