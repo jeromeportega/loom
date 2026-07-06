@@ -32,7 +32,9 @@ export function materializeWorktreeReadScope(
 ): WorktreeReadScopeResult {
   const { worktreePath, readRoot, loomScriptPath } = opts;
 
-  const hookCommand = `node "${loomScriptPath}" guard hook`;
+  // JSON.stringify produces a properly quoted+escaped string, safe even if
+  // loomScriptPath contains double-quotes or other shell-special characters.
+  const hookCommand = `node ${JSON.stringify(loomScriptPath)} guard hook`;
 
   // Note: workers run --permission-mode bypassPermissions, so the permissions
   // block below is advisory (defense-in-depth) only. The hook is the real

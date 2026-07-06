@@ -1810,18 +1810,27 @@ export class Supervisor {
         const loomDir = path.join(repoRoot, '.loom');
         let readRootRel = '.';
         try {
-          readRootRel = PolicyEngine.load(loomDir).policyData.filesystem.allowed_read_root;
+          readRootRel = PolicyEngine.load(loomDir).policyData?.filesystem?.allowed_read_root ?? '.';
         } catch {
           // Policy unreadable — default to repo root
         }
-        const readRoot = path.resolve(repoRoot, readRootRel);
+        let readRoot: string;
+        try {
+          readRoot = fs.realpathSync(path.resolve(repoRoot, readRootRel));
+        } catch {
+          readRoot = path.resolve(repoRoot, readRootRel);
+        }
         materializeWorktreeReadScope({
           worktreePath: wt.path,
           readRoot,
           loomScriptPath: this.opts.loomScriptPath,
         });
-      } catch {
-        // Never let settings materialization crash dispatch
+      } catch (err) {
+        // Never let settings materialization crash dispatch, but warn so operators
+        // can detect that read-scope enforcement is absent for this worker.
+        process.stderr.write(
+          `[loom] warning: failed to materialize read-scope settings for ${wt.path}: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
       }
     }
 

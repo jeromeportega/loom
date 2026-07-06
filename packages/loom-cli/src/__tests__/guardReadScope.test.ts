@@ -50,8 +50,9 @@ before(() => {
     encoding: 'utf8',
     env: { ...process.env, LOOM_HOME: path.join(tmpDir, '.loom-home') },
   });
-  // Pick a known-stable out-of-scope path (a real directory that exists).
-  outsidePath = os.tmpdir();
+  // Resolve symlinks (on macOS /tmp → /private/tmp) so path comparisons inside
+  // the hook's realpathSync-based containment check match what we pass here.
+  outsidePath = fs.realpathSync(os.tmpdir());
 });
 
 after(() => {
@@ -125,6 +126,34 @@ describe('guard hook — Glob tool', () => {
   });
 });
 
+// ─── Parent-traversal (../–escaping) tests ───────────────────────────────
+
+describe('guard hook — parent-traversal (../–escaping) paths', () => {
+  it('blocks Read with a ../–escaping file_path (exit 2)', () => {
+    // path.join resolves the traversal: tmpDir + /../../etc/passwd → /etc/passwd
+    const escapingPath = path.join(tmpDir, '../../etc/passwd');
+    const payload = hookPayload('Read', { file_path: escapingPath });
+    const { status, stderr } = runHook(payload);
+    assert.equal(status, 2, 'Read with ../–escaping path should exit 2');
+    const body = JSON.parse(stderr.trim());
+    assert.equal(body.loom_guard, 'blocked');
+  });
+
+  it('blocks Bash cat with a ../–escaping path (exit 2)', () => {
+    const escapingPath = path.join(tmpDir, '../../etc/passwd');
+    const payload = hookPayload('Bash', { command: `cat "${escapingPath}"` });
+    const { status } = runHook(payload);
+    assert.equal(status, 2, 'cat with ../–escaping path should exit 2');
+  });
+
+  it('blocks Bash grep with a ../–escaping path (exit 2)', () => {
+    const escapingPath = path.join(tmpDir, '../../etc/passwd');
+    const payload = hookPayload('Bash', { command: `grep pattern "${escapingPath}"` });
+    const { status } = runHook(payload);
+    assert.equal(status, 2, 'grep with ../–escaping path should exit 2');
+  });
+});
+
 // ─── Bash dispatch — read-scope appended after write/git checks ────────────
 
 describe('guard hook — Bash read-scope (grep/rg/find/cat/ls)', () => {
@@ -180,8 +209,13 @@ describe('guard hook — Bash read-scope (grep/rg/find/cat/ls)', () => {
 // ─── Other tools are allowed through ─────────────────────────────────────
 
 describe('guard hook — other tools', () => {
+  // Write scope enforcement (out-of-worktree writes) is covered by the existing
+  // policy engine write-guard (PolicyEngine.check / evaluateCommand), not by the
+  // read-scope hook. This test only verifies that Write is not double-intercepted
+  // by the read-scope dispatch added in story-067-003.
   it('allows a non-intercepted tool (e.g. Write) without prompts (exit 0)', () => {
-    const payload = hookPayload('Write', { file_path: '/etc/passwd', content: 'hack' });
+    // Use a neutral non-existent path; /etc/passwd should not appear in test fixtures.
+    const payload = hookPayload('Write', { file_path: '/tmp/loom-test-non-existent', content: 'test' });
     const { status } = runHook(payload);
     assert.equal(status, 0, 'Write tool is not intercepted by the read-scope hook');
   });

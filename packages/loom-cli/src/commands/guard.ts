@@ -1,5 +1,6 @@
 import type { CommandDescription } from '../describe/schema.js';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { PolicyEngine, AuditLog, type ReadScopeContext } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
@@ -130,9 +131,13 @@ function buildReadScopeCtx(engine: PolicyEngine, projectRoot: string): ReadScope
     engine.policyData?.filesystem?.allowed_read_root ?? '.',
   );
 
+  // In a git worktree, the DB lives in the main repo (not the worktree directory).
+  // Resolve the main repo root via git so DB open finds the right path.
+  const mainRepoRoot = resolveMainRepoRoot(projectRoot);
+
   let audit: AuditLog | undefined;
   try {
-    const db = openProjectDatabase(projectRoot);
+    const db = openProjectDatabase(mainRepoRoot);
     audit = new AuditLog(db);
   } catch {
     // No DB yet (loom init hasn't run) — still enforce policy
@@ -145,9 +150,41 @@ function buildReadScopeCtx(engine: PolicyEngine, projectRoot: string): ReadScope
   };
 }
 
-/** Minimal no-op audit used when the DB is unavailable (pre-loom-init). */
+/**
+ * Returns the main repo root from any directory inside a git repo or worktree.
+ * In a linked worktree `git rev-parse --git-common-dir` returns the path to the
+ * main .git directory, whose parent is the main repo root.
+ */
+function resolveMainRepoRoot(cwd: string): string {
+  try {
+    const gitCommonDir = execFileSync('git', ['rev-parse', '--git-common-dir'], {
+      cwd,
+      encoding: 'utf8',
+    }).trim();
+    const absGitDir = path.isAbsolute(gitCommonDir)
+      ? gitCommonDir
+      : path.resolve(cwd, gitCommonDir);
+    return path.dirname(absGitDir);
+  } catch {
+    return cwd;
+  }
+}
+
+/**
+ * No-op audit used when the DB is unavailable (pre-loom-init).
+ * Uses a Proxy so any unexpected method call beyond `record()` throws immediately
+ * rather than silently returning undefined — making interface drift visible.
+ */
 function makeNoopAudit(): AuditLog {
-  return { record: () => undefined } as unknown as AuditLog;
+  const handler: ProxyHandler<object> = {
+    get(_target, prop: string | symbol) {
+      if (prop === 'record') return () => undefined;
+      throw new TypeError(
+        `makeNoopAudit: AuditLog.${String(prop)}() called but no database is available`,
+      );
+    },
+  };
+  return new Proxy({}, handler) as unknown as AuditLog;
 }
 
 interface EvaluatedCommand {
