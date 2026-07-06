@@ -4,6 +4,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createApp, newToken } from '@loom-ai/web';
+import { ProjectRegistry, defaultMachineConfigPath } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
 export interface WebOptions {
@@ -19,15 +20,80 @@ export interface WebOptions {
 }
 
 /**
+ * Reads `project_root` from the machine-level config JSON, if present.
+ * Returns null when the file is absent, unreadable, or has no valid entry.
+ */
+function readMachineConfigProjectRoot(configPath: string): string | null {
+  if (!fs.existsSync(configPath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    const root = parsed.project_root;
+    if (typeof root === 'string' && root.length > 0) return root;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves which loom project root to serve.
+ *
+ * Resolution order (first match wins):
+ *   1. CWD has `.loom/policy.yaml` → serve CWD.
+ *   2. ProjectRegistry has at least one entry → serve the first registered project.
+ *   3. Machine config has `project_root` pointing to an initialized repo → serve it.
+ *   4. Throw with a clear message.
+ *
+ * Optional parameters are for dependency injection in tests.
+ */
+export function resolveWebRoot(
+  cwd: string,
+  registry?: ProjectRegistry,
+  machineConfigPath?: string
+): { projectRoot: string; loomDir: string } {
+  const cwdLoomDir = path.join(cwd, '.loom');
+  if (fs.existsSync(path.join(cwdLoomDir, 'policy.yaml'))) {
+    return { projectRoot: cwd, loomDir: cwdLoomDir };
+  }
+
+  const reg = registry ?? new ProjectRegistry();
+  // Pick the first REGISTERED project that is still initialized. A registered
+  // root whose `.loom/` was removed (or whose directory was recreated) would
+  // otherwise be served with a freshly-minted empty DB — a silently blank
+  // dashboard. Skip such entries and fall through to machine config / error.
+  for (const project of reg.list()) {
+    const projLoomDir = path.join(project.root, '.loom');
+    if (fs.existsSync(path.join(projLoomDir, 'policy.yaml'))) {
+      return { projectRoot: project.root, loomDir: projLoomDir };
+    }
+  }
+
+  const cfgPath = machineConfigPath ?? defaultMachineConfigPath();
+  const machineRoot = readMachineConfigProjectRoot(cfgPath);
+  if (machineRoot) {
+    const machineRootLoomDir = path.join(machineRoot, '.loom');
+    if (fs.existsSync(path.join(machineRootLoomDir, 'policy.yaml'))) {
+      return { projectRoot: machineRoot, loomDir: machineRootLoomDir };
+    }
+  }
+
+  throw new Error(
+    'loom is not initialized in this directory and no loom project is registered. Run `loom init` first.'
+  );
+}
+
+/**
  * `loom web` — launches the loom dashboard server, prints the URL with
  * a per-launch random token, and opens the browser. Binds 127.0.0.1 only;
  * the token defends against rogue same-machine processes.
  */
 export async function runWeb(opts: WebOptions = {}): Promise<void> {
-  const projectRoot = process.cwd();
-  const loomDir = path.join(projectRoot, '.loom');
-  if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
-    console.error('loom is not initialized in this directory. Run `loom init` first.');
+  let projectRoot: string;
+  let loomDir: string;
+  try {
+    ({ projectRoot, loomDir } = resolveWebRoot(process.cwd()));
+  } catch (err) {
+    console.error((err as Error).message);
     process.exit(1);
   }
   const db = openProjectDatabase(projectRoot);

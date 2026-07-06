@@ -269,4 +269,33 @@ export class AgentStore {
       .prepare('UPDATE agents SET model = ?, updated_at = ? WHERE id = ?')
       .run(model, new Date().toISOString(), id);
   }
+
+  // Throws AgentNotFoundError if agentId is absent.
+  incrementReviseRound(agentId: string): void {
+    const result = this.db
+      .prepare(
+        'UPDATE agents SET revise_round = revise_round + 1, updated_at = ? WHERE id = ?'
+      )
+      .run(new Date().toISOString(), agentId);
+    if (result.changes === 0) {
+      throw new Error(`AgentNotFoundError: agent '${agentId}' not found`);
+    }
+  }
+
+  // Sets the revise-round count to an absolute value (idempotent). Used by the
+  // Supervisor to record the actual number of block-and-revise rounds a story's
+  // real review loop ran (ReviewOutcome.revisions). No-op if the agent is absent.
+  setReviseRound(agentId: string, round: number): void {
+    this.db
+      .prepare('UPDATE agents SET revise_round = ?, updated_at = ? WHERE id = ?')
+      .run(round, new Date().toISOString(), agentId);
+  }
+
+  // Returns 0 defensively when agentId is not in the table.
+  getReviseRound(agentId: string): number {
+    const row = this.db
+      .prepare('SELECT revise_round FROM agents WHERE id = ?')
+      .get(agentId) as { revise_round: number } | undefined;
+    return row?.revise_round ?? 0;
+  }
 }

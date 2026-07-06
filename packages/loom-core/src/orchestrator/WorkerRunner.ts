@@ -1,4 +1,5 @@
 import type { Story, AgentStatus, SelfAssessment } from '../types.js';
+import type { Finding } from '../findings/schema.js';
 import type { WorkerInputChannel } from './WorkerInputChannel.js';
 import type { AttemptClass, InfraSignature } from './resilience/types.js';
 import type { TimeoutKillReason } from './WorkerTimeoutGuard.js';
@@ -200,6 +201,12 @@ export interface ReviewOutcome {
   commentBody?: string;
   /** How many block-and-revise rounds ran (0 means no re-prompt). */
   revisions: number;
+  /**
+   * The final review pass's structured findings (Review-Forge `Finding[]`).
+   * Persisted by the Supervisor so `loom review` can render them. Absent for
+   * backends/paths that don't produce structured findings.
+   */
+  findings?: Finding[];
 }
 
 export interface WorkerResult {

@@ -14,6 +14,7 @@ import {
   RecoveryStore,
   MetricsStore,
 } from '../state/index.js';
+import { FindingStore } from '../state/FindingStore.js';
 import type { GlobalLimiter, LimiterSlot } from '../state/index.js';
 import { withRunMetrics } from '../metrics/withRunMetrics.js';
 import { activeCollector } from '../metrics/activeCollector.js';
@@ -407,6 +408,8 @@ export class Supervisor {
   private runAutoRecoveryCount = 0;
   /** Count of clean-worktree auto-recoveries within the current run. Reset at run entry. */
   private runCleanRetryCount = 0;
+  /** Persists structured review findings per agent attempt (story-076-002). */
+  private findings: FindingStore;
 
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
@@ -491,6 +494,7 @@ export class Supervisor {
     this.lease = new LeaseStore(opts.db);
     this.signalLedger = new SignalLedger({ db: opts.db, projectRoot: opts.projectRoot });
     this.recoveryStore = new RecoveryStore(opts.db);
+    this.findings = new FindingStore(opts.db);
     this.cleanRetryService = opts.cleanRetryService ?? new StoryRetryService({
       projectRoot: opts.projectRoot,
       db: opts.db,
@@ -2563,6 +2567,17 @@ export class Supervisor {
           summary: result.review.summary,
         },
       });
+      // Persist the real review's structured findings + the actual revise-round
+      // count, so `loom review` renders findings and `loom status` shows
+      // `(revise N)`. These come from BaseCliWorker's real block-and-revise loop
+      // (ReviewOutcome.findings / .revisions) — the only place they are produced.
+      // Clear the story's prior findings first so a clean retry doesn't leave an
+      // earlier attempt's blockers as the "latest" (getByStory is per-story).
+      this.findings.clearByStory(task.story.id);
+      if (result.review.findings && result.review.findings.length > 0) {
+        this.findings.saveFindings(task.agentId, task.story.id, result.review.findings);
+      }
+      this.agents.setReviseRound(task.agentId, result.review.revisions);
     }
     // Story signal ledger — record heuristics + tier to both sinks (story-010-002).
     // Best-effort: SignalLedger.record never throws. Runs regardless of
@@ -2791,4 +2806,5 @@ export class Supervisor {
       detail: { status, reason },
     });
   }
+
 }

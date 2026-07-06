@@ -1050,6 +1050,50 @@ describe('Supervisor — review pass persistence (issue #6)', () => {
     const rows = new AuditLog(db).getByCommand('story-001-001', ['code_review_pass']);
     assert.equal(rows.length, 0);
   });
+
+  it('persists the review findings and revise-round from the worker outcome (real applyResult wiring)', async () => {
+    // Drives the FULL Supervisor.run() → applyResult path with a ReviewOutcome that
+    // carries structured findings + a revise count — the exact seam that was inert
+    // before wiring: FindingStore/revise_round must reflect what the worker returned.
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+
+    const worker = new MockWorkerRunner(async (a) => ({
+      status: 'done' as const,
+      commitCount: 1,
+      summary: `mock ${a.storyId}`,
+      logTail: '',
+      review: {
+        status: 'blocked' as const,
+        blockerCount: 1,
+        totalCount: 2,
+        summary: 'One blocker, one should-fix.',
+        revisions: 2,
+        findings: [
+          { severity: 'blocker' as const, category: 'correctness', location: { file: 'src/a.ts', line: 5 }, description: 'Null deref', suggested_fix: 'guard it', source: 'adversarial-review' },
+          { severity: 'medium' as const, category: 'style', location: { file: 'src/b.ts' }, description: 'Dead code', source: 'edge-case-hunter' },
+        ],
+      },
+    }));
+
+    await new Supervisor({ projectRoot: repo, db, worker, maxConcurrent: 1 }).run();
+
+    const { FindingStore } = await import('../state/FindingStore.js');
+    const findings = new FindingStore(db).getByStory('story-001-001');
+    assert.equal(findings.length, 2, 'both findings must be persisted by the real applyResult path');
+    assert.equal(findings[0].severity, 'blocking', 'blocker → blocking, ordered first');
+    assert.equal(findings[0].file, 'src/a.ts');
+    assert.equal(findings[0].line, 5);
+    assert.equal(findings[0].message, 'Null deref');
+    assert.equal(findings[0].suggestion, 'guard it');
+    assert.equal(findings[1].severity, 'medium');
+    assert.equal(findings[1].line, null, 'missing location.line → null');
+
+    const { AgentStore } = await import('../state/AgentStore.js');
+    const agentStore = new AgentStore(db);
+    const agent = agentStore.getByStory('story-001-001')!;
+    assert.equal(agentStore.getReviseRound(agent.id), 2, 'revise_round must equal ReviewOutcome.revisions');
+  });
 });
 
 describe('Supervisor — decision trace persistence', () => {

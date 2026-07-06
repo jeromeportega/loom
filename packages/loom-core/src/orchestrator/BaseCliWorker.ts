@@ -1014,6 +1014,9 @@ export abstract class BaseCliWorker implements WorkerRunner {
       commentBody:
         findings.length > 0 ? renderOrchestratedComment(findings, summary) : undefined,
       revisions,
+      // Surface the final pass's structured findings so the Supervisor can
+      // persist them (loom review / loom status revise-round visibility).
+      findings,
     };
   }
 
