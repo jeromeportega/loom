@@ -616,8 +616,7 @@ function renderLoomDir(
           const retryTag = attempts > 1 ? `  (retry ${attempts - 1})` : '';
           const recoveryCount = recoveryStore.getRecoveryCount(agent.story_id);
           const recoveryTag = recoveryCount > 0 ? `  (recovered ${recoveryCount})` : '';
-          const reviseRound = agent.revise_round ?? 0;
-          const reviseTag = reviseRound >= 1 ? `  (revise ${reviseRound})` : '';
+          const reviseTag = formatReviseTag(agent.revise_round);
           const modelTag = `  [${displayModel(agent.model)}]`;
           console.log(`      ${si} ${label}${elapsed}${stallTag}${retryTag}${recoveryTag}${reviseTag}${modelTag}${pr}`);
           if (agent.branch_name && agent.status !== 'done') {
@@ -668,8 +667,7 @@ function renderLoomDir(
       const retryTag = attempts > 1 ? `  (retry ${attempts - 1})` : '';
       const recoveryCount = recoveryStore.getRecoveryCount(agent.story_id);
       const recoveryTag = recoveryCount > 0 ? `  (recovered ${recoveryCount})` : '';
-      const reviseRound = agent.revise_round ?? 0;
-      const reviseTag = reviseRound >= 1 ? `  (revise ${reviseRound})` : '';
+      const reviseTag = formatReviseTag(agent.revise_round);
       const modelTag = `  [${displayModel(agent.model)}]`;
       console.log(`\n   ${si} Story ${label}  [${agent.status}]${elapsed}${stallTag}${retryTag}${recoveryTag}${reviseTag}${modelTag}${pr}${archivedTag}`);
       if (agent.branch_name && agent.status !== 'done') {
@@ -747,6 +745,11 @@ function stallReasonFor(audit: AuditLog, agentId: string): string | null {
 // duration is the real processing time (start→finish), not now−start — which
 // otherwise keeps growing forever and makes long-finished epics look like they
 // ran for hours (S25). Running agents pass no end and get live elapsed.
+function formatReviseTag(reviseRound: number | null | undefined): string {
+  const n = reviseRound ?? 0;
+  return n >= 1 ? `  (revise ${n})` : '';
+}
+
 function elapsedStr(startedAt: string, endedAt?: string): string {
   const end = endedAt ? new Date(endedAt).getTime() : Date.now();
   const ms = end - new Date(startedAt).getTime();

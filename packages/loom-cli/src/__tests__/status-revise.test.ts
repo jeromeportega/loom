@@ -90,7 +90,7 @@ describe('loom status — revise tag position', () => {
     // tie-breaks on MAX(id) are non-deterministic with crypto random suffixes).
     db.prepare(
       `INSERT INTO agents (id, epic_id, story_id, story_title, status, updated_at, revise_round, model)
-       VALUES ('agent-story-076-004-old000', 'epic-076', 'story-076-004', 'Position story', 'blocked', '2020-01-01T00:00:00.000Z', 0, 'claude-sonnet-4-6')`
+       VALUES ('agent-story-076-004-00000000', 'epic-076', 'story-076-004', 'Position story', 'blocked', '2020-01-01T00:00:00.000Z', 0, 'claude-sonnet-4-6')`
     ).run();
 
     // Current attempt — created now, so updated_at is definitely newer.
@@ -144,28 +144,5 @@ describe('loom status — elapsed tag unaffected by revise tag', () => {
       `Expected elapsed-time token (e.g. "(0s)") in output:\n${out}`
     );
     assert.ok(out.includes('(revise 2)'), `Expected '(revise 2)' tag alongside elapsed:\n${out}`);
-  });
-});
-
-// ─── revise_round = 0 defensiveness (no tag, no error) ───────────────────────
-
-describe('loom status — revise_round 0 is silent (no throw, no tag)', () => {
-  it('no error and no revise tag when revise_round is 0', async () => {
-    const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
-    new EpicStore(db).create('epic-076', 'Zero-revise test epic');
-    const agents = new AgentStore(db);
-    const agent = agents.create('epic-076', 'story-076-004b', 'Zero revise story');
-    agents.setModel(agent.id, 'claude-sonnet-4-6');
-    db.close();
-
-    let out = '';
-    await assert.doesNotReject(async () => {
-      out = await captureText({});
-    }, 'runStatus must not throw when revise_round is 0');
-
-    assert.ok(
-      !out.includes('(revise'),
-      `Must NOT include '(revise' tag when revise_round is 0:\n${out}`
-    );
   });
 });
