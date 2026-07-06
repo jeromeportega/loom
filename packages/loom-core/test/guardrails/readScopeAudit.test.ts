@@ -91,6 +91,9 @@ describe('readScopeAudit — checkReadScope with real audit_log (story-067-004)'
     assert.equal(row.allowed, 0);
     assert.equal(row.policy_rule, 'filesystem.allowed_read_root');
 
+    // command column: checkReadScope sets it to 'read <path>' (tool + path form, §4 contract).
+    assert.ok(row.command?.startsWith('read '), 'command column uses "read <path>" form for direct reads');
+
     assert.ok(row.detail, 'detail column must be set');
     const detail = JSON.parse(row.detail!);
     assert.ok('tool' in detail, 'detail.tool present');
@@ -100,6 +103,7 @@ describe('readScopeAudit — checkReadScope with real audit_log (story-067-004)'
     assert.ok('worktreeRoot' in detail, 'detail.worktreeRoot present');
     assert.ok('readRoot' in detail, 'detail.readRoot present');
     assert.equal(detail.requestedPath, target);
+    assert.equal(detail.resolvedPath, fs.realpathSync(target), 'detail.resolvedPath is canonical path');
     assert.equal(detail.worktreeRoot, worktreeRoot);
     assert.equal(detail.readRoot, readRoot);
   });
@@ -215,7 +219,7 @@ describe('readScopeAudit — checkReadScopeCommand with real audit_log (story-06
     const detail = JSON.parse(row.detail!);
     assert.equal(detail.tool, 'grep');
     assert.equal(detail.requestedPath, outFile);
-    assert.ok('resolvedPath' in detail, 'detail.resolvedPath present');
+    assert.equal(detail.resolvedPath, fs.realpathSync(outFile), 'detail.resolvedPath is canonical path');
     assert.ok('reason' in detail, 'detail.reason present');
     assert.ok('worktreeRoot' in detail, 'detail.worktreeRoot present');
     assert.ok('readRoot' in detail, 'detail.readRoot present');
@@ -242,7 +246,7 @@ describe('readScopeAudit — checkReadScopeCommand with real audit_log (story-06
     const detail = JSON.parse(rows[0].detail!);
     assert.equal(detail.tool, 'rg');
     assert.equal(detail.requestedPath, outFile);
-    assert.ok('resolvedPath' in detail, 'detail.resolvedPath present');
+    assert.equal(detail.resolvedPath, fs.realpathSync(outFile), 'detail.resolvedPath is canonical path');
   });
 
   // AC3 (log-before-return): row present the moment checkReadScopeCommand returns
