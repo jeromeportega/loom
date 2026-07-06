@@ -268,6 +268,7 @@ const PolicySchema = z.object({
   filesystem: z.object({
     protected_paths: z.array(z.string()).default(['~/.ssh', '~/.aws', '~/.gnupg', '/etc', '/usr', '.git']),
     allowed_write_root: z.string().default('.'),
+    allowed_read_root: z.string().default('.'),   // resolved relative to the worktree at hook time; on-by-default; independent of cross_repo.enabled
   }),
   agents: z.object({
     max_concurrent: z.number().int().min(1).max(10).default(3),
@@ -351,6 +352,7 @@ const response = await anthropic.messages.create({
 | Agent executes `git push --force` | Overwrites remote history | Policy engine exits non-zero; Claude Code aborts tool call |
 | Agent deletes `~/.ssh` | Loss of credentials | Protected paths list; path resolution before comparison |
 | Agent escapes worktree to parent repo | Corrupts main branch | allowed_write_root enforcement; git worktree scoping |
+| Agent reads outside its worktree and repo root | Exfiltrates code from unrelated paths or parent directories | `allowed_read_root` enforcement; pre-tool-use hook intercepts `Read`, `Grep`, `Glob`, and Bash searches; every denial audit-logged as `read_scope_denied` |
 | Agent pushes to unauthorized remote | Leaks code to wrong repo | allowed_remotes glob matching |
 | Malicious skill injects harmful instructions | Agent misbehaves | Skills are plain markdown; no execution; human controls skill store |
 | Planning produces an incorrect architecture | Bad code generated | Human gate (approve/reject) before any code execution |

@@ -22,6 +22,21 @@ export interface WorktreeContext {
   audit: AuditLog;
 }
 
+/**
+ * Context for read-scope enforcement. Parallel to WorktreeContext but carries
+ * no workspace/cross-repo manifest — read scoping is independent of cross_repo.enabled.
+ */
+export interface ReadScopeContext {
+  /** Agent's own worktree, canonicalized, no trailing slash. In the hook: process.cwd(). */
+  worktreeRoot: string;
+  /** Resolved allowed_read_root (absolute, canonicalized). Defaults to repo root. */
+  readRoot: string;
+  /** Audit logger — every denial recorded before return (invariant #5). */
+  audit: AuditLog;
+  /** Attributes the audit row when known. */
+  agentId?: string;
+}
+
 export class PolicyEngine {
   private policy: Policy;
 
@@ -416,6 +431,118 @@ export class PolicyEngine {
     }
     return path.resolve(p);
   }
+
+  /**
+   * Canonicalizes targetPath (fs.realpathSync → path.resolve fallback) and
+   * admits it iff it is under worktreeRoot or readRoot — never their common
+   * parent. Runs regardless of cross_repo.enabled. Every denial is logged to
+   * ctx.audit before returning.
+   *
+   * Note: realpathSync only follows symlinks for paths that exist on disk. A
+   * not-yet-created path falls back to path.resolve (lexical normalization) —
+   * acceptable for a read control.
+   */
+  checkReadScope(targetPath: string, ctx: ReadScopeContext): PolicyCheckResult {
+    // Strip trailing separators so isUnder works correctly regardless of how
+    // the caller obtained the root paths (e.g. from path.join or a config value).
+    // Guard against '' (e.g. root configured as '/') — '' admits every absolute
+    // path via startsWith('/').
+    const wt = ctx.worktreeRoot.replace(/[/\\]+$/, '') || path.sep;
+    const rr = ctx.readRoot.replace(/[/\\]+$/, '') || path.sep;
+    const resolved = resolveArg(targetPath === '' ? '.' : targetPath, wt);
+
+    if (isUnder(resolved, wt) || isUnder(resolved, rr)) {
+      return { allowed: true };
+    }
+
+    const result: PolicyCheckResult = {
+      allowed: false,
+      rule: 'filesystem.allowed_read_root',
+      reason: `Path "${targetPath}" (resolved: "${resolved}") is outside the allowed read scope — must be under worktree "${ctx.worktreeRoot}" or read root "${ctx.readRoot}"`,
+    };
+    ctx.audit.record({
+      agent_id: ctx.agentId,
+      action: 'read_scope_denied',
+      command: `read ${targetPath}`,
+      allowed: false,
+      policy_rule: 'filesystem.allowed_read_root',
+      detail: {
+        tool: 'read',
+        requestedPath: targetPath,
+        resolvedPath: resolved,
+        reason: result.reason,
+        worktreeRoot: ctx.worktreeRoot,
+        readRoot: ctx.readRoot,
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Extracts path args from a parsed command for the enumerated readers and
+   * applies checkReadScope to each. Returns the first denial, else { allowed: true }.
+   * Runs regardless of cross_repo.enabled.
+   *
+   * Note: READ_TOOLS is a best-effort blocklist. Callers should layer OS-level
+   * sandbox enforcement on top — tools not listed here bypass this check.
+   */
+  checkReadScopeCommand(command: string, ctx: ReadScopeContext): PolicyCheckResult {
+    // grep, rg, find, cat, ls + common single-file readers; best-effort set.
+    // tee is intentionally excluded — it writes to its path args, not reads;
+    // write-scope enforcement is a separate concern.
+    const READ_TOOLS = new Set([
+      'grep', 'rg', 'find', 'cat', 'ls',
+      'head', 'tail', 'awk', 'sed',
+    ]);
+    // For these tools the FIRST non-flag positional arg is a script/pattern,
+    // not a file path — skip it to prevent false denials for expressions that
+    // look like absolute paths (e.g. `grep /usr/include/ src/main.ts`,
+    // `awk '/usr/bin/' src/main.ts`, `sed '/^foo/d' src/main.ts`).
+    const PATTERN_FIRST_TOOLS = new Set(['grep', 'rg', 'awk', 'sed']);
+
+    // Guard against a root that normalizes to '' (e.g. configured as '/');
+    // '' would cause isUnder to admit every absolute path via startsWith('/').
+    const wt = ctx.worktreeRoot.replace(/[/\\]+$/, '') || path.sep;
+    const rr = ctx.readRoot.replace(/[/\\]+$/, '') || path.sep;
+
+    const cmd = parseCommand(command);
+    if (!READ_TOOLS.has(cmd.program)) {
+      return { allowed: true };
+    }
+
+    let candidates = extractArgPaths(cmd.argv, wt);
+    if (PATTERN_FIRST_TOOLS.has(cmd.program)) {
+      candidates = candidates.slice(1);
+    }
+
+    for (const [original, resolved] of candidates) {
+      if (!isUnder(resolved, wt) && !isUnder(resolved, rr)) {
+        const result: PolicyCheckResult = {
+          allowed: false,
+          rule: 'filesystem.allowed_read_root',
+          reason: `Path "${original}" (resolved: "${resolved}") is outside the allowed read scope — must be under worktree "${ctx.worktreeRoot}" or read root "${ctx.readRoot}"`,
+        };
+        ctx.audit.record({
+          agent_id: ctx.agentId,
+          action: 'read_scope_denied',
+          command,
+          allowed: false,
+          policy_rule: 'filesystem.allowed_read_root',
+          detail: {
+            tool: cmd.program,
+            requestedPath: original,
+            resolvedPath: resolved,
+            reason: result.reason,
+            worktreeRoot: ctx.worktreeRoot,
+            readRoot: ctx.readRoot,
+          },
+        });
+        return result;
+      }
+    }
+
+    return { allowed: true };
+  }
 }
 
 /**
@@ -483,9 +610,14 @@ function isUnder(resolved: string, root: string): boolean {
 
 /**
  * Resolve a path argument to its canonical absolute form.
- * Follows symlinks via realpathSync when the path exists; falls back to
- * path.resolve (normalizes `..` without a filesystem call) for non-existent
- * paths (write destinations that don't yet exist).
+ * Follows symlinks via realpathSync when the path exists; for a dangling
+ * symlink chain, iteratively follows readlinkSync hops (up to MAX_SYMLINK_HOPS)
+ * so that link1→link2→/outside/target is denied even when intermediate links
+ * exist inside the worktree; falls back to path.resolve (lexical normalization)
+ * only when the path is not a symlink at all.
+ *
+ * Trade-off: a not-yet-created non-symlink path is compared lexically.
+ * Acceptable for a read control — document this at call sites.
  */
 function resolveArg(p: string, base: string): string {
   let normalized: string;
@@ -499,7 +631,26 @@ function resolveArg(p: string, base: string): string {
   try {
     return fs.realpathSync(normalized);
   } catch {
-    return normalized;
+    // Path doesn't exist — may be a dangling symlink chain. Follow hops
+    // iteratively so multi-hop chains (link1→link2→/outside) are fully traced.
+    const MAX_SYMLINK_HOPS = 40; // Linux default MAXSYMLINKS
+    let current = normalized;
+    for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
+      let target: string;
+      try {
+        target = fs.readlinkSync(current);
+      } catch {
+        // Not a symlink — lexical normalization is the best we can do.
+        return current;
+      }
+      current = path.resolve(path.dirname(current), target);
+      try {
+        return fs.realpathSync(current);
+      } catch {
+        // Next hop is also missing or dangling — keep iterating.
+      }
+    }
+    return current;
   }
 }
 

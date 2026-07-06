@@ -133,6 +133,12 @@ Loom is autonomous, not unsupervised. Before anything else, know your brakes:
   not by asking the model nicely. See `.loom/policy.yaml`.
 - **Worktree isolation.** Every story runs in its own git worktree on its own branch.
   Agents physically cannot touch your main branch; they open PRs you review.
+- **Read-scope enforcement.** Worker `Read`/`Grep`/`Glob` and common Bash searches
+  are confined to the agent's own worktree and `policy.filesystem.allowed_read_root`
+  (default `.`, resolved relative to the worktree at hook time). Out-of-scope
+  attempts are blocked by the PreToolUse hook (the sole enforcement path) and
+  audit-logged. On by default; independent of `cross_repo.enabled`. Best-effort on
+  the Bash channel — interpreters and shell redirection need an OS sandbox.
 - **`loom stop`** halts a run gracefully at any time — in-flight stories finish, no
   more dispatch. Resume later with `loom run`.
 - **Checkpoints.** `loom run --checkpoint story` (or `epic`) pauses at each boundary
