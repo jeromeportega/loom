@@ -611,10 +611,16 @@ export class EpicFinalizer {
       ? (this.gateMode as FinalizeGateMode)
       : 'warn';
     const gatesResult = await runFinalizeGates({
-      projectRoot: gitRoot,
+      // Contracts are the untracked `.loom/contract/` artifacts written at plan
+      // time under the REAL repo root — not the integration worktree (gitRoot),
+      // which in rolling mode does not carry them. Presence is tested against
+      // the integrated tree at gitRoot (head = epicBranch, base = base_sha).
+      contractRoot: this.opts.projectRoot,
+      treeRoot: gitRoot,
+      headRef: epicBranch,
+      baseRef: epic.base_sha!,
       epicId,
       epicDiff,
-      storyDiffs: buildStoryDiffMap(merged, gitRoot, epic.base_sha!),
       mode: fgMode,
       deliveredEpicIds: epicStore.listByStatus('done').map(r => r.id),
     });
@@ -1678,44 +1684,23 @@ function defaultOpenEpicPrsProbe(projectRoot: string): (epicBranch: string) => s
   };
 }
 
-/**
- * Generates per-story diffs: `git diff <baseSha> story/<id>` for each merged
- * story. Used to feed the finalize correctness gates. Best-effort: a failing
- * git command contributes an empty string for that story.
- */
-function buildStoryDiffMap(
-  storyIds: string[],
-  gitRoot: string,
-  baseSha: string
-): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const id of storyIds) {
-    const r = gitSafe(gitRoot, ['diff', baseSha, `story/${id}`]);
-    if (!r.ok) {
-      console.warn(`[finalize] could not compute diff for story/${id}: branch may be missing`);
-    }
-    map.set(id, r.ok ? r.output : '');
-  }
-  return map;
-}
-
 /** Prints finalize gate findings to stderr so operators see them in the run log. */
 function emitFinalizeGateDiagnostics(result: FinalizeGatesResult): void {
   for (const f of result.symbolDrift) {
     console.warn(
-      `[finalize] symbol drift: '${f.symbol}' (contract: ${f.contractEpicId}) ` +
-      `in ${f.storyId} — ${f.lineSnippet.trim()}`
+      `[finalize] contract drift: pinned symbol '${f.symbol}' (contract: ${f.contractEpicId}) ` +
+      `is not present in the integrated tree — it may have been renamed or dropped`
     );
   }
   for (const f of result.undocumentedEnvVars) {
     console.warn(
-      `[finalize] undocumented env var: ${f.varName} (${f.filePath}) — ${f.lineSnippet.trim()}`
+      `[finalize] undocumented env var: ${f.varName} (${f.filePath}) — not documented in .env.example`
     );
   }
   for (const f of result.regressions) {
     console.warn(
-      `[finalize] regression: '${f.symbol}' removed in ${f.storyId} ` +
-      `(prior contract: ${f.priorEpicId}) — ${f.lineSnippet.trim()}`
+      `[finalize] cross-epic regression: '${f.symbol}' (pinned by ${f.priorEpicId}) ` +
+      `was present before this epic but is gone from the integrated tree`
     );
   }
 }

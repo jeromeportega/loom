@@ -7,7 +7,7 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import {
   extractSymbolsFromContract,
-  escapeRegexSymbol,
+  symbolsPresentInTree,
   checkSymbolDrift,
   runFinalizeGates,
 } from '../FinalizeGates.js';
@@ -20,7 +20,25 @@ import { IntegrationGate } from '../IntegrationGate.js';
 import type { Story } from '../../types.js';
 import { SharedContract } from '../SharedContract.js';
 
-// ─── story-077-002 — FinalizeGates unit tests ────────────────────────────────
+// ─── story-077-002 — FinalizeGates unit tests (tree-presence rework) ─────────
+//
+// The gates test whether a contract-pinned symbol is present anywhere in the
+// integrated git tree — NOT whether a diff line removed it. This eliminates the
+// two false-positive classes the diff-grep original had: (a) prose words pinned
+// from code fences, and (b) a symbol flagged as "removed" when it is alive in an
+// untouched file the diff never showed.
+
+// ── git repo helper ──────────────────────────────────────────────────────────
+
+function makeGitRepo(): { root: string; git: (args: string[]) => string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-fgtree-'));
+  const git = (args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  git(['init', '-q']);
+  git(['config', 'user.email', 'test@loom.dev']);
+  git(['config', 'user.name', 'Loom Test']);
+  git(['config', 'commit.gpgsign', 'false']);
+  return { root, git };
+}
 
 // ── extractSymbolsFromContract ───────────────────────────────────────────────
 
@@ -52,275 +70,230 @@ describe('extractSymbolsFromContract', () => {
     assert.ok(symbols.includes('runFinalizeGates'), 'runFinalizeGates from inline span must be extracted');
   });
 
+  it('drops lowercase prose words that appear inside code fences (significance filter)', () => {
+    // A fence that mixes real identifiers with English words from comments/strings.
+    const md = [
+      '```typescript',
+      '// when the team has finished, set the root state',
+      'const team = getTeamRoster();',
+      '```',
+    ].join('\n');
+    const symbols = extractSymbolsFromContract(md);
+    for (const junk of ['when', 'team', 'has', 'root', 'state']) {
+      assert.ok(!symbols.includes(junk), `lowercase prose word '${junk}' must NOT be pinned`);
+    }
+    assert.ok(symbols.includes('getTeamRoster'), 'camelCase identifier must still be pinned');
+  });
+
+  it('keeps UPPER_SNAKE env-var / constant style names', () => {
+    const md = '```\nconst x = process.env.AUTH_TOKEN_ID;\n```';
+    const symbols = extractSymbolsFromContract(md);
+    assert.ok(symbols.includes('AUTH_TOKEN_ID'), 'UPPER_SNAKE name must be pinned');
+  });
+
   it('deduplicates symbols across multiple code blocks', () => {
     const md = [
       '```typescript',
-      'function Token() {}',
+      'function TokenFn() {}',
       '```',
       '',
       'Some prose.',
       '',
       '```typescript',
-      'function Token() {} // same name again',
+      'function TokenFn() {} // same name again',
       '```',
     ].join('\n');
     const symbols = extractSymbolsFromContract(md);
-    const tokenOccurrences = symbols.filter(s => s === 'Token');
-    assert.equal(tokenOccurrences.length, 1, 'Token must appear exactly once after deduplication');
+    assert.equal(symbols.filter(s => s === 'TokenFn').length, 1, 'must appear once after dedup');
   });
 
-  it('returns [] for empty contract', () => {
+  it('returns [] for empty / whitespace-only contract', () => {
     assert.deepEqual(extractSymbolsFromContract(''), []);
-  });
-
-  it('returns [] for whitespace-only contract', () => {
     assert.deepEqual(extractSymbolsFromContract('   \n\n   '), []);
   });
 });
 
-// ── escapeRegexSymbol ────────────────────────────────────────────────────────
+// ── symbolsPresentInTree ─────────────────────────────────────────────────────
 
-describe('escapeRegexSymbol', () => {
-  it('escapes special regex characters so new RegExp does not throw', () => {
-    const cases = ['$emit', 'Map<K,V>', 'foo.bar', 'a+b', 'a*b', 'a?b'];
-    for (const sym of cases) {
-      assert.doesNotThrow(
-        () => new RegExp(escapeRegexSymbol(sym)),
-        `new RegExp(escapeRegexSymbol('${sym}')) must not throw`
-      );
-    }
-  });
-
-  it('escaped $emit matches $emit literally', () => {
-    const re = new RegExp(escapeRegexSymbol('$emit'));
-    assert.ok(re.test('this.$emit("event")'), '$emit must match literally');
-    assert.ok(!re.test('noop'), 'must not match unrelated text');
-  });
-
-  it('escaped Map<K,V> matches Map<K,V> literally', () => {
-    const re = new RegExp(escapeRegexSymbol('Map<K,V>'));
-    assert.ok(re.test('const m: Map<K,V> = new Map()'), 'Map<K,V> must match literally');
-    assert.ok(!re.test('const m: HashMap = new Map()'), 'must not match HashMap');
-  });
-});
-
-// ── checkSymbolDrift ─────────────────────────────────────────────────────────
-
-describe('checkSymbolDrift', () => {
-  it('returns empty findings when contractSymbols is empty', () => {
-    const diffs = new Map([['story-001', '+const x = 1;']]);
-    const findings = checkSymbolDrift({ contractSymbols: [], contractEpicId: 'epic-001', storyDiffs: diffs });
-    assert.deepEqual(findings, []);
-  });
-
-  it('detects drift when story removes a pinned symbol (renamed scenario)', () => {
-    // The story renamed Token to AuthToken: removed line has Token, added line has AuthToken.
-    const diff = [
-      '--- a/auth.ts',
-      '+++ b/auth.ts',
-      '-export interface Token { id: string; }',
-      '+export interface AuthToken { id: string; }',
-    ].join('\n');
-    const diffs = new Map([['story-001', diff]]);
-    const findings = checkSymbolDrift({
-      contractSymbols: ['Token'],
-      contractEpicId: 'epic-001',
-      storyDiffs: diffs,
-    });
-    assert.equal(findings.length, 1, 'one drift finding must be returned');
-    assert.equal(findings[0].symbol, 'Token');
-    assert.equal(findings[0].storyId, 'story-001');
-    assert.equal(findings[0].contractEpicId, 'epic-001');
-    assert.ok(findings[0].lineSnippet.includes('Token'), 'lineSnippet must contain the matched line');
-  });
-
-  it('enforces word-boundary: AuthToken in added lines only does not match Token', () => {
-    // Diff only adds AuthToken — Token does not appear anywhere with word boundary.
-    const diff = [
-      '--- a/auth.ts',
-      '+++ b/auth.ts',
-      '+export class AuthToken implements AuthTokenBase { }',
-    ].join('\n');
-    const diffs = new Map([['story-001', diff]]);
-    const findings = checkSymbolDrift({
-      contractSymbols: ['Token'],
-      contractEpicId: 'epic-001',
-      storyDiffs: diffs,
-    });
-    assert.deepEqual(findings, [], 'AuthToken substring must not match Token with word boundary');
-  });
-
-  it('no drift when story adds the exact pinned symbol', () => {
-    // Added lines contain Token as a standalone word.
-    const diff = [
-      '--- a/auth.ts',
-      '+++ b/auth.ts',
-      '+const t: Token = TokenFactory.create();',
-    ].join('\n');
-    const diffs = new Map([['story-001', diff]]);
-    const findings = checkSymbolDrift({
-      contractSymbols: ['Token'],
-      contractEpicId: 'epic-001',
-      storyDiffs: diffs,
-    });
-    assert.deepEqual(findings, [], 'story using the exact symbol must produce no findings');
-  });
-
-  it('no drift when symbol not in diff at all', () => {
-    const diff = [
-      '--- a/utils.ts',
-      '+++ b/utils.ts',
-      '+export function helper(): void {}',
-    ].join('\n');
-    const diffs = new Map([['story-001', diff]]);
-    const findings = checkSymbolDrift({
-      contractSymbols: ['Token'],
-      contractEpicId: 'epic-001',
-      storyDiffs: diffs,
-    });
-    assert.deepEqual(findings, [], 'symbol absent from diff must produce no findings');
-  });
-
-  it('no drift when symbol survives in context lines after its definition is removed', () => {
-    // Removes the Token definition but Token still appears as an unchanged context line
-    // (e.g. a usage in the same hunk). Without context-line awareness this produces a
-    // false-positive finding.
-    const diff = [
-      '--- a/auth.ts',
-      '+++ b/auth.ts',
-      '@@ -1,3 +1,2 @@',
-      '-export interface Token { id: string; }',
-      '+// definition moved to shared package',
-      ' const t: Token = TokenFactory.create();',  // context line — Token survives
-    ].join('\n');
-    const diffs = new Map([['story-001', diff]]);
-    const findings = checkSymbolDrift({
-      contractSymbols: ['Token'],
-      contractEpicId: 'epic-001',
-      storyDiffs: diffs,
-    });
-    assert.deepEqual(findings, [], 'Token surviving in context lines must produce no drift finding');
-  });
-
-  it('only story-A gets a finding when story-B uses the symbol correctly', () => {
-    const driftDiff = [
-      '-export interface Token { }',
-      '+export interface AuthToken { }',
-    ].join('\n');
-    const noDriftDiff = '+const t: Token = Token.create();';
-    const diffs = new Map([
-      ['story-A', driftDiff],
-      ['story-B', noDriftDiff],
-    ]);
-    const findings = checkSymbolDrift({
-      contractSymbols: ['Token'],
-      contractEpicId: 'epic-001',
-      storyDiffs: diffs,
-    });
-    assert.equal(findings.length, 1, 'exactly one finding for story-A');
-    assert.equal(findings[0].storyId, 'story-A');
-  });
-});
-
-// ── runFinalizeGates policy wiring ───────────────────────────────────────────
-
-describe('runFinalizeGates — policy wiring', () => {
-  let tmpDir: string;
+describe('symbolsPresentInTree', () => {
+  let repo: ReturnType<typeof makeGitRepo>;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-fgates-'));
+    repo = makeGitRepo();
+    fs.writeFileSync(
+      path.join(repo.root, 'auth.ts'),
+      'export interface AuthToken { id: string; }\nexport const SESSION_KEY = "s";\n'
+    );
+    repo.git(['add', '.']);
+    repo.git(['commit', '-q', '-m', 'init']);
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(repo.root, { recursive: true, force: true });
   });
 
-  function writeContract(epicId: string, content: string): void {
-    SharedContract.write(tmpDir, epicId, content);
-  }
+  it('returns the empty set for no symbols', () => {
+    assert.deepEqual([...symbolsPresentInTree(repo.root, 'HEAD', [])!], []);
+  });
 
-  function makeDriftyStoryDiffs(symbol: string): Map<string, string> {
-    const diff = [
-      `--- a/src.ts`,
-      `+++ b/src.ts`,
-      `-export interface ${symbol} { }`,
-      `+export interface Auth${symbol} { }`,
-    ].join('\n');
-    return new Map([['story-001', diff]]);
+  it('reports a present symbol', () => {
+    const present = symbolsPresentInTree(repo.root, 'HEAD', ['AuthToken', 'SESSION_KEY']);
+    assert.ok(present!.has('AuthToken'));
+    assert.ok(present!.has('SESSION_KEY'));
+  });
+
+  it('does not report an absent symbol', () => {
+    const present = symbolsPresentInTree(repo.root, 'HEAD', ['Nonexistent']);
+    assert.ok(!present!.has('Nonexistent'));
+    assert.equal(present!.size, 0);
+  });
+
+  it('enforces word boundaries — Token is absent even though AuthToken is present', () => {
+    const present = symbolsPresentInTree(repo.root, 'HEAD', ['Token']);
+    assert.ok(!present!.has('Token'), 'Token must not match inside AuthToken');
+  });
+
+  it('returns null on a bad ref (skip-the-gate signal), not a false "all absent"', () => {
+    const present = symbolsPresentInTree(repo.root, 'no-such-ref', ['AuthToken']);
+    assert.equal(present, null, 'a git error must surface as null, not an empty present-set');
+  });
+});
+
+// ── checkSymbolDrift (present-set based) ─────────────────────────────────────
+
+describe('checkSymbolDrift', () => {
+  it('returns empty findings when contractSymbols is empty', () => {
+    assert.deepEqual(
+      checkSymbolDrift({ contractSymbols: [], contractEpicId: 'epic-001', presentSymbols: new Set() }),
+      []
+    );
+  });
+
+  it('flags a pinned symbol absent from the tree (renamed or dropped)', () => {
+    const findings = checkSymbolDrift({
+      contractSymbols: ['Token'],
+      contractEpicId: 'epic-001',
+      presentSymbols: new Set(['AuthToken']), // Token was renamed to AuthToken
+    });
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].symbol, 'Token');
+    assert.equal(findings[0].contractEpicId, 'epic-001');
+  });
+
+  it('does not flag a pinned symbol that is present', () => {
+    const findings = checkSymbolDrift({
+      contractSymbols: ['Token'],
+      contractEpicId: 'epic-001',
+      presentSymbols: new Set(['Token', 'AuthToken']),
+    });
+    assert.deepEqual(findings, []);
+  });
+
+  it('flags only the absent symbols in a mixed set', () => {
+    const findings = checkSymbolDrift({
+      contractSymbols: ['Alpha', 'Beta', 'Gamma'],
+      contractEpicId: 'epic-001',
+      presentSymbols: new Set(['Beta']),
+    });
+    assert.deepEqual(findings.map(f => f.symbol).sort(), ['Alpha', 'Gamma']);
+  });
+});
+
+// ── runFinalizeGates policy wiring (real git tree) ───────────────────────────
+
+describe('runFinalizeGates — policy wiring', () => {
+  let repo: ReturnType<typeof makeGitRepo>;
+  let baseSha: string;
+
+  // Seed a tree whose head has AuthToken but NOT Token — so a contract pinning
+  // Token is a genuine drift (the symbol is absent from the whole tree).
+  beforeEach(() => {
+    repo = makeGitRepo();
+    fs.writeFileSync(path.join(repo.root, 'src.ts'), 'export interface AuthToken {}\n');
+    repo.git(['add', '.']);
+    repo.git(['commit', '-q', '-m', 'init']);
+    baseSha = repo.git(['rev-parse', 'HEAD']);
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo.root, { recursive: true, force: true });
+  });
+
+  function run(mode: 'off' | 'warn' | 'block', epicId = 'epic-001') {
+    return runFinalizeGates({
+      contractRoot: repo.root,
+      treeRoot: repo.root,
+      headRef: 'HEAD',
+      baseRef: baseSha,
+      epicId,
+      epicDiff: '',
+      mode,
+      deliveredEpicIds: [],
+    });
   }
 
   it('mode=off returns all-empty findings and hardFail=false', async () => {
-    writeContract('epic-001', '```typescript\nexport interface Token { }\n```');
-    const result = await runFinalizeGates({
-      projectRoot: tmpDir,
-      epicId: 'epic-001',
-      epicDiff: '',
-      storyDiffs: makeDriftyStoryDiffs('Token'),
-      mode: 'off',
-      deliveredEpicIds: [],
-    });
+    SharedContract.write(repo.root, 'epic-001', '```typescript\nexport interface Token {}\n```');
+    const result = await run('off');
     assert.deepEqual(result.symbolDrift, []);
-    assert.deepEqual(result.undocumentedEnvVars, []);
-    assert.deepEqual(result.regressions, []);
     assert.equal(result.hardFail, false);
   });
 
-  it('mode=warn: findings returned but hardFail=false', async () => {
-    writeContract('epic-001', '```typescript\nexport interface Token { }\n```');
-    const result = await runFinalizeGates({
-      projectRoot: tmpDir,
-      epicId: 'epic-001',
-      epicDiff: '',
-      storyDiffs: makeDriftyStoryDiffs('Token'),
-      mode: 'warn',
-      deliveredEpicIds: [],
-    });
-    assert.ok(result.symbolDrift.length > 0, 'warn mode must still return findings');
-    assert.equal(result.hardFail, false, 'warn mode must not set hardFail');
+  it('mode=warn: drift finding returned but hardFail=false', async () => {
+    SharedContract.write(repo.root, 'epic-001', '```typescript\nexport interface Token {}\n```');
+    const result = await run('warn');
+    assert.ok(result.symbolDrift.some(f => f.symbol === 'Token'), 'Token drift must be reported');
+    assert.equal(result.hardFail, false, 'warn must not hard-fail');
   });
 
-  it('mode=block with findings: hardFail=true', async () => {
-    writeContract('epic-001', '```typescript\nexport interface Token { }\n```');
-    const result = await runFinalizeGates({
-      projectRoot: tmpDir,
-      epicId: 'epic-001',
-      epicDiff: '',
-      storyDiffs: makeDriftyStoryDiffs('Token'),
-      mode: 'block',
-      deliveredEpicIds: [],
-    });
-    assert.ok(result.symbolDrift.length > 0, 'block mode must return findings');
-    assert.equal(result.hardFail, true, 'block mode with findings must set hardFail=true');
+  it('mode=block: symbol drift is ADVISORY — finding present but hardFail=false', async () => {
+    // Drift is a heuristic over prose-heavy contracts; it must never withhold a
+    // PR on its own. Only the precise env-var gate hard-fails (see GateEnvVar).
+    SharedContract.write(repo.root, 'epic-001', '```typescript\nexport interface Token {}\n```');
+    const result = await run('block');
+    assert.ok(result.symbolDrift.some(f => f.symbol === 'Token'), 'drift finding still reported');
+    assert.equal(result.hardFail, false, 'symbol drift alone must NOT hard-fail');
   });
 
-  it('mode=block with zero findings: hardFail=false', async () => {
-    writeContract('epic-001', '```typescript\nexport interface Token { }\n```');
-    // Story correctly uses Token.
-    const cleanDiffs = new Map([['story-001', '+const t: Token = Token.create();']]);
-    const result = await runFinalizeGates({
-      projectRoot: tmpDir,
-      epicId: 'epic-001',
-      epicDiff: '',
-      storyDiffs: cleanDiffs,
-      mode: 'block',
-      deliveredEpicIds: [],
-    });
+  it('mode=block with zero findings: hardFail=false (pinned symbol is present)', async () => {
+    // Contract pins AuthToken, which IS present in the tree → no drift.
+    SharedContract.write(repo.root, 'epic-001', '```typescript\nexport interface AuthToken {}\n```');
+    const result = await run('block');
     assert.equal(result.symbolDrift.length, 0);
-    assert.equal(result.hardFail, false, 'block mode with no findings must NOT set hardFail');
+    assert.equal(result.hardFail, false);
   });
 
-  it('empty contract produces no drift findings regardless of diff content', async () => {
-    // No contract file written — SharedContract.read returns null.
-    const result = await runFinalizeGates({
-      projectRoot: tmpDir,
-      epicId: 'epic-no-contract',
-      epicDiff: '',
-      storyDiffs: makeDriftyStoryDiffs('Token'),
-      mode: 'block',
-      deliveredEpicIds: [],
-    });
-    assert.deepEqual(result.symbolDrift, [], 'absent contract must yield no drift findings');
+  it('absent contract produces no drift findings', async () => {
+    const result = await run('block', 'epic-no-contract');
+    assert.deepEqual(result.symbolDrift, []);
     assert.equal(result.hardFail, false);
+  });
+
+  it('reads the contract from contractRoot, not treeRoot (rolling-mode wrong-root regression)', async () => {
+    // Simulate rolling integration: the contract lives under the REAL repo root,
+    // while the integrated tree is a *separate* worktree that does not carry the
+    // untracked .loom/contract file. The pre-fix code read the contract from the
+    // worktree (treeRoot) and silently found nothing → zero findings forever.
+    const contractRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-fgcontract-'));
+    try {
+      SharedContract.write(contractRoot, 'epic-001', '```typescript\nexport interface Token {}\n```');
+      const result = await runFinalizeGates({
+        contractRoot,           // contract here …
+        treeRoot: repo.root,    // … tree grepped here (Token absent)
+        headRef: 'HEAD',
+        baseRef: baseSha,
+        epicId: 'epic-001',
+        epicDiff: '',
+        mode: 'block',
+        deliveredEpicIds: [],
+      });
+      assert.ok(
+        result.symbolDrift.some(f => f.symbol === 'Token'),
+        'contract must be read from contractRoot even when treeRoot lacks it'
+      );
+    } finally {
+      fs.rmSync(contractRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -378,8 +351,10 @@ describe('EpicFinalizer integration smoke — hardFail propagates to gated resul
     gitc(['config', 'user.email', 'test@loom.dev']);
     gitc(['config', 'user.name', 'Loom Test']);
     gitc(['config', 'commit.gpgsign', 'false']);
-    // Seed a file with Token so the story can remove it.
-    fs.writeFileSync(path.join(repo, 'src.ts'), 'export interface Token { id: string; }\n');
+    // Seed a source file plus a .env.example that does NOT document the secret
+    // the story will introduce — so the (blocking) env-var gate fires.
+    fs.writeFileSync(path.join(repo, 'src.ts'), 'export const x = 1;\n');
+    fs.writeFileSync(path.join(repo, '.env.example'), 'DOCUMENTED_VAR=\n');
     gitc(['add', '.']);
     gitc(['commit', '-q', '-m', 'initial']);
   });
@@ -389,7 +364,7 @@ describe('EpicFinalizer integration smoke — hardFail propagates to gated resul
     fs.rmSync(repo, { recursive: true, force: true });
   });
 
-  it('runFinalizeGates hardFail propagates to { status: gated } in finalize()', async () => {
+  it('env-var hardFail propagates to { status: gated } in finalize()', async () => {
     const storyId = 'story-001-001';
     const epicId = 'epic-001';
     seedEpic(epicId, [storyObj(storyId)]);
@@ -398,33 +373,28 @@ describe('EpicFinalizer integration smoke — hardFail propagates to gated resul
     const epicStore = new EpicStore(db);
     const agentStore = new AgentStore(db);
 
-    // Set base_sha to current HEAD.
     epicStore.updateBaseSha(epicId, gitc(['rev-parse', 'HEAD']));
 
-    // Create the story branch that RENAMES Token to AuthToken (drift).
+    // Story branch reads an env var absent from .env.example → env-var gate fires.
     gitc(['checkout', '-b', `story/${storyId}`]);
     fs.writeFileSync(
       path.join(repo, 'src.ts'),
-      'export interface AuthToken { id: string; }\n'
+      'export const secret = process.env.UNDOCUMENTED_SECRET;\n'
     );
     gitc(['add', 'src.ts']);
-    gitc(['commit', '-q', '-m', `${storyId}: rename Token to AuthToken`]);
+    gitc(['commit', '-q', '-m', `${storyId}: read UNDOCUMENTED_SECRET`]);
     gitc(['checkout', '-']);
 
-    // Mark the story as done so finalize merges it.
     const agent = agentStore.create(epicId, storyId, storyId);
     agentStore.updateStatus(agent.id, 'done');
-
-    // Write the contract pinning Token.
-    SharedContract.write(repo, epicId, '```typescript\nexport interface Token { id: string; }\n```');
 
     const opts: EpicFinalizerOptions = {
       projectRoot: repo,
       db,
-      allowedRemotes: [],          // no remote → no push, but we expect gated before that
+      allowedRemotes: [],
       prStrategy: 'per-epic',
       gate: greenGate(),
-      integrationGate: 'block',   // this drives the finalize gates mode too
+      integrationGate: 'block', // drives the finalize gates mode too
       pushBranch: () => ({ ok: true, output: 'pushed' }),
       openPr: () => 'https://example.com/pull/1',
     };
@@ -434,7 +404,7 @@ describe('EpicFinalizer integration smoke — hardFail propagates to gated resul
     assert.equal(
       result.status,
       'gated',
-      'hardFail from symbol drift must propagate to status=gated'
+      'hardFail from the undocumented-env-var gate must propagate to status=gated'
     );
   });
 });

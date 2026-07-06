@@ -167,6 +167,24 @@ describe('checkUndocumentedEnvVars', () => {
     assert.ok(filePaths.includes('src/api.ts'), 'api.ts must be in findings');
     assert.ok(filePaths.includes('src/worker.ts'), 'worker.ts must be in findings');
   });
+
+  it('does not flag ambient system / CI variables (PATH, NODE_ENV, CI)', () => {
+    const diff = [
+      '--- a/src/config.ts',
+      '+++ b/src/config.ts',
+      '+const p = process.env.PATH;',
+      '+const e = process.env.NODE_ENV;',
+      '+const c = process.env.CI;',
+      '+const s = process.env.APP_SECRET;',
+    ].join('\n');
+
+    const findings = checkUndocumentedEnvVars({ epicDiff: diff, envExampleVars: new Set() });
+    const varNames = findings.map(f => f.varName);
+    assert.ok(!varNames.includes('PATH'), 'PATH is ambient and must not be flagged');
+    assert.ok(!varNames.includes('NODE_ENV'), 'NODE_ENV is ambient and must not be flagged');
+    assert.ok(!varNames.includes('CI'), 'CI is ambient and must not be flagged');
+    assert.ok(varNames.includes('APP_SECRET'), 'a genuine undocumented var is still flagged');
+  });
 });
 
 // ── readEnvExampleVars unit tests ────────────────────────────────────────────
@@ -236,10 +254,12 @@ describe('runFinalizeGates — undocumented env-var policy wiring', () => {
     writeEnvExample([]);  // empty .env.example — UNDOC_VAR not listed
 
     const result = await runFinalizeGates({
-      projectRoot: tmpDir,
+      contractRoot: tmpDir,
+      treeRoot: tmpDir,
+      headRef: 'HEAD',
+      baseRef: 'HEAD',
       epicId: 'epic-test',
       epicDiff: epicDiffWithUndocVar,
-      storyDiffs: new Map(),
       mode: 'warn',
       deliveredEpicIds: [],
     });
@@ -252,10 +272,12 @@ describe('runFinalizeGates — undocumented env-var policy wiring', () => {
     writeEnvExample([]);  // empty .env.example
 
     const result = await runFinalizeGates({
-      projectRoot: tmpDir,
+      contractRoot: tmpDir,
+      treeRoot: tmpDir,
+      headRef: 'HEAD',
+      baseRef: 'HEAD',
       epicId: 'epic-test',
       epicDiff: epicDiffWithUndocVar,
-      storyDiffs: new Map(),
       mode: 'block',
       deliveredEpicIds: [],
     });
@@ -268,10 +290,12 @@ describe('runFinalizeGates — undocumented env-var policy wiring', () => {
     writeEnvExample([]);
 
     const result = await runFinalizeGates({
-      projectRoot: tmpDir,
+      contractRoot: tmpDir,
+      treeRoot: tmpDir,
+      headRef: 'HEAD',
+      baseRef: 'HEAD',
       epicId: 'epic-test',
       epicDiff: epicDiffWithUndocVar,
-      storyDiffs: new Map(),
       mode: 'off',
       deliveredEpicIds: [],
     });
@@ -310,10 +334,12 @@ describe('runFinalizeGates — missing .env.example integration smoke', () => {
     ].join('\n');
 
     const result = await runFinalizeGates({
-      projectRoot: tmpDir,
+      contractRoot: tmpDir,
+      treeRoot: tmpDir,
+      headRef: 'HEAD',
+      baseRef: 'HEAD',
       epicId: 'epic-test',
       epicDiff,
-      storyDiffs: new Map(),
       mode: 'block',
       deliveredEpicIds: [],
     });

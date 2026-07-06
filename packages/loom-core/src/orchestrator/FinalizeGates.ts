@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { SharedContract } from './SharedContract.js';
 import { checkUndocumentedEnvVars } from './GateEnvVar.js';
 import { checkCrossEpicRegressions } from './GateRegression.js';
@@ -9,8 +10,6 @@ export type FinalizeGateMode = 'off' | 'warn' | 'block';
 export interface SymbolDriftFinding {
   symbol: string;
   contractEpicId: string;
-  storyId: string;
-  lineSnippet: string;
 }
 
 export interface EnvVarFinding {
@@ -22,8 +21,6 @@ export interface EnvVarFinding {
 export interface RegressionFinding {
   symbol: string;
   priorEpicId: string;
-  storyId: string;
-  lineSnippet: string;
 }
 
 export interface FinalizeGatesResult {
@@ -34,15 +31,8 @@ export interface FinalizeGatesResult {
   hardFail: boolean;
 }
 
-/** Escapes a symbol string for safe use in new RegExp(escapeRegexSymbol(s)). */
-export function escapeRegexSymbol(symbol: string): string {
-  return symbol.replace(/[.*+?^${}()|[\]\\<>,]/g, '\\$&');
-}
-
 // JS/TS keywords and builtins that appear in every code block but carry no
-// semantic identity as contract symbols. Filtering these prevents spurious
-// drift findings when a story removes a module-level `export` or renames
-// a parameter typed as `string`.
+// semantic identity as contract symbols.
 const RESERVED_WORDS = new Set([
   'export', 'import', 'interface', 'class', 'function', 'type', 'const', 'let', 'var',
   'string', 'number', 'boolean', 'void', 'null', 'undefined', 'return', 'if', 'else',
@@ -54,16 +44,38 @@ const RESERVED_WORDS = new Set([
 ]);
 
 // Only pure identifier spans (letters/digits/underscore, starting with a letter
-// or underscore) are treated as pinned contract symbols from inline code spans.
-// Complex expressions like `Map<K,V>` are skipped — \b anchors misfire on the
-// non-word trailing character, causing false negatives in drift matching.
+// or underscore) are treated as pinned contract symbols.
 const PURE_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+// A contract symbol is only "significant" enough to gate on if it looks like a
+// real code identifier rather than an English word emphasised in prose:
+//   • mixed-case  (PascalCase / camelCase) — `AuthToken`, `resolveTimeoutMs`
+//   • UPPER_SNAKE containing an underscore — `AUTH_TOKEN_ID`, `MAX_RETRIES`
+// This drops BOTH bare lowercase words (`when`, `team`, `state`) AND bare
+// all-caps words (`OWNER`, `LAYER`, `STREAM`, `PRODUCER`) — the latter are the
+// label/emphasis tokens loom's own prose-in-fence contracts are full of, and
+// were the dominant residual false positive after the first narrowing pass.
+// A token must also contain at least one letter, which drops artefacts like
+// `_000` produced by tokenising a numeric separator (`30_000`).
+// Precision over recall: a genuinely-pinned bare-word symbol (rare) is not
+// gated, which is far cheaper than a finalize log full of the word "OWNER".
+function isSignificantSymbol(s: string): boolean {
+  if (!/[A-Za-z]/.test(s)) return false;
+  const hasUpper = /[A-Z]/.test(s);
+  const hasLower = /[a-z]/.test(s);
+  if (hasUpper && hasLower) return true; // PascalCase / camelCase
+  if (!hasLower && s.includes('_')) return true; // UPPER_SNAKE constant / env var
+  return false;
+}
 
 /**
  * Extracts pinned symbol names from fenced code blocks and inline code spans.
  * Returns a deduplicated array of identifier-like strings.
- * Symbols found only in prose (no code formatting) are NOT extracted.
- * JS/TS reserved words and identifiers of 2 or fewer characters are excluded.
+ * Symbols found only in prose (no code formatting) are NOT extracted; comment
+ * text inside code fences is still tokenized — the significance filter below is
+ * what keeps prose words out — and only "significant" identifiers (containing
+ * an uppercase letter or underscore) survive. JS/TS reserved words and
+ * identifiers of 2 or fewer characters are excluded.
  */
 export function extractSymbolsFromContract(contractMarkdown: string): string[] {
   if (!contractMarkdown.trim()) return [];
@@ -85,9 +97,8 @@ export function extractSymbolsFromContract(contractMarkdown: string): string[] {
     }
   }
 
-  // Extract inline code spans not inside fenced blocks.
-  // Only pure identifiers are accepted — complex expressions (e.g. `Map<K,V>`)
-  // are skipped to avoid regex-boundary mismatches during drift checking.
+  // Extract inline code spans not inside fenced blocks. Only pure identifiers
+  // are accepted — complex expressions (e.g. `Map<K,V>`) are skipped.
   const inlineSpanRe = /`([^`\n]+)`/g;
   let spanMatch: RegExpExecArray | null;
   while ((spanMatch = inlineSpanRe.exec(contractMarkdown)) !== null) {
@@ -99,68 +110,108 @@ export function extractSymbolsFromContract(contractMarkdown: string): string[] {
     }
   }
 
-  return Array.from(symbols).filter(s => s.length > 2 && !RESERVED_WORDS.has(s));
+  return Array.from(symbols).filter(
+    s => s.length > 2 && !RESERVED_WORDS.has(s) && isSignificantSymbol(s)
+  );
 }
 
 /**
- * Checks each story diff for symbol drift: a pinned contract symbol that was
- * removed or renamed. Uses word-boundary regex so `Token` does not match
- * inside `AuthToken`.
+ * Returns the subset of `symbols` that are present — as whole words — anywhere
+ * in the git tree at `ref` (a branch name or commit sha), searched from
+ * `treeRoot`. This is a *tree-wide* presence test, not a diff test: a symbol
+ * that lives in a file this epic never touched still counts as present. That is
+ * the whole point — "the contract pins symbol X" is only violated when X is
+ * absent from the *entire delivered codebase*, not merely from one story's diff.
  *
- * Drift detection: for each symbol, if the symbol appears in the removed
- * lines (`-`) of a story diff but NOT in the added lines (`+`), the story
- * has removed or renamed the contract symbol.
+ * Returns `null` when git grep could not run to completion (a bad ref, a git
+ * error — anything other than the benign "no matches" exit code 1). Callers MUST
+ * treat null as "unknown" and skip the gate rather than assume every symbol is
+ * absent: flagging a whole contract on a transient git failure is exactly the
+ * false-positive storm this rework exists to prevent.
+ */
+export function symbolsPresentInTree(
+  treeRoot: string,
+  ref: string,
+  symbols: string[]
+): Set<string> | null {
+  if (symbols.length === 0) return new Set();
+
+  const patternArgs: string[] = [];
+  for (const s of symbols) patternArgs.push('-e', s);
+
+  let out: string;
+  try {
+    out = execFileSync(
+      'git',
+      // -w whole-word, -F fixed-string (symbols are literal identifiers),
+      // -o only the matched token, -h no filename prefix, -I skip binary.
+      ['grep', '-w', '-F', '-o', '-h', '-I', ...patternArgs, ref],
+      {
+        cwd: treeRoot,
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
+  } catch (err) {
+    const e = err as { status?: number };
+    // Exit 1 = pattern matched nothing: a legitimate "none present" answer.
+    if (e.status === 1) return new Set();
+    // Exit 2+ (bad ref, grep failure) = we genuinely do not know. Signal the
+    // caller to skip the gate instead of flagging everything as absent.
+    return null;
+  }
+
+  const requested = new Set(symbols);
+  const present = new Set<string>();
+  for (const rawLine of out.split('\n')) {
+    // With -o -h each line is a matched token, but guard against any residual
+    // `path:token` prefix by also checking the last colon-delimited field.
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (requested.has(line)) {
+      present.add(line);
+      continue;
+    }
+    const tail = line.slice(line.lastIndexOf(':') + 1).trim();
+    if (requested.has(tail)) present.add(tail);
+  }
+  return present;
+}
+
+/**
+ * Symbol-drift gate. Pure. A pinned contract symbol that is NOT present in the
+ * integrated tree (see `symbolsPresentInTree`) has been renamed or dropped:
+ * the epic promised a seam by that name and did not deliver it.
  */
 export function checkSymbolDrift(opts: {
   contractSymbols: string[];
   contractEpicId: string;
-  storyDiffs: Map<string, string>;
+  presentSymbols: Set<string>;
 }): SymbolDriftFinding[] {
-  if (opts.contractSymbols.length === 0) return [];
-
-  const findings: SymbolDriftFinding[] = [];
-
-  for (const [storyId, diff] of opts.storyDiffs) {
-    const lines = diff.split('\n');
-    const addedLines = lines.filter(l => l.startsWith('+') && !l.startsWith('+++'));
-    const removedLines = lines.filter(l => l.startsWith('-') && !l.startsWith('---'));
-    // Context lines (space-prefixed, unchanged) count as evidence the symbol
-    // still exists in the file. Without this check, removing a definition while
-    // keeping usages in the same hunk would produce a spurious drift finding.
-    const contextLines = lines.filter(l => l.startsWith(' '));
-
-    for (const symbol of opts.contractSymbols) {
-      const escaped = escapeRegexSymbol(symbol);
-      const re = new RegExp('\\b' + escaped + '\\b');
-
-      // Symbol present in added or context lines → still alive in this story.
-      if (addedLines.some(l => re.test(l)) || contextLines.some(l => re.test(l))) continue;
-
-      // Symbol only in removed lines → was removed or renamed in this story.
-      const removedMatch = removedLines.find(l => re.test(l));
-      if (removedMatch) {
-        findings.push({
-          symbol,
-          contractEpicId: opts.contractEpicId,
-          storyId,
-          lineSnippet: removedMatch,
-        });
-      }
-    }
-  }
-
-  return findings;
+  return opts.contractSymbols
+    .filter(s => !opts.presentSymbols.has(s))
+    .map(symbol => ({ symbol, contractEpicId: opts.contractEpicId }));
 }
 
 /**
  * Orchestrates all three finalize gates. Called by EpicFinalizer after
  * IntegrationGate.run(). Returns early with all-empty findings when mode='off'.
+ *
+ * Contracts are read from `contractRoot` (the real repo root, where the
+ * untracked `.loom/contract/` artifacts are written at plan time) while symbol
+ * presence is tested against the integrated tree at `treeRoot` (which, in
+ * rolling mode, is a dedicated integration worktree that does NOT carry the
+ * untracked contract files). Conflating the two is what made the gate silently
+ * no-op in loom's own rolling-integration configuration.
  */
 export async function runFinalizeGates(opts: {
-  projectRoot: string;
+  contractRoot: string;
+  treeRoot: string;
+  headRef: string;
+  baseRef: string;
   epicId: string;
   epicDiff: string;
-  storyDiffs: Map<string, string>;
   mode: FinalizeGateMode;
   deliveredEpicIds: string[];
 }): Promise<FinalizeGatesResult> {
@@ -168,43 +219,65 @@ export async function runFinalizeGates(opts: {
     return { symbolDrift: [], undocumentedEnvVars: [], regressions: [], hardFail: false };
   }
 
-  // Read this epic's shared contract and extract its pinned symbols.
-  const contractMarkdown = SharedContract.read(opts.projectRoot, opts.epicId) ?? '';
+  // ── Symbol-drift gate: this epic's own pinned symbols must exist at head. ──
+  const contractMarkdown = SharedContract.read(opts.contractRoot, opts.epicId) ?? '';
   const contractSymbols = extractSymbolsFromContract(contractMarkdown);
+  const ownPresent =
+    contractSymbols.length > 0
+      ? symbolsPresentInTree(opts.treeRoot, opts.headRef, contractSymbols)
+      : new Set<string>();
+  const symbolDrift =
+    ownPresent === null
+      ? [] // grep unavailable → skip rather than flag every pinned symbol
+      : checkSymbolDrift({
+          contractSymbols,
+          contractEpicId: opts.epicId,
+          presentSymbols: ownPresent,
+        });
 
-  // Symbol drift gate.
-  const symbolDrift = checkSymbolDrift({
-    contractSymbols,
-    contractEpicId: opts.epicId,
-    storyDiffs: opts.storyDiffs,
-  });
-
-  // Env-var gate: read .env.example and pass its variable names (or null if absent).
-  const envExampleVars = readEnvExampleVars(opts.projectRoot);
+  // ── Env-var gate: newly-read env vars must be documented in .env.example. ──
+  const envExampleVars = readEnvExampleVars(opts.treeRoot);
   const undocumentedEnvVars = checkUndocumentedEnvVars({
     epicDiff: opts.epicDiff,
     envExampleVars,
   });
 
-  // Build prior-contract map for the regression gate.
+  // ── Cross-epic regression gate: a symbol a prior delivered epic pinned that
+  // was present before this epic but is gone at head → this epic dropped a
+  // previously-shipped seam. Union all prior symbols into a single grep pair. ──
   const priorContracts = new Map<string, string[]>();
+  const priorUnion = new Set<string>();
   for (const priorEpicId of opts.deliveredEpicIds) {
-    const md = SharedContract.read(opts.projectRoot, priorEpicId);
-    if (md) {
-      priorContracts.set(priorEpicId, extractSymbolsFromContract(md));
+    if (priorEpicId === opts.epicId) continue;
+    const md = SharedContract.read(opts.contractRoot, priorEpicId);
+    if (!md) continue;
+    const syms = extractSymbolsFromContract(md);
+    if (syms.length === 0) continue;
+    priorContracts.set(priorEpicId, syms);
+    for (const s of syms) priorUnion.add(s);
+  }
+  let regressions: RegressionFinding[] = [];
+  if (priorUnion.size > 0) {
+    const union = Array.from(priorUnion);
+    const basePresent = symbolsPresentInTree(opts.treeRoot, opts.baseRef, union);
+    const headPresent = symbolsPresentInTree(opts.treeRoot, opts.headRef, union);
+    if (basePresent !== null && headPresent !== null) {
+      regressions = checkCrossEpicRegressions({ priorContracts, basePresent, headPresent });
     }
   }
 
-  // Regression gate (GateRegression.ts stub; story-077-004 provides the real implementation).
-  const regressions = checkCrossEpicRegressions({
-    epicDiff: opts.epicDiff,
-    storyDiffs: opts.storyDiffs,
-    priorContracts,
-  });
-
-  const hasFindings =
-    symbolDrift.length > 0 || undocumentedEnvVars.length > 0 || regressions.length > 0;
-  const hardFail = opts.mode === 'block' && hasFindings;
+  // Only the undocumented-env-var gate is precise enough to WITHHOLD a PR: it is
+  // an exact set-membership test (an env var the code reads that is absent from
+  // .env.example), with an ambient-var allowlist, so its findings are real. The
+  // symbol-drift and cross-epic-regression gates are heuristics over
+  // prose-heavy markdown contracts — genuinely useful as advisory signals but
+  // still carrying a non-zero false-positive rate (measured on loom's own 64
+  // contracts). They are therefore ALWAYS advisory: emitted as warnings for the
+  // operator, but never a hard-fail, regardless of mode. Escalating them to a
+  // blocker would let a mis-extracted prose word withhold a correct epic — the
+  // exact failure the review of this gate flagged. `mode` still gates whether
+  // they run at all (mode='off' skips everything above).
+  const hardFail = opts.mode === 'block' && undocumentedEnvVars.length > 0;
 
   return { symbolDrift, undocumentedEnvVars, regressions, hardFail };
 }
