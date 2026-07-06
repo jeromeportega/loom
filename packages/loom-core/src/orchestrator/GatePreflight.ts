@@ -98,6 +98,8 @@ const TS_SIGNAL    = 'tsconfig.json';
 const NEXT_CONFIGS = ['next.config.js', 'next.config.mjs', 'next.config.ts', 'next.config.cjs'];
 const GO_SIGNAL    = 'go.mod';
 const RUST_SIGNAL  = 'Cargo.toml';
+const UV_LOCK      = 'uv.lock';
+// 003: scan pyproject.toml RAW text for /\[tool\.uv\.workspace\]/m (→ --all-packages) and /\[tool\.uv\]/m (→ uv run)
 
 // ── END SIGNAL TABLES ──
 
@@ -129,10 +131,17 @@ export function resolveGatePlan(projectRoot: string, opts: GatePreflightOptions)
     return { steps: [], source: 'none', cwd: projectRoot };
   }
 
+  // uv unit-step variant rewrite (story-068-003): when uv signals are present and the
+  // unit command is `pytest`, replace the command with the appropriate uv variant.
+  const resolvedUnitCommand =
+    detected.command === 'pytest'
+      ? (detectUvCommand(detected.cwd, probes) ?? detected.command)
+      : detected.command;
+
   const unitStep: GateStep = {
     name: 'unit',
     kind: 'unit',
-    command: detected.command,
+    command: resolvedUnitCommand,
     cwd: detected.cwd,
   };
 
@@ -219,11 +228,34 @@ function detectToolchainSteps(
     });
   }
 
-  // Story 003 appends: uv unit-step variant rewrite.
   return steps;
 }
 
 // ── END TOOLCHAIN DETECTORS ──
+
+/**
+ * When the unit command resolved to `pytest`, check for uv project signals and
+ * return the appropriate uv-prefixed command, or undefined if no uv signals.
+ *
+ * Precedence: [tool.uv.workspace] wins over plain [tool.uv] / uv.lock.
+ * Detection is raw-string regex on pyproject.toml — no TOML parser.
+ */
+function detectUvCommand(cwd: string, probes: Probes): string | undefined {
+  const pyprojectRaw = probes.read(path.join(cwd, 'pyproject.toml'));
+
+  // Workspace takes precedence: every member's deps must be provisioned.
+  if (pyprojectRaw !== null && /\[tool\.uv\.workspace\]/m.test(pyprojectRaw)) {
+    return 'uv run --all-packages pytest';
+  }
+
+  const hasUvLock = probes.exists(path.join(cwd, UV_LOCK));
+  const hasUvTable = pyprojectRaw !== null && /\[tool\.uv\]/m.test(pyprojectRaw);
+  if (hasUvLock || hasUvTable) {
+    return 'uv run pytest';
+  }
+
+  return undefined;
+}
 
 /**
  * Thin adapter for out-of-epic callers (e.g. gatePreflightWarning). Returns
