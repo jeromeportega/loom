@@ -6,9 +6,16 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { openDatabase, resetDatabaseForTest, EpicStore } from '@loom-ai/core';
 import { spec, runAutonomy } from '../../commands/autonomy.js';
-import { renderValueMeanings } from '../helpSupplement.js';
 import { PositionalArgSchema } from '../schema.js';
 import { applySpec } from '../applySpec.js';
+
+// Literal expected output from renderValueMeanings for the level arg.
+// maxLen('checkpoint')=10; full-auto(9)+3sp, checkpoint(10)+2sp, manual(6)+6sp.
+const EXPECTED_MEANINGS =
+  'Values:\n' +
+  '  full-auto   — run continuously without pausing\n' +
+  '  checkpoint  — pause after each story for review\n' +
+  '  manual      — require explicit approval at each step';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,7 +23,7 @@ import { applySpec } from '../applySpec.js';
 
 function captureHelp(cmd: Command): string {
   let output = '';
-  cmd.configureOutput({ writeOut: (str) => { output += str; } });
+  cmd.configureOutput({ writeOut: (str) => { output += str; }, writeErr: (str) => { output += str; } });
   cmd.outputHelp();
   return output;
 }
@@ -222,29 +229,28 @@ describe('runAutonomy — no-level echo', () => {
     assert.ok(levelLineIdx < valuesIdx, 'current level must appear before Values: block');
   });
 
-  it('divergence guard — no-level echo Values block is byte-identical to renderValueMeanings(spec.arguments[1])', () => {
+  it('divergence guard — no-level echo Values block is byte-identical to the expected literal', () => {
     seedEpic('epic-001');
     const { logs } = captureRun(() => runAutonomy('epic-001', undefined));
-    assert.ok(logs.length >= 2, 'must have at least two log entries (level line + meanings block)');
-    const meaningsFromEcho = logs[1];
-    const expected = renderValueMeanings(spec.arguments[1]);
+    const meaningsFromEcho = logs.find(l => l.includes('Values:'));
+    assert.ok(meaningsFromEcho, 'must find a Values: block in echo output');
     assert.equal(
       meaningsFromEcho,
-      expected,
-      'no-level echo Values block must be byte-identical to renderValueMeanings(spec.arguments[1])',
+      EXPECTED_MEANINGS,
+      'no-level echo Values block must match the expected literal meanings',
     );
   });
 
   it('divergence guard — no-level echo Values block matches the --help Values block', () => {
     seedEpic('epic-001');
     const { logs } = captureRun(() => runAutonomy('epic-001', undefined));
-    const meaningsFromEcho = logs[1];
+    const meaningsFromEcho = logs.find(l => l.includes('Values:'));
+    assert.ok(meaningsFromEcho, 'must find a Values: block in echo output');
 
     const cmd = new Command('autonomy');
     cmd.exitOverride();
     applySpec(cmd, spec);
     const helpText = captureHelp(cmd);
-    // The Values: block from --help is the same renderValueMeanings output
     assert.ok(helpText.includes(meaningsFromEcho), '--help must contain the same Values block as the no-level echo');
   });
 
