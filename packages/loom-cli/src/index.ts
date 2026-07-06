@@ -37,6 +37,7 @@ import { runProject, spec as projectSpec } from './commands/project.js';
 import { runWeave, spec as weaveSpec } from './commands/weave.js';
 import { runMigrate, spec as migrateSpec } from './commands/migrate.js';
 import { runRetrieveSearch, runRetrieveRead, specSearch as retrieveSearchSpec, specRead as retrieveReadSpec } from './commands/retrieve.js';
+import { runSync, syncSpec } from './commands/sync.js';
 import { applySpec } from './describe/applySpec.js';
 import { registerDescribe } from './commands/describe.js';
 import { handleTopLevelError } from './errorHandling.js';
@@ -241,6 +242,12 @@ export function buildProgram(): Command {
   // ─── loom reconcile ─────────────────────────────────────────────────────────
   applySpec(program.command('reconcile'), reconcileSpec)
     .action((epicId: string, opts: { pr?: string }) => runReconcile(epicId, { pr: opts.pr }));
+
+  // ─── loom sync ───────────────────────────────────────────────────────────────
+  applySpec(program.command('sync'), syncSpec)
+    .action(async (epicId: string, opts: { mainBranch?: string }) => {
+      await runSync(epicId, { mainBranch: opts.mainBranch });
+    });
 
   // ─── loom publish ────────────────────────────────────────────────────────────
   applySpec(program.command('publish'), publishSpec)
