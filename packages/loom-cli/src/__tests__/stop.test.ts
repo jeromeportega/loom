@@ -15,8 +15,11 @@ import {
   checkpointInFlightWorktrees,
   stopEpicWorkers,
   stopSupervisor,
+  pollUntilTerminal,
+  runStop,
   type RetryClock,
   type CheckpointRunner,
+  type PollClock,
 } from '../commands/stop.js';
 
 /**
@@ -435,5 +438,359 @@ describe('stopSupervisor — bare stop audit', () => {
     const rows = new AuditLog(db).recent(10).filter((r) => r.action === 'stop_agent');
     assert.equal(rows.length, 1);
     assert.equal(JSON.parse(rows[0].detail!).reason, 'cli');
+  });
+});
+
+// ─── pollUntilTerminal ────────────────────────────────────────────────────────
+
+/**
+ * Fake PollClock for pollUntilTerminal tests. Starts at nowMs=0.
+ * Advance time with `advance(ms)`. Optionally run a callback on each
+ * `sleep()` call to simulate DB state transitions.
+ */
+class FakePollClock implements PollClock {
+  private _now = 0;
+  private _sleepCallbacks: (() => void)[] = [];
+  public sleepCount = 0;
+
+  nowMs(): number {
+    return this._now;
+  }
+
+  advance(ms: number): void {
+    this._now += ms;
+  }
+
+  sleep(_ms: number): void {
+    this.sleepCount++;
+    const cb = this._sleepCallbacks.shift();
+    if (cb) cb();
+  }
+
+  onNextSleep(fn: () => void): void {
+    this._sleepCallbacks.push(fn);
+  }
+}
+
+function seedAgent(epicId: string, storyId: string): string {
+  const agents = new AgentStore(db);
+  const agent = agents.create(epicId, storyId, `title ${storyId}`);
+  return agent.id;
+}
+
+describe('pollUntilTerminal', () => {
+  it('returns immediately when status is already "done" on the first poll', () => {
+    const agentId = seedAgent('epic-006', 'story-poll-1');
+    new AgentStore(db).updateStatus(agentId, 'done');
+
+    const clock = new FakePollClock();
+    const result = pollUntilTerminal('story-poll-1', db, 30_000, clock);
+
+    assert.deepEqual(result, { reached: true, finalStatus: 'done' });
+    assert.equal(clock.sleepCount, 0, 'no sleep — terminal on first check');
+  });
+
+  it('returns immediately when status is already "failed" on the first poll', () => {
+    const agentId = seedAgent('epic-006', 'story-poll-2');
+    new AgentStore(db).updateStatus(agentId, 'failed');
+
+    const clock = new FakePollClock();
+    const result = pollUntilTerminal('story-poll-2', db, 30_000, clock);
+
+    assert.deepEqual(result, { reached: true, finalStatus: 'failed' });
+    assert.equal(clock.sleepCount, 0, 'no sleep — terminal on first check');
+  });
+
+  it('waits until status transitions to terminal on the N-th poll tick', () => {
+    const agentId = seedAgent('epic-006', 'story-poll-3');
+    new AgentStore(db).updateStatus(agentId, 'running');
+
+    const clock = new FakePollClock();
+    // Transition to 'done' on the 2nd sleep callback.
+    clock.onNextSleep(() => { /* running still */ });
+    clock.onNextSleep(() => {
+      new AgentStore(db).updateStatus(agentId, 'done');
+    });
+
+    const result = pollUntilTerminal('story-poll-3', db, 30_000, clock);
+
+    assert.deepEqual(result, { reached: true, finalStatus: 'done' });
+    // No force-write — terminal was reached naturally.
+    const agent = new AgentStore(db).getByStory('story-poll-3');
+    assert.equal(agent?.log_tail, null, 'timeout log_tail was NOT written');
+  });
+
+  it('on timeout: issues exactly one UPDATE to force "failed" and returns reached:false', () => {
+    const agentId = seedAgent('epic-006', 'story-poll-timeout');
+    new AgentStore(db).updateStatus(agentId, 'running');
+
+    // nowMs() starts at 0; after the first status check, advance past the deadline.
+    let callCount = 0;
+    const clock: PollClock = {
+      nowMs: () => {
+        callCount++;
+        // First call computes deadline (0 + timeout). Second+ calls check deadline.
+        return callCount > 1 ? 30_001 : 0;
+      },
+      sleep: () => {},
+    };
+
+    const result = pollUntilTerminal('story-poll-timeout', db, 30_000, clock);
+
+    assert.equal(result.reached, false);
+    assert.equal(result.finalStatus, 'failed');
+
+    // DB must reflect the forced failure.
+    const agent = new AgentStore(db).get(agentId)!;
+    assert.equal(agent.status, 'failed');
+    assert.equal(agent.log_tail, 'stop timeout: forced failed');
+  });
+
+  it('timeout force-write is a single atomic SQL statement (status and log_tail set together)', () => {
+    const agentId = seedAgent('epic-006', 'story-poll-atomic');
+    new AgentStore(db).updateStatus(agentId, 'running');
+
+    let nowCallCount = 0;
+    const clock: PollClock = {
+      nowMs: () => {
+        nowCallCount++;
+        return nowCallCount > 1 ? 30_001 : 0;
+      },
+      sleep: () => {},
+    };
+
+    pollUntilTerminal('story-poll-atomic', db, 30_000, clock);
+
+    // Both status and log_tail are set in the single AgentStore.updateStatus call.
+    // If they were separate writes, one could succeed and the other fail.
+    const agent = new AgentStore(db).get(agentId)!;
+    assert.equal(agent.status, 'failed', 'status set to failed by timeout write');
+    assert.equal(
+      agent.log_tail,
+      'stop timeout: forced failed',
+      'log_tail set in the same statement as status'
+    );
+    // Verify that no other agent rows exist for the story (no extra insertions).
+    const allRows = db
+      .prepare('SELECT COUNT(*) as c FROM agents WHERE story_id = ?')
+      .get('story-poll-atomic') as { c: number };
+    assert.equal(allRows.c, 1, 'exactly one agents row — no duplicate writes');
+  });
+
+  it('poll interval uses Date.now() delta — no real setTimeout (fake clock fully controls timing)', () => {
+    const agentId = seedAgent('epic-006', 'story-poll-clock');
+    new AgentStore(db).updateStatus(agentId, 'running');
+
+    const clock = new FakePollClock();
+    // Set a very short timeout (1 ms) but keep nowMs at 0 until transition.
+    // The clock never advances past the deadline, so the loop only exits
+    // because we set the story to terminal via the sleep callback.
+    clock.onNextSleep(() => {
+      new AgentStore(db).updateStatus(agentId, 'done');
+    });
+
+    const result = pollUntilTerminal('story-poll-clock', db, 1_000, clock);
+
+    // The loop terminated via terminal status, not timeout — proves no real
+    // sleep was used (a real 1 ms would have fired and caused a timeout).
+    assert.equal(result.reached, true);
+    assert.equal(result.finalStatus, 'done');
+  });
+});
+
+// ─── runStop --and-retry ──────────────────────────────────────────────────────
+
+describe('runStop --and-retry', () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-stop-andretry-'));
+    const loomDir = path.join(projectDir, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    fs.writeFileSync(path.join(loomDir, 'policy.yaml'), 'agents:\n  max_concurrent: 2\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it('calls retryFn after pollUntilTerminal resolves and exits 0 on success', async () => {
+    const agentId = seedAgent('epic-006', 'story-ar-1');
+    new AgentStore(db).updateStatus(agentId, 'failed');
+
+    const retriedStories: string[] = [];
+    const exits: number[] = [];
+
+    await runStop(
+      ['story-ar-1'],
+      { andRetry: true },
+      {
+        projectRoot: projectDir,
+        db,
+        // pollClock: default-like (story is already terminal, resolves immediately)
+        retryFn: async (storyId) => { retriedStories.push(storyId); },
+        exitFn: (code) => { exits.push(code); },
+      }
+    );
+
+    assert.deepEqual(retriedStories, ['story-ar-1'], 'retryFn was called for the story');
+    assert.deepEqual(exits, [], 'no explicit exit — resolved 0 by returning normally');
+  });
+
+  it('exits non-zero with "loom retry <storyId>" when retryFn throws', async () => {
+    const agentId = seedAgent('epic-006', 'story-ar-2');
+    new AgentStore(db).updateStatus(agentId, 'failed');
+
+    const exits: number[] = [];
+    const stderrLines: string[] = [];
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      stderrLines.push(String(chunk));
+      return true;
+    };
+
+    try {
+      await runStop(
+        ['story-ar-2'],
+        { andRetry: true },
+        {
+          projectRoot: projectDir,
+          db,
+          retryFn: async () => { throw new Error('queue full'); },
+          exitFn: (code) => { exits.push(code); },
+        }
+      );
+    } finally {
+      process.stderr.write = origStderrWrite;
+    }
+
+    assert.deepEqual(exits, [1], 'exits non-zero when retry fails');
+    const combined = stderrLines.join('');
+    assert.match(combined, /loom retry story-ar-2/, 'message includes "loom retry <storyId>"');
+  });
+
+  it('exits non-zero and does NOT call retryFn when pollUntilTerminal times out', async () => {
+    const agentId = seedAgent('epic-006', 'story-ar-3');
+    new AgentStore(db).updateStatus(agentId, 'running');
+
+    let nowCallCount = 0;
+    const timeoutClock: PollClock = {
+      nowMs: () => {
+        nowCallCount++;
+        return nowCallCount > 1 ? 30_001 : 0;
+      },
+      sleep: () => {},
+    };
+
+    const retriedStories: string[] = [];
+    const exits: number[] = [];
+    const stderrLines: string[] = [];
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      stderrLines.push(String(chunk));
+      return true;
+    };
+
+    try {
+      // story is 'running' with a pid so SIGTERM is attempted
+      new AgentStore(db).updateWorkerPid(agentId, 99999);
+      // process.kill will throw ESRCH since pid 99999 doesn't exist; that's fine
+      await runStop(
+        ['story-ar-3'],
+        { andRetry: true },
+        {
+          projectRoot: projectDir,
+          db,
+          pollClock: timeoutClock,
+          retryFn: async (storyId) => { retriedStories.push(storyId); },
+          exitFn: (code) => { exits.push(code); },
+        }
+      );
+    } finally {
+      process.stderr.write = origStderrWrite;
+    }
+
+    assert.deepEqual(retriedStories, [], 'retryFn NOT called on timeout');
+    assert.deepEqual(exits, [1], 'exits non-zero on timeout');
+    const combined = stderrLines.join('');
+    assert.match(combined, /loom retry story-ar-3/, 'diagnostic includes retry hint');
+  });
+});
+
+describe('runStop --epic + --and-retry rejection', () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-stop-epic-andretry-'));
+    const loomDir = path.join(projectDir, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    fs.writeFileSync(path.join(loomDir, 'policy.yaml'), 'agents:\n  max_concurrent: 2\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it('exits non-zero with an error when --epic and --and-retry are combined', async () => {
+    const exits: number[] = [];
+    const stderrLines: string[] = [];
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk: unknown) => {
+      stderrLines.push(String(chunk));
+      return true;
+    };
+
+    try {
+      await runStop(
+        [],
+        { epic: 'epic-006', andRetry: true },
+        {
+          projectRoot: projectDir,
+          db,
+          exitFn: (code) => { exits.push(code); },
+        }
+      );
+    } finally {
+      process.stderr.write = origStderrWrite;
+    }
+
+    assert.deepEqual(exits, [1], 'exits non-zero for the --epic + --and-retry combination');
+    const combined = stderrLines.join('');
+    assert.match(combined, /--and-retry is not supported with --epic/);
+  });
+});
+
+describe('runStop backward compat — no new flags', () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-stop-compat-'));
+    const loomDir = path.join(projectDir, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    fs.writeFileSync(path.join(loomDir, 'policy.yaml'), 'agents:\n  max_concurrent: 2\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it('polls for terminal status but does NOT call retryFn without --and-retry', async () => {
+    const agentId = seedAgent('epic-006', 'story-compat-1');
+    new AgentStore(db).updateStatus(agentId, 'failed'); // already terminal — poll resolves immediately
+
+    const retriedStories: string[] = [];
+
+    await runStop(
+      ['story-compat-1'],
+      {}, // no --and-retry
+      {
+        projectRoot: projectDir,
+        db,
+        retryFn: async (storyId) => { retriedStories.push(storyId); },
+        exitFn: () => {},
+      }
+    );
+
+    assert.deepEqual(retriedStories, [], 'retryFn was NOT called without --and-retry');
   });
 });

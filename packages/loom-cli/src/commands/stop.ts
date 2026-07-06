@@ -4,8 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ControlStore, AgentStore, EpicStore, AuditLog } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
-import type { AgentRecord } from '@loom-ai/core';
+import type { AgentRecord, AgentStatus } from '@loom-ai/core';
 import type Database from 'better-sqlite3';
+import { runRetry } from './retry.js';
+import type { RetryOptions } from './retry.js';
 
 /**
  * Per-worker bound for the stop-time WIP checkpoint. Mirrors the
@@ -17,6 +19,9 @@ import type Database from 'better-sqlite3';
  * story-006-010.
  */
 const STOP_CHECKPOINT_TIMEOUT_MS = 30_000;
+
+// Mirrors AgentStore.TERMINAL_STATUSES (not exported there; kept in sync manually).
+const STOP_TERMINAL_STATUSES = new Set<AgentStatus>(['done', 'failed']);
 
 /**
  * Minimal structural mirror of the injectable `RetryClock` from the epic-006
@@ -40,6 +45,67 @@ const realClock: RetryClock = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
   clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
 };
+
+/**
+ * Injectable clock for `pollUntilTerminal`. Separates wall-clock reads and
+ * the synchronous sleep from production code so tests advance time without
+ * real delays. `nowMs()` replaces `Date.now()`; `sleep(ms)` replaces
+ * `Atomics.wait`.
+ */
+export interface PollClock {
+  nowMs(): number;
+  sleep(ms: number): void;
+}
+
+const realPollClock: PollClock = {
+  nowMs: () => Date.now(),
+  sleep: (ms: number) => {
+    const buf = new SharedArrayBuffer(4);
+    const arr = new Int32Array(buf);
+    Atomics.wait(arr, 0, 0, ms);
+  },
+};
+
+/**
+ * Synchronous poll loop that blocks until the story's DB status is in
+ * `STOP_TERMINAL_STATUSES` (`done` or `failed`), or until `timeoutMs` elapses.
+ * Uses `Date.now()` delta — no `setTimeout` — so tests advance the fake clock
+ * synchronously without real sleeps.
+ *
+ * On timeout: issues a single atomic `updateStatus('failed')` and returns
+ * `{ reached: false, finalStatus: 'failed' }`.
+ */
+export function pollUntilTerminal(
+  storyId: string,
+  db: Database.Database,
+  timeoutMs: number = 30_000,
+  pollClock: PollClock = realPollClock,
+): { reached: boolean; finalStatus: AgentStatus } {
+  const POLL_INTERVAL_MS = 250;
+  const agents = new AgentStore(db);
+  const deadline = pollClock.nowMs() + timeoutMs;
+
+  for (;;) {
+    const agent = agents.getByStory(storyId);
+    const status = agent?.status;
+    if (status !== undefined && STOP_TERMINAL_STATUSES.has(status)) {
+      return { reached: true, finalStatus: status };
+    }
+
+    const now = pollClock.nowMs();
+    if (now >= deadline) {
+      if (agent) {
+        agents.updateStatus(agent.id, 'failed', {
+          log_tail: 'stop timeout: forced failed',
+        });
+      }
+      return { reached: false, finalStatus: 'failed' };
+    }
+
+    const remaining = deadline - now;
+    pollClock.sleep(Math.min(POLL_INTERVAL_MS, remaining));
+  }
+}
 
 /**
  * Runs one worktree's WIP checkpoint, bounded by `timeoutMs`. Reuses the
@@ -169,6 +235,24 @@ export interface StopDeps {
   kill?: (pid: number) => void;
 }
 
+/**
+ * Injectable seams for `runStop`. All fields optional; defaults are the real
+ * implementations. Injected by unit tests to avoid process.exit, real
+ * databases, and real clocks.
+ */
+export interface RunStopDeps {
+  /** Override project root (defaults to process.cwd()); used by tests. */
+  projectRoot?: string;
+  /** Injected DB (skips openProjectDatabase); used by tests. */
+  db?: Database.Database;
+  /** Injectable clock for `pollUntilTerminal`; used by tests. */
+  pollClock?: PollClock;
+  /** Injectable retry function for `--and-retry`; defaults to `runRetry`. */
+  retryFn?: (storyId: string, opts: RetryOptions) => Promise<void>;
+  /** Injectable exit function; defaults to `process.exit`. */
+  exitFn?: (code: number) => void;
+}
+
 export interface StopEpicResult {
   status: 'ok' | 'not_found';
   stopped: { storyId: string; pid: number }[];
@@ -272,24 +356,39 @@ export function stopSupervisor(
   return { checkpoints };
 }
 
-export function runStop(storyIds: string[] = [], opts?: { epic?: string; reason?: string }): void {
-  const loomDir = path.join(process.cwd(), '.loom');
+export async function runStop(
+  storyIds: string[] = [],
+  opts?: { epic?: string; reason?: string; andRetry?: boolean },
+  runDeps: RunStopDeps = {},
+): Promise<void> {
+  const doExit = runDeps.exitFn ?? ((code: number) => process.exit(code));
+  const projectRoot = runDeps.projectRoot ?? process.cwd();
+  const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
-    process.exit(1);
+    doExit(1);
+    return;
   }
 
-  const projectRoot = process.cwd();
-  const db = openProjectDatabase(projectRoot);
+  const db = runDeps.db ?? openProjectDatabase(projectRoot);
   const reason = opts?.reason || 'cli';
 
   // ─── loom stop --epic <id> ───────────────────────────────────────────────
   if (opts?.epic) {
+    if (opts?.andRetry) {
+      console.error(
+        '  --and-retry is not supported with --epic.\n' +
+        '  Stop individual story IDs and retry them separately.'
+      );
+      doExit(1);
+      return;
+    }
     const epicId = opts.epic;
     const result = stopEpicWorkers(db, epicId, reason);
     if (result.status === 'not_found') {
       console.error(`  Epic "${epicId}" not found.`);
-      process.exit(1);
+      doExit(1);
+      return;
     }
     const { stopped, noop, errors } = result;
     if (stopped.length === 0) {
@@ -323,6 +422,9 @@ export function runStop(storyIds: string[] = [], opts?: { epic?: string; reason?
   const agents = new AgentStore(db);
   const audit = new AuditLog(db);
   let stopped = 0;
+  // Stories to poll for terminal status after SIGTERM (or already terminal).
+  const pollingStories: string[] = [];
+
   for (const storyId of storyIds) {
     const agent = agents.getByStory(storyId);
     if (!agent) {
@@ -330,11 +432,22 @@ export function runStop(storyIds: string[] = [], opts?: { epic?: string; reason?
       continue;
     }
     if (agent.status !== 'running') {
-      console.log(`  ${storyId}: not running (status: ${agent.status})`);
+      if (STOP_TERMINAL_STATUSES.has(agent.status as AgentStatus)) {
+        // Already terminal — no SIGTERM needed; poll resolves immediately.
+        console.log(`  ${storyId}: already terminal (status: ${agent.status})`);
+        pollingStories.push(storyId);
+      } else {
+        // Non-running, non-terminal (queued, pending, etc.) — do not attempt to
+        // stop or retry; polling would spin out and corrupt the story to 'failed'.
+        console.log(`  ${storyId}: not running (status: ${agent.status}) — stop is a no-op`);
+      }
       continue;
     }
     if (!agent.worker_pid) {
       console.log(`  ${storyId}: running, but no worker_pid recorded`);
+      if (opts?.andRetry) {
+        console.log(`  ${storyId}: --and-retry skipped (no worker_pid to wait on)`);
+      }
       continue;
     }
     try {
@@ -348,15 +461,65 @@ export function runStop(storyIds: string[] = [], opts?: { epic?: string; reason?
       });
       console.log(`  ${storyId}: SIGTERM sent (pid ${agent.worker_pid})`);
       stopped++;
+      pollingStories.push(storyId);
     } catch (err) {
-      const msg =
-        (err as NodeJS.ErrnoException).code === 'ESRCH'
-          ? 'worker process already gone'
-          : (err as Error).message;
+      const isGone = (err as NodeJS.ErrnoException).code === 'ESRCH';
+      const msg = isGone ? 'worker process already gone' : (err as Error).message;
       console.log(`  ${storyId}: could not signal — ${msg}`);
+      if (isGone) {
+        // Worker is gone; DB may still show 'running' if it crashed without cleanup.
+        // Poll until the status reaches a terminal state before proceeding.
+        if (opts?.andRetry) {
+          console.log(`  ${storyId}: worker already gone; polling for terminal status before retry…`);
+        }
+        pollingStories.push(storyId);
+      }
     }
   }
   console.log(`\n  ${stopped} of ${storyIds.length} requested worker(s) stopped.\n`);
+
+  if (pollingStories.length === 0) return;
+
+  // ─── Poll each stopped story until it reaches a terminal state (AC#1). ───
+  // This runs for every per-story stop — not only when --and-retry is set —
+  // so `loom stop <story>` blocks until the DB status is confirmed terminal.
+  // The retry enqueue below is gated separately on opts?.andRetry.
+  const pollClock = runDeps.pollClock;
+  // Default retryFn closes over the already-resolved projectRoot so the retry
+  // step opens the same logical database as the stop step.
+  const retryFn =
+    runDeps.retryFn ??
+    ((sid: string, retryOpts: RetryOptions) => runRetry(sid, { ...retryOpts, projectRoot }));
+  let exitNonZero = false;
+
+  for (const storyId of pollingStories) {
+    const pollResult = pollUntilTerminal(storyId, db, 30_000, pollClock);
+    if (!pollResult.reached) {
+      console.error(
+        `\n  ${storyId}: stop timed out — force-wrote "failed" after 30 s.` +
+        `\n  Run \`loom retry ${storyId}\` when you are ready to re-dispatch it.\n`
+      );
+      exitNonZero = true;
+      continue;
+    }
+
+    if (!opts?.andRetry) continue;
+
+    try {
+      await retryFn(storyId, { reason });
+    } catch (err) {
+      console.error(
+        `\n  ${storyId}: stop succeeded but retry enqueue failed — ` +
+        `${(err as Error).message}\n` +
+        `  Run \`loom retry ${storyId}\` to re-dispatch it.\n`
+      );
+      exitNonZero = true;
+    }
+  }
+
+  if (exitNonZero) {
+    doExit(1);
+  }
 }
 
 export const spec: CommandDescription = {
@@ -368,19 +531,21 @@ export const spec: CommandDescription = {
   ],
   options: [
     { name: '--epic', type: 'string', description: 'Stop every running worker in this epic only (leaves other epics running)', changesOutputShape: false },
+    { name: '--and-retry', type: 'boolean', description: 'After stopping, poll until terminal (30 s timeout), then enqueue a retry. Exits 0 only when both the stop and retry enqueue succeed.', changesOutputShape: false },
     { name: '--reason', type: 'string', description: 'Explanation recorded in the audit log (defaults to "cli")', changesOutputShape: false },
   ],
   output: { text: 'Confirmation of SIGTERM sent to stopped workers or stop signal raised' },
   examples: [
     { command: 'loom stop', description: 'Halt the supervisor and checkpoint in-flight worktrees' },
     { command: 'loom stop story-001-003', description: 'SIGTERM the worker for story-001-003' },
+    { command: 'loom stop story-001-003 --and-retry', description: 'Stop the worker, wait for terminal state, then enqueue a retry' },
     { command: 'loom stop --epic epic-001', description: 'Stop all workers in epic-001 only' },
     { command: 'loom stop --reason "Emergency halt"', description: 'Halt with an audit note' },
   ],
   exitCodes: [
-    { code: 0, meaning: 'Stop signal raised or SIGTERM sent' },
-    { code: 1, meaning: 'loom not initialized or epic not found' },
+    { code: 0, meaning: 'Stop signal raised or SIGTERM sent (and retry enqueued when --and-retry)' },
+    { code: 1, meaning: 'loom not initialized, epic not found, stop timeout, or retry enqueue failed' },
   ],
-  errors: ['loom is not initialized — run `loom init` first', 'Epic not found'],
+  errors: ['loom is not initialized — run `loom init` first', 'Epic not found', 'Stop timeout after 30 s — force-wrote "failed"'],
   relationships: { prerequisites: ['run'], nextSteps: ['status', 'retry', 'run'] },
 };

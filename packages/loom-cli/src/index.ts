@@ -192,8 +192,8 @@ export function buildProgram(): Command {
 
   // ─── loom retry ───────────────────────────────────────────────────────────────
   applySpec(program.command('retry'), retrySpec)
-    .action(async (storyId: string, opts: { clean?: boolean; reason?: string }) => {
-      await runRetry(storyId, { clean: opts.clean, reason: opts.reason });
+    .action(async (storyId: string, opts: { clean?: boolean; reason?: string; force?: boolean }) => {
+      await runRetry(storyId, { clean: opts.clean, reason: opts.reason, force: opts.force });
     });
 
   // ─── loom web ───────────────────────────────────────────────────────────────
@@ -216,8 +216,9 @@ export function buildProgram(): Command {
     .argument('[story-ids...]', 'Story ids to stop individually; omit to halt the whole run')
     .option('--epic <value>', 'Stop every running worker in this epic only (leaves other epics running)')
     .option('--reason <value>', 'Explanation recorded in the audit log (defaults to "cli")')
-    .action((storyIds: string[], opts: { epic?: string; reason?: string }) => {
-      runStop(storyIds, opts);
+    .option('--and-retry', 'After stopping, poll until terminal (30 s timeout), then enqueue a retry')
+    .action(async (storyIds: string[], opts: { epic?: string; reason?: string; andRetry?: boolean }) => {
+      await runStop(storyIds, opts);
     });
 
   // ─── loom guide ─────────────────────────────────────────────────────────────
