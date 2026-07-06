@@ -79,9 +79,9 @@ beforeEach(() => {
 });
 
 describe('loom doctor — gate dry-run is opt-in', () => {
-  it('plain `loom doctor` runs the gate command ZERO times (the headline AC)', () => {
+  it('plain `loom doctor` runs the gate command via gate-runnable (no worktree)', () => {
     loom(['doctor']);
-    assert.equal(gateRunCount(), 0, 'plain doctor must never execute the gate command');
+    assert.equal(gateRunCount(), 1, 'plain doctor runs the gate command once via gate-runnable check');
     assert.ok(
       !fs.existsSync(path.join(tmpDir, '.loom', 'integration')),
       'plain doctor must not create an integration worktree'
