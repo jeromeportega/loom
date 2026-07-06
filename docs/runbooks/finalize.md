@@ -1,0 +1,181 @@
+# Finalize Correctness Gates Runbook
+
+How to interpret and respond to the three correctness gates that run during `loom finalize`.
+
+---
+
+## Overview
+
+After the integration gate (build/test suite) passes, loom runs three additional semantic
+checks before opening the PR. These catch interface drift and undocumented changes that the
+build suite cannot see:
+
+| Gate | What it catches | Can block? |
+|---|---|---|
+| **contract-symbol drift** | A symbol this epic's shared contract pins is missing from the delivered code | No — advisory |
+| **undocumented env-var** | A new `process.env.VAR` reference was added without a `.env.example` entry | **Yes** |
+| **cross-epic regression** | A symbol a prior delivered epic pinned was present before this epic and is gone after | No — advisory |
+
+**Presence is tested against the integrated git tree, not against a diff.** A symbol counts as
+"present" if it appears — as a whole word — anywhere in the epic's integrated tree, including
+files this epic never touched. This is deliberate: a contract symbol is only violated when it
+is absent from the *entire delivered codebase*, not merely from one story's diff. Contracts are
+read from the real repo root (`.loom/contract/<epic-id>.md`), even under rolling integration
+where the gate runs in a separate integration worktree.
+
+### Advisory vs. blocking
+
+Only the **undocumented-env-var** gate can withhold a PR. It is an exact set-membership test
+(a var the code reads that is not in `.env.example`, minus an ambient-var allowlist), so its
+findings are trustworthy enough to block.
+
+The **contract-symbol drift** and **cross-epic regression** gates are heuristics over
+prose-heavy markdown contracts. They are genuinely useful signals but carry a non-zero
+false-positive rate, so they are **always advisory** — printed for the operator but never a
+hard-fail, regardless of policy mode. This prevents a mis-extracted prose word from blocking
+a correct epic.
+
+| `policy.agents.integration_gate` | env-var gate | drift / regression gates |
+|---|---|---|
+| `off` | skipped | skipped |
+| `warn` (default) | findings printed; PR opens | findings printed; PR opens |
+| `block` | **PR withheld** if any finding; epic → `in_progress` | findings printed; PR still opens |
+
+When the env-var gate blocks, the note printed to the operator is:
+
+```
+Finalize gates BLOCKED epic/<id>: symbol-drift=N, undoc-env-var=N, regression=N.
+Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.
+```
+
+(The `symbol-drift`/`regression` counts are shown for context, but only `undoc-env-var` drives
+the block.)
+
+---
+
+## Gate 1: Contract-symbol drift (advisory)
+
+**What it checks:** every symbol pinned in this epic's shared contract
+(`.loom/contract/<epic-id>.md`) is still present, as a whole word, somewhere in the integrated
+tree. Symbols are extracted from fenced code blocks and inline code spans only, and are further
+narrowed to "significant" identifiers — mixed-case (`PascalCase`/`camelCase`) or
+`UPPER_SNAKE`-with-underscore. Bare lowercase words (`when`, `state`) and bare all-caps prose
+labels (`OWNER`, `LAYER`) are ignored, because in a markdown contract they are almost always
+prose, not named seams.
+
+**When it fires:** a pinned identifier the Architect committed to no longer exists anywhere in
+the delivered code — usually because a story renamed or dropped it without updating the
+contract.
+
+**Audit action:** `epic_finalize_symbol_drift` with `{ count: N }`.
+
+**Diagnostic format** (emitted to stderr per finding):
+
+```
+[finalize] contract drift: pinned symbol 'MyInterface' (contract: epic-042) is not present in the integrated tree — it may have been renamed or dropped
+```
+
+**How to fix:** either update the contract to match what was actually built, or restore the
+pinned name. If the rename is intentional, update the contract (`epics/<id>/architecture.md`)
+and re-run. Because this gate is advisory, an unfixed finding never blocks the PR — but it is
+worth resolving so the contract stays honest for downstream epics.
+
+---
+
+## Gate 2: Undocumented env-var (blocking)
+
+**What it checks:** every new `process.env.VAR` reference introduced in the assembled diff has
+a corresponding entry in `.env.example` at the project root. Ambient system/CI variables
+(`PATH`, `NODE_ENV`, `CI`, `HOME`, …) are allow-listed and never flagged.
+
+**`.env.example`-absent behavior:** when `.env.example` does not exist in the project root, this
+gate is **automatically skipped** (returns zero findings). A notice is emitted:
+
+```
+[finalize] .env.example not found at <path> — skipping undocumented env-var gate
+```
+
+No action is needed unless your project deliberately documents environment variables — in that
+case, create `.env.example` at the repo root.
+
+**Audit action:** `epic_finalize_undoc_env_var` with `{ count: N }`.
+
+**Diagnostic format** (emitted to stderr per finding):
+
+```
+[finalize] undocumented env var: DATABASE_URL (src/db/client.ts) — not documented in .env.example
+```
+
+**How to fix:** add the variable to `.env.example` with a placeholder value and a comment
+explaining its purpose. Example:
+
+```bash
+# Connection string for the primary database
+DATABASE_URL=postgres://localhost:5432/myapp
+```
+
+---
+
+## Gate 3: Cross-epic regression (advisory)
+
+**What it checks:** symbols pinned in the contracts of all previously `done` epics that were
+present in the tree **before** this epic (at the epic's base commit) but are **gone after** it
+(at the integrated head). "Present-before, absent-after" attributes the removal to this epic and
+ignores churn — a symbol that was merely moved or reformatted is still present at head and is
+not flagged. In-flight (non-`done`) epics' contracts are not checked.
+
+**When it fires:** the current epic removed or renamed an identifier that a prior delivered
+epic's shared contract committed to — breaking the implicit interface between epics.
+
+**Audit action:** `epic_finalize_regression` with `{ count: N }`.
+
+**Diagnostic format** (emitted to stderr per finding):
+
+```
+[finalize] cross-epic regression: 'runFinalizeGates' (pinned by epic-077) was present before this epic but is gone from the integrated tree
+```
+
+**How to fix:** either restore the removed symbol (add a deprecation wrapper if needed) or, if
+the rename is intentional, update all consuming callers and the prior epic's contract. Advisory
+only — it never blocks — but a genuine regression is worth resolving before it reaches a
+downstream epic.
+
+---
+
+## Policy control
+
+All three gates are controlled by a single policy knob (shared with the build/test gate):
+
+```yaml
+# .loom/policy.yaml
+agents:
+  integration_gate: warn   # off | warn | block
+```
+
+- `warn` (default) — build suite runs; all gate findings are advisory; the PR always opens.
+- `block` — the build suite and the **undocumented-env-var** gate can withhold the PR; drift
+  and regression findings remain advisory.
+- `off` — skips the build/test suite AND all three finalize gates entirely.
+
+> **Note:** there is no separate knob to make drift/regression blocking. They are advisory by
+> design until the contract format is structured enough to extract symbols without
+> false positives.
+
+---
+
+## Reading the audit log
+
+After a finalize run, inspect finding counts via:
+
+```bash
+loom audit | grep 'epic_finalize_'
+```
+
+Each row records the epic id and `{ count: N }`. A count of `0` means the gate ran clean.
+
+---
+
+## Related
+
+- [Integration branch runbook](integration-branch.md) — rolling integration branch and lag warnings
+- [`docs/capabilities.md`](../capabilities.md) — full capability reference, including the Finalize correctness gates row

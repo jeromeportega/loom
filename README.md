@@ -115,7 +115,7 @@ if you need a roll-up today.
 
 | Capability | How |
 |---|---|
-| **Plan** | Analyst → PM → Architect personas turn a brief into a PRD, an architecture, and a story breakdown |
+| **Plan** | Analyst → PM → Architect personas turn a brief into a PRD, an architecture, and a story breakdown. Completion line shows `tech_notes N of M` — stories the Architect annotated with per-story implementation notes. |
 | **Build** | Parallel story agents implement, test, and merge — each isolated in its own git worktree. A single-repo epic produces one pull request; a cross-repo epic produces one pull request per repository, landed in dependency order with all-ready-or-none staging. Before any PR opens, a toolchain-aware integration gate runs on the merged tree (unit tests + tsc typecheck + Next.js / Go / Cargo build as detected). |
 | **Learn** | A curated skill library auto-injects into worker agents; new skills are extracted from successful work and gated by an eval harness (the lifecycle runs internally — no user-facing CRUD surface today) |
 | **Supervise** | `loom status`, checkpoints, and `loom stop` keep you in control; `loom status --all` spans every repo on the machine |
@@ -323,6 +323,8 @@ pytest` (or `uv run --all-packages pytest` for workspaces). Set
 command. Build steps (`next build`, `cargo build`) run full compilations and
 materially increase gate wall-clock — plan accordingly when enabling
 `integration_gate: block`.
+
+Immediately after the integration gate, three **finalize correctness gates** run: **contract-symbol drift** (every significant symbol this epic's shared contract pins is still present somewhere in the integrated tree), **undocumented env-var** (new `process.env.VAR` references are documented in `.env.example`, ambient vars allow-listed — automatically skipped when `.env.example` is absent), and **cross-epic regression** (a symbol a prior delivered epic pinned that was present before this epic is gone after it). Presence is tested against the integrated git tree, not a diff. All three respect the `policy.agents.integration_gate` knob (`off` / `warn` / `block`), but **only the precise undocumented-env-var gate can withhold a PR** under `block` — drift and regression are always advisory (printed, never blocking) because they are heuristics over prose-heavy contracts. See `docs/runbooks/finalize.md`.
 
 `policy.agents.pr_strategy` is the knob; only `per-epic` is accepted (one PR per repository for cross-repo epics; the landing order is controlled by the coordinator, not this knob).
 

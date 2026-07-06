@@ -22,6 +22,7 @@ import { resolveLoomHomePath } from '../home/resolveLoomHomePath.js';
 import { ensureLoomHome } from '../home/ensureLoomHome.js';
 import { routeArtifacts } from '../home/artifactRouter.js';
 import { commitArtifacts } from '../home/commitArtifacts.js';
+import { runFinalizeGates, type FinalizeGateMode, type FinalizeGatesResult } from './FinalizeGates.js';
 
 export interface EpicFinalizerOptions {
   projectRoot: string;
@@ -594,6 +595,76 @@ export class EpicFinalizer {
             'policy.agents.integration_gate=warn to land regardless.',
         };
       }
+    }
+
+    // ── Finalize correctness gates ────────────────────────────────────────────
+    // Run symbol-drift, undocumented-env-var, and cross-epic-regression checks.
+    // Symbol presence is tested against the integrated tree (git grep at head /
+    // base), NOT the diff; only the env-var gate reads the diff. Respects the
+    // same policy knob as the integration gate, but only the precise env-var
+    // gate can 'block' (withhold the PR) — drift and regression are advisory.
+    const epicDiff = (() => {
+      const r = gitSafe(gitRoot, ['diff', epic.base_sha!, epicBranch]);
+      return r.ok ? r.output : '';
+    })();
+    const fgMode: FinalizeGateMode = (['off', 'warn', 'block'] as const).includes(
+      this.gateMode as FinalizeGateMode
+    )
+      ? (this.gateMode as FinalizeGateMode)
+      : 'warn';
+    const gatesResult = await runFinalizeGates({
+      // Contracts are the untracked `.loom/contract/` artifacts written at plan
+      // time under the REAL repo root — not the integration worktree (gitRoot),
+      // which in rolling mode does not carry them. Presence is tested against
+      // the integrated tree at gitRoot (head = epicBranch, base = base_sha).
+      contractRoot: this.opts.projectRoot,
+      treeRoot: gitRoot,
+      headRef: epicBranch,
+      baseRef: epic.base_sha!,
+      epicId,
+      epicDiff,
+      mode: fgMode,
+      deliveredEpicIds: epicStore.listByStatus('done').map(r => r.id),
+    });
+    emitFinalizeGateDiagnostics(gatesResult);
+    audit.record({
+      agent_id: undefined,
+      action: 'epic_finalize_symbol_drift',
+      command: epicId,
+      allowed: true,
+      detail: { count: gatesResult.symbolDrift.length },
+    });
+    audit.record({
+      agent_id: undefined,
+      action: 'epic_finalize_undoc_env_var',
+      command: epicId,
+      allowed: true,
+      detail: { count: gatesResult.undocumentedEnvVars.length },
+    });
+    audit.record({
+      agent_id: undefined,
+      action: 'epic_finalize_regression',
+      command: epicId,
+      allowed: true,
+      detail: { count: gatesResult.regressions.length },
+    });
+    if (gatesResult.hardFail) {
+      epicStore.updateStatus(epicId, 'in_progress',
+        `finalize gates blocked: ${gatesResult.symbolDrift.length} drift, ` +
+        `${gatesResult.undocumentedEnvVars.length} env-var, ` +
+        `${gatesResult.regressions.length} regression finding(s)`
+      );
+      return {
+        status: 'gated',
+        conflicted,
+        merged,
+        cleaned: [],
+        note:
+          `Finalize gates BLOCKED ${epicBranch}: symbol-drift=${gatesResult.symbolDrift.length}, ` +
+          `undoc-env-var=${gatesResult.undocumentedEnvVars.length}, ` +
+          `regression=${gatesResult.regressions.length}. ` +
+          'Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.',
+      };
     }
 
     // Gate passed (or wasn't blocking). The epic is now review-ready: commit
@@ -1613,6 +1684,27 @@ function defaultOpenEpicPrsProbe(projectRoot: string): (epicBranch: string) => s
       return [];
     }
   };
+}
+
+/** Prints finalize gate findings to stderr so operators see them in the run log. */
+function emitFinalizeGateDiagnostics(result: FinalizeGatesResult): void {
+  for (const f of result.symbolDrift) {
+    console.warn(
+      `[finalize] contract drift: pinned symbol '${f.symbol}' (contract: ${f.contractEpicId}) ` +
+      `is not present in the integrated tree — it may have been renamed or dropped`
+    );
+  }
+  for (const f of result.undocumentedEnvVars) {
+    console.warn(
+      `[finalize] undocumented env var: ${f.varName} (${f.filePath}) — not documented in .env.example`
+    );
+  }
+  for (const f of result.regressions) {
+    console.warn(
+      `[finalize] cross-epic regression: '${f.symbol}' (pinned by ${f.priorEpicId}) ` +
+      `was present before this epic but is gone from the integrated tree`
+    );
+  }
 }
 
 /** Order-insensitive equality for string arrays (allowed_remotes globs). */

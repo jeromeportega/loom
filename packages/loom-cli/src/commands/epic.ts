@@ -288,7 +288,7 @@ export async function runEpic(
   } else {
     console.log(
       `  ${result.epicIds.length} epic(s), ${result.storyCount} stories ` +
-        `(${result.storiesEnriched} enriched with tech notes).`
+        `${formatTechNotesMetric(result.storiesEnriched, result.storyCount)}.`
     );
   }
   const billed = result.usage.inputTokens + result.usage.outputTokens;
@@ -322,6 +322,10 @@ export async function runEpic(
 
 function rel(root: string, abs: string): string {
   return path.relative(root, abs) || abs;
+}
+
+export function formatTechNotesMetric(storiesEnriched: number, storyCount: number): string {
+  return `tech_notes ${storiesEnriched} of ${storyCount}`;
 }
 
 /**
