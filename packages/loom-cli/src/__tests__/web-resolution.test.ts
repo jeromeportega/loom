@@ -2,8 +2,8 @@
  * Integration tests for resolveWebRoot.
  *
  * Tests exercise the resolution helper in isolation (no HTTP server started).
- * A custom ProjectRegistry path is injected via the optional second argument
- * so each test has a hermetic, seeded registry backed by a temp file.
+ * A custom ProjectRegistry path and machineConfigPath are injected so each
+ * test has a hermetic, seeded environment backed by temp files.
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,6 +15,7 @@ import { resolveWebRoot } from '../commands/web.js';
 
 let tmpDir: string;
 let registryFile: string;
+let emptyMachineConfigPath: string;
 
 function makeRegistry(): ProjectRegistry {
   return new ProjectRegistry({ path: registryFile });
@@ -30,6 +31,9 @@ function makeInitializedDir(): string {
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-web-res-'));
   registryFile = path.join(tmpDir, 'registry.json');
+  // A config file with no project_root, so tests don't fall through to real machine config.
+  emptyMachineConfigPath = path.join(tmpDir, 'config.json');
+  fs.writeFileSync(emptyMachineConfigPath, JSON.stringify({ max_global_workers: 4 }) + '\n');
 });
 
 afterEach(() => {
@@ -37,11 +41,11 @@ afterEach(() => {
 });
 
 describe('resolveWebRoot — CWD is initialized repo', () => {
-  it('returns projectRoot === cwd without consulting the registry', async () => {
+  it('returns projectRoot === cwd without consulting the registry', () => {
     const repoDir = makeInitializedDir();
-    const emptyRegistry = makeRegistry(); // registry has no entries
+    const emptyRegistry = makeRegistry();
 
-    const result = await resolveWebRoot(repoDir, emptyRegistry);
+    const result = resolveWebRoot(repoDir, emptyRegistry, emptyMachineConfigPath);
 
     assert.equal(result.projectRoot, repoDir, 'projectRoot must equal the initialized CWD');
     assert.equal(
@@ -53,13 +57,13 @@ describe('resolveWebRoot — CWD is initialized repo', () => {
 });
 
 describe('resolveWebRoot — CWD not a repo, registry has one entry', () => {
-  it('returns the registry entry root when CWD has no policy.yaml', async () => {
+  it('returns the registry entry root when CWD has no policy.yaml', () => {
     const fixtureRepo = makeInitializedDir();
     const registry = makeRegistry();
     registry.register(fixtureRepo);
 
     const nonRepoDir = fs.mkdtempSync(path.join(tmpDir, 'non-repo-'));
-    const result = await resolveWebRoot(nonRepoDir, registry);
+    const result = resolveWebRoot(nonRepoDir, registry, emptyMachineConfigPath);
 
     assert.equal(result.projectRoot, fixtureRepo, 'must return the registry fixture path');
     assert.notEqual(result.projectRoot, nonRepoDir, 'must not return the non-repo CWD');
@@ -67,14 +71,14 @@ describe('resolveWebRoot — CWD not a repo, registry has one entry', () => {
 });
 
 describe('resolveWebRoot — resolution order: CWD wins over registry', () => {
-  it('returns CWD when both CWD has policy.yaml and registry has a different path', async () => {
+  it('returns CWD when both CWD has policy.yaml and registry has a different path', () => {
     const cwdRepo = makeInitializedDir();
     const registryRepo = makeInitializedDir();
 
     const registry = makeRegistry();
     registry.register(registryRepo);
 
-    const result = await resolveWebRoot(cwdRepo, registry);
+    const result = resolveWebRoot(cwdRepo, registry, emptyMachineConfigPath);
 
     assert.equal(result.projectRoot, cwdRepo, 'CWD must win over registry when both are valid');
     assert.notEqual(result.projectRoot, registryRepo, 'registry path must not override CWD');
@@ -82,12 +86,12 @@ describe('resolveWebRoot — resolution order: CWD wins over registry', () => {
 });
 
 describe('resolveWebRoot — registry empty, CWD not a repo', () => {
-  it('throws with a clear error message', () => {
+  it('throws with a clear error message when no resolution succeeds', () => {
     const nonRepoDir = fs.mkdtempSync(path.join(tmpDir, 'empty-'));
     const emptyRegistry = makeRegistry();
 
     assert.throws(
-      () => resolveWebRoot(nonRepoDir, emptyRegistry),
+      () => resolveWebRoot(nonRepoDir, emptyRegistry, emptyMachineConfigPath),
       (err: Error) => {
         assert.ok(
           err.message.includes('not initialized') || err.message.includes('no loom project is registered'),
@@ -100,7 +104,7 @@ describe('resolveWebRoot — registry empty, CWD not a repo', () => {
 });
 
 describe('resolveWebRoot — registry first entry wins', () => {
-  it('returns the first registered path, not the second', async () => {
+  it('returns the first registered path, not the second', () => {
     const firstRepo = makeInitializedDir();
     const secondRepo = makeInitializedDir();
 
@@ -109,9 +113,48 @@ describe('resolveWebRoot — registry first entry wins', () => {
     registry.register(secondRepo);
 
     const nonRepoDir = fs.mkdtempSync(path.join(tmpDir, 'non-repo-'));
-    const result = await resolveWebRoot(nonRepoDir, registry);
+    const result = resolveWebRoot(nonRepoDir, registry, emptyMachineConfigPath);
 
     assert.equal(result.projectRoot, firstRepo, 'must return the first registered path');
     assert.notEqual(result.projectRoot, secondRepo, 'must not return the second registered path');
+  });
+});
+
+describe('resolveWebRoot — machine config resolution', () => {
+  it('returns machine config project_root when registry is empty and CWD is not a repo', () => {
+    const machineRepo = makeInitializedDir();
+    const machineConfigPath = path.join(tmpDir, 'machine-config.json');
+    fs.writeFileSync(
+      machineConfigPath,
+      JSON.stringify({ project_root: machineRepo }) + '\n'
+    );
+
+    const nonRepoDir = fs.mkdtempSync(path.join(tmpDir, 'non-repo-'));
+    const emptyRegistry = makeRegistry();
+
+    const result = resolveWebRoot(nonRepoDir, emptyRegistry, machineConfigPath);
+
+    assert.equal(result.projectRoot, machineRepo, 'must return machine config project_root');
+    assert.equal(result.loomDir, path.join(machineRepo, '.loom'), 'loomDir must be under machine config root');
+  });
+
+  it('prefers registry over machine config when registry has an entry', () => {
+    const registryRepo = makeInitializedDir();
+    const machineRepo = makeInitializedDir();
+
+    const registry = makeRegistry();
+    registry.register(registryRepo);
+
+    const machineConfigPath = path.join(tmpDir, 'machine-config.json');
+    fs.writeFileSync(
+      machineConfigPath,
+      JSON.stringify({ project_root: machineRepo }) + '\n'
+    );
+
+    const nonRepoDir = fs.mkdtempSync(path.join(tmpDir, 'non-repo-'));
+    const result = resolveWebRoot(nonRepoDir, registry, machineConfigPath);
+
+    assert.equal(result.projectRoot, registryRepo, 'registry entry must win over machine config');
+    assert.notEqual(result.projectRoot, machineRepo, 'machine config must not override registry');
   });
 });

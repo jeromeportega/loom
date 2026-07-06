@@ -4,7 +4,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createApp, newToken } from '@loom-ai/web';
-import { ProjectRegistry } from '@loom-ai/core';
+import { ProjectRegistry, defaultMachineConfigPath } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
 export interface WebOptions {
@@ -20,19 +20,36 @@ export interface WebOptions {
 }
 
 /**
+ * Reads `project_root` from the machine-level config JSON, if present.
+ * Returns null when the file is absent, unreadable, or has no valid entry.
+ */
+function readMachineConfigProjectRoot(configPath: string): string | null {
+  if (!fs.existsSync(configPath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    const root = parsed.project_root;
+    if (typeof root === 'string' && root.length > 0) return root;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolves which loom project root to serve.
  *
  * Resolution order (first match wins):
  *   1. CWD has `.loom/policy.yaml` → serve CWD.
  *   2. ProjectRegistry has at least one entry → serve the first registered project.
- *   3. Throw with a clear message.
+ *   3. Machine config has `project_root` pointing to an initialized repo → serve it.
+ *   4. Throw with a clear message.
  *
- * Accepts an optional `registry` for dependency injection in tests.
- * Machine-config loomHome is intentionally skipped per ADR-076-003.
+ * Optional parameters are for dependency injection in tests.
  */
 export function resolveWebRoot(
   cwd: string,
-  registry?: ProjectRegistry
+  registry?: ProjectRegistry,
+  machineConfigPath?: string
 ): { projectRoot: string; loomDir: string } {
   const cwdLoomDir = path.join(cwd, '.loom');
   if (fs.existsSync(path.join(cwdLoomDir, 'policy.yaml'))) {
@@ -44,6 +61,15 @@ export function resolveWebRoot(
   if (projects.length > 0) {
     const projectRoot = projects[0].root;
     return { projectRoot, loomDir: path.join(projectRoot, '.loom') };
+  }
+
+  const cfgPath = machineConfigPath ?? defaultMachineConfigPath();
+  const machineRoot = readMachineConfigProjectRoot(cfgPath);
+  if (machineRoot) {
+    const machineRootLoomDir = path.join(machineRoot, '.loom');
+    if (fs.existsSync(path.join(machineRootLoomDir, 'policy.yaml'))) {
+      return { projectRoot: machineRoot, loomDir: machineRootLoomDir };
+    }
   }
 
   throw new Error(
@@ -64,9 +90,7 @@ export async function runWeb(opts: WebOptions = {}): Promise<void> {
   } catch (err) {
     console.error((err as Error).message);
     process.exit(1);
-    return;
   }
-  console.log(`  Serving project: ${projectRoot}`);
   const db = openProjectDatabase(projectRoot);
   const token = newToken();
   const staticDir = resolveStaticDir();
