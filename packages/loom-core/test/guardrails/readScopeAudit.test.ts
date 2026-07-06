@@ -130,10 +130,15 @@ describe('readScopeAudit — checkReadScope with real audit_log (story-067-004)'
     const ctx: ReadScopeContext = { worktreeRoot, readRoot, audit };
     const engine = makeEngine();
 
-    const result = engine.checkReadScope(path.join(worktreeRoot, 'in.ts'), ctx);
+    // worktreeRoot-scoped path is allowed
+    const resultWt = engine.checkReadScope(path.join(worktreeRoot, 'in.ts'), ctx);
+    assert.equal(resultWt.allowed, true);
 
-    assert.equal(result.allowed, true);
-    assert.equal(denials().length, 0, 'no audit row on allowed read');
+    // readRoot-scoped path is also allowed (regression guard: must not be blocked)
+    const resultRr = engine.checkReadScope(path.join(readRoot, 'shared.ts'), ctx);
+    assert.equal(resultRr.allowed, true);
+
+    assert.equal(denials().length, 0, 'no audit row on allowed reads');
   });
 
   // AC5: agentId attribution — row carries ctx.agentId
@@ -193,7 +198,7 @@ describe('readScopeAudit — checkReadScopeCommand with real audit_log (story-06
     const engine = makeEngine();
 
     const outFile = path.join(outsideDir, 'secret.txt');
-    const result = engine.checkReadScopeCommand(`grep pattern ${outFile}`, ctx);
+    const result = engine.checkReadScopeCommand(`grep pattern "${outFile}"`, ctx);
 
     assert.equal(result.allowed, false);
     const rows = denials();
@@ -203,25 +208,27 @@ describe('readScopeAudit — checkReadScopeCommand with real audit_log (story-06
     assert.equal(row.action, 'read_scope_denied');
     assert.equal(row.allowed, 0);
     assert.equal(row.policy_rule, 'filesystem.allowed_read_root');
+    assert.ok(row.command, 'command column must be populated');
+    assert.ok(row.command!.includes(outFile), 'command column includes the target path');
 
     assert.ok(row.detail, 'detail column must be set');
     const detail = JSON.parse(row.detail!);
     assert.equal(detail.tool, 'grep');
-    assert.ok('requestedPath' in detail, 'detail.requestedPath present');
+    assert.equal(detail.requestedPath, outFile);
     assert.ok('resolvedPath' in detail, 'detail.resolvedPath present');
     assert.ok('reason' in detail, 'detail.reason present');
     assert.ok('worktreeRoot' in detail, 'detail.worktreeRoot present');
     assert.ok('readRoot' in detail, 'detail.readRoot present');
   });
 
-  // AC2: blocked rg writes one row
-  it('AC2 — blocked out-of-scope rg writes one read_scope_denied row', () => {
+  // AC2b: blocked rg writes one row
+  it('AC2b — blocked out-of-scope rg writes one read_scope_denied row', () => {
     const { audit, denials } = makeRealDb();
     const ctx: ReadScopeContext = { worktreeRoot, readRoot, audit };
     const engine = makeEngine();
 
     const outFile = path.join(outsideDir, 'secret.txt');
-    const result = engine.checkReadScopeCommand(`rg pattern ${outFile}`, ctx);
+    const result = engine.checkReadScopeCommand(`rg pattern "${outFile}"`, ctx);
 
     assert.equal(result.allowed, false);
     const rows = denials();
@@ -229,8 +236,13 @@ describe('readScopeAudit — checkReadScopeCommand with real audit_log (story-06
     assert.equal(rows[0].action, 'read_scope_denied');
     assert.equal(rows[0].allowed, 0);
     assert.equal(rows[0].policy_rule, 'filesystem.allowed_read_root');
+    assert.ok(rows[0].command, 'command column must be populated');
+    assert.ok(rows[0].command!.includes(outFile), 'command column includes the target path');
+    assert.ok(rows[0].detail, 'detail column must be set');
     const detail = JSON.parse(rows[0].detail!);
     assert.equal(detail.tool, 'rg');
+    assert.equal(detail.requestedPath, outFile);
+    assert.ok('resolvedPath' in detail, 'detail.resolvedPath present');
   });
 
   // AC3 (log-before-return): row present the moment checkReadScopeCommand returns
@@ -239,8 +251,10 @@ describe('readScopeAudit — checkReadScopeCommand with real audit_log (story-06
     const ctx: ReadScopeContext = { worktreeRoot, readRoot, audit };
     const engine = makeEngine();
 
+    // Use grep (verified to produce a denial in AC2) so this test isolates
+    // the log-before-return timing invariant from command-recognition correctness.
     const outFile = path.join(outsideDir, 'secret.txt');
-    const result = engine.checkReadScopeCommand(`cat ${outFile}`, ctx);
+    const result = engine.checkReadScopeCommand(`grep pattern "${outFile}"`, ctx);
     const rowCountAfterReturn = denials().length;
 
     assert.equal(result.allowed, false);
@@ -257,13 +271,21 @@ describe('readScopeAudit — checkReadScopeCommand with real audit_log (story-06
     const ctx: ReadScopeContext = { worktreeRoot, readRoot, audit };
     const engine = makeEngine();
 
-    const result = engine.checkReadScopeCommand(
-      `grep pattern ${path.join(worktreeRoot, 'in.ts')}`,
+    // worktreeRoot-scoped search is allowed
+    const resultWt = engine.checkReadScopeCommand(
+      `grep pattern "${path.join(worktreeRoot, 'in.ts')}"`,
       ctx,
     );
+    assert.equal(resultWt.allowed, true);
 
-    assert.equal(result.allowed, true);
-    assert.equal(denials().length, 0, 'no audit row on allowed search');
+    // readRoot-scoped search is also allowed (regression guard: must not be blocked)
+    const resultRr = engine.checkReadScopeCommand(
+      `grep pattern "${path.join(readRoot, 'shared.ts')}"`,
+      ctx,
+    );
+    assert.equal(resultRr.allowed, true);
+
+    assert.equal(denials().length, 0, 'no audit row on allowed searches');
   });
 
   // AC5: agentId attribution on search denial
@@ -273,7 +295,7 @@ describe('readScopeAudit — checkReadScopeCommand with real audit_log (story-06
     const ctx: ReadScopeContext = { worktreeRoot, readRoot, audit, agentId };
     const engine = makeEngine();
 
-    engine.checkReadScopeCommand(`cat ${path.join(outsideDir, 'secret.txt')}`, ctx);
+    engine.checkReadScopeCommand(`grep pattern "${path.join(outsideDir, 'secret.txt')}"`, ctx);
 
     const rows = denials();
     assert.equal(rows.length, 1);
