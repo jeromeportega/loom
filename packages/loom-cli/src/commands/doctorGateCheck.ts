@@ -98,7 +98,7 @@ function getLeadBinary(command: string): string | null {
 /** Check whether a binary is resolvable under the given PATH string using /bin/sh. */
 function binaryOnPath(binary: string, envPath: string): boolean {
   try {
-    execFileSync('/bin/sh', ['-c', `command -v ${binary}`], {
+    execFileSync('/bin/sh', ['-c', 'command -v "$1"', '--', binary], {
       env: { PATH: envPath, HOME: process.env.HOME ?? os.homedir() },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -239,8 +239,8 @@ export async function gateRunnableCheck(
   } catch (err) {
     return {
       name,
-      ok: true,
-      detail: `check skipped (${(err as Error).message})`,
+      ok: false,
+      detail: `check errored: ${(err as Error).message}`,
       required: false,
     };
   }

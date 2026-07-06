@@ -78,7 +78,7 @@ beforeEach(() => {
   fs.rmSync(marker, { force: true });
 });
 
-describe('loom doctor — gate dry-run is opt-in', () => {
+describe('loom doctor — gate execution behaviour', () => {
   it('plain `loom doctor` runs the gate command via gate-runnable (no worktree)', () => {
     loom(['doctor']);
     assert.equal(gateRunCount(), 1, 'plain doctor runs the gate command once via gate-runnable check');
