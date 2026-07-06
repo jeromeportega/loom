@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import type { CommandDescription } from './schema.js';
+import { renderHelpSupplement } from './helpSupplement.js';
 
 // Applies spec.summary -> cmd.description(), spec.arguments -> cmd.argument(),
 // spec.options -> cmd.option(). Returns cmd for chaining .action().
@@ -20,6 +21,9 @@ export function applySpec(cmd: Command, spec: CommandDescription): Command {
       cmd.option(flag, opt.description);
     }
   }
+
+  const supplement = renderHelpSupplement(spec);
+  if (supplement) cmd.addHelpText('after', '\n' + supplement);
 
   return cmd;
 }
