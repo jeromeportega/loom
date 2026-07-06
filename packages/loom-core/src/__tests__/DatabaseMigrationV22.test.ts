@@ -196,6 +196,7 @@ describe('DatabaseMigrationV22 — agents.log_bytes (story-019-001)', () => {
       attempt_class: null,
       model: null,
       log_bytes: null,
+      revise_round: 0,
     };
     assert.equal(record.log_bytes, null);
 

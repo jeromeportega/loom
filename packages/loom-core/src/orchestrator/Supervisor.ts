@@ -14,6 +14,8 @@ import {
   RecoveryStore,
   MetricsStore,
 } from '../state/index.js';
+import { FindingStore } from '../state/FindingStore.js';
+import type { ReviewFinding } from '../review/types.js';
 import type { GlobalLimiter, LimiterSlot } from '../state/index.js';
 import { withRunMetrics } from '../metrics/withRunMetrics.js';
 import { activeCollector } from '../metrics/activeCollector.js';
@@ -407,6 +409,8 @@ export class Supervisor {
   private runAutoRecoveryCount = 0;
   /** Count of clean-worktree auto-recoveries within the current run. Reset at run entry. */
   private runCleanRetryCount = 0;
+  /** Persists structured review findings per agent attempt (story-076-002). */
+  private findings: FindingStore;
 
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
@@ -491,6 +495,7 @@ export class Supervisor {
     this.lease = new LeaseStore(opts.db);
     this.signalLedger = new SignalLedger({ db: opts.db, projectRoot: opts.projectRoot });
     this.recoveryStore = new RecoveryStore(opts.db);
+    this.findings = new FindingStore(opts.db);
     this.cleanRetryService = opts.cleanRetryService ?? new StoryRetryService({
       projectRoot: opts.projectRoot,
       db: opts.db,
@@ -2790,5 +2795,39 @@ export class Supervisor {
       command: task.story.id,
       detail: { status, reason },
     });
+  }
+
+  // Runs review passes and drives block-and-revise; revise_round increments only when a revision pass actually executes.
+  async runRevisionLoop(
+    agentId: string,
+    storyId: string,
+    opts: {
+      blockAndRevise: boolean;
+      maxRevisions: number;
+      runPass: (revisionIndex: number) => Promise<ReviewFinding[]>;
+      shouldRevise?: (findings: ReviewFinding[]) => boolean;
+      revise?: (findings: ReviewFinding[], revisionIndex: number) => Promise<boolean>;
+    }
+  ): Promise<{ revisions: number }> {
+    const shouldRevise =
+      opts.shouldRevise ??
+      ((findings: ReviewFinding[]) => findings.some((f) => f.severity === 'blocker'));
+
+    let revisions = 0;
+    let findings = await opts.runPass(0);
+    this.findings.saveFindings(agentId, storyId, findings);
+
+    while (opts.blockAndRevise && revisions < opts.maxRevisions && shouldRevise(findings)) {
+      if (opts.revise) {
+        const proceeded = await opts.revise(findings, revisions + 1);
+        if (!proceeded) break;
+      }
+      this.agents.incrementReviseRound(agentId);
+      revisions++;
+      findings = await opts.runPass(revisions);
+      this.findings.saveFindings(agentId, storyId, findings);
+    }
+
+    return { revisions };
   }
 }

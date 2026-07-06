@@ -126,6 +126,12 @@ export interface AgentRecord {
    * write; NULL for rows predating v22. 0 when absent.
    */
   log_bytes: number | null;
+  /**
+   * Number of review-driven revision cycles this agent attempt has completed.
+   * Incremented by the block-and-revise loop at the start of each new revision
+   * round; 0 until the first revision begins (added in schema v30).
+   */
+  revise_round: number;
 }
 
 export interface EpicRecord {
