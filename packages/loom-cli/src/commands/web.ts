@@ -4,6 +4,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createApp, newToken } from '@loom-ai/web';
+import { ProjectRegistry } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
 export interface WebOptions {
@@ -19,17 +20,47 @@ export interface WebOptions {
 }
 
 /**
+ * Resolves which loom project root to serve.
+ *
+ * Resolution order (first match wins):
+ *   1. CWD has `.loom/policy.yaml` → serve CWD.
+ *   2. ProjectRegistry has at least one entry → serve the first registered project.
+ *   3. Throw with a clear message.
+ *
+ * Accepts an optional `registry` for dependency injection in tests.
+ */
+export async function resolveWebRoot(
+  cwd: string,
+  registry?: ProjectRegistry
+): Promise<{ projectRoot: string; loomDir: string }> {
+  const cwdLoomDir = path.join(cwd, '.loom');
+  if (fs.existsSync(path.join(cwdLoomDir, 'policy.yaml'))) {
+    return { projectRoot: cwd, loomDir: cwdLoomDir };
+  }
+
+  const reg = registry ?? new ProjectRegistry();
+  const projects = reg.list();
+  if (projects.length > 0) {
+    const projectRoot = projects[0].root;
+    return { projectRoot, loomDir: path.join(projectRoot, '.loom') };
+  }
+
+  throw new Error(
+    'loom is not initialized in this directory and no loom project is registered. Run `loom init` first.'
+  );
+}
+
+/**
  * `loom web` — launches the loom dashboard server, prints the URL with
  * a per-launch random token, and opens the browser. Binds 127.0.0.1 only;
  * the token defends against rogue same-machine processes.
  */
 export async function runWeb(opts: WebOptions = {}): Promise<void> {
-  const projectRoot = process.cwd();
-  const loomDir = path.join(projectRoot, '.loom');
-  if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
-    console.error('loom is not initialized in this directory. Run `loom init` first.');
+  const { projectRoot } = await resolveWebRoot(process.cwd()).catch((err: unknown) => {
+    console.error((err as Error).message);
     process.exit(1);
-  }
+  });
+  console.log(`  Serving project: ${projectRoot}`);
   const db = openProjectDatabase(projectRoot);
   const token = newToken();
   const staticDir = resolveStaticDir();
