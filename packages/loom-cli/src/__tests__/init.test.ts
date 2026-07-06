@@ -265,11 +265,26 @@ describe('loom guard hook (Claude Code stdin JSON protocol)', () => {
     assert.ok(result.stderr.includes('shell.wrapper_program'));
   });
 
-  it('exits 0 for non-Bash tool calls (e.g., Read, Edit)', () => {
+  it('exits 0 for Read of an in-scope file (worktree path allowed)', () => {
+    // Read/Grep/Glob are now intercepted by checkReadScope — an in-scope path
+    // (under the worktree root) must exit 0 so legitimate reads run prompt-free.
+    // Use fs.realpathSync to match the path the subprocess's process.cwd() returns
+    // (important on macOS where /tmp is a symlink to /private/var/folders/...).
+    const realTmpDir = fs.realpathSync(tmpDir);
     const result = runHookWithJson({
       hook_event_name: 'PreToolUse',
       tool_name: 'Read',
-      tool_input: { file_path: '/tmp/something' },
+      tool_input: { file_path: path.join(realTmpDir, 'README.md') },
+    });
+    assert.equal(result.status, 0);
+  });
+
+  it('exits 0 for non-intercepted tool calls (e.g., Edit)', () => {
+    // Edit/Write/other non-Read tools are not intercepted by read-scope checks.
+    const result = runHookWithJson({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Edit',
+      tool_input: { file_path: '/etc/passwd', old_string: 'root', new_string: 'hack' },
     });
     assert.equal(result.status, 0);
   });

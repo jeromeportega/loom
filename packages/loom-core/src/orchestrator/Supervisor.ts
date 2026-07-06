@@ -35,6 +35,7 @@ import {
   McpRegistry,
   materializeWorktreeMcpConfig,
 } from '../mcp/index.js';
+import { materializeWorktreeReadScope } from './WorktreeReadScope.js';
 import { enforceCursorMcpAllowlist } from './CursorMcpEnforcer.js';
 import { WorktreeManager } from './WorktreeManager.js';
 import { WorktreeJanitor } from './WorktreeJanitor.js';
@@ -262,6 +263,13 @@ export interface SupervisorOptions {
    * keep the requested value as the final record.
    */
   workerModel?: string;
+  /**
+   * Absolute path to the loom CLI entry-point script (process.argv[1] from the CLI).
+   * When set, the supervisor writes a per-worker `.claude/settings.json` with a
+   * PreToolUse hook that enforces read-scope boundaries via `loom guard hook`.
+   * Omit to skip read-scope settings materialization (e.g. in library tests).
+   */
+  loomScriptPath?: string;
   /**
    * @deprecated No longer consumed. The stall-recovery path was replaced by the
    * durable clean-retry budget (`stallRecoveryBudget` / `policy.agents.stall_recovery_budget`).
@@ -1791,6 +1799,31 @@ export class Supervisor {
         ...(enf ? { disabledServers: enf.disabled, gaps: enf.gaps } : {}),
       },
     });
+
+    // ─── Per-worker read-scope settings (epic-067, story-067-003) ───────────
+    // Writes a `.claude/settings.json` with a PreToolUse hook that routes
+    // Read/Grep/Glob/Bash through `loom guard hook` so out-of-scope reads are
+    // blocked at the OS level. Only materializes when loomScriptPath is provided
+    // (omitted in tests that don't exercise the read-scope path).
+    if (this.opts.loomScriptPath) {
+      try {
+        const loomDir = path.join(repoRoot, '.loom');
+        let readRootRel = '.';
+        try {
+          readRootRel = PolicyEngine.load(loomDir).policyData.filesystem.allowed_read_root;
+        } catch {
+          // Policy unreadable — default to repo root
+        }
+        const readRoot = path.resolve(repoRoot, readRootRel);
+        materializeWorktreeReadScope({
+          worktreePath: wt.path,
+          readRoot,
+          loomScriptPath: this.opts.loomScriptPath,
+        });
+      } catch {
+        // Never let settings materialization crash dispatch
+      }
+    }
 
     // First story dispatched for an epic captures the epic's base SHA — the
     // EpicFinalizer needs it to build `epic/<id>` from a stable point. Root
