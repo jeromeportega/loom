@@ -28,11 +28,12 @@ export interface WebOptions {
  *   3. Throw with a clear message.
  *
  * Accepts an optional `registry` for dependency injection in tests.
+ * Machine-config loomHome is intentionally skipped per ADR-076-003.
  */
-export async function resolveWebRoot(
+export function resolveWebRoot(
   cwd: string,
   registry?: ProjectRegistry
-): Promise<{ projectRoot: string; loomDir: string }> {
+): { projectRoot: string; loomDir: string } {
   const cwdLoomDir = path.join(cwd, '.loom');
   if (fs.existsSync(path.join(cwdLoomDir, 'policy.yaml'))) {
     return { projectRoot: cwd, loomDir: cwdLoomDir };
@@ -56,10 +57,15 @@ export async function resolveWebRoot(
  * the token defends against rogue same-machine processes.
  */
 export async function runWeb(opts: WebOptions = {}): Promise<void> {
-  const { projectRoot } = await resolveWebRoot(process.cwd()).catch((err: unknown) => {
+  let projectRoot: string;
+  let loomDir: string;
+  try {
+    ({ projectRoot, loomDir } = resolveWebRoot(process.cwd()));
+  } catch (err) {
     console.error((err as Error).message);
     process.exit(1);
-  });
+    return;
+  }
   console.log(`  Serving project: ${projectRoot}`);
   const db = openProjectDatabase(projectRoot);
   const token = newToken();

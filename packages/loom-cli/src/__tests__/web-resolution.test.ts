@@ -1,5 +1,5 @@
 /**
- * Integration tests for resolveWebRoot — story-076-005.
+ * Integration tests for resolveWebRoot.
  *
  * Tests exercise the resolution helper in isolation (no HTTP server started).
  * A custom ProjectRegistry path is injected via the optional second argument
@@ -82,11 +82,11 @@ describe('resolveWebRoot — resolution order: CWD wins over registry', () => {
 });
 
 describe('resolveWebRoot — registry empty, CWD not a repo', () => {
-  it('throws with a clear error message', async () => {
+  it('throws with a clear error message', () => {
     const nonRepoDir = fs.mkdtempSync(path.join(tmpDir, 'empty-'));
     const emptyRegistry = makeRegistry();
 
-    await assert.rejects(
+    assert.throws(
       () => resolveWebRoot(nonRepoDir, emptyRegistry),
       (err: Error) => {
         assert.ok(
