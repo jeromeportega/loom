@@ -616,7 +616,8 @@ function renderLoomDir(
           const retryTag = attempts > 1 ? `  (retry ${attempts - 1})` : '';
           const recoveryCount = recoveryStore.getRecoveryCount(agent.story_id);
           const recoveryTag = recoveryCount > 0 ? `  (recovered ${recoveryCount})` : '';
-          const reviseTag = (agent.revise_round ?? 0) >= 1 ? `  (revise ${agent.revise_round})` : '';
+          const reviseRound = agent.revise_round ?? 0;
+          const reviseTag = reviseRound >= 1 ? `  (revise ${reviseRound})` : '';
           const modelTag = `  [${displayModel(agent.model)}]`;
           console.log(`      ${si} ${label}${elapsed}${stallTag}${retryTag}${recoveryTag}${reviseTag}${modelTag}${pr}`);
           if (agent.branch_name && agent.status !== 'done') {
@@ -667,7 +668,8 @@ function renderLoomDir(
       const retryTag = attempts > 1 ? `  (retry ${attempts - 1})` : '';
       const recoveryCount = recoveryStore.getRecoveryCount(agent.story_id);
       const recoveryTag = recoveryCount > 0 ? `  (recovered ${recoveryCount})` : '';
-      const reviseTag = (agent.revise_round ?? 0) >= 1 ? `  (revise ${agent.revise_round})` : '';
+      const reviseRound = agent.revise_round ?? 0;
+      const reviseTag = reviseRound >= 1 ? `  (revise ${reviseRound})` : '';
       const modelTag = `  [${displayModel(agent.model)}]`;
       console.log(`\n   ${si} Story ${label}  [${agent.status}]${elapsed}${stallTag}${retryTag}${recoveryTag}${reviseTag}${modelTag}${pr}${archivedTag}`);
       if (agent.branch_name && agent.status !== 'done') {
