@@ -24,11 +24,27 @@ export class PolicyValidationError extends Error {
   }
 }
 
-/** Map each zod issue by issue.code into a PolicyIssue. Adds NO validation. */
-export function describePolicyIssues(err: ZodError): PolicyIssue[] {
+/** Walk a nested object by an array of path segments. Returns undefined when any segment is absent. */
+function lookupByPath(obj: unknown, path: (string | number)[]): unknown {
+  let cur: unknown = obj;
+  for (const seg of path) {
+    if (cur === null || typeof cur !== 'object') return undefined;
+    cur = (cur as Record<string | number, unknown>)[seg];
+  }
+  return cur;
+}
+
+/**
+ * Map each zod issue by issue.code into a PolicyIssue. Adds NO validation.
+ * @param rawInput - The pre-parse merged config tree. When provided, it is used
+ *   to look up the operator's actual value when zod omits `received` (e.g. on
+ *   too_small / too_big / refinement issues).
+ */
+export function describePolicyIssues(err: ZodError, rawInput?: unknown): PolicyIssue[] {
   return err.issues.map((issue) => {
     const fieldPath = issue.path.join('.');
-    const received = (issue as { received?: unknown }).received;
+    const rawReceived = (issue as { received?: unknown }).received;
+    const received = rawReceived !== undefined ? rawReceived : lookupByPath(rawInput, issue.path);
 
     let constraint: string;
     let hint: string;

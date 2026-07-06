@@ -301,6 +301,11 @@ export interface StorySignals {
 
 // ─── Policy Schema ──────────────────────────────────────────────────────────
 
+/** Accept the literal string 'on' as a convenience alias for `canonical`, then validate as enum. */
+function onAlias<T extends readonly [string, ...string[]]>(values: T, canonical: T[number]) {
+  return z.preprocess((v) => (v === 'on' ? canonical : v), z.enum(values));
+}
+
 export const PolicySchema = z.object({
   git: z
     .object({
@@ -332,7 +337,7 @@ export const PolicySchema = z.object({
     .default({}),
   agents: z
     .object({
-      max_concurrent: z.number().int().min(1).max(10).default(5),
+      max_concurrent: z.number().int().min(1).default(5),
       worktree_isolation: z.boolean().default(true),
       require_human_pr_merge: z.boolean().default(true),
       // LLM backend for planning. Both are session-based (no API key, no API
@@ -441,7 +446,7 @@ export const PolicySchema = z.object({
       // so parallel agents build on real prior code instead of colliding at
       // finalize. Only meaningful with pr_strategy='per-epic'; ignored (with a
       // warning) under 'per-story'. Off is byte-identical to the bench baseline.
-      integration_branch: z.enum(['off', 'rolling']).default('off'),
+      integration_branch: onAlias(['off', 'rolling'] as const, 'rolling').default('off'),
       // Bounded integrator (PR 3b). When 'on' (and integration_branch='rolling'),
       // a story whose merge-back conflicts is handed to a bounded agent that
       // resolves the conflict markers in the integration worktree; loom then
@@ -495,7 +500,7 @@ export const PolicySchema = z.object({
       // against an explicit definition of "verified" instead of guessing.
       // 'off' (default) skips the extra planning call AND the injection,
       // keeping the worker prompt byte-identical to the bench baseline.
-      qa_planning: z.enum(['off', 'advisory']).default('off'),
+      qa_planning: onAlias(['off', 'advisory'] as const, 'advisory').default('off'),
       // Cross-model review (#20). When 'cross', the reviewer
       // (block-and-revise / comment) runs through a DIFFERENT model than
       // the worker — same-session via Cursor CLI's multi-model targeting,

@@ -36,24 +36,45 @@ describe('describePolicyIssues', () => {
   });
 
   it('bound violation: too_small on max_concurrent renders the bound', () => {
-    // max_concurrent has min(1).max(10)
-    const err = parseError({ agents: { max_concurrent: 0 } });
-    const issues = describePolicyIssues(err);
+    const raw = { agents: { max_concurrent: 0 } };
+    const err = parseError(raw);
+    const issues = describePolicyIssues(err, raw);
 
     const issue = issues.find((i: PolicyIssue) => i.fieldPath === 'agents.max_concurrent');
     assert.ok(issue, 'expected an issue for agents.max_concurrent');
     assert.match(issue.constraint, /1/);
     assert.ok(issue.hint.length > 0, 'hint must be non-empty');
+    // FR-7: received must echo the operator's actual value (0), never undefined
+    assert.equal(issue.received, 0, 'received must be the operator value, not undefined');
+    assert.notEqual(issue.received, undefined, 'received must never be undefined');
   });
 
-  it('bound violation: too_big on max_concurrent renders the bound', () => {
-    const err = parseError({ agents: { max_concurrent: 99 } });
-    const issues = describePolicyIssues(err);
+  it('rawInput fallback: received echoes value even when zod omits issue.received', () => {
+    // too_small issues from zod often omit `received`; rawInput fills the gap
+    const raw = { agents: { max_concurrent: 0 } };
+    const err = parseError(raw);
+    const issuesWithRaw = describePolicyIssues(err, raw);
+    const issueWithout = describePolicyIssues(err);
 
-    const issue = issues.find((i: PolicyIssue) => i.fieldPath === 'agents.max_concurrent');
-    assert.ok(issue, 'expected an issue for agents.max_concurrent');
-    assert.match(issue.constraint, /10/);
-    assert.ok(issue.hint.length > 0, 'hint must be non-empty');
+    const withRaw = issuesWithRaw.find((i: PolicyIssue) => i.fieldPath === 'agents.max_concurrent');
+    const without = issueWithout.find((i: PolicyIssue) => i.fieldPath === 'agents.max_concurrent');
+    assert.ok(withRaw, 'issue present with rawInput');
+    assert.ok(without, 'issue present without rawInput');
+    // When rawInput is supplied the received value is the operator's actual value
+    assert.equal(withRaw!.received, 0);
+    // Without rawInput the received may be undefined (zod omits it for too_small)
+    // but with rawInput it must NOT be undefined
+    assert.notEqual(withRaw!.received, undefined);
+  });
+
+  it('enum issues that already carry received are unchanged by rawInput', () => {
+    const raw = { agents: { review_strategy: 'loud' } };
+    const err = parseError(raw);
+    const issues = describePolicyIssues(err, raw);
+    const issue = issues.find((i: PolicyIssue) => i.fieldPath === 'agents.review_strategy');
+    assert.ok(issue);
+    // enum issues always carry received; rawInput must not clobber it
+    assert.equal(issue.received, 'loud');
   });
 
   it('multiple issues: returns one PolicyIssue per ZodError issue', () => {

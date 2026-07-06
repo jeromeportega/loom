@@ -84,7 +84,7 @@ export function resolveEffectiveConfig(opts: ResolveOptions): EffectiveConfig {
       // Annotate each issue's hint with the contributing layer from the provenance
       // map so operators know whether to fix policy.yaml, team-config.yaml, or a
       // LOOM_* env variable — not just that the merged config is invalid.
-      const issues = describePolicyIssues(err).map(issue => {
+      const issues = describePolicyIssues(err, merged).map(issue => {
         const layer = provenance[issue.fieldPath];
         if (layer && layer !== 'repo') {
           return {
