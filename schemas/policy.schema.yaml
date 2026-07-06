@@ -283,6 +283,31 @@ properties:
           auto-detects (npm test / make test / pytest). loom never auto-installs
           dependencies, so if the suite needs a fresh install encode it here,
           e.g. "npm ci && npm test".
+      test_commands:
+        type: array
+        description: |
+          Per-path test commands for polyglot repos. Each entry runs only when
+          at least one changed file matches one of the entry's glob patterns.
+          Ignored when test_command is set (test_command takes precedence).
+        items:
+          type: object
+          required: [name, command, paths]
+          properties:
+            name:
+              type: string
+              minLength: 1
+              description: "Human label, surfaced in gate output and audit log"
+            command:
+              type: string
+              minLength: 1
+              description: "Shell command executed at project root (shell: true)"
+            paths:
+              type: array
+              minItems: 1
+              items:
+                type: string
+                minLength: 1
+              description: "Non-empty minimatch globs matched against repo-root-relative changed paths"
       # NOTE: integration_gate_timeout_minutes was removed from the public
       # surface in v0.4 (engine-tuning knob, no operator calibration data);
       # it's hardcoded internally. Set test_command if you need to bound the

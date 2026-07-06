@@ -307,6 +307,18 @@ export interface StorySignals {
 
 // ─── Policy Schema ──────────────────────────────────────────────────────────
 
+export interface TestCommandEntry {
+  name:    string;
+  command: string;
+  paths:   string[];
+}
+
+const TestCommandEntrySchema = z.object({
+  name:    z.string().min(1),
+  command: z.string().min(1),
+  paths:   z.array(z.string().min(1)).min(1),
+});
+
 /** Accept the literal string 'on' as a convenience alias for `canonical`, then validate as enum. */
 function onAlias<T extends readonly [string, ...string[]]>(values: T, canonical: T[number]) {
   return z.preprocess((v) => (v === 'on' ? canonical : v), z.enum(values));
@@ -444,6 +456,10 @@ export const PolicySchema = z.object({
       // make test / pytest). loom never auto-installs deps, so if the suite
       // needs a fresh install encode it here, e.g. "npm ci && npm test".
       test_command: z.string().optional(),
+      // Per-path test commands for polyglot repos. Each entry selects via
+      // minimatch globs over changed file paths; only matching entries run.
+      // Ignored when test_command is set (test_command takes precedence).
+      test_commands: z.array(TestCommandEntrySchema).optional(),
       // Rolling integration branch (PR 3a of the epic-quality plan). 'off'
       // (default) keeps today's topology: workers branch from their first
       // dependency and the EpicFinalizer big-bang-merges every story branch at
