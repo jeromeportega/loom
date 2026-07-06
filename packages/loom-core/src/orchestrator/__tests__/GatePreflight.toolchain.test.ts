@@ -13,12 +13,20 @@ const REAL_PKG = JSON.stringify({ scripts: { test: 'node --test' } });
 const NEXT_PKG = JSON.stringify({ scripts: { test: 'node --test' }, dependencies: { next: '14.0.0' } });
 const NEXT_DEV_PKG = JSON.stringify({ scripts: { test: 'node --test' }, devDependencies: { next: '14.0.0' } });
 
-/** Probe factory backed by a basename→content map; no disk involved. */
-function fakeFs(files: Record<string, string>): GatePreflightOptions {
-  const byName = (p: string): string | undefined => files[path.basename(p)];
+/**
+ * Probe factory keyed on full absolute paths (root + relative name) so that
+ * two different directories containing the same filename return different
+ * content — avoids the fragile basename-only lookup that silently returns
+ * wrong results for monorepo layouts.
+ */
+function fakeFs(root: string, files: Record<string, string>): GatePreflightOptions {
+  const map: Record<string, string> = {};
+  for (const [k, v] of Object.entries(files)) {
+    map[path.join(root, k)] = v;
+  }
   return {
-    fileExists: (p) => byName(p) !== undefined,
-    fileReader: (p) => byName(p) ?? null,
+    fileExists: (p) => p in map,
+    fileReader: (p) => map[p] ?? null,
   };
 }
 
@@ -32,7 +40,7 @@ function findStep(steps: GateStep[], name: string): GateStep | undefined {
 
 describe('toolchain detection — typecheck:tsc', () => {
   it('tsconfig.json present → appends typecheck:tsc with correct command and cwd', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({ 'package.json': REAL_PKG, 'tsconfig.json': '{}' }));
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': REAL_PKG, 'tsconfig.json': '{}' }));
     const step = findStep(plan.steps, 'typecheck:tsc');
     assert.ok(step, 'typecheck:tsc step should be present');
     assert.equal(step.kind, 'typecheck');
@@ -41,7 +49,7 @@ describe('toolchain detection — typecheck:tsc', () => {
   });
 
   it('no tsconfig.json → no typecheck:tsc step', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({ 'package.json': REAL_PKG }));
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': REAL_PKG }));
     assert.equal(findStep(plan.steps, 'typecheck:tsc'), undefined);
   });
 });
@@ -51,7 +59,7 @@ describe('toolchain detection — typecheck:tsc', () => {
 describe('toolchain detection — build:next via config file', () => {
   for (const cfg of ['next.config.js', 'next.config.mjs', 'next.config.ts', 'next.config.cjs']) {
     it(`${cfg} present → appends build:next`, () => {
-      const plan = resolveGatePlan('/repo', fakeFs({ 'package.json': REAL_PKG, [cfg]: 'module.exports = {}' }));
+      const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': REAL_PKG, [cfg]: 'module.exports = {}' }));
       const step = findStep(plan.steps, 'build:next');
       assert.ok(step, `build:next step should be present when ${cfg} exists`);
       assert.equal(step.kind, 'build');
@@ -63,7 +71,7 @@ describe('toolchain detection — build:next via config file', () => {
 
 describe('toolchain detection — build:next via package.json dependency', () => {
   it('next in dependencies → appends build:next even without next.config', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({ 'package.json': NEXT_PKG }));
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': NEXT_PKG }));
     const step = findStep(plan.steps, 'build:next');
     assert.ok(step, 'build:next should be present when next is in dependencies');
     assert.equal(step.command, 'npx --no-install next build');
@@ -71,13 +79,13 @@ describe('toolchain detection — build:next via package.json dependency', () =>
   });
 
   it('next in devDependencies → appends build:next', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({ 'package.json': NEXT_DEV_PKG }));
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': NEXT_DEV_PKG }));
     const step = findStep(plan.steps, 'build:next');
     assert.ok(step, 'build:next should be present when next is in devDependencies');
   });
 
   it('package.json without next dependency and no next.config → no build:next', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({ 'package.json': REAL_PKG }));
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': REAL_PKG }));
     assert.equal(findStep(plan.steps, 'build:next'), undefined);
   });
 });
@@ -86,7 +94,7 @@ describe('toolchain detection — build:next via package.json dependency', () =>
 
 describe('toolchain detection — build:go', () => {
   it('go.mod present → appends build:go with correct command and cwd', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({ Makefile: 'build:\n\tgo build\ntest:\n\tgo test ./...\n', 'go.mod': 'module example\n' }));
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { Makefile: 'build:\n\tgo build\ntest:\n\tgo test ./...\n', 'go.mod': 'module example\n' }));
     const step = findStep(plan.steps, 'build:go');
     assert.ok(step, 'build:go step should be present');
     assert.equal(step.kind, 'build');
@@ -95,7 +103,7 @@ describe('toolchain detection — build:go', () => {
   });
 
   it('no go.mod → no build:go step', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({ 'package.json': REAL_PKG }));
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': REAL_PKG }));
     assert.equal(findStep(plan.steps, 'build:go'), undefined);
   });
 });
@@ -104,16 +112,16 @@ describe('toolchain detection — build:go', () => {
 
 describe('toolchain detection — build:cargo', () => {
   it('Cargo.toml present → appends build:cargo with correct command and cwd', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({ Makefile: 'test:\n\tcargo test\n', 'Cargo.toml': '[package]\nname = "foo"\n' }));
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { Makefile: 'test:\n\tcargo test\n', 'Cargo.toml': '[package]\nname = "foo"\n' }));
     const step = findStep(plan.steps, 'build:cargo');
     assert.ok(step, 'build:cargo step should be present');
     assert.equal(step.kind, 'build');
-    assert.equal(step.command, 'cargo build');
+    assert.equal(step.command, 'cargo build --workspace');
     assert.equal(step.cwd, plan.cwd);
   });
 
   it('no Cargo.toml → no build:cargo step', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({ 'package.json': REAL_PKG }));
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': REAL_PKG }));
     assert.equal(findStep(plan.steps, 'build:cargo'), undefined);
   });
 });
@@ -122,7 +130,7 @@ describe('toolchain detection — build:cargo', () => {
 
 describe('toolchain detection — additive multi-toolchain (FR-3)', () => {
   it('TS + Go → steps = [unit, typecheck:tsc, build:go]', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', {
       'package.json': REAL_PKG,
       'tsconfig.json': '{}',
       'go.mod': 'module example\n',
@@ -133,7 +141,7 @@ describe('toolchain detection — additive multi-toolchain (FR-3)', () => {
   });
 
   it('all four toolchains → fixed order: unit, typecheck:tsc, build:next, build:go, build:cargo', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', {
       'package.json': REAL_PKG,
       'tsconfig.json': '{}',
       'next.config.js': 'module.exports = {}',
@@ -145,7 +153,7 @@ describe('toolchain detection — additive multi-toolchain (FR-3)', () => {
   });
 
   it('TS + Next + Go + Rust → all four toolchain steps appended independently', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', {
       'package.json': REAL_PKG,
       'tsconfig.json': '{}',
       'next.config.mjs': 'export default {}',
@@ -160,7 +168,7 @@ describe('toolchain detection — additive multi-toolchain (FR-3)', () => {
 
 describe('toolchain detection — no signals (negative)', () => {
   it('npm package with no toolchain signals → only the unit step', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({ 'package.json': REAL_PKG }));
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', { 'package.json': REAL_PKG }));
     assert.equal(plan.steps.length, 1);
     assert.equal(plan.steps[0].name, 'unit');
   });
@@ -191,6 +199,7 @@ describe('toolchain detection — probe injection (FR-1)', () => {
     };
     resolveGatePlan('/repo', opts);
     assert.ok(checkedPaths.includes('tsconfig.json'), 'tsconfig.json must be probed via injected fileExists');
+    assert.ok(checkedPaths.some((p) => p.startsWith('next.config.')), 'next.config.* must be probed via injected fileExists');
     assert.ok(checkedPaths.includes('go.mod'), 'go.mod must be probed via injected fileExists');
     assert.ok(checkedPaths.includes('Cargo.toml'), 'Cargo.toml must be probed via injected fileExists');
   });
@@ -198,7 +207,7 @@ describe('toolchain detection — probe injection (FR-1)', () => {
   it('detection never touches real disk when probes are injected', () => {
     // If probes were ignored and real fs was used, no tsconfig.json would be
     // found at '/nonexistent-root' — the injected probe forces detection.
-    const plan = resolveGatePlan('/nonexistent-root', fakeFs({
+    const plan = resolveGatePlan('/nonexistent-root', fakeFs('/nonexistent-root', {
       'package.json': REAL_PKG,
       'tsconfig.json': '{}',
       'go.mod': 'module example\n',
@@ -213,7 +222,7 @@ describe('toolchain detection — probe injection (FR-1)', () => {
 
 describe('toolchain detection — cwd anchoring (FR-5)', () => {
   it('unit step cwd equals plan.cwd', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', {
       'package.json': REAL_PKG,
       'tsconfig.json': '{}',
     }));
@@ -223,7 +232,7 @@ describe('toolchain detection — cwd anchoring (FR-5)', () => {
   });
 
   it('all toolchain steps cwd equals plan.cwd (project root)', () => {
-    const plan = resolveGatePlan('/repo', fakeFs({
+    const plan = resolveGatePlan('/repo', fakeFs('/repo', {
       'package.json': REAL_PKG,
       'tsconfig.json': '{}',
       'next.config.js': 'module.exports = {}',

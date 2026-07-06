@@ -208,11 +208,13 @@ function detectToolchainSteps(
   }
 
   // build:cargo — Cargo.toml present
+  // --workspace covers both single-package crates and virtual-manifest workspace roots,
+  // where bare `cargo build` errors with "manifest path does not describe a package".
   if (probes.exists(path.join(projectRoot, RUST_SIGNAL))) {
     steps.push({
       name: 'build:cargo',
       kind: 'build',
-      command: 'cargo build',
+      command: 'cargo build --workspace',
       cwd: projectRoot,
     });
   }
