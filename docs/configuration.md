@@ -244,14 +244,14 @@ policy.agents.max_concurrent (N) exceeds the recommended ceiling of M for this m
 
 The advisory is informational only — the configured value is **never
 modified**. To silence it, lower `max_concurrent` to the recommended
-threshold in your `policy.yaml`. The threshold is computed at runtime from
+threshold in your `.loom/policy.yaml`. The threshold is computed at runtime from
 `os.cpus().length` and may differ between machines.
 
 ---
 
 ## Policy validation error format
 
-When `policy.yaml` fails Zod validation (at `PolicyEngine.load` time or
+When `.loom/policy.yaml` fails Zod validation (at `PolicyEngine.load` time or
 during `loom doctor`), each invalid field is reported as a four-line block:
 
 ```
