@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { SharedContract } from './SharedContract.js';
 import { checkUndocumentedEnvVars } from './GateEnvVar.js';
 import { checkCrossEpicRegressions } from './GateRegression.js';
@@ -177,10 +179,11 @@ export async function runFinalizeGates(opts: {
     storyDiffs: opts.storyDiffs,
   });
 
-  // Env-var gate (GateEnvVar.ts stub; story-077-003 provides the real implementation).
+  // Env-var gate: read .env.example and pass its variable names (or null if absent).
+  const envExampleVars = readEnvExampleVars(opts.projectRoot);
   const undocumentedEnvVars = checkUndocumentedEnvVars({
     epicDiff: opts.epicDiff,
-    envExampleVars: null,
+    envExampleVars,
   });
 
   // Build prior-contract map for the regression gate.
@@ -204,4 +207,29 @@ export async function runFinalizeGates(opts: {
   const hardFail = opts.mode === 'block' && hasFindings;
 
   return { symbolDrift, undocumentedEnvVars, regressions, hardFail };
+}
+
+/**
+ * Reads .env.example from projectRoot and returns the set of documented
+ * variable names. Returns null when the file is absent (caller emits notice).
+ */
+export function readEnvExampleVars(projectRoot: string): Set<string> | null {
+  const envExamplePath = path.join(projectRoot, '.env.example');
+  let content: string;
+  try {
+    content = fs.readFileSync(envExamplePath, 'utf8');
+  } catch {
+    console.warn(`[finalize] .env.example not found at ${envExamplePath} — skipping undocumented env-var gate`);
+    return null;
+  }
+
+  const vars = new Set<string>();
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    const name = eqIdx >= 0 ? trimmed.slice(0, eqIdx).trim() : trimmed;
+    if (name) vars.add(name);
+  }
+  return vars;
 }
