@@ -52,6 +52,8 @@ Exits 0 only when both the stop and the retry enqueue succeed. Exits 1 on timeou
 
 > **`--and-retry` is not supported with `--epic`.** Stop individual story IDs and retry them separately.
 
+> **Multiple story IDs with `--and-retry`:** when multiple story IDs are supplied, loom stops and retries each one in sequence — stop → poll → retry for the first ID, then the same for the next, and so on. All stories are attempted regardless of individual failures; the command exits 1 at the end if any stop timed out or retry enqueue failed.
+
 ---
 
 ## Retrying a failed or blocked story
@@ -103,6 +105,42 @@ loom audit --story <story-id>
 
 ---
 
+## Stalled planner recovery
+
+`loom status` emits a `⚠` hint when an epic has been in `planning` status for longer than `policy.agents.stale_planning_minutes` minutes (default `30`) with no update. This indicates the planner may have stalled.
+
+In `loom status --json`:
+
+```json
+{
+  "stale_planning": {
+    "idle_minutes": 45,
+    "threshold_minutes": 30,
+    "warn": true
+  }
+}
+```
+
+Check whether the planner process is still running (`loom status --watch`). If it has stalled:
+
+```bash
+loom stop
+loom reject <epic-id> --reason "stale planner"
+loom weave "<brief>"
+```
+
+`loom reject` accepts epics in both `planned` and `planning` status — you can reject a stalled planner without waiting for planning to complete.
+
+To tune the threshold:
+
+```yaml
+# .loom/policy.yaml
+agents:
+  stale_planning_minutes: 60   # allow 60 minutes before warning
+```
+
+---
+
 ## Common recovery patterns
 
 ### Story failed with no obvious error
@@ -121,7 +159,7 @@ loom retry story-001-003 --clean
 
 ```bash
 loom stop story-001-003
-# wait for the synchronous poll to confirm terminal
+# stop blocks until the story is confirmed terminal (up to 30 s)
 loom retry story-001-003
 ```
 

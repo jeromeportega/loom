@@ -75,39 +75,7 @@ agents:
 
 Set higher for repos with frequent `main` commits (e.g. a fast-moving monorepo) to reduce noise.
 
----
-
-## Stale-planning hint
-
-`loom status` emits a `⚠` hint when an epic has been in `planning` status for longer than `policy.agents.stale_planning_minutes` minutes (default `30`) with no update. This indicates the planner may have stalled.
-
-In `loom status --json`:
-
-```json
-{
-  "stale_planning": {
-    "idle_minutes": 45,
-    "threshold_minutes": 30,
-    "warn": true
-  }
-}
-```
-
-### Responding to stale planning
-
-Check whether the planner process is still running (`loom status --watch`). If it has stalled:
-
-1. `loom stop` to halt the run.
-2. `loom reject <epic-id> --reason "stale planner"` — rejects the epic even while in `planning` status.
-3. Resubmit with `loom weave "<brief>"`.
-
-### Tuning the threshold
-
-```yaml
-# .loom/policy.yaml
-agents:
-  stale_planning_minutes: 60   # allow 60 minutes before warning
-```
+> **Planning-phase stalls:** if `loom status` shows a `⚠ stale-planning` hint (planner idle in `planning` status), that is unrelated to the integration branch — see the [stop-and-retry runbook](stop-retry.md#stalled-planner-recovery) for guidance.
 
 ---
 
