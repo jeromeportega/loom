@@ -37,6 +37,7 @@ import { runProject, spec as projectSpec } from './commands/project.js';
 import { runWeave, spec as weaveSpec } from './commands/weave.js';
 import { runMigrate, spec as migrateSpec } from './commands/migrate.js';
 import { runRetrieveSearch, runRetrieveRead, specSearch as retrieveSearchSpec, specRead as retrieveReadSpec } from './commands/retrieve.js';
+import { runSync, syncSpec } from './commands/sync.js';
 import { applySpec } from './describe/applySpec.js';
 import { registerDescribe } from './commands/describe.js';
 import { handleTopLevelError } from './errorHandling.js';
@@ -191,8 +192,8 @@ export function buildProgram(): Command {
 
   // ─── loom retry ───────────────────────────────────────────────────────────────
   applySpec(program.command('retry'), retrySpec)
-    .action(async (storyId: string, opts: { clean?: boolean; reason?: string }) => {
-      await runRetry(storyId, { clean: opts.clean, reason: opts.reason });
+    .action(async (storyId: string, opts: { clean?: boolean; reason?: string; force?: boolean }) => {
+      await runRetry(storyId, { clean: opts.clean, reason: opts.reason, force: opts.force });
     });
 
   // ─── loom web ───────────────────────────────────────────────────────────────
@@ -215,8 +216,9 @@ export function buildProgram(): Command {
     .argument('[story-ids...]', 'Story ids to stop individually; omit to halt the whole run')
     .option('--epic <value>', 'Stop every running worker in this epic only (leaves other epics running)')
     .option('--reason <value>', 'Explanation recorded in the audit log (defaults to "cli")')
-    .action((storyIds: string[], opts: { epic?: string; reason?: string }) => {
-      runStop(storyIds, opts);
+    .option('--and-retry', 'After stopping, poll until terminal (30 s timeout), then enqueue a retry')
+    .action(async (storyIds: string[], opts: { epic?: string; reason?: string; andRetry?: boolean }) => {
+      await runStop(storyIds, opts);
     });
 
   // ─── loom guide ─────────────────────────────────────────────────────────────
@@ -241,6 +243,12 @@ export function buildProgram(): Command {
   // ─── loom reconcile ─────────────────────────────────────────────────────────
   applySpec(program.command('reconcile'), reconcileSpec)
     .action((epicId: string, opts: { pr?: string }) => runReconcile(epicId, { pr: opts.pr }));
+
+  // ─── loom sync ───────────────────────────────────────────────────────────────
+  applySpec(program.command('sync'), syncSpec)
+    .action(async (epicId: string, opts: { mainBranch?: string }) => {
+      await runSync(epicId, { mainBranch: opts.mainBranch });
+    });
 
   // ─── loom publish ────────────────────────────────────────────────────────────
   applySpec(program.command('publish'), publishSpec)

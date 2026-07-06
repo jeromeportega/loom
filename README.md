@@ -357,7 +357,9 @@ stop / per-worker kill. No external services — local only.
 | `loom approve [epic-id]` / `loom reject <epic-id>` | The human gate |
 | `loom run [--checkpoint story\|epic] [--verbose]` | Dispatch story agents; automatically resumes any `finalizing`/`publish_pending` epic it encounters before dispatching new work; `--verbose` streams live worker stdout/stderr |
 | `loom finalize --resume <epic-id>` | Manually resume a stranded `finalizing` or `publish_pending` epic to `done` without redoing merged work (copy-paste from `loom run`'s skip message) |
-| `loom stop` | Halt a run gracefully |
+| `loom stop [<story-ids>] [--and-retry]` | Halt a run gracefully (no story args) or SIGTERM a specific worker (`<story-id>`); `--and-retry` stops a story then immediately re-queues it (requires a story ID; not compatible with `--epic`) |
+| `loom retry <story-id> [--clean] [--force]` | Re-dispatch a failed/blocked story; `--clean` tears down the worktree for a fresh start; `--force` bypasses the running-state guard |
+| `loom sync <epic-id> [--main-branch <name>]` | Merge latest main into an epic's rolling integration branch on demand |
 | `loom status [--watch] [--epic <id>] [--all]` | Epic and agent status; `--all` spans every repo |
 | `loom publish <epic-id>` | Drive a `publish_pending` or `finalizing` epic to `done`; opens a PR from the pushed ref (`publish_pending`) or resumes the full finalize sequence (`finalizing`) |
 | `loom reconcile <epic-id> [--pr <url>]` | Reconcile a stranded `in_progress` (already merged) or `finalizing` epic to `done` |

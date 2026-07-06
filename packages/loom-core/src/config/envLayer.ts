@@ -215,6 +215,13 @@ export function loadEnvLayer(env: NodeJS.ProcessEnv): ConfigLayer {
     // guard-check JSON and the alias-advisory assertions).
     if (key === 'LOOM_HOME') continue;
 
+    // LOOM_WORKER_CONTEXT is a private runtime marker set by BaseCliWorker on
+    // worker subprocesses so the guard hook can distinguish operator from worker
+    // sessions. It is intentionally absent from policy schema (ADR-004). Skip it
+    // silently — it must never surface as a spurious "unknown config key" warning
+    // in worker stderr (which is machine-readable in stream-json mode).
+    if (key === 'LOOM_WORKER_CONTEXT') continue;
+
     if (!key.startsWith(ENV_PREFIX)) continue;
 
     const suffix = key.slice(ENV_PREFIX.length).toLowerCase();

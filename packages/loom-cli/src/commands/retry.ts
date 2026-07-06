@@ -22,6 +22,20 @@ export interface RetryOptions {
   clean?: boolean;
   /** Optional explanation recorded with the retry in the audit log. */
   reason?: string;
+  /**
+   * Bypass the running-state guard. Normally `prepareRetry` rejects a story
+   * that is still `running`; setting this to `true` skips that check. Used by
+   * `loom stop --and-retry` after the stop has been confirmed terminal, and
+   * directly via `loom retry --force`.
+   */
+  force?: boolean;
+  /**
+   * Override the project root used by `runRetry` when opening the database and
+   * resolving the loom directory. Defaults to `process.cwd()`. Injected by
+   * `loom stop --and-retry` so the retry step uses the same project root as the
+   * stop step rather than opening a second DB from the real cwd.
+   */
+  projectRoot?: string;
 }
 
 /**
@@ -114,7 +128,7 @@ export function prepareRetry(
   if (!agent) {
     return base({ status: 'error', message: `No agent on record for story "${storyId}".` });
   }
-  if (agent.status === 'running') {
+  if (agent.status === 'running' && !opts.force) {
     return base({
       status: 'rejected',
       epicId: agent.epic_id,
@@ -213,7 +227,7 @@ export function prepareRetry(
  * auto-retry budget are reset.
  */
 export async function runRetry(storyId: string, opts: RetryOptions = {}): Promise<void> {
-  const projectRoot = process.cwd();
+  const projectRoot = opts.projectRoot ?? process.cwd();
   const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
@@ -254,12 +268,14 @@ export const spec: CommandDescription = {
   ],
   options: [
     { name: '--clean', type: 'boolean', description: 'Tear down the worktree and branch so the story re-runs from scratch instead of resuming', changesOutputShape: false },
+    { name: '--force', type: 'boolean', description: 'Bypass the running-state guard and enqueue a retry even if the story is still marked running', changesOutputShape: false },
     { name: '--reason', type: 'string', description: 'Explanation recorded with the retry in the audit log', changesOutputShape: false },
   ],
   output: { text: 'Confirmation of the retry dispatch and the story branch' },
   examples: [
     { command: 'loom retry story-001-003', description: 'Retry a failed story, resuming from the last worktree state' },
     { command: 'loom retry story-001-003 --clean', description: 'Retry from scratch by tearing down the worktree' },
+    { command: 'loom retry story-001-003 --force', description: 'Enqueue a retry bypassing the running-state guard' },
     { command: 'loom retry story-001-003 --reason "Fixed flaky dependency"', description: 'Retry with an audit note' },
   ],
   exitCodes: [

@@ -29,9 +29,17 @@ function runHook(payload: string): { status: number; stderr: string } {
     input: payload,
     cwd: tmpDir,
     encoding: 'utf8',
-    env: { ...process.env, LOOM_HOME: path.join(tmpDir, '.loom-home') },
+    // LOOM_WORKER_CONTEXT=1 simulates a worker session so the read-scope guard
+    // is active. Without this, an operator early-exit would allow everything.
+    env: { ...process.env, LOOM_HOME: path.join(tmpDir, '.loom-home'), LOOM_WORKER_CONTEXT: '1' },
   });
-  return { status: result.status ?? 1, stderr: result.stderr ?? '' };
+  const raw = result.stderr ?? '';
+  // Extract the JSON blocking message from stderr, skipping advisory lines from
+  // loadEnvLayer. In the worktree build environment, @loom-ai/core resolves to
+  // the main repo's dist (pre-envLayer fix), so LOOM_WORKER_CONTEXT triggers a
+  // warning line before the JSON. Find the first JSON object line.
+  const stderr = raw.split('\n').find(l => l.trimStart().startsWith('{')) ?? raw.trim();
+  return { status: result.status ?? 1, stderr };
 }
 
 before(() => {

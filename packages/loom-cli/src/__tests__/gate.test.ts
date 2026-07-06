@@ -35,12 +35,17 @@ before(() => {
   execSync('git init -q', { cwd: tmpDir });
   loom('init');
 
-  // Seed two planned epics directly into the DB (planning needs an API key).
+  // Seed epics directly into the DB (planning needs an API key).
   resetDatabaseForTest();
   const db = openProjectDatabase(tmpDir);
   const store = new EpicStore(db);
   store.create('epic-001', 'First seeded epic');
   store.create('epic-002', 'Second seeded epic');
+  // epic-003: planning status (no yaml_path — matches real loom epic in-flight)
+  store.beginPlanning('epic-003', 'Planning epic brief');
+  // epic-004: in_progress status
+  store.create('epic-004', 'In-progress epic');
+  store.updateStatus('epic-004', 'in_progress');
   resetDatabaseForTest();
 });
 
@@ -106,6 +111,51 @@ describe('loom approve / reject', () => {
   it('errors when rejecting a non-planned epic', () => {
     const result = loom('reject epic-002');
     assert.equal(result.status, 1);
+  });
+
+  // story-075-004: reject from planning status
+  it('rejects a planning-status epic (exits 0, DB becomes rejected)', () => {
+    const result = loom('reject epic-003');
+    assert.equal(result.status, 0);
+    assert.ok(result.stdout.includes('rejected'));
+    assert.equal(epicStatus('epic-003'), 'rejected');
+  });
+
+  it('listByStatus(rejected) handles null yaml_path from a planning-era row', () => {
+    // epic-003 was created via beginPlanning (yaml_path=NULL) and rejected above
+    resetDatabaseForTest();
+    const db = openProjectDatabase(tmpDir);
+    const rows = new EpicStore(db).listByStatus('rejected');
+    resetDatabaseForTest();
+    const planningRow = rows.find(r => r.id === 'epic-003');
+    assert.ok(planningRow, 'rejected planning epic is returned by listByStatus');
+    assert.equal(planningRow!.yaml_path, null, 'yaml_path is null — handled without throwing');
+  });
+
+  it('errors when rejecting an already-rejected epic (terminal status — unchanged)', () => {
+    // epic-002 was already rejected in the first test
+    const result = loom('reject epic-002');
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes('cannot reject'));
+  });
+
+  it('errors when rejecting an approved epic (unchanged error path)', () => {
+    // epic-001 was approved in an earlier test
+    const result = loom('reject epic-001');
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes('cannot reject'));
+  });
+
+  it('errors when rejecting an in_progress epic (unchanged)', () => {
+    const result = loom('reject epic-004');
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes('cannot reject'));
+  });
+
+  it('errors when rejecting a non-existent epic', () => {
+    const result = loom('reject epic-777');
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes('not found'));
   });
 });
 

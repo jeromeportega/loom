@@ -51,6 +51,9 @@ import {
 } from '../review/orchestrator.js';
 import type { Finding } from '../findings/schema.js';
 
+const LOOM_WORKER_CONTEXT_KEY = 'LOOM_WORKER_CONTEXT';
+const LOOM_WORKER_CONTEXT_VALUE = '1';
+
 export type PrStrategy = 'per-story' | 'per-epic' | 'both';
 
 export interface CliWorkerOptions {
@@ -422,10 +425,15 @@ export abstract class BaseCliWorker implements WorkerRunner {
    * the prior behaviour.
    */
   protected workerEnv(): NodeJS.ProcessEnv {
-    if (!this.sessionAuth) return process.env;
-    const env = { ...process.env };
-    delete env.ANTHROPIC_API_KEY;
-    delete env.ANTHROPIC_AUTH_TOKEN;
+    const env = this.sessionAuth
+      ? (() => {
+          const e = { ...process.env };
+          delete e.ANTHROPIC_API_KEY;
+          delete e.ANTHROPIC_AUTH_TOKEN;
+          return e;
+        })()
+      : { ...process.env };
+    env[LOOM_WORKER_CONTEXT_KEY] = LOOM_WORKER_CONTEXT_VALUE;
     return env;
   }
 

@@ -46,8 +46,13 @@ describe('worker spawn env — policy.agents.worker_auth', () => {
     assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'tok-test');
   });
 
-  it("explicit 'inherit' returns the live process.env reference unchanged", () => {
+  it("explicit 'inherit' returns a copy with LOOM_WORKER_CONTEXT injected (not process.env itself)", () => {
     const env = new TestableWorker({ workerAuth: 'inherit' }).exposeWorkerEnv();
-    assert.equal(env, process.env);
+    // story-075-005: workerEnv() always returns a copy so LOOM_WORKER_CONTEXT can
+    // be injected without mutating the parent process.env.
+    assert.notEqual(env, process.env, 'must return a copy, not the live process.env reference');
+    assert.equal(env.LOOM_WORKER_CONTEXT, '1', 'copy must carry the worker context marker');
+    // Original env is unmodified.
+    assert.equal(process.env.LOOM_WORKER_CONTEXT, undefined, 'process.env must not be mutated');
   });
 });

@@ -227,3 +227,47 @@ describe('secretConfinement — worker_auth precedent: secrets flow only via wor
     );
   });
 });
+
+// ── T2-E: LOOM_WORKER_CONTEXT env marker injected by workerEnv() ──────────────
+
+describe('secretConfinement — LOOM_WORKER_CONTEXT marker always set by workerEnv() (T2-E)', () => {
+  it('inherit-mode workerEnv() includes LOOM_WORKER_CONTEXT=1', () => {
+    const worker = new TestableWorker({ workerAuth: 'inherit' });
+    const env = worker.workerEnvPublic();
+    assert.equal(
+      env['LOOM_WORKER_CONTEXT'],
+      '1',
+      'inherit mode must set LOOM_WORKER_CONTEXT=1 in the subprocess env',
+    );
+  });
+
+  it('session-mode workerEnv() includes LOOM_WORKER_CONTEXT=1', () => {
+    const worker = new TestableWorker({ workerAuth: 'session' });
+    const env = worker.workerEnvPublic();
+    assert.equal(
+      env['LOOM_WORKER_CONTEXT'],
+      '1',
+      'session mode must also set LOOM_WORKER_CONTEXT=1 in the subprocess env',
+    );
+  });
+
+  it('inherit-mode workerEnv() returns a copy, not process.env itself', () => {
+    const worker = new TestableWorker({ workerAuth: 'inherit' });
+    const env = worker.workerEnvPublic();
+    // Verify it's a copy — mutating env must not mutate process.env
+    env['__TEST_SENTINEL__'] = 'sentinel-value';
+    assert.ok(
+      process.env['__TEST_SENTINEL__'] === undefined,
+      'workerEnv() must return a fresh copy, not the live process.env object',
+    );
+    delete env['__TEST_SENTINEL__'];
+  });
+
+  it('LOOM_WORKER_CONTEXT value is exactly "1" (not "true", not "yes")', () => {
+    // Guard against accidental value drift — guard.ts and BaseCliWorker.ts both
+    // use '1' as the sentinel; any other value would silently break worker detection.
+    const worker = new TestableWorker({ workerAuth: 'inherit' });
+    const env = worker.workerEnvPublic();
+    assert.equal(env['LOOM_WORKER_CONTEXT'], '1', 'sentinel value must be the string "1"');
+  });
+});
