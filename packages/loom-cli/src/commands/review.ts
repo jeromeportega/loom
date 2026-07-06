@@ -1,11 +1,69 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { AgentStore } from '@loom-ai/core';
+import { AgentStore, FindingStore } from '@loom-ai/core';
+import type { StoredFinding } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
 export interface ReviewOptions {
   json?: boolean;
+}
+
+export interface FindingJsonEntry {
+  severity: StoredFinding['severity'];
+  file: string;
+  line: number | null;
+  message: string;
+  suggestion?: string;
+}
+
+const SEVERITY_ORDER: StoredFinding['severity'][] = ['blocking', 'medium', 'low', 'info'];
+
+/**
+ * Renders the FINDINGS block for text output.
+ * Returns an empty string when there are no findings (block is omitted).
+ * Grouped by severity: blocking → medium → low → info.
+ */
+export function renderFindingsBlock(findings: StoredFinding[]): string {
+  if (findings.length === 0) return '';
+
+  const lines: string[] = ['  FINDINGS', '  ────────'];
+
+  for (const sev of SEVERITY_ORDER) {
+    const group = findings.filter((f) => f.severity === sev);
+    if (group.length === 0) continue;
+
+    lines.push(`  [${sev}]`);
+    for (const f of group) {
+      const loc = f.line !== null ? `${f.file}:${f.line}` : f.file;
+      lines.push(`    ${loc} — ${f.message}`);
+      if (f.suggestion !== null && f.suggestion !== undefined) {
+        lines.push(`      suggestion: ${f.suggestion}`);
+      }
+    }
+    lines.push('');
+  }
+
+  if (lines[lines.length - 1] === '') lines.pop();
+
+  return lines.join('\n');
+}
+
+/**
+ * Converts a StoredFinding to its JSON output shape.
+ * `suggestion` key is omitted entirely when null (not set to null).
+ */
+export function findingToJson(f: StoredFinding): FindingJsonEntry {
+  const entry: FindingJsonEntry = {
+    severity: f.severity,
+    file: f.file,
+    line: f.line,
+    message: f.message,
+  };
+  if (f.suggestion !== null && f.suggestion !== undefined) {
+    entry.suggestion = f.suggestion;
+  }
+  return entry;
 }
 
 /**
@@ -28,9 +86,17 @@ export function runReview(storyId: string, opts: ReviewOptions = {}): void {
     return;
   }
 
+  const findings = new FindingStore(db).getByStory(storyId);
+
   if (!agent.review_status && !agent.review_summary) {
     if (opts.json) {
-      console.log(JSON.stringify({ story_id: storyId, review_status: null, review_summary: null }, null, 2));
+      console.log(
+        JSON.stringify(
+          { story_id: storyId, review_status: null, review_summary: null, findings: [] },
+          null,
+          2
+        )
+      );
       return;
     }
     console.log(`No review recorded for ${storyId} — review_strategy may be off or the worker has not finished.`);
@@ -40,7 +106,12 @@ export function runReview(storyId: string, opts: ReviewOptions = {}): void {
   if (opts.json) {
     console.log(
       JSON.stringify(
-        { story_id: storyId, review_status: agent.review_status ?? null, review_summary: agent.review_summary ?? null },
+        {
+          story_id: storyId,
+          review_status: agent.review_status ?? null,
+          review_summary: agent.review_summary ?? null,
+          findings: findings.map(findingToJson),
+        },
         null,
         2
       )
@@ -49,6 +120,13 @@ export function runReview(storyId: string, opts: ReviewOptions = {}): void {
   }
 
   console.log(`  ${storyId} — review: ${agent.review_status ?? '(none)'}`);
+
+  const findingsBlock = renderFindingsBlock(findings);
+  if (findingsBlock) {
+    console.log('');
+    console.log(findingsBlock);
+  }
+
   if (agent.review_summary) {
     console.log('');
     console.log(agent.review_summary);
@@ -63,11 +141,11 @@ export const spec: CommandDescription = {
     { name: 'story-id', type: 'string', required: true, description: 'Story id (e.g. story-001-003)' },
   ],
   options: [
-    { name: '--json', type: 'boolean', description: 'Emit JSON: { story_id, review_status, review_summary }', changesOutputShape: true },
+    { name: '--json', type: 'boolean', description: 'Emit JSON: { story_id, review_status, review_summary, findings }', changesOutputShape: true },
   ],
   output: {
-    text: 'Review status and summary for the story',
-    json: { supported: true, shape: '{ story_id: string, review_status: string, review_summary: string }' },
+    text: 'Review status, findings grouped by severity, and summary for the story',
+    json: { supported: true, shape: '{ story_id: string, review_status: string, review_summary: string, findings: Array<{ severity, file, line, message, suggestion? }> }' },
   },
   examples: [
     { command: 'loom review story-001-003', description: "Show the review verdict for story-001-003" },
