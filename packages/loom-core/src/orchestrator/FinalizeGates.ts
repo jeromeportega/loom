@@ -37,10 +37,31 @@ export function escapeRegexSymbol(symbol: string): string {
   return symbol.replace(/[.*+?^${}()|[\]\\<>,]/g, '\\$&');
 }
 
+// JS/TS keywords and builtins that appear in every code block but carry no
+// semantic identity as contract symbols. Filtering these prevents spurious
+// drift findings when a story removes a module-level `export` or renames
+// a parameter typed as `string`.
+const RESERVED_WORDS = new Set([
+  'export', 'import', 'interface', 'class', 'function', 'type', 'const', 'let', 'var',
+  'string', 'number', 'boolean', 'void', 'null', 'undefined', 'return', 'if', 'else',
+  'for', 'while', 'new', 'this', 'enum', 'extends', 'implements', 'abstract', 'static',
+  'public', 'private', 'protected', 'readonly', 'async', 'await', 'from', 'of', 'in',
+  'default', 'any', 'never', 'object', 'unknown', 'true', 'false', 'namespace',
+  'module', 'declare', 'throw', 'try', 'catch', 'finally', 'switch', 'case', 'break',
+  'continue', 'delete', 'typeof', 'instanceof',
+]);
+
+// Only pure identifier spans (letters/digits/underscore, starting with a letter
+// or underscore) are treated as pinned contract symbols from inline code spans.
+// Complex expressions like `Map<K,V>` are skipped — \b anchors misfire on the
+// non-word trailing character, causing false negatives in drift matching.
+const PURE_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /**
  * Extracts pinned symbol names from fenced code blocks and inline code spans.
  * Returns a deduplicated array of identifier-like strings.
  * Symbols found only in prose (no code formatting) are NOT extracted.
+ * JS/TS reserved words and identifiers of 2 or fewer characters are excluded.
  */
 export function extractSymbolsFromContract(contractMarkdown: string): string[] {
   if (!contractMarkdown.trim()) return [];
@@ -63,6 +84,8 @@ export function extractSymbolsFromContract(contractMarkdown: string): string[] {
   }
 
   // Extract inline code spans not inside fenced blocks.
+  // Only pure identifiers are accepted — complex expressions (e.g. `Map<K,V>`)
+  // are skipped to avoid regex-boundary mismatches during drift checking.
   const inlineSpanRe = /`([^`\n]+)`/g;
   let spanMatch: RegExpExecArray | null;
   while ((spanMatch = inlineSpanRe.exec(contractMarkdown)) !== null) {
@@ -70,11 +93,11 @@ export function extractSymbolsFromContract(contractMarkdown: string): string[] {
     const inBlock = blockRanges.some(([start, end]) => spanStart >= start && spanStart < end);
     if (!inBlock) {
       const content = spanMatch[1].trim();
-      if (content) symbols.add(content);
+      if (content && PURE_IDENT_RE.test(content)) symbols.add(content);
     }
   }
 
-  return Array.from(symbols);
+  return Array.from(symbols).filter(s => s.length > 2 && !RESERVED_WORDS.has(s));
 }
 
 /**
@@ -99,13 +122,17 @@ export function checkSymbolDrift(opts: {
     const lines = diff.split('\n');
     const addedLines = lines.filter(l => l.startsWith('+') && !l.startsWith('+++'));
     const removedLines = lines.filter(l => l.startsWith('-') && !l.startsWith('---'));
+    // Context lines (space-prefixed, unchanged) count as evidence the symbol
+    // still exists in the file. Without this check, removing a definition while
+    // keeping usages in the same hunk would produce a spurious drift finding.
+    const contextLines = lines.filter(l => l.startsWith(' '));
 
     for (const symbol of opts.contractSymbols) {
       const escaped = escapeRegexSymbol(symbol);
       const re = new RegExp('\\b' + escaped + '\\b');
 
-      // Symbol present in added lines → story correctly uses the contract symbol.
-      if (addedLines.some(l => re.test(l))) continue;
+      // Symbol present in added or context lines → still alive in this story.
+      if (addedLines.some(l => re.test(l)) || contextLines.some(l => re.test(l))) continue;
 
       // Symbol only in removed lines → was removed or renamed in this story.
       const removedMatch = removedLines.find(l => re.test(l));

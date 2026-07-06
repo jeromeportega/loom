@@ -605,12 +605,17 @@ export class EpicFinalizer {
       const r = gitSafe(gitRoot, ['diff', epic.base_sha!, epicBranch]);
       return r.ok ? r.output : '';
     })();
+    const fgMode: FinalizeGateMode = (['off', 'warn', 'block'] as const).includes(
+      this.gateMode as FinalizeGateMode
+    )
+      ? (this.gateMode as FinalizeGateMode)
+      : 'warn';
     const gatesResult = await runFinalizeGates({
       projectRoot: gitRoot,
       epicId,
       epicDiff,
       storyDiffs: buildStoryDiffMap(merged, gitRoot, epic.base_sha!),
-      mode: this.gateMode as FinalizeGateMode,
+      mode: fgMode,
       deliveredEpicIds: epicStore.listByStatus('done').map(r => r.id),
     });
     emitFinalizeGateDiagnostics(gatesResult);
@@ -1686,6 +1691,9 @@ function buildStoryDiffMap(
   const map = new Map<string, string>();
   for (const id of storyIds) {
     const r = gitSafe(gitRoot, ['diff', baseSha, `story/${id}`]);
+    if (!r.ok) {
+      console.warn(`[finalize] could not compute diff for story/${id}: branch may be missing`);
+    }
     map.set(id, r.ok ? r.output : '');
   }
   return map;

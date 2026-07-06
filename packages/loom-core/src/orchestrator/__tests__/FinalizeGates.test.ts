@@ -181,6 +181,27 @@ describe('checkSymbolDrift', () => {
     assert.deepEqual(findings, [], 'symbol absent from diff must produce no findings');
   });
 
+  it('no drift when symbol survives in context lines after its definition is removed', () => {
+    // Removes the Token definition but Token still appears as an unchanged context line
+    // (e.g. a usage in the same hunk). Without context-line awareness this produces a
+    // false-positive finding.
+    const diff = [
+      '--- a/auth.ts',
+      '+++ b/auth.ts',
+      '@@ -1,3 +1,2 @@',
+      '-export interface Token { id: string; }',
+      '+// definition moved to shared package',
+      ' const t: Token = TokenFactory.create();',  // context line — Token survives
+    ].join('\n');
+    const diffs = new Map([['story-001', diff]]);
+    const findings = checkSymbolDrift({
+      contractSymbols: ['Token'],
+      contractEpicId: 'epic-001',
+      storyDiffs: diffs,
+    });
+    assert.deepEqual(findings, [], 'Token surviving in context lines must produce no drift finding');
+  });
+
   it('only story-A gets a finding when story-B uses the symbol correctly', () => {
     const driftDiff = [
       '-export interface Token { }',
