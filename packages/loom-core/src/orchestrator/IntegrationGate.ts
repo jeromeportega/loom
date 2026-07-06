@@ -1,6 +1,7 @@
-import { spawn } from 'node:child_process';
-import { resolveGatePlan } from './GatePreflight.js';
+import { spawn, execFileSync } from 'node:child_process';
+import { resolveGatePlan, runTestCommandEntries } from './GatePreflight.js';
 import type { GateStep, GateStepKind } from './GatePreflight.js';
+import type { TestCommandEntry } from '../types.js';
 
 /**
  * The integration gate is the objective answer to "is this epic actually
@@ -53,6 +54,8 @@ export interface IntegrationGateOptions {
    * that here (e.g. "npm ci && npm test").
    */
   testCommand?: string;
+  /** Named per-path test commands from `policy.agents.test_commands`. */
+  testCommands?: TestCommandEntry[];
   /** Wall-clock bound for the gate command. Default 15 minutes. */
   timeoutMs?: number;
   /** Injectable command runner. Defaults to a spawnSync shell runner. */
@@ -61,6 +64,11 @@ export interface IntegrationGateOptions {
   fileExists?: (p: string) => boolean;
   /** Injectable file reader (for command auto-detection). Returns null if unreadable. */
   fileReader?: (p: string) => string | null;
+  /**
+   * Injectable changed-paths resolver for the test_commands path. Defaults to a
+   * git diff --name-only probe. Tests inject a stub to avoid real git calls.
+   */
+  getChangedPaths?: (projectRoot: string) => string[];
 }
 
 /** Per-step execution outcome. */
@@ -204,6 +212,30 @@ export async function runGateSteps(
   return outcomes;
 }
 
+/**
+ * Resolves repo-root-relative changed file paths by running `git diff --name-only`
+ * against the nearest known base branch. Returns [] on any error (no git, no base).
+ */
+function getChangedPathsFromGit(projectRoot: string): string[] {
+  for (const base of ['origin/main', 'origin/master', 'main', 'master']) {
+    try {
+      execFileSync('git', ['rev-parse', '--verify', base], {
+        cwd: projectRoot,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const out = execFileSync('git', ['diff', '--name-only', `${base}...HEAD`], {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      return out.trim().split('\n').filter(Boolean);
+    } catch {
+      // try next base
+    }
+  }
+  return [];
+}
+
 export class IntegrationGate {
   constructor(private readonly opts: IntegrationGateOptions = {}) {}
 
@@ -219,10 +251,72 @@ export class IntegrationGate {
     const amputated = input.conflicted ?? [];
 
     const plan = resolveGatePlan(input.projectRoot, {
-      testCommand: this.opts.testCommand,
-      fileExists: this.opts.fileExists,
-      fileReader: this.opts.fileReader,
+      testCommand:  this.opts.testCommand,
+      testCommands: this.opts.testCommands,
+      fileExists:   this.opts.fileExists,
+      fileReader:   this.opts.fileReader,
     });
+
+    // test_commands path: select and run entries whose path globs match the epic's changed files.
+    if (plan.source === 'test_commands') {
+      const entries = this.opts.testCommands ?? [];
+      const changedPaths = this.opts.getChangedPaths
+        ? this.opts.getChangedPaths(input.projectRoot)
+        : getChangedPathsFromGit(input.projectRoot);
+      const runner = this.opts.runner ?? defaultRunner;
+      const timeoutMs = this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+      const { results, anyFailed } = await runTestCommandEntries({
+        entries,
+        changedPaths,
+        projectRoot: input.projectRoot,
+        runner,
+        timeoutMs,
+      });
+
+      const ok = amputated.length === 0 && !anyFailed;
+      const totalDurationMs = results.reduce((sum, r) => sum + r.durationMs, 0);
+
+      const stepOutcomes: GateStepOutcome[] = results.map((r) => ({
+        name:       r.name,
+        kind:       'unit' as GateStepKind,
+        command:    r.command,
+        ok:         r.status === 'passed',
+        exitCode:   r.exitCode,
+        timedOut:   false,
+        durationMs: r.durationMs,
+        output:     r.stdout,
+      }));
+
+      const parts: string[] = [];
+      if (amputated.length > 0) {
+        parts.push(`${amputated.length} story(ies) missing from the epic (${amputated.join(', ')})`);
+      }
+      for (const r of results) {
+        if (r.status === 'skipped') {
+          parts.push(`${r.name} skipped (no matching paths)`);
+        } else if (r.status === 'failed') {
+          parts.push(`${r.name} failed (exit ${r.exitCode})`);
+        } else {
+          parts.push(`${r.name} passed in ${Math.round(r.durationMs / 1000)}s`);
+        }
+      }
+
+      const firstFailing = stepOutcomes.find((s) => !s.ok);
+      const aggregate = firstFailing ?? stepOutcomes[stepOutcomes.length - 1];
+      return {
+        ok,
+        ran: results.some((r) => r.status !== 'skipped'),
+        steps: stepOutcomes,
+        command:    aggregate?.command,
+        exitCode:   aggregate?.exitCode ?? null,
+        timedOut:   false,
+        durationMs: totalDurationMs,
+        output:     aggregate?.output ?? '',
+        amputated,
+        summary:    `${ok ? 'Integration gate passed' : 'Integration gate failed'}: ${parts.join('; ')}.`,
+      };
+    }
 
     // No command resolvable: fall back to the (free) amputation check only.
     // This keeps the default `warn` mode safe in repos with no detectable suite.

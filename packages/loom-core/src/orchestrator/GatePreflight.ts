@@ -1,6 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { minimatch } from 'minimatch';
+import type { TestCommandEntry } from '../types.js';
+// CommandRunner is imported as type only — erased at compile time, no runtime circular dep.
+import type { CommandRunner } from './IntegrationGate.js';
 
 /**
  * Gate-command preflight (ADR-2): resolves the exact command the
@@ -36,9 +40,22 @@ export interface GateStep {
 export interface ResolvedGatePlan {
   /** Ordered steps; see composition-order contract (§5). */
   steps: GateStep[];
-  source: 'configured' | 'auto-detected' | 'none';
+  source: 'configured' | 'auto-detected' | 'none' | 'test_commands';
   /** Detected project root. */
   cwd: string;
+  /** Populated by IntegrationGate.run() after runTestCommandEntries() completes. */
+  testCommandResults?: TestCommandResult[];
+}
+
+/** Per-entry result for the test_commands execution path. */
+export interface TestCommandResult {
+  name:       string;
+  command:    string;
+  status:     'passed' | 'failed' | 'skipped';
+  exitCode:   number | null;
+  stdout:     string;
+  stderr:     string;
+  durationMs: number;
 }
 
 // ── Legacy single-command interface (retained for out-of-epic callers) ──
@@ -48,7 +65,7 @@ export interface ResolvedGateCommand {
   command?: string;
   /** projectRoot, or the monorepo-scoped subdirectory the command runs in. */
   cwd: string;
-  source: 'configured' | 'auto-detected' | 'none';
+  source: 'configured' | 'auto-detected' | 'none' | 'test_commands';
 }
 
 export interface GatePreflightResult {
@@ -65,7 +82,8 @@ export interface GatePreflightResult {
 
 /** Injectable probes mirroring IntegrationGateOptions, so tests need no disk. */
 export interface GatePreflightOptions {
-  testCommand?: string;
+  testCommand?:  string;
+  testCommands?: TestCommandEntry[];
   fileExists?: (p: string) => boolean;
   fileReader?: (p: string) => string | null;
 }
@@ -122,6 +140,12 @@ export function resolveGatePlan(projectRoot: string, opts: GatePreflightOptions)
       source: 'configured',
       cwd: projectRoot,
     };
+  }
+
+  // test_commands branch: present and non-empty → delegate selection + execution to the async
+  // runTestCommandEntries() caller (IntegrationGate.run). steps=[] here; results are populated async.
+  if (opts.testCommands && opts.testCommands.length > 0) {
+    return { steps: [], source: 'test_commands', cwd: projectRoot };
   }
 
   const probes = probesFrom(opts);
@@ -505,6 +529,62 @@ function resolveDiffRange(projectRoot: string): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * Select and run test_commands entries whose paths globs match at least one
+ * changed file. Unmatched entries produce a 'skipped' result. Matched entries
+ * run sequentially in declaration order with no fail-fast — all run regardless
+ * of intermediate failures (mirrors runGateSteps ADR-3 semantics).
+ *
+ * Uses minimatch for glob evaluation against repo-root-relative changedPaths.
+ * An empty changedPaths array → every entry is skipped (no files changed = no match).
+ */
+export async function runTestCommandEntries(opts: {
+  entries:      TestCommandEntry[];
+  changedPaths: string[];
+  projectRoot:  string;
+  runner:       CommandRunner;
+  timeoutMs:    number;
+}): Promise<{ results: TestCommandResult[]; anyFailed: boolean }> {
+  const results: TestCommandResult[] = [];
+  let anyFailed = false;
+
+  for (const entry of opts.entries) {
+    const matched =
+      opts.changedPaths.length > 0 &&
+      opts.changedPaths.some((changedPath) =>
+        entry.paths.some((glob) => minimatch(changedPath, glob))
+      );
+
+    if (!matched) {
+      results.push({
+        name:       entry.name,
+        command:    entry.command,
+        status:     'skipped',
+        exitCode:   null,
+        stdout:     '',
+        stderr:     '',
+        durationMs: 0,
+      });
+      continue;
+    }
+
+    const result = await opts.runner(entry.command, opts.projectRoot, opts.timeoutMs);
+    const passed = !result.timedOut && result.exitCode === 0;
+    if (!passed) anyFailed = true;
+    results.push({
+      name:       entry.name,
+      command:    entry.command,
+      status:     passed ? 'passed' : 'failed',
+      exitCode:   result.exitCode,
+      stdout:     result.output,
+      stderr:     '',
+      durationMs: result.durationMs,
+    });
+  }
+
+  return { results, anyFailed };
 }
 
 /** Longest path prefix common to two POSIX-style directories. */
