@@ -74,17 +74,23 @@ function makeFreshFinalizer(
   });
 }
 
-/** Calls the private detectResumePhase method via cast. */
+/**
+ * Calls the private detectResumePhase method via cast.
+ * Callers must assert non-null before passing; the narrowed parameter type
+ * removes the need for a ! at the internal call site.
+ * The private-access cast is intentional for unit coverage of a hot path.
+ */
 function detectPhase(
   f: EpicFinalizer,
-  epic: ReturnType<EpicStore['get']>,
+  epic: NonNullable<ReturnType<EpicStore['get']>>,
   remote: string | null
 ): ResumePlan {
+  // accessing private method for unit coverage — intentional
   return (
     f as unknown as {
       detectResumePhase(epic: NonNullable<ReturnType<EpicStore['get']>>, remote: string | null): ResumePlan;
     }
-  ).detectResumePhase(epic!, remote);
+  ).detectResumePhase(epic, remote);
 }
 
 // ─── Scenario 1: Push-fail stranding → fresh-process resume → done ──────────
@@ -128,6 +134,8 @@ describe('Stranding scenario 1: push-fail → publish_pending → fresh-process 
     // ── No re-merge: epic_finalize audit row must be absent ─────────────────
     // finalize() (which runs merge+gate) writes 'epic_finalize'; resume() writes 'epic_finalize_resume'.
     // If no epic_finalize row exists, the merge/gate path was not re-entered.
+    // getByCommand(epicId, actions) → rows WHERE command=epicId AND action IN (actions).
+    // The second parameter is actions?: string[] per AuditLog.getByCommand's actual signature.
     const finalizeRows = audit.getByCommand('epic-001', ['epic_finalize']);
     assert.equal(finalizeRows.length, 0, 'epic_finalize must NOT be written — merge was not redone');
 
@@ -168,6 +176,29 @@ describe('Stranding scenario 1: push-fail → publish_pending → fresh-process 
 
     assert.equal(audit.getByCommand('epic-001', ['epic_finalize_resume']).length, 1);
     assert.equal(audit.getByCommand('epic-001', ['epic_published']).length, 1);
+  });
+
+  it('push-fail (ref NOT on remote, local sha mismatch): plan is full-finalize — requires re-merge', () => {
+    const { db, store } = freshDb();
+
+    // Ref never reached the remote AND the local epic branch has since diverged.
+    // Both guards fail → the prior gate result cannot be trusted → full re-finalize needed.
+    seedPublishPending(store, 'epic-001', FINALIZE_REF, 'push failed and sha diverged');
+
+    const epic = store.get('epic-001')!;
+
+    const freshFinalizer = makeFreshFinalizer(db, {
+      prForRef: () => ({ exists: false }),
+      remoteRefExists: () => false,           // ref NOT on remote
+      integrationHeadMatchesRef: () => false, // local sha has diverged — cannot re-push safely
+    });
+
+    const plan = detectPhase(freshFinalizer, epic, 'origin');
+    assert.equal(
+      plan.action,
+      'full-finalize',
+      'irrecoverable: ref not on remote and local head does not match stored sha'
+    );
   });
 });
 
@@ -246,17 +277,23 @@ describe('Stranding scenario 2: PR-open-fail → publish_pending → fresh-proce
 
     // Fresh process 2: a second resume() — remote now reports the live PR
     let openPrCalled = false;
+    let push2Called = false;
     const freshFinalizer2 = makeFreshFinalizer(db, {
       prForRef: () => ({ exists: true, url: PR_URL }), // remote says PR exists
+      // prForRef returns live PR first → already-done path → pushBranch never consulted.
+      // Seam is wired to confirm this invariant holds.
+      pushBranch: () => { push2Called = true; return { ok: true, output: 'pushed' }; },
       openPr: () => { openPrCalled = true; return PR_URL; },
     });
     const result2 = await freshFinalizer2.resume('epic-001');
 
     assert.equal(result2.status, 'merged', 'already-done plan returns merged');
     assert.ok(!openPrCalled, 'openPr must NOT be called on an already-done epic');
+    assert.ok(!push2Called, 'pushBranch must not fire on an already-done epic');
     assert.equal(store.get('epic-001')!.status, 'done', 'status unchanged after idempotent resume');
 
-    // Two epic_finalize_resume rows (one per resume() call) but still no epic_finalize
+    // resume() writes 'epic_finalize_resume' BEFORE publishPhase regardless of plan type
+    // (including 'already-done'), so both calls contribute a row.
     const resumeRows = audit.getByCommand('epic-001', ['epic_finalize_resume']);
     assert.equal(resumeRows.length, 2, 'each resume() call writes exactly one epic_finalize_resume');
     const finalizeRows = audit.getByCommand('epic-001', ['epic_finalize']);
@@ -322,13 +359,14 @@ describe('Scenario 3: Fresh-process resume — detectResumePhase driven by persi
     // This is exactly what `loom finalize --resume epic-001` does: create a new
     // EpicFinalizer from disk, call resume(). The finalize_ref comes ONLY from
     // the DB row; there is no session variable linking this finalizer to process 1.
-    let mergeOrGateSeamCalled = false;
+    // The open-pr plan (remoteRefExists=true) must NOT trigger pushBranch.
+    let unexpectedPushCalled = false;
     const processTwoFinalizer = makeFreshFinalizer(db, {
       prForRef: () => ({ exists: false }),
       remoteRefExists: () => true, // ref on remote → open-pr plan (no re-push, no re-merge)
       pushBranch: () => {
-        // If push is unexpectedly called, the merge/gate path was re-entered.
-        mergeOrGateSeamCalled = true;
+        // pushBranch must not fire on the open-pr plan (remoteRefExists=true)
+        unexpectedPushCalled = true;
         return { ok: true, output: 'pushed' };
       },
       openPr: () => PR_URL,
@@ -345,7 +383,9 @@ describe('Scenario 3: Fresh-process resume — detectResumePhase driven by persi
     assert.equal(finalEpic.epic_pr_url, PR_URL, 'PR URL must be recorded in DB');
 
     // ── Merge/gate was NOT redone ─────────────────────────────────────────────
-    assert.ok(!mergeOrGateSeamCalled, 'push seam must not fire on the open-pr path (no re-merge)');
+    // Primary guard: epic_finalize audit row absent (the merge+gate path was not traversed).
+    // Secondary guard: pushBranch must not fire on the open-pr plan (ref was already remote).
+    assert.ok(!unexpectedPushCalled, 'pushBranch must not fire on the open-pr path (remoteRefExists=true)');
     const epicFinalizeRows = audit.getByCommand('epic-001', ['epic_finalize']);
     assert.equal(
       epicFinalizeRows.length,
