@@ -22,6 +22,7 @@ import { resolveLoomHomePath } from '../home/resolveLoomHomePath.js';
 import { ensureLoomHome } from '../home/ensureLoomHome.js';
 import { routeArtifacts } from '../home/artifactRouter.js';
 import { commitArtifacts } from '../home/commitArtifacts.js';
+import { runFinalizeGates, type FinalizeGateMode, type FinalizeGatesResult } from './FinalizeGates.js';
 
 export interface EpicFinalizerOptions {
   projectRoot: string;
@@ -594,6 +595,63 @@ export class EpicFinalizer {
             'policy.agents.integration_gate=warn to land regardless.',
         };
       }
+    }
+
+    // ── Finalize correctness gates ────────────────────────────────────────────
+    // Run symbol-drift, undocumented-env-var, and cross-epic-regression checks
+    // on the assembled epic diff. Respects the same policy mode as the
+    // integration gate: 'block' withholds the PR; 'warn' annotates but proceeds.
+    const epicDiff = (() => {
+      const r = gitSafe(gitRoot, ['diff', epic.base_sha!, epicBranch]);
+      return r.ok ? r.output : '';
+    })();
+    const gatesResult = await runFinalizeGates({
+      projectRoot: gitRoot,
+      epicId,
+      epicDiff,
+      storyDiffs: buildStoryDiffMap(merged, gitRoot, epic.base_sha!),
+      mode: this.gateMode as FinalizeGateMode,
+      deliveredEpicIds: epicStore.listByStatus('done').map(r => r.id),
+    });
+    emitFinalizeGateDiagnostics(gatesResult);
+    audit.record({
+      agent_id: undefined,
+      action: 'epic_finalize_symbol_drift',
+      command: epicId,
+      allowed: true,
+      detail: { count: gatesResult.symbolDrift.length },
+    });
+    audit.record({
+      agent_id: undefined,
+      action: 'epic_finalize_undoc_env_var',
+      command: epicId,
+      allowed: true,
+      detail: { count: gatesResult.undocumentedEnvVars.length },
+    });
+    audit.record({
+      agent_id: undefined,
+      action: 'epic_finalize_regression',
+      command: epicId,
+      allowed: true,
+      detail: { count: gatesResult.regressions.length },
+    });
+    if (gatesResult.hardFail) {
+      epicStore.updateStatus(epicId, 'in_progress',
+        `finalize gates blocked: ${gatesResult.symbolDrift.length} drift, ` +
+        `${gatesResult.undocumentedEnvVars.length} env-var, ` +
+        `${gatesResult.regressions.length} regression finding(s)`
+      );
+      return {
+        status: 'gated',
+        conflicted,
+        merged,
+        cleaned: [],
+        note:
+          `Finalize gates BLOCKED ${epicBranch}: symbol-drift=${gatesResult.symbolDrift.length}, ` +
+          `undoc-env-var=${gatesResult.undocumentedEnvVars.length}, ` +
+          `regression=${gatesResult.regressions.length}. ` +
+          'Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.',
+      };
     }
 
     // Gate passed (or wasn't blocking). The epic is now review-ready: commit
@@ -1613,6 +1671,45 @@ function defaultOpenEpicPrsProbe(projectRoot: string): (epicBranch: string) => s
       return [];
     }
   };
+}
+
+/**
+ * Generates per-story diffs: `git diff <baseSha> story/<id>` for each merged
+ * story. Used to feed the finalize correctness gates. Best-effort: a failing
+ * git command contributes an empty string for that story.
+ */
+function buildStoryDiffMap(
+  storyIds: string[],
+  gitRoot: string,
+  baseSha: string
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const id of storyIds) {
+    const r = gitSafe(gitRoot, ['diff', baseSha, `story/${id}`]);
+    map.set(id, r.ok ? r.output : '');
+  }
+  return map;
+}
+
+/** Prints finalize gate findings to stderr so operators see them in the run log. */
+function emitFinalizeGateDiagnostics(result: FinalizeGatesResult): void {
+  for (const f of result.symbolDrift) {
+    console.warn(
+      `[finalize] symbol drift: '${f.symbol}' (contract: ${f.contractEpicId}) ` +
+      `in ${f.storyId} — ${f.lineSnippet.trim()}`
+    );
+  }
+  for (const f of result.undocumentedEnvVars) {
+    console.warn(
+      `[finalize] undocumented env var: ${f.varName} (${f.filePath}) — ${f.lineSnippet.trim()}`
+    );
+  }
+  for (const f of result.regressions) {
+    console.warn(
+      `[finalize] regression: '${f.symbol}' removed in ${f.storyId} ` +
+      `(prior contract: ${f.priorEpicId}) — ${f.lineSnippet.trim()}`
+    );
+  }
 }
 
 /** Order-insensitive equality for string arrays (allowed_remotes globs). */
