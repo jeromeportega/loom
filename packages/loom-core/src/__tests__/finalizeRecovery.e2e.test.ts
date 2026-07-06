@@ -86,11 +86,11 @@ function detectPhase(
   remote: string | null
 ): ResumePlan {
   // accessing private method for unit coverage — intentional
-  return (
-    f as unknown as {
-      detectResumePhase(epic: NonNullable<ReturnType<EpicStore['get']>>, remote: string | null): ResumePlan;
-    }
-  ).detectResumePhase(epic, remote);
+  const fn = (f as unknown as Record<string, unknown>)['detectResumePhase'];
+  if (typeof fn !== 'function') {
+    throw new Error('detectResumePhase is not a function on EpicFinalizer — was it renamed?');
+  }
+  return (fn as (epic: NonNullable<ReturnType<EpicStore['get']>>, remote: string | null) => ResumePlan).call(f, epic, remote);
 }
 
 // ─── Scenario 1: Push-fail stranding → fresh-process resume → done ──────────
@@ -107,6 +107,8 @@ describe('Stranding scenario 1: push-fail → publish_pending → fresh-process 
     const strandedEpic = store.get('epic-001')!;
     assert.equal(strandedEpic.status, 'publish_pending', 'stranded epic must be in publish_pending');
     assert.equal(strandedEpic.finalize_ref, FINALIZE_REF, 'finalize_ref must be persisted');
+    // EpicStore.publishPending sets finalize_phase = NULL per its SQL (EpicStore.ts);
+    // this assertion guards against future regressions where publishPending omits that reset.
     assert.equal(strandedEpic.finalize_phase, null, 'finalize_phase must be cleared');
 
     // Fresh process: create a new EpicFinalizer — no reference to the prior run.
@@ -280,8 +282,9 @@ describe('Stranding scenario 2: PR-open-fail → publish_pending → fresh-proce
     let push2Called = false;
     const freshFinalizer2 = makeFreshFinalizer(db, {
       prForRef: () => ({ exists: true, url: PR_URL }), // remote says PR exists
-      // prForRef returns live PR first → already-done path → pushBranch never consulted.
-      // Seam is wired to confirm this invariant holds.
+      // prForRef returns live PR first → already-done path short-circuits before remoteRefExists
+      // is consulted. remoteRefExists is intentionally not overridden here; the probe order
+      // in detectResumePhase means it never fires on the already-done branch.
       pushBranch: () => { push2Called = true; return { ok: true, output: 'pushed' }; },
       openPr: () => { openPrCalled = true; return PR_URL; },
     });
