@@ -309,3 +309,54 @@ describe('prepareRetry — --reason audit parity', () => {
     assert.equal(JSON.parse(rows[0].detail!).reason, 'cli');
   });
 });
+
+// ─── prepareRetry --force flag ────────────────────────────────────────────────
+
+describe('prepareRetry --force flag', () => {
+  it('without --force, a running story returns status:rejected with stop-first message', () => {
+    const a = agents.create('epic-001', 'story-001-001', 'A');
+    agents.updateStatus(a.id, 'running');
+
+    const res = prepareRetry(db, root, 'story-001-001', {}, ourLease());
+
+    assert.equal(res.status, 'rejected');
+    assert.match(res.message, /still running/i);
+    assert.match(res.message, /loom stop story-001-001/);
+  });
+
+  it('with force:true, a running story bypasses the running guard and proceeds to queue/self path', () => {
+    // Use queue path (live lease) so we don't need worktree teardown.
+    const a = agents.create('epic-001', 'story-001-001', 'A');
+    agents.updateStatus(a.id, 'running');
+    liveOtherLease();
+
+    const res = prepareRetry(db, root, 'story-001-001', { force: true }, ourLease());
+
+    assert.equal(res.status, 'ready', 'force bypassed the running guard');
+    assert.equal(res.dispatch, 'queue');
+  });
+
+  it('force:true on a non-running story behaves identically to the normal (non-force) path', () => {
+    const a = agents.create('epic-001', 'story-001-001', 'A');
+    agents.updateStatus(a.id, 'failed');
+
+    const resNormal = prepareRetry(db, root, 'story-001-001', {}, ourLease());
+    // Reset for the force run.
+    agents.updateStatus(a.id, 'failed');
+
+    const resForce = prepareRetry(db, root, 'story-001-001', { force: true }, ourLease());
+
+    assert.equal(resNormal.status, resForce.status, 'status matches');
+    assert.equal(resNormal.dispatch, resForce.dispatch, 'dispatch path matches');
+    assert.equal(resNormal.willResume, resForce.willResume, 'willResume matches');
+  });
+
+  it('existing running-state guard fires as before when --force is absent', () => {
+    const a = agents.create('epic-001', 'story-001-001', 'A');
+    agents.updateStatus(a.id, 'running');
+
+    const res = prepareRetry(db, root, 'story-001-001', { force: false }, ourLease());
+
+    assert.equal(res.status, 'rejected', 'guard fires for force:false');
+  });
+});
