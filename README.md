@@ -32,7 +32,7 @@ loom epic "<brief>"               # plan an epic
 loom approve <epic-id> --run      # approve + dispatch
 loom status --json                # poll progress + PR links
 loom diff <story|epic-id>         # inspect a story/epic diff
-loom review <story-id>            # the reviewer verdict
+loom review <story-id>            # the reviewer verdict: status, findings, summary
 ```
 
 ---
@@ -119,7 +119,7 @@ if you need a roll-up today.
 | **Build** | Parallel story agents implement, test, and merge — each isolated in its own git worktree. A single-repo epic produces one pull request; a cross-repo epic produces one pull request per repository, landed in dependency order with all-ready-or-none staging. Before any PR opens, a toolchain-aware integration gate runs on the merged tree (unit tests + tsc typecheck + Next.js / Go / Cargo build as detected). |
 | **Learn** | A curated skill library auto-injects into worker agents; new skills are extracted from successful work and gated by an eval harness (the lifecycle runs internally — no user-facing CRUD surface today) |
 | **Supervise** | `loom status`, checkpoints, and `loom stop` keep you in control; `loom status --all` spans every repo on the machine |
-| **Observe** | Local web dashboard (`loom web`) for visibility into running agents, planning artifacts, and history; `loom cost` for per-epic cost and token breakdown |
+| **Observe** | Local web dashboard (`loom web`) for visibility into running agents, planning artifacts, and history — runs from any directory, auto-resolves the project; `loom cost` for per-epic cost and token breakdown |
 | **Integrate** | Provisions your org's approved MCP servers for worker agents via `loom mcp add` |
 
 ---
@@ -335,9 +335,13 @@ loom web                          # starts the local dashboard on a free port
 ```
 
 `loom web` serves a single-process dashboard at `http://127.0.0.1:<port>` over
-the same SQLite state the supervisor writes to. The list view **federates
-across every loom-init'ed repo on the machine** — one window, every active
-project, grouped by repo name (current project first). The detail view
+the same SQLite state the supervisor writes to. **Run it from any directory** —
+it resolves the project root automatically: (1) CWD has `.loom/policy.yaml` →
+serve CWD; (2) `ProjectRegistry` has entries → serve the first registered
+project; (3) machine config has `project_root` → serve it; (4) exits with a
+clear error. The resolved project root is printed at startup. The list view
+**federates across every loom-init'ed repo on the machine** — one window, every
+active project, grouped by repo name (current project first). The detail view
 streams live worker stdout via SSE, surfaces planning artifacts (brief,
 PRD, architecture, epic YAML) inline for `planned` epics so you can review
 the plan before approving, and exposes inline controls: approve / reject /
