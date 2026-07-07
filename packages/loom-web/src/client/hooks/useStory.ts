@@ -3,6 +3,8 @@ import { POLL_MS } from '../lib/constants';
 import { queryKeys } from '../lib/queryKeys';
 import type { AgentDetail } from '../../shared/types';
 
+const TERMINAL_STATES = new Set(['done', 'failed'] as const);
+
 export function useStory(
   slug: string,
   epicId: string,
@@ -18,6 +20,11 @@ export function useStory(
       }
       return res.json() as Promise<AgentDetail>;
     },
-    refetchInterval: POLL_MS,
+    refetchInterval: (query) => {
+      const status = (query.state.data as AgentDetail | undefined)?.status;
+      return status !== undefined && TERMINAL_STATES.has(status as 'done' | 'failed')
+        ? false
+        : POLL_MS;
+    },
   });
 }

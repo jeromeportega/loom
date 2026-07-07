@@ -1,18 +1,9 @@
 import { useParams } from 'react-router-dom';
 import { useStory } from '../hooks/useStory';
+import { statusVariant } from '../lib/statusVariant';
 import { Badge } from '../components/ui/badge';
 import { Skeleton } from '../components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import type { AgentSummary } from '../../shared/types';
-
-function statusVariant(
-  status: AgentSummary['status'],
-): 'default' | 'secondary' | 'destructive' | 'outline' {
-  if (status === 'done' || status === 'pr_open') return 'default';
-  if (status === 'running') return 'secondary';
-  if (status === 'failed') return 'destructive';
-  return 'outline';
-}
 
 export function StoryDetail() {
   const { slug = '', epicId = '', storyId = '' } = useParams<{
@@ -80,7 +71,7 @@ export function StoryDetail() {
                 <dd>{data.worktree_path}</dd>
               </div>
             )}
-            {data.pr_url && (
+            {data.pr_url && data.pr_url.startsWith('https://') && (
               <div>
                 <dt className="text-muted-foreground">PR</dt>
                 <dd>

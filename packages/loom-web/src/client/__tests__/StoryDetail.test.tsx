@@ -2,8 +2,6 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import React from 'react';
 import { StoryDetail } from '../views/StoryDetail';
 import type { AgentDetail } from '../../shared/types';
@@ -107,16 +105,6 @@ describe('StoryDetail — log tab', () => {
     const logOutput = screen.getByTestId('log-output');
     expect(logOutput.textContent).toContain('Worker started.');
     expect(logOutput.textContent).toContain('Done!');
-  });
-});
-
-// ─── Case 7: polling contract (static source check) ──────────────────────────
-
-describe('StoryDetail — polling contract', () => {
-  it('useStory hook passes POLL_MS as refetchInterval', () => {
-    const src = readFileSync(join(process.cwd(), 'src/client/hooks/useStory.ts'), 'utf8');
-    expect(src).toContain('refetchInterval: POLL_MS');
-    expect(src).toContain("import { POLL_MS } from '../lib/constants'");
   });
 });
 

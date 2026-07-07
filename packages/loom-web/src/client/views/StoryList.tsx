@@ -1,6 +1,7 @@
 import { useNavigate, useParams } from 'react-router-dom';
 import { useStories } from '../hooks/useStories';
 import { routes } from '../lib/routes';
+import { statusVariant } from '../lib/statusVariant';
 import { Badge } from '../components/ui/badge';
 import { Skeleton } from '../components/ui/skeleton';
 import {
@@ -11,16 +12,6 @@ import {
   TableHeader,
   TableRow,
 } from '../components/ui/table';
-import type { AgentSummary } from '../../shared/types';
-
-function statusVariant(
-  status: AgentSummary['status'],
-): 'default' | 'secondary' | 'destructive' | 'outline' {
-  if (status === 'done' || status === 'pr_open') return 'default';
-  if (status === 'running') return 'secondary';
-  if (status === 'failed') return 'destructive';
-  return 'outline';
-}
 
 export function StoryList() {
   const { slug = '', epicId = '' } = useParams<{ slug: string; epicId: string }>();
@@ -41,6 +32,8 @@ export function StoryList() {
     return <p className="p-4 text-destructive">Failed to load stories.</p>;
   }
 
+  if (!data) return null;
+
   return (
     <div className="p-4">
       <h2 className="text-lg font-semibold mb-4">Stories — {epicId}</h2>
@@ -54,7 +47,7 @@ export function StoryList() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {data?.stories.map((story) => (
+          {data.stories.map((story) => (
             <TableRow
               key={story.id}
               className="cursor-pointer"
@@ -68,7 +61,7 @@ export function StoryList() {
               <TableCell>{story.updated_at}</TableCell>
             </TableRow>
           ))}
-          {data?.stories.length === 0 && (
+          {data.stories.length === 0 && (
             <TableRow>
               <TableCell colSpan={4} className="text-center text-muted-foreground">
                 No stories found.

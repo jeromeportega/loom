@@ -161,16 +161,6 @@ describe('StoryList — click row navigates', () => {
   });
 });
 
-// ─── Case 4: polling contract (static source check) ──────────────────────────
-
-describe('StoryList — polling contract', () => {
-  it('useStories hook passes POLL_MS as refetchInterval', () => {
-    const src = readFileSync(join(process.cwd(), 'src/client/hooks/useStories.ts'), 'utf8');
-    expect(src).toContain('refetchInterval: POLL_MS');
-    expect(src).toContain("import { POLL_MS } from '../lib/constants'");
-  });
-});
-
 // ─── Case 9: browser back returns to StoryList ───────────────────────────────
 
 describe('StoryList — browser back', () => {

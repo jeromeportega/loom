@@ -21,6 +21,7 @@ function makeWrapper(qc: QueryClient) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -31,13 +32,13 @@ describe('useStories — polling', () => {
     vi.useFakeTimers();
 
     let callCount = 0;
-    global.fetch = vi.fn().mockImplementation(() => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
       callCount++;
       return Promise.resolve({
         ok: true,
         json: () => Promise.resolve({ epic_id: 'epic-001', stories: [] }),
       });
-    });
+    }));
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { unmount } = renderHook(
@@ -65,7 +66,7 @@ describe('useStory — polling', () => {
     vi.useFakeTimers();
 
     let callCount = 0;
-    global.fetch = vi.fn().mockImplementation(() => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
       callCount++;
       return Promise.resolve({
         ok: true,
@@ -75,7 +76,7 @@ describe('useStory — polling', () => {
             story_id: 'story-001-001',
             epic_id: 'epic-001',
             story_title: null,
-            status: 'done',
+            status: 'running',
             pr_url: null,
             started_at: null,
             updated_at: '2024-01-01T00:00:00Z',
@@ -92,7 +93,7 @@ describe('useStory — polling', () => {
             worker_pid: null,
           }),
       });
-    });
+    }));
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { unmount } = renderHook(
