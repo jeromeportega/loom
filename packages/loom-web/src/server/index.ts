@@ -572,7 +572,7 @@ export function createApp(opts: CreateAppOptions): Express {
     app.use(express.static(resolvedStaticDir));
     // SPA fallback for client-side routing.
     app.get(/^(?!\/api\/).+/, (_req, res) => {
-      res.sendFile('index.html', { root: resolvedStaticDir! });
+      res.sendFile('index.html', { root: resolvedStaticDir });
     });
   }
 
