@@ -151,10 +151,10 @@ function resolveLoomBin(): string[] {
  */
 function resolveStaticDir(): string | undefined {
   const candidates = [
-    // Installed: @loom-ai/web/dist/public
-    path.resolve(require.resolve('@loom-ai/web/package.json'), '..', 'dist', 'public'),
-    // In-monorepo dev: ../loom-web/dist/public
-    path.resolve(__dirname, '..', '..', '..', 'loom-web', 'dist', 'public'),
+    // Installed: @loom-ai/web/client-dist (the Vite SPA build; in package `files`)
+    path.resolve(require.resolve('@loom-ai/web/package.json'), '..', 'client-dist'),
+    // In-monorepo dev: ../loom-web/client-dist
+    path.resolve(__dirname, '..', '..', '..', 'loom-web', 'client-dist'),
   ];
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;

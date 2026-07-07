@@ -40,6 +40,7 @@ import { registerMutationRoutes } from './routes/mutations.js';
 import { registerOpportunityRoutes } from './routes/opportunities.js';
 import { registerProposeRoutes } from './routes/propose.js';
 import { registerLessonRoutes } from './routes/lessons.js';
+import { registerRepoRoutes } from './routes/repos.js';
 import { makeResolveProjectDb } from './resolveProjectDb.js';
 
 export interface CreateAppOptions {
@@ -562,12 +563,27 @@ export function createApp(opts: CreateAppOptions): Express {
     loomdir: path.join(currentProjectRoot, '.loom'),
   }));
 
+  // ─── repo routes (story-081-002) — /api/repos/* ──────────────────────────
+  registerRepoRoutes(app, { db: opts.db, projectRoot: currentProjectRoot });
+
+  // ─── API 404 catch-all — must be after all /api/* route registrations ────
+  // Ensures unknown /api/* paths return JSON (not the SPA index.html or
+  // Express's default text/html "Cannot GET /api/…" response).
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'not found' });
+  });
+
   // ─── Static frontend (built React) ───────────────────────────────────────
-  if (opts.staticDir) {
-    app.use(express.static(opts.staticDir));
+  // Default to the Vite SPA output directory when no override is provided.
+  // The check gates on file existence so the dev workflow (Vite dev server
+  // proxying /api to Express) is unaffected when client-dist hasn't been built.
+  const defaultStaticDir = path.join(__dirname, '../../client-dist');
+  const resolvedStaticDir = opts.staticDir ?? (fs.existsSync(defaultStaticDir) ? defaultStaticDir : undefined);
+  if (resolvedStaticDir) {
+    app.use(express.static(resolvedStaticDir));
     // SPA fallback for client-side routing.
     app.get(/^(?!\/api\/).+/, (_req, res) => {
-      res.sendFile(path.join(opts.staticDir!, 'index.html'));
+      res.sendFile('index.html', { root: resolvedStaticDir });
     });
   }
 
