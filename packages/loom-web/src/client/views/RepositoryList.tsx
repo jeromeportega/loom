@@ -7,6 +7,9 @@ import { Skeleton } from '../components/ui/skeleton';
 export function RepositoryList() {
   const navigate = useNavigate();
   const { data, isLoading, isError } = useRepos();
+  // Normalize once so a partial/malformed response renders an empty state
+  // rather than throwing mid-render and white-screening the dashboard.
+  const repos = data?.repos ?? [];
 
   return (
     <div data-testid="repository-list">
@@ -22,13 +25,13 @@ export function RepositoryList() {
         <p className="text-muted-foreground">Failed to load repositories.</p>
       )}
 
-      {!isLoading && !isError && data && data.repos.length === 0 && (
+      {!isLoading && !isError && repos.length === 0 && (
         <p className="text-muted-foreground">No repositories found.</p>
       )}
 
-      {!isLoading && !isError && data && data.repos.length > 0 && (
+      {!isLoading && !isError && repos.length > 0 && (
         <div className="space-y-4">
-          {data.repos.map((repo) => (
+          {repos.map((repo) => (
             <Card
               key={repo.slug}
               className="cursor-pointer hover:bg-accent transition-colors"

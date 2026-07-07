@@ -58,14 +58,16 @@ describe('clean build — source assertions', () => {
     );
   });
 
-  it('loom-web build script clears dist before tsc and keeps copy:public', () => {
+  it('loom-web build script clears dist before tsc and builds the React SPA with vite', () => {
     const script = readBuildScript('loom-web');
     assert.ok(
       /rm -rf dist/.test(script),
       `expected 'rm -rf dist' in loom-web build script, got: ${script}`
     );
-    assert.ok(script.includes('tsc'), 'build script must invoke tsc');
-    assert.ok(script.includes('copy:public'), 'loom-web build must still invoke copy:public');
+    assert.ok(script.includes('tsc'), 'build script must invoke tsc (server)');
+    // epic-081 re-platformed loom-web from a static vanilla-JS `copy:public`
+    // step to a Vite-built React SPA — the build must now invoke `vite build`.
+    assert.ok(script.includes('vite build'), 'loom-web build must invoke vite build (React SPA)');
   });
 });
 

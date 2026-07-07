@@ -34,6 +34,9 @@ export function StoryList() {
 
   if (!data) return null;
 
+  // Normalize so a partial response renders an empty state, not a crash.
+  const stories = data.stories ?? [];
+
   return (
     <div className="p-4">
       <h2 className="text-lg font-semibold mb-4">Stories — {epicId}</h2>
@@ -47,7 +50,7 @@ export function StoryList() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {data.stories.map((story) => (
+          {stories.map((story) => (
             <TableRow
               key={story.id}
               className="cursor-pointer"
@@ -61,7 +64,7 @@ export function StoryList() {
               <TableCell>{story.updated_at}</TableCell>
             </TableRow>
           ))}
-          {data.stories.length === 0 && (
+          {stories.length === 0 && (
             <TableRow>
               <TableCell colSpan={4} className="text-center text-muted-foreground">
                 No stories found.

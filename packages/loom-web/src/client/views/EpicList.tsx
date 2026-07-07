@@ -30,6 +30,9 @@ export function EpicList() {
   const { data, isLoading, isError, error } = useEpics(slug);
 
   const is404 = isError && (error as Error & { status?: number })?.status === 404;
+  // Normalize once so a partial/malformed response renders an empty state
+  // rather than throwing mid-render.
+  const epics = data?.epics ?? [];
 
   return (
     <div data-testid="epic-list">
@@ -49,11 +52,11 @@ export function EpicList() {
         <p className="text-muted-foreground">Failed to load epics.</p>
       )}
 
-      {!isLoading && !isError && data && data.epics.length === 0 && (
+      {!isLoading && !isError && epics.length === 0 && (
         <p className="text-muted-foreground">No epics found for this repository.</p>
       )}
 
-      {!isLoading && !isError && data && data.epics.length > 0 && (
+      {!isLoading && !isError && epics.length > 0 && (
         <Table>
           <TableHeader>
             <TableRow>
@@ -64,7 +67,7 @@ export function EpicList() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.epics.map((epic) => (
+            {epics.map((epic) => (
               <TableRow
                 key={epic.id}
                 className="cursor-pointer"
