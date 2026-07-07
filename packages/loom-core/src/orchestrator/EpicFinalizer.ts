@@ -23,6 +23,23 @@ import { ensureLoomHome } from '../home/ensureLoomHome.js';
 import { routeArtifacts } from '../home/artifactRouter.js';
 import { commitArtifacts } from '../home/commitArtifacts.js';
 import { runFinalizeGates, type FinalizeGateMode, type FinalizeGatesResult } from './FinalizeGates.js';
+import { resolveSmokeCommand } from './SmokeResolver.js';
+import { runSmoke } from './SmokeExecutor.js';
+import type { SmokeResult } from './SmokeExecutor.js';
+import type { CommandRunner } from './IntegrationGate.js';
+import type { Policy } from '../types.js';
+
+/** Thrown when the smoke gate fails in 'block' mode. */
+export class SmokeGateError extends Error {
+  constructor(public readonly result: SmokeResult) {
+    super(
+      result.timeoutKilled
+        ? `Smoke gate timed out after ${result.durationSeconds}s`
+        : `Smoke gate failed with exit code ${result.exitCode ?? '(signal)'}`
+    );
+    this.name = 'SmokeGateError';
+  }
+}
 
 export interface EpicFinalizerOptions {
   projectRoot: string;
@@ -67,6 +84,12 @@ export interface EpicFinalizerOptions {
   integrationGateTimeoutMs?: number;
   /** Injectable gate (tests). Defaults to one built from the fields above. */
   gate?: IntegrationGate;
+  /** policy.agents.smoke_command — explicit smoke command (else auto-detected from package.json). */
+  smokeCommand?: string;
+  /** policy.agents.smoke_timeout_minutes — wall-clock budget for the smoke command. Default 15 min. */
+  smokeTimeoutMinutes?: number;
+  /** Injectable smoke runner (tests). Defaults to the real process-spawning runner in runSmoke. */
+  smokeRunner?: CommandRunner;
   /**
    * policy.agents.integration_branch. When 'rolling', the Supervisor already
    * merged each story into a live `epic/<id>` as it completed, so finalize
@@ -686,6 +709,54 @@ export class EpicFinalizer {
           `regression=${gatesResult.regressions.length}. ` +
           'Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.',
       };
+    }
+
+    // ── Smoke gate ────────────────────────────────────────────────────────────
+    // Runs after integration gate and all test_commands complete. Respects the
+    // same integration_gate mode: 'off' skips entirely (no resolver call, no
+    // audit); resolver returning null silently skips; 'block' withholds the PR
+    // on failure; 'warn' annotates and continues (ADR-005).
+    if (this.gateMode !== 'off') {
+      const smokeTimeoutMinutes = this.opts.smokeTimeoutMinutes ?? 15;
+      // resolveSmokeCommand only reads policy.agents.smoke_command; pass the
+      // minimal shape the resolver needs rather than a full Policy object.
+      const policyForSmoke = {
+        agents: { smoke_command: this.opts.smokeCommand },
+      } as unknown as Policy;
+      const resolvedSmokeCmd = await resolveSmokeCommand(gitRoot, policyForSmoke);
+      if (resolvedSmokeCmd !== null) {
+        console.log(`[finalize] smoke: running smoke gate`);
+        const smokeResult = await runSmoke({
+          command:        resolvedSmokeCmd,
+          worktreeCwd:    gitRoot,
+          timeoutMinutes: smokeTimeoutMinutes,
+          runner:         this.opts.smokeRunner,
+        });
+        const smokeFailed = smokeResult.exitCode !== 0 || smokeResult.timeoutKilled;
+        audit.record({
+          action:  'smoke_gate',
+          command: resolvedSmokeCmd,
+          allowed: !smokeFailed,
+          detail:  {
+            exit_code:        smokeResult.exitCode,
+            duration_seconds: smokeResult.durationSeconds,
+            timeout_killed:   smokeResult.timeoutKilled,
+            gate_mode:        this.gateMode,
+          },
+        });
+        if (smokeFailed) {
+          if (this.gateMode === 'block') {
+            epicStore.updateStatus(epicId, 'in_progress',
+              `smoke gate failed: exit ${smokeResult.exitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''}`
+            );
+            throw new SmokeGateError(smokeResult);
+          } else {
+            console.warn(
+              `[finalize] smoke: exit ${smokeResult.exitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''} — proceeding in warn mode`
+            );
+          }
+        }
+      }
     }
 
     // Gate passed (or wasn't blocking). The epic is now review-ready: commit
