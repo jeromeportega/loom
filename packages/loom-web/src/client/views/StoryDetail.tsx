@@ -42,6 +42,11 @@ export function StoryDetail() {
   // de-dup floor MUST be an absolute byte length — anchored to X-Log-Length from
   // GET /api/agents/:id/log — not the rolling, char-counted log_tail window.
   const anchorRef = useRef(0);
+  // The story that anchorRef/baseLog currently describe. On a story→story change
+  // (same component instance) we must reset both, else B inherits A's byte floor
+  // and drops its early output. Kept out of the effect's status/id re-runs so a
+  // same-story status change doesn't wipe the log to a placeholder (flicker).
+  const anchorStoryRef = useRef(storyId);
 
   // Live log. On view-enter (or story/status/agent change) fetch the full durable
   // log and anchor the SSE de-dup floor to its X-Log-Length. Then, for non-terminal
@@ -54,6 +59,12 @@ export function StoryDetail() {
     if (!agentId) return;
     let cancelled = false;
 
+    if (anchorStoryRef.current !== storyId) {
+      // New story in the same instance — discard the previous story's anchor/base.
+      anchorStoryRef.current = storyId;
+      anchorRef.current = 0;
+      setBaseLog(null);
+    }
     setLiveLog('');
     void apiFetch(`/api/agents/${encodeURIComponent(agentId)}/log`)
       .then(async (res) => {
@@ -161,7 +172,17 @@ export function StoryDetail() {
   // React UI offered these on both; dropping 'blocked' left escalated stories
   // with no controls at all.
   const isRetryable = data.status === 'failed' || data.status === 'blocked';
-  const combinedLog = (baseLog ?? data.log_tail ?? '') + liveLog;
+  // Prefer the authoritative fetched log. An empty fetched log is meaningful for a
+  // RUNNING story — SSE carries the live output, and the polled log_tail (a 4KB
+  // suffix) would duplicate what's already in liveLog — so we keep the empty
+  // baseLog there. But a non-running row whose durable-log fetch came back empty
+  // (a legacy row predating the durable log, or a deleted log file) should fall
+  // back to its log_tail rather than render an empty panel.
+  const logBase =
+    baseLog === null || (baseLog === '' && data.status !== 'running')
+      ? (data.log_tail ?? '')
+      : baseLog;
+  const combinedLog = logBase + liveLog;
 
   return (
     <div className="p-4">

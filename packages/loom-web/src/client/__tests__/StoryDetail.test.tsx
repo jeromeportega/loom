@@ -189,6 +189,49 @@ describe('StoryDetail — log tab', () => {
     fireEvent.click(screen.getByRole('tab', { name: /log/i }));
     expect(screen.getByTestId('log-output').textContent).toContain('Worker started.');
   });
+
+  it('falls back to log_tail for a done story whose durable-log fetch is empty (legacy row)', async () => {
+    // Legacy row: log_bytes 0 (empty /log body) but log_tail populated. A done
+    // story is not streaming, so showing the tail cannot duplicate live output.
+    mockLogFetch('', 0);
+    mockStory({ ...baseAgent, status: 'done', log_tail: 'Legacy tail output' });
+    renderStoryDetail();
+
+    fireEvent.click(screen.getByRole('tab', { name: /log/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId('log-output').textContent).toContain('Legacy tail output');
+    });
+  });
+
+  it('does NOT show the polled log_tail for a running story with an empty durable log (no dup)', async () => {
+    // Running + empty fetched log → SSE carries the output; the 4KB log_tail is a
+    // suffix already inside liveLog, so surfacing it would render output twice.
+    mockLogFetch('', 0);
+    mockStory({ ...baseAgent, status: 'running', log_tail: 'DUPLICATED_TAIL' });
+    renderStoryDetail();
+
+    // Let baseLog resolve to '' (authoritative-empty).
+    await waitFor(() => {
+      expect(vi.mocked(apiModule.apiFetch)).toHaveBeenCalled();
+    });
+
+    act(() => {
+      MockEventSource.instances[0].emit('output', {
+        agent_id: 'agent-001',
+        story_id: 'story-001-001',
+        from: 0,
+        bytes: 'live bytes',
+        byteLength: 10,
+      } as SseOutputPayload);
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /log/i }));
+    await waitFor(() => {
+      const text = screen.getByTestId('log-output').textContent;
+      expect(text).toContain('live bytes');
+      expect(text).not.toContain('DUPLICATED_TAIL');
+    });
+  });
 });
 
 // ─── Existing: 404 story ─────────────────────────────────────────────────────
