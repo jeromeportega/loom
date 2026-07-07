@@ -9,7 +9,7 @@
   "types": "dist/server/index.d.ts",
   "type": "commonjs",
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.server.json && vite build",
+    "build": "rm -rf dist tsconfig.server.tsbuildinfo && tsc -p tsconfig.server.json && vite build",
     "dev": "vite",
     "test:server": "node --test $(find dist -path '*__tests__*' -name '*.test.js')",
     "test:client": "vitest run",
