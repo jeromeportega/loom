@@ -146,11 +146,27 @@ describe('mutations — POST /api/epics/:id/reject', () => {
     });
     assert.equal(res.status, 403);
   });
+
+  it('auth failure: invalid x-loom-token → 403', async () => {
+    const res = await fetch(`${baseUrl}/api/epics/epic-reject-001/reject`, {
+      method: 'POST',
+      headers: invalidToken,
+      body: JSON.stringify({ reason: 'nope' }),
+    });
+    assert.equal(res.status, 403);
+  });
 });
 
 // ─── POST /api/agents/:id/kill ───────────────────────────────────────────────
 
 describe('mutations — POST /api/agents/:id/kill', () => {
+  let child: ReturnType<typeof spawn> | undefined;
+
+  afterEach(() => {
+    if (child?.exitCode === null) child.kill();
+    child = undefined;
+  });
+
   it('happy path: valid token + agent with active pid → 200 { status: killed, pid, story_id }', async () => {
     const epics = new EpicStore(db);
     const agents = new AgentStore(db);
@@ -158,8 +174,10 @@ describe('mutations — POST /api/agents/:id/kill', () => {
     const a = agents.create('epic-kill-001', 'story-kill-001', 'Story to kill');
 
     // Spawn a real process so the kill handler can SIGTERM it.
-    const child = spawn('sleep', ['100']);
-    const pid = child.pid!;
+    child = spawn('sleep', ['100'], { stdio: 'ignore' });
+    child.unref();
+    if (child.pid == null) throw new Error('sleep did not start — pid is undefined');
+    const pid = child.pid;
     agents.updateWorkerPid(a.id, pid);
 
     const res = await fetch(`${baseUrl}/api/agents/${a.id}/kill`, {
@@ -177,6 +195,14 @@ describe('mutations — POST /api/agents/:id/kill', () => {
     const res = await fetch(`${baseUrl}/api/agents/agent-any-id/kill`, {
       method: 'POST',
       headers: noToken,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('auth failure: invalid x-loom-token → 403', async () => {
+    const res = await fetch(`${baseUrl}/api/agents/agent-any-id/kill`, {
+      method: 'POST',
+      headers: invalidToken,
     });
     assert.equal(res.status, 403);
   });
@@ -234,6 +260,14 @@ describe('mutations — POST /api/stories/:storyId/retry', () => {
     });
     assert.equal(res.status, 403);
   });
+
+  it('auth failure: invalid x-loom-token → 403', async () => {
+    const res = await fetch(`${baseUrl}/api/stories/story-any-id/retry`, {
+      method: 'POST',
+      headers: invalidToken,
+    });
+    assert.equal(res.status, 403);
+  });
 });
 
 // ─── POST /api/stop ──────────────────────────────────────────────────────────
@@ -253,6 +287,14 @@ describe('mutations — POST /api/stop', () => {
     const res = await fetch(`${baseUrl}/api/stop`, {
       method: 'POST',
       headers: noToken,
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('auth failure: invalid x-loom-token → 403', async () => {
+    const res = await fetch(`${baseUrl}/api/stop`, {
+      method: 'POST',
+      headers: invalidToken,
     });
     assert.equal(res.status, 403);
   });
