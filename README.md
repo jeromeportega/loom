@@ -379,13 +379,20 @@ the same SQLite state the supervisor writes to. **Run it from any directory** �
 it resolves the project root automatically: (1) CWD has `.loom/policy.yaml` →
 serve CWD; (2) `ProjectRegistry` has entries → serve the first registered
 project; (3) machine config has `project_root` → serve it; (4) exits with a
-clear error. The resolved project root is printed at startup. The list view
-**federates across every loom-init'ed repo on the machine** — one window, every
-active project, grouped by repo name (current project first). The detail view
-streams live worker stdout via SSE, surfaces planning artifacts (brief,
-PRD, architecture, epic YAML) inline for `planned` epics so you can review
-the plan before approving, and exposes inline controls: approve / reject /
-stop / per-worker kill. No external services — local only.
+clear error. The resolved project root is printed at startup.
+
+The dashboard is a **React single-page app** (Vite + React Router + TanStack
+Query + Tailwind/shadcn-ui) with a repository → epic → story **drill-down**: the
+homepage lists every registered repo as a card; clicking one shows its epics,
+then an epic's stories, then a story's detail. Each level is a real URL
+(`/repo/:slug/epic/:epicId/story/:storyId`), so the **browser back/forward
+buttons work** and any view is deep-linkable. No external services — local only.
+
+> **Migration in progress:** the drill-down navigation is complete on the React
+> stack. Live SSE worker-stdout streaming, the inline mutation controls
+> (approve / reject / stop / per-worker kill / retry), and the specialized
+> boards (Inbox / Fleet / Flywheel / Opportunities) are being migrated from the
+> previous vanilla-JS frontend; their backend endpoints remain served meanwhile.
 
 ---
 

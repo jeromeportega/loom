@@ -7,7 +7,7 @@ This is the **loom** repository: an open-source, self-learning, multi-agent engi
 ```
 packages/loom-core/   — orchestration engine (planner, supervisor, guardrails, skills, state)
 packages/loom-cli/    — CLI commands — the usability surface (init, epic, approve, run, status, diff, review, artifacts, traces, audit, autonomy)
-packages/loom-web/    — local web dashboard — the observability surface (Express + vanilla JS frontend)
+packages/loom-web/    — local web dashboard — the observability surface (Express JSON API + a React SPA: Vite, React Router, TanStack Query, Tailwind + shadcn/ui)
 skills/                — built-in loom skills (agentskills.io format)
 schemas/               — epic.schema.yaml, policy.schema.yaml
 docs/                  — MkDocs site (architecture, testing, runbooks)
