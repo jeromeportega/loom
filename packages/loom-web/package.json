@@ -1,7 +1,7 @@
 {
   "name": "@loom-ai/web",
   "version": "6.9.0",
-  "description": "Loom web dashboard — local Express + vanilla-JS UI over the SQLite state",
+  "description": "Loom web dashboard — local Express + React SPA over the SQLite state",
   "license": "UNLICENSED",
   "homepage": "https://github.com/jeromeportega/loom",
   "repository": { "type": "git", "url": "git+https://github.com/jeromeportega/loom.git" },
@@ -9,19 +9,39 @@
   "types": "dist/server/index.d.ts",
   "type": "commonjs",
   "scripts": {
-    "build": "rm -rf dist && tsc && npm run copy:public",
-    "copy:public": "mkdir -p dist/public && cp -R public/. dist/public/",
-    "dev": "tsc --watch",
-    "test": "node --test $(find dist -path '*__tests__*' -name '*.test.js')"
+    "build": "rm -rf dist && tsc -p tsconfig.server.json && vite build",
+    "dev": "vite",
+    "test:server": "node --test $(find dist -path '*__tests__*' -name '*.test.js')",
+    "test:client": "vitest run",
+    "test": "npm run test:server && npm run test:client"
   },
-  "files": ["dist", "public"],
+  "files": ["dist", "client-dist"],
   "dependencies": {
     "@loom-ai/core": "^6.9.0",
-    "express": "^4.19.2"
+    "@radix-ui/react-slot": "^1.0.2",
+    "@radix-ui/react-tabs": "^1.1.0",
+    "@tanstack/react-query": "^5.28.0",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.0",
+    "express": "^4.19.2",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "react-router-dom": "^6.23.0",
+    "tailwind-merge": "^2.2.0"
   },
   "devDependencies": {
+    "@testing-library/react": "^14.2.0",
     "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
-    "typescript": "^5.4.0"
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.2.0",
+    "autoprefixer": "^10.4.18",
+    "jsdom": "^24.0.0",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0",
+    "vitest": "^1.4.0"
   }
 }
