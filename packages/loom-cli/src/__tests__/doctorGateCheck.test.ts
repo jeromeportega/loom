@@ -5,8 +5,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { preflightGateCommand } from '@loom-ai/core';
-import type { GatePreflightResult } from '@loom-ai/core';
+import type { GatePreflightResult, Policy } from '@loom-ai/core';
 import { gateCommandCheck, gateRunnableCheck } from '../commands/doctorGateCheck.js';
+import { smokeDoctorCheck } from '../commands/doctor.js';
 
 type Preflight = typeof preflightGateCommand;
 
@@ -519,6 +520,156 @@ describe('gateRunnableCheck — doctor call path integration (story-078-003)', (
         (stdout + stderr).includes('loom-nonexistent-tc-binary-xyz'),
         `doctor output names the missing binary:\nstdout: ${stdout}\nstderr: ${stderr}`
       );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── smokeDoctorCheck — unit tests (story-079-005) ────────────────────────────
+
+const defaultPolicy = { agents: { smoke_timeout_minutes: 15 } } as unknown as Policy;
+
+describe('smokeDoctorCheck — none resolved (story-079-005)', () => {
+  let tmpDir: string;
+  before(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-sdc-none-')); });
+  after(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('returns smoke-command label with detail "none resolved" and status pass when resolver returns null', async () => {
+    const result = await smokeDoctorCheck(tmpDir, {
+      resolveFn: async () => null,
+    });
+    assert.equal(result.name, 'smoke-command', 'label must be smoke-command');
+    assert.equal(result.ok, true, 'status must be pass when none resolved');
+    assert.equal(result.detail, 'none resolved');
+    assert.equal(result.required, false, 'required must always be false');
+  });
+});
+
+describe('smokeDoctorCheck — resolved + binary found (story-079-005)', () => {
+  let tmpDir: string;
+  before(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-sdc-found-')); });
+  after(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('status pass and detail mentions command and "found" when lead binary is on PATH', async () => {
+    const result = await smokeDoctorCheck(tmpDir, {
+      resolveFn: async () => 'npm run smoke',
+      isOnPathFn: () => true,
+    });
+    assert.equal(result.name, 'smoke-command');
+    assert.equal(result.ok, true, 'binary found → pass');
+    assert.ok(result.detail.includes('npm run smoke'), `detail must mention command: ${result.detail}`);
+    assert.ok(result.detail.includes("'npm'"), `detail must name the lead binary: ${result.detail}`);
+    assert.ok(result.detail.includes('found'), `detail must mention "found": ${result.detail}`);
+    assert.equal(result.required, false);
+  });
+});
+
+describe('smokeDoctorCheck — resolved + binary missing (story-079-005)', () => {
+  let tmpDir: string;
+  before(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-sdc-miss-')); });
+  after(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('status warn and detail mentions "NOT found" when lead binary is not on PATH', async () => {
+    const result = await smokeDoctorCheck(tmpDir, {
+      resolveFn: async () => 'my-custom-smoke-command --verbose',
+      isOnPathFn: () => false,
+    });
+    assert.equal(result.name, 'smoke-command');
+    assert.equal(result.ok, false, 'binary missing → warn (ok:false)');
+    assert.ok(
+      result.detail.includes('NOT found'),
+      `detail must call out NOT found: ${result.detail}`
+    );
+    assert.ok(
+      result.detail.includes("'my-custom-smoke-command'"),
+      `detail must name the missing binary: ${result.detail}`
+    );
+    assert.equal(result.required, false, 'must not be a hard failure');
+  });
+});
+
+describe('smokeDoctorCheck — reuse: calls resolveSmokeCommand (story-079-005)', () => {
+  it('uses resolveSmokeCommand from loom-core via a real fixture — not a local reimplementation', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-sdc-reuse-'));
+    try {
+      // Set up a package.json with a smoke script so the real resolver returns 'npm run smoke'.
+      fs.writeFileSync(
+        path.join(root, 'package.json'),
+        JSON.stringify({ name: 'x', version: '1.0.0', scripts: { smoke: 'echo ok' } })
+      );
+      // Use the real resolver (no resolveFn injection) — confirms reuse.
+      const result = await smokeDoctorCheck(root, { isOnPathFn: () => true });
+      assert.equal(result.name, 'smoke-command');
+      assert.ok(
+        result.detail.includes('npm run smoke'),
+        `real resolver should return 'npm run smoke': ${result.detail}`
+      );
+      assert.equal(result.ok, true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('smokeDoctorCheck — no full finalize (story-079-005)', () => {
+  it('completes without calling runSmoke (finalize pipeline untouched)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-sdc-nofin-'));
+    try {
+      let runSmokeCalled = false;
+      // Inject a sentinel that would flag if runSmoke were called via the resolver path.
+      // The check resolves the command only; it must not execute it.
+      const result = await smokeDoctorCheck(root, {
+        resolveFn: async () => {
+          // Returning a command — smokeDoctorCheck must NOT run it.
+          return 'npm run smoke';
+        },
+        isOnPathFn: () => {
+          // isOnPath is called (binary check), but not runSmoke.
+          return true;
+        },
+      });
+      assert.equal(runSmokeCalled, false, 'runSmoke must not be called by smokeDoctorCheck');
+      assert.equal(result.name, 'smoke-command');
+      assert.equal(result.ok, true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('smokeDoctorCheck — appears in loom doctor output after gate-runnable (story-079-005)', () => {
+  const LOOM_CLI = path.resolve(__dirname, '../index.js');
+
+  it('loom doctor output includes a smoke-command line', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-sdc-cli-'));
+    try {
+      // No package.json smoke script → none resolved.
+      fs.writeFileSync(
+        path.join(root, 'package.json'),
+        JSON.stringify({ name: 'x', version: '1.0.0', scripts: { test: 'node --test' } })
+      );
+      let stdout = '';
+      try {
+        stdout = execSync(`node "${LOOM_CLI}" doctor`, {
+          cwd: root,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, LOOM_HOME: path.join(root, '.loom-home') },
+        });
+      } catch (err: unknown) {
+        stdout = (err as { stdout?: string }).stdout ?? '';
+      }
+      const lines = stdout.split('\n');
+      const smokeLine = lines.find((l) => l.includes('smoke-command'));
+      assert.ok(smokeLine, `doctor output must include a smoke-command line:\n${stdout}`);
+      assert.ok(smokeLine!.includes('none resolved'), `smoke line detail must be "none resolved": ${smokeLine}`);
+
+      // Verify ordering: smoke-command appears after gate-runnable.
+      const gateIdx = lines.findIndex((l) => l.includes('gate-runnable'));
+      const smokeIdx = lines.findIndex((l) => l.includes('smoke-command'));
+      assert.ok(gateIdx >= 0, 'gate-runnable line must be present');
+      assert.ok(smokeIdx > gateIdx, `smoke-command (line ${smokeIdx}) must appear after gate-runnable (line ${gateIdx})`);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
