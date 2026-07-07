@@ -1,20 +1,25 @@
 # Finalize Correctness Gates Runbook
 
-How to interpret and respond to the three correctness gates that run during `loom finalize`.
+How to interpret and respond to the five correctness gates that run during `loom finalize`.
 
 ---
 
 ## Overview
 
-After the integration gate (build/test suite) passes, loom runs three additional semantic
-checks before opening the PR. These catch interface drift and undocumented changes that the
-build suite cannot see:
+After the integration gate (build/test suite) passes, loom runs five additional semantic
+checks before opening the PR, followed by an optional adversarial review pass. These catch
+interface drift, undocumented changes, and code quality issues that the build suite cannot see:
 
 | Gate | What it catches | Can block? |
 |---|---|---|
 | **contract-symbol drift** | A symbol this epic's shared contract pins is missing from the delivered code | No — advisory |
-| **undocumented env-var** | A new `process.env.VAR` reference was added without a `.env.example` entry | **Yes** |
+| **undocumented env-var** | A new `process.env.VAR` reference was added without a `.env.example` entry | **Yes** (under `block`) |
 | **cross-epic regression** | A symbol a prior delivered epic pinned was present before this epic and is gone after | No — advisory |
+| **no-production-caller** | An exported symbol's only callers are test files (or it has zero callers) | **Yes** (under `block`) |
+| **dead-policy-field** | A policy field defined in `schemas/policy.schema.yaml` has zero production reads | **Yes** (under `block`) |
+
+After all five correctness gates, an optional **adversarial review pass** runs when
+`policy.agents.adversarial_review_model` is set — see [Adversarial review pass](#adversarial-review-pass) below.
 
 **Presence is tested against the integrated git tree, not against a diff.** A symbol counts as
 "present" if it appears — as a whole word — anywhere in the epic's integrated tree, including
@@ -25,9 +30,10 @@ where the gate runs in a separate integration worktree.
 
 ### Advisory vs. blocking
 
-Only the **undocumented-env-var** gate can withhold a PR. It is an exact set-membership test
-(a var the code reads that is not in `.env.example`, minus an ambient-var allowlist), so its
-findings are trustworthy enough to block.
+Three gates can withhold a PR under `block` mode: **undocumented-env-var**, **no-production-caller**,
+and **dead-policy-field**. Each is an exact set-membership or pattern test, so its findings are
+trustworthy enough to block. When any of these three finds something under `block`, `hardFail` is
+set, the PR is withheld, and the epic is set back to `in_progress`.
 
 The **contract-symbol drift** and **cross-epic regression** gates are heuristics over
 prose-heavy markdown contracts. They are genuinely useful signals but carry a non-zero
@@ -35,21 +41,21 @@ false-positive rate, so they are **always advisory** — printed for the operato
 hard-fail, regardless of policy mode. This prevents a mis-extracted prose word from blocking
 a correct epic.
 
-| `policy.agents.integration_gate` | env-var gate | drift / regression gates |
+| `policy.agents.integration_gate` | env-var / no-caller / dead-field gates | drift / regression gates |
 |---|---|---|
 | `off` | skipped | skipped |
 | `warn` (default) | findings printed; PR opens | findings printed; PR opens |
 | `block` | **PR withheld** if any finding; epic → `in_progress` | findings printed; PR still opens |
 
-When the env-var gate blocks, the note printed to the operator is:
+When a blocking gate fires, the note printed to the operator is:
 
 ```
-Finalize gates BLOCKED epic/<id>: symbol-drift=N, undoc-env-var=N, regression=N.
+Finalize gates BLOCKED epic/<id>: symbol-drift=N, undoc-env-var=N, regression=N, no-caller=N, dead-field=N.
 Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.
 ```
 
-(The `symbol-drift`/`regression` counts are shown for context, but only `undoc-env-var` drives
-the block.)
+(The `symbol-drift`/`regression` counts are shown for context, but only `undoc-env-var`, `no-caller`,
+and `dead-field` drive the block.)
 
 ---
 
@@ -142,9 +148,74 @@ downstream epic.
 
 ---
 
+## Gate 4: No-production-caller (blocking under `block`)
+
+**What it checks:** exported symbols introduced or touched by this epic whose only import/call
+sites across the **entire repo** are test files (`.test.ts`, `.spec.ts`, `__tests__/`), or that
+have zero callers at all. A symbol with at least one production caller — including cross-package
+imports (e.g. `loom-web` importing from `loom-core`) — is never flagged.
+
+**When it fires:** a story exported a function, class, or constant that production code never
+calls. This commonly happens when a worker adds an integration point but the consuming site was
+either forgotten or lives in a dependent story not yet merged.
+
+**Audit action:** `epic_finalize_no_caller` with `{ count: N, findings: [...] }`.
+
+**Diagnostic format** (emitted to stderr per finding):
+
+```
+[finalize] no-production-caller: 'exportedHelperFn' (src/lib/utils.ts) — only test callers found; annotate with // @loom-public-api to suppress
+```
+
+**How to fix:**
+1. If the export is intentionally part of a public API surface not yet consumed by production
+   code, annotate the export with `// @loom-public-api` on the immediately preceding non-blank
+   line to suppress the finding unconditionally.
+2. If the export is supposed to have a production caller, add the missing call site and re-run.
+3. If the export is dead code, remove it.
+
+Under `block` mode, a finding exits non-zero and withholds the PR. Under `warn` mode, the
+finding is printed but the PR opens. Findings always surface as `⚠ warn` items in `loom doctor`
+regardless of gate mode.
+
+---
+
+## Gate 5: Dead-policy-field (blocking under `block`)
+
+**What it checks:** every field in the `agents` section of `schemas/policy.schema.yaml` to
+verify it has at least one production read site (a `policy.agents.<field>` access in
+non-test source files). Fields with zero production reads — or whose only reads are inside test
+files — are flagged as dead policy fields.
+
+**When it fires:** a story added or updated a policy field in the schema but no production code
+actually reads it. This catches fields that were defined in the contract but never wired into
+the runtime.
+
+**Audit action:** `epic_finalize_dead_field` with `{ count: N, findings: [...] }`.
+
+**Diagnostic format** (emitted to stderr per finding):
+
+```
+[finalize] dead-policy-field: 'adversarial_review_model' — defined in agents schema; zero production reads found
+```
+
+**How to fix:**
+1. If the field is reserved for future use or is an intentional public API knob not yet read
+   by runtime code, annotate the schema entry with `# @loom-public-api` on the immediately
+   preceding line to suppress the finding unconditionally.
+2. If the field is supposed to be wired, add the missing read site(s) in production code and
+   re-run.
+3. If the field is genuinely unused, remove it from the schema.
+
+Under `block` mode, a finding exits non-zero and withholds the PR. Under `warn` mode, the
+finding is printed but the PR opens. Findings always surface as `⚠ warn` items in `loom doctor`
+regardless of gate mode.
+
+---
+
 ## Policy control
 
-All three gates are controlled by a single policy knob (shared with the build/test gate):
+All five correctness gates are controlled by a single policy knob (shared with the build/test gate):
 
 ```yaml
 # .loom/policy.yaml
@@ -153,9 +224,10 @@ agents:
 ```
 
 - `warn` (default) — build suite runs; all gate findings are advisory; the PR always opens.
-- `block` — the build suite and the **undocumented-env-var** gate can withhold the PR; drift
-  and regression findings remain advisory.
-- `off` — skips the build/test suite AND all three finalize gates entirely.
+- `block` — the build suite and the **undocumented-env-var**, **no-production-caller**, and
+  **dead-policy-field** gates can withhold the PR; contract-symbol drift and cross-epic
+  regression findings remain advisory.
+- `off` — skips the build/test suite AND all five finalize gates entirely.
 
 > **Note:** there is no separate knob to make drift/regression blocking. They are advisory by
 > design until the contract format is structured enough to extract symbols without
@@ -336,6 +408,84 @@ resumes `finalizing`/`publish_pending` epics):
 4. To bypass smoke for this landing, set `integration_gate: warn` (or `off`) in `policy.yaml`
    before re-running — the late-bound policy re-read picks it up (an `epic_policy_rebound`
    audit row records the change).
+
+---
+
+## Adversarial review pass
+
+After all five correctness gates (and the smoke gate), an optional independent review runs when
+`policy.agents.adversarial_review_model` is set.
+
+### What it does
+
+A `CodeReviewAgent` is invoked with an **adversarial system prompt** that instructs it to:
+
+- Treat worker-authored tests as self-serving evidence — demand proof from production call
+  sites, not from test assertions.
+- Hunt real shell invocations and config-propagation bugs that green CI cannot catch.
+- Actively look for false-positive heuristics — tests that verify a stub rather than the real
+  integration.
+- Treat green CI as insufficient evidence of correctness.
+
+The model used is taken from `policy.agents.adversarial_review_model` — deliberately separate
+from `policy.agents.model` (the worker model) so the reviewer can be a different, more
+powerful tier.
+
+### Finalize sequence position
+
+```
+merge story branches
+  ↓
+integration gate (build / test suite)
+  ↓
+correctness gates (symbol drift · env-var · regression · no-production-caller · dead-policy-field)
+  ↓
+smoke gate
+  ↓
+adversarial review pass  ←── this section (when adversarial_review_model is set)
+  ↓
+push → open PR
+```
+
+### Activation
+
+```yaml
+# .loom/policy.yaml
+agents:
+  adversarial_review_model: claude-opus-4-8   # any valid model id
+```
+
+When absent or empty: **zero behavior change** — no review runs, no audit entry is written, and
+the finalize sequence is byte-identical to the baseline.
+
+### Findings and severity
+
+| Severity | `loom doctor` display | `required` |
+|---|---|---|
+| `blocker` | `✗  error` | `true` |
+| `should-fix` | `⚠  warn` | `false` |
+| `nit` | `⚠  warn` | `false` |
+
+Findings appear in `loom doctor` output after the run completes. They do **not** withhold the
+PR on their own — the adversarial review is an advisory signal, not a gate that blocks landing.
+To withhold the PR on adversarial findings you must add a separate story to act on the
+`loom doctor` output before re-running.
+
+### Audit row
+
+Every adversarial review run writes an `adversarial_review` audit entry:
+
+```
+action:  adversarial_review
+detail:  { "model": "<adversarial_review_model value>", "findings": { findings: [...], summary: "..." } }
+agent_id, command, allowed, policy_rule: null
+```
+
+Inspect via:
+
+```bash
+loom audit | grep adversarial_review
+```
 
 ---
 
