@@ -1,6 +1,6 @@
 {
   "name": "@loom-ai/web",
-  "version": "6.10.0",
+  "version": "6.11.0",
   "description": "Loom web dashboard — local Express + React SPA over the SQLite state",
   "license": "UNLICENSED",
   "homepage": "https://github.com/jeromeportega/loom",
@@ -17,7 +17,7 @@
   },
   "files": ["dist", "client-dist"],
   "dependencies": {
-    "@loom-ai/core": "^6.10.0",
+    "@loom-ai/core": "^6.11.0",
     "express": "^4.19.2"
   },
   "devDependencies": {
