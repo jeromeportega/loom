@@ -32,7 +32,7 @@ const PUBLIC_API_ANNOTATION = '@loom-public-api';
  * Returns true when `filePath` is a test file.
  * Covers the common conventions used in this monorepo:
  *   - *.test.ts / *.spec.ts (and .js/.mts/.mjs variants)
- *   - files under __tests__/ directory segments
+ *   - files under __tests__/ directory segments (including root-level __tests__/)
  *   - files under test/ directory segments (e.g. packages/loom-core/test/)
  */
 function isTestFile(filePath: string): boolean {
@@ -40,7 +40,7 @@ function isTestFile(filePath: string): boolean {
   return (
     /[._]test\.[mc]?[jt]sx?$/.test(norm) ||
     /[._]spec\.[mc]?[jt]sx?$/.test(norm) ||
-    /\/__tests__\//.test(norm) ||
+    /(^|\/)__tests__\//.test(norm) ||
     /(^|\/)test\//.test(norm)
   );
 }
@@ -77,8 +77,13 @@ function extractExportsFromDiff(epicDiff: string): ExportEntry[] {
       continue;
     }
 
-    // Skip --- headers and removed lines entirely.
-    if (rawLine.startsWith('---') || rawLine.startsWith('-')) continue;
+    // Skip removed diff lines (covers both the --- old-file header and any -prefixed
+    // removal). Reset prevContent so a @loom-public-api annotation cannot bleed
+    // forward through a removed declaration onto the next added export.
+    if (rawLine.startsWith('-')) {
+      prevContent = '';
+      continue;
+    }
 
     const isAdded = rawLine.startsWith('+') && !rawLine.startsWith('+++');
     const isContext = rawLine.startsWith(' ');
@@ -125,8 +130,17 @@ function extractExportsFromDiff(epicDiff: string): ExportEntry[] {
  * that mention `symbol` as a whole word. Returns repo-relative paths.
  * The export's own source file (`sourceFile`) is excluded.
  * Ignores node_modules, dist, and dist-test directories.
+ *
+ * Uses an explicit extended-regex word boundary (`[A-Za-z0-9_$]`) rather than
+ * grep -w because -w treats `$` as a non-word character: searching for `stream$`
+ * with -w would match inside `notstream$` since grep sees a boundary at `$`.
+ * The explicit character class covers the full TypeScript identifier alphabet.
  */
 function findCallers(symbol: string, sourceFile: string, projectRoot: string): string[] {
+  // Escape $ in the symbol for use in an extended regex pattern.
+  const escaped = symbol.replace(/\$/g, '\\$');
+  const pattern = `(^|[^A-Za-z0-9_$])${escaped}([^A-Za-z0-9_$]|$)`;
+
   let out: string;
   try {
     out = execFileSync(
@@ -134,7 +148,7 @@ function findCallers(symbol: string, sourceFile: string, projectRoot: string): s
       [
         '-r',                       // recursive
         '-l',                       // list matching files only (no line output)
-        '-w',                       // whole-word match
+        '-E',                       // extended regex (portable; macOS BSD grep supports -E)
         '--include=*.ts',
         '--include=*.tsx',
         '--include=*.mts',
@@ -145,7 +159,7 @@ function findCallers(symbol: string, sourceFile: string, projectRoot: string): s
         '--exclude-dir=dist',
         '--exclude-dir=dist-test',
         '--exclude-dir=.git',
-        '-e', symbol,
+        '-e', pattern,
         projectRoot,
       ],
       {
@@ -199,13 +213,16 @@ export function checkNoProductionCallers(opts: {
 
   const raw = extractExportsFromDiff(opts.epicDiff);
 
-  // Deduplicate by symbol name; keep first occurrence if a symbol appears in
-  // multiple hunks or files within the same diff.
+  // Deduplicate by composite key (symbol + file) so that identically-named
+  // exports from different files each receive their own caller search. Deduping
+  // by symbol name alone would silently drop same-named exports from any file
+  // after the first occurrence in the diff.
   const seen = new Set<string>();
   const exports: ExportEntry[] = [];
   for (const e of raw) {
-    if (!seen.has(e.symbol)) {
-      seen.add(e.symbol);
+    const key = `${e.symbol}:${e.file}`;
+    if (!seen.has(key)) {
+      seen.add(key);
       exports.push(e);
     }
   }

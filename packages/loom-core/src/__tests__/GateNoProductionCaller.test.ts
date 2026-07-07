@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { checkNoProductionCallers } from '../orchestrator/GateNoProductionCaller.js';
+import { runFinalizeGates } from '../orchestrator/FinalizeGates.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -355,5 +356,178 @@ describe('checkNoProductionCallers — performance', () => {
       `durationMs ${result.durationMs} must be under 5000ms`
     );
     assert.equal(result.scannedSymbols.length, 10);
+  });
+});
+
+// ─── Regression: isTestFile must match root-level __tests__/ (no leading /) ──
+
+describe('checkNoProductionCallers — isTestFile root-level __tests__ regression', () => {
+  it('counts a caller at __tests__/foo.test.ts (no leading slash) as a test file', () => {
+    // The caller file is at the root of the project, so path.relative returns
+    // '__tests__/foo.test.ts' with no leading slash.
+    write('__tests__/foo.test.ts', "import { rootTestFn } from '../src/rootTest';\n");
+
+    const result = checkNoProductionCallers({
+      epicDiff: diff('src/rootTest.ts', ['export function rootTestFn() { return 0; }']),
+      projectRoot: tmpDir,
+    });
+
+    assert.equal(result.findings.length, 1, 'a root-level __tests__/ caller must still flag the symbol');
+    assert.equal(result.findings[0].symbol, 'rootTestFn');
+    assert.ok(
+      result.findings[0].callers.some(c => c.startsWith('__tests__')),
+      'caller path starting with __tests__/ must appear in callers list'
+    );
+  });
+});
+
+// ─── Regression: annotation bleed through removed lines ───────────────────────
+
+describe('checkNoProductionCallers — annotation bleed through removed lines', () => {
+  it('does not carry a @loom-public-api annotation forward past a removed declaration', () => {
+    // Sequence: context annotation → removed old export → added new export.
+    // The annotation must NOT suppress the new export's finding.
+    write('__tests__/bleed.test.ts', "import { newFn } from '../src/bleed';\n");
+
+    const epicDiff = [
+      '--- a/src/bleed.ts',
+      '+++ b/src/bleed.ts',
+      '@@ -1,2 +1,2 @@',
+      ' // @loom-public-api',
+      '-export function oldFn() {}',
+      '+export function newFn() {}',
+    ].join('\n');
+
+    const result = checkNoProductionCallers({ epicDiff, projectRoot: tmpDir });
+
+    assert.equal(result.findings.length, 1, 'newFn must be flagged — annotation must not bleed past removed line');
+    assert.equal(result.findings[0].symbol, 'newFn');
+  });
+});
+
+// ─── Regression: composite key deduplication ──────────────────────────────────
+
+describe('checkNoProductionCallers — composite key deduplication', () => {
+  it('does not let an annotated same-named export from file B shadow an unannotated export from file A', () => {
+    // fileB (annotated) appears FIRST in the diff; fileA (unannotated) appears second.
+    // With old symbol-only dedup, fileB's entry would be kept (first seen), fileA's
+    // dropped. Since fileB is annotated it is skipped, and fileA's test-only export
+    // would never be flagged — a silent false negative.
+    // With composite-key dedup, both entries are kept and scanned independently.
+    write('__tests__/dedup.test.ts', "import { dupFoo } from '../src/fileA';\n");
+
+    const epicDiff = [
+      '--- /dev/null',
+      '+++ b/src/fileB.ts',      // annotated export appears first in diff
+      '@@ -0,0 +1,2 @@',
+      '+// @loom-public-api',
+      '+export function dupFoo() { return 2; }',
+      '--- /dev/null',
+      '+++ b/src/fileA.ts',      // unannotated export appears second
+      '@@ -0,0 +1,1 @@',
+      '+export function dupFoo() { return 1; }',
+    ].join('\n');
+
+    const result = checkNoProductionCallers({ epicDiff, projectRoot: tmpDir });
+
+    // Both files must appear in scannedSymbols (one entry per file).
+    assert.equal(
+      result.scannedSymbols.filter(s => s === 'dupFoo').length,
+      2,
+      'same-named exports from different files must each appear in scannedSymbols'
+    );
+    // fileA.dupFoo is unannotated with a test-only caller → must be flagged.
+    const flagged = result.findings.filter(f => f.symbol === 'dupFoo');
+    assert.equal(flagged.length, 1, 'fileA.dupFoo (unannotated, test-only) must be flagged');
+    assert.equal(flagged[0].file, 'src/fileA.ts');
+  });
+});
+
+// ─── runFinalizeGates wiring ──────────────────────────────────────────────────
+
+describe('runFinalizeGates — noCallers wiring', () => {
+  it('sets hardFail:true and populates noCallers.findings when export has test-only caller', async () => {
+    // Set up a minimal project: .env.example to silence the env-var gate,
+    // and a test file that imports the symbol but no production caller.
+    write('.env.example', '');
+    write('__tests__/wired.test.ts', "import { wiredFn } from '../src/wired';\n");
+
+    const epicDiff = diff('src/wired.ts', ['export function wiredFn() { return 1; }']);
+
+    const result = await runFinalizeGates({
+      contractRoot: tmpDir,
+      treeRoot: tmpDir,
+      headRef: 'HEAD',
+      baseRef: 'HEAD~1',
+      epicId: 'epic-test',
+      epicDiff,
+      mode: 'block',
+      deliveredEpicIds: [],
+    });
+
+    assert.ok(result.noCallers, 'noCallers field must be present');
+    assert.equal(result.noCallers.findings.length, 1, 'one no-caller finding expected');
+    assert.equal(result.noCallers.findings[0].symbol, 'wiredFn');
+    assert.equal(result.hardFail, true, 'hardFail must be true in block mode with a no-caller finding');
+  });
+
+  it('does not set hardFail when the export has a production caller', async () => {
+    write('.env.example', '');
+    write('src/prodCaller.ts', "import { wiredProdFn } from './wired';\nwiredProdFn();\n");
+
+    const epicDiff = diff('src/wired.ts', ['export function wiredProdFn() { return 2; }']);
+
+    const result = await runFinalizeGates({
+      contractRoot: tmpDir,
+      treeRoot: tmpDir,
+      headRef: 'HEAD',
+      baseRef: 'HEAD~1',
+      epicId: 'epic-test',
+      epicDiff,
+      mode: 'block',
+      deliveredEpicIds: [],
+    });
+
+    assert.ok(result.noCallers, 'noCallers field must be present');
+    assert.equal(result.noCallers.findings.length, 0, 'no findings when production caller exists');
+    assert.equal(result.hardFail, false, 'hardFail must be false when no no-caller findings');
+  });
+
+  it('returns empty noCallers when mode is off', async () => {
+    const result = await runFinalizeGates({
+      contractRoot: tmpDir,
+      treeRoot: tmpDir,
+      headRef: 'HEAD',
+      baseRef: 'HEAD~1',
+      epicId: 'epic-test',
+      epicDiff: diff('src/off.ts', ['export function offFn() {}']),
+      mode: 'off',
+      deliveredEpicIds: [],
+    });
+
+    assert.ok(result.noCallers, 'noCallers field must be present even in off mode');
+    assert.deepEqual(result.noCallers.findings, [], 'no findings in off mode');
+    assert.equal(result.hardFail, false);
+  });
+
+  it('does not hard-fail in warn mode even when no-caller findings exist', async () => {
+    write('.env.example', '');
+    write('__tests__/warnMode.test.ts', "import { warnFn } from '../src/warnMode';\n");
+
+    const epicDiff = diff('src/warnMode.ts', ['export function warnFn() { return 3; }']);
+
+    const result = await runFinalizeGates({
+      contractRoot: tmpDir,
+      treeRoot: tmpDir,
+      headRef: 'HEAD',
+      baseRef: 'HEAD~1',
+      epicId: 'epic-test',
+      epicDiff,
+      mode: 'warn',
+      deliveredEpicIds: [],
+    });
+
+    assert.equal(result.noCallers.findings.length, 1, 'finding exists in warn mode');
+    assert.equal(result.hardFail, false, 'hardFail must be false in warn mode regardless of findings');
   });
 });

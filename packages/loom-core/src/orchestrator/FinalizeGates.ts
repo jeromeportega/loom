@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { SharedContract } from './SharedContract.js';
 import { checkUndocumentedEnvVars } from './GateEnvVar.js';
 import { checkCrossEpicRegressions } from './GateRegression.js';
+import { checkNoProductionCallers, type NoCallerResult } from './GateNoProductionCaller.js';
 
 export type FinalizeGateMode = 'off' | 'warn' | 'block';
 
@@ -27,9 +28,10 @@ export interface FinalizeGatesResult {
   symbolDrift: SymbolDriftFinding[];
   undocumentedEnvVars: EnvVarFinding[];
   regressions: RegressionFinding[];
-  /** true only when mode === 'block' AND the (precise) env-var gate found an
-   *  undocumented variable. Symbol drift and cross-epic regression are advisory
-   *  and never contribute to hardFail. */
+  noCallers: NoCallerResult;
+  /** true when mode === 'block' AND (undocumented env-var found OR
+   *  noCallers.findings.length > 0). Symbol drift and cross-epic regression
+   *  are advisory and never contribute to hardFail. */
   hardFail: boolean;
 }
 
@@ -227,8 +229,9 @@ export async function runFinalizeGates(opts: {
   mode: FinalizeGateMode;
   deliveredEpicIds: string[];
 }): Promise<FinalizeGatesResult> {
+  const emptyNoCallers: NoCallerResult = { findings: [], scannedSymbols: [], durationMs: 0 };
   if (opts.mode === 'off') {
-    return { symbolDrift: [], undocumentedEnvVars: [], regressions: [], hardFail: false };
+    return { symbolDrift: [], undocumentedEnvVars: [], regressions: [], noCallers: emptyNoCallers, hardFail: false };
   }
 
   // ── Symbol-drift gate: this epic's own pinned symbols must exist at head. ──
@@ -283,20 +286,25 @@ export async function runFinalizeGates(opts: {
     }
   }
 
-  // Only the undocumented-env-var gate is precise enough to WITHHOLD a PR: it is
-  // an exact set-membership test (an env var the code reads that is absent from
-  // .env.example), with an ambient-var allowlist, so its findings are real. The
-  // symbol-drift and cross-epic-regression gates are heuristics over
-  // prose-heavy markdown contracts — genuinely useful as advisory signals but
-  // still carrying a non-zero false-positive rate (measured on loom's own 64
-  // contracts). They are therefore ALWAYS advisory: emitted as warnings for the
-  // operator, but never a hard-fail, regardless of mode. Escalating them to a
-  // blocker would let a mis-extracted prose word withhold a correct epic — the
-  // exact failure the review of this gate flagged. `mode` still gates whether
-  // they run at all (mode='off' skips everything above).
-  const hardFail = opts.mode === 'block' && undocumentedEnvVars.length > 0;
+  // ── No-production-caller gate: exported symbols in the diff that are only
+  // called by test files are flagged as possibly-cosmetic wiring. ──────────────
+  const noCallers = checkNoProductionCallers({
+    epicDiff: opts.epicDiff,
+    projectRoot: opts.treeRoot,
+  });
 
-  return { symbolDrift, undocumentedEnvVars, regressions, hardFail };
+  // Only the undocumented-env-var and no-production-caller gates are precise
+  // enough to WITHHOLD a PR: both are exact set-membership / pattern tests with
+  // allowlists, so their findings are real. The symbol-drift and cross-epic-
+  // regression gates are heuristics over prose-heavy markdown contracts — useful
+  // as advisory signals but still carrying a non-zero false-positive rate. They
+  // are therefore ALWAYS advisory: emitted as warnings for the operator, but
+  // never a hard-fail, regardless of mode. `mode` still gates whether they run
+  // at all (mode='off' skips everything above).
+  const hardFail =
+    opts.mode === 'block' && (undocumentedEnvVars.length > 0 || noCallers.findings.length > 0);
+
+  return { symbolDrift, undocumentedEnvVars, regressions, noCallers, hardFail };
 }
 
 /**
