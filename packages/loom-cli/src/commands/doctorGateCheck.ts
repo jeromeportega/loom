@@ -190,7 +190,12 @@ export async function gateRunnableCheck(
     const gatePath = process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
     const binaryResolvesFn = deps?.binaryResolves ?? ((b: string) => binaryOnPath(b, gatePath));
 
-    const plan = resolveGatePlanFn(projectRoot, { testCommand });
+    // Pass testCommands so the resolved plan mirrors what the REAL gate will run:
+    // when test_commands is configured, resolveGatePlan returns source
+    // 'test_commands' with no auto-detected steps, so we don't flag auto-detected
+    // binaries (tsc/next/…) the gate will never invoke. The test_commands entries'
+    // own binaries are still verified by the dedicated loop below.
+    const plan = resolveGatePlanFn(projectRoot, { testCommand, testCommands: testCommandEntries });
 
     if (plan.steps.length === 0 && testCommandEntries.length === 0) {
       return {
