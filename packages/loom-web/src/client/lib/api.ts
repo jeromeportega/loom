@@ -31,3 +31,28 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   if (TOKEN) headers.set('x-loom-token', TOKEN);
   return fetch(path, { ...init, headers });
 }
+
+/**
+ * Builds the URL for an EventSource (SSE) connection, carrying the auth token as
+ * a `?token=` query param. EventSource cannot set request headers, so the token —
+ * which `accessGuard` also accepts as a query param — must ride in the URL.
+ * Without this, every SSE connection 401s in the default (token) launch mode and
+ * live log streaming silently never works. Localhost-only, per-launch token.
+ */
+export function eventSourceUrl(path: string): string {
+  if (!TOKEN) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}token=${encodeURIComponent(TOKEN)}`;
+}
+
+/** POST helper: sends JSON body with auth token. Returns raw Response — never throws on non-2xx. */
+export function apiPost(path: string, body?: unknown): Promise<Response> {
+  const headers = new Headers();
+  if (TOKEN) headers.set('x-loom-token', TOKEN);
+  headers.set('Content-Type', 'application/json');
+  return fetch(path, {
+    method: 'POST',
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+}

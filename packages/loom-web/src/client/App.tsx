@@ -9,8 +9,8 @@ const RepositoryList = lazy(() =>
 const EpicList = lazy(() =>
   import('./views/EpicList').then((m) => ({ default: m.EpicList }))
 );
-const StoryList = lazy(() =>
-  import('./views/StoryList').then((m) => ({ default: m.StoryList }))
+const EpicDetail = lazy(() =>
+  import('./views/EpicDetail').then((m) => ({ default: m.EpicDetail }))
 );
 const StoryDetail = lazy(() =>
   import('./views/StoryDetail').then((m) => ({ default: m.StoryDetail }))
@@ -30,7 +30,7 @@ export function AppContent() {
         <Routes>
           <Route path="/" element={<RepositoryList />} />
           <Route path="/repo/:slug" element={<EpicList />} />
-          <Route path="/repo/:slug/epic/:epicId" element={<StoryList />} />
+          <Route path="/repo/:slug/epic/:epicId" element={<EpicDetail />} />
           <Route path="/repo/:slug/epic/:epicId/story/:storyId" element={<StoryDetail />} />
         </Routes>
       </Suspense>

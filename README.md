@@ -396,11 +396,7 @@ then an epic's stories, then a story's detail. Each level is a real URL
 (`/repo/:slug/epic/:epicId/story/:storyId`), so the **browser back/forward
 buttons work** and any view is deep-linkable. No external services — local only.
 
-> **Migration in progress:** the drill-down navigation is complete on the React
-> stack. Live SSE worker-stdout streaming, the inline mutation controls
-> (approve / reject / stop / per-worker kill / retry), and the specialized
-> boards (Inbox / Fleet / Flywheel / Opportunities) are being migrated from the
-> previous vanilla-JS frontend; their backend endpoints remain served meanwhile.
+The React dashboard ships **live worker output streaming** (SSE-backed story log panel), **inline mutation controls** (approve, reject, stop, kill, and retry — including clean-retry — directly from the story detail view), and **planning-artifact review** (brief, PRD, architecture, and epic YAML rendered inline above the Approve button for `planned` epics).
 
 ---
 

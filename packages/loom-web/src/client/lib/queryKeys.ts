@@ -4,4 +4,6 @@ export const queryKeys = {
   stories: (slug: string, epicId: string) => ['repos', slug, epicId, 'stories'] as const,
   story: (slug: string, epicId: string, storyId: string) =>
     ['repos', slug, epicId, 'stories', storyId] as const,
+  planningArtifacts: (slug: string, epicId: string) =>
+    ['repos', slug, epicId, 'planning-artifacts'] as const,
 };

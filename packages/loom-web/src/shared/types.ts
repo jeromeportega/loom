@@ -222,6 +222,15 @@ export interface CostReport {
   };
 }
 
+/** Wire shape for the `output` SSE event — matches the server emit in events.ts. */
+export interface SseOutputPayload {
+  agent_id:   string;
+  story_id:   string;
+  from:       number;
+  bytes:      string;
+  byteLength: number;
+}
+
 /**
  * SSE event envelope. `kind` matches the SSE event name; `data` is the
  * payload. The /api/events endpoint emits diffs against the previous poll,
@@ -237,7 +246,7 @@ export type LiveEvent =
   | { kind: 'hello'; data: { epoch: string } }
   | { kind: 'epic'; data: EpicStatus }
   | { kind: 'agent'; data: AgentSummary & { epic_id: string } }
-  | { kind: 'output'; data: { agent_id: string; story_id: string; chunk: string } }
+  | { kind: 'output'; data: SseOutputPayload }
   | { kind: 'planning-output'; data: { epic_id: string; phase: PlanningPhase | null; chunk: string } };
 
 export type { PlanningPhase };
