@@ -35,7 +35,7 @@ export class SmokeGateError extends Error {
     super(
       result.timeoutKilled
         ? `Smoke gate timed out after ${result.durationSeconds}s`
-        : `Smoke gate failed with exit code ${result.exitCode}`
+        : `Smoke gate failed with exit code ${result.exitCode ?? '(signal)'}`
     );
     this.name = 'SmokeGateError';
   }
@@ -717,10 +717,14 @@ export class EpicFinalizer {
     // audit); resolver returning null silently skips; 'block' withholds the PR
     // on failure; 'warn' annotates and continues (ADR-005).
     if (this.gateMode !== 'off') {
+      const smokeTimeoutMinutes = this.opts.smokeTimeoutMinutes ?? 15;
+      // resolveSmokeCommand only reads policy.agents.smoke_command — the cast is
+      // safe. Threading the full Policy through EpicFinalizerOptions is avoided
+      // to keep the interface lean; smoke-specific fields live in opts.smokeCommand.
       const policyForSmoke = {
         agents: {
           smoke_command: this.opts.smokeCommand,
-          smoke_timeout_minutes: this.opts.smokeTimeoutMinutes ?? 15,
+          smoke_timeout_minutes: smokeTimeoutMinutes,
         },
       } as unknown as Policy;
       const resolvedSmokeCmd = await resolveSmokeCommand(gitRoot, policyForSmoke);
@@ -729,29 +733,30 @@ export class EpicFinalizer {
         const smokeResult = await runSmoke({
           command:        resolvedSmokeCmd,
           worktreeCwd:    gitRoot,
-          timeoutMinutes: this.opts.smokeTimeoutMinutes ?? 15,
+          timeoutMinutes: smokeTimeoutMinutes,
           runner:         this.opts.smokeRunner,
         });
+        const smokeExitCode = smokeResult.exitCode ?? -1;
         audit.record({
           action:  'smoke_gate',
           command: resolvedSmokeCmd,
-          allowed: smokeResult.exitCode === 0,
+          allowed: smokeExitCode === 0,
           detail:  {
-            exit_code:        smokeResult.exitCode,
+            exit_code:        smokeExitCode,
             duration_seconds: smokeResult.durationSeconds,
             timeout_killed:   smokeResult.timeoutKilled,
             gate_mode:        this.gateMode,
           },
         });
-        if (smokeResult.exitCode !== 0) {
+        if (smokeExitCode !== 0) {
           if (this.gateMode === 'block') {
             epicStore.updateStatus(epicId, 'in_progress',
-              `smoke gate failed: exit ${smokeResult.exitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''}`
+              `smoke gate failed: exit ${smokeExitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''}`
             );
             throw new SmokeGateError(smokeResult);
           } else {
             console.warn(
-              `[finalize] smoke: exit ${smokeResult.exitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''} — proceeding in warn mode`
+              `[finalize] smoke: exit ${smokeExitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''} — proceeding in warn mode`
             );
           }
         }
