@@ -1,6 +1,6 @@
 # Finalize Correctness Gates Runbook
 
-How to interpret and respond to the three correctness gates that run during `loom finalize`.
+How to interpret and respond to the five correctness gates that run during `loom finalize`.
 
 ---
 
@@ -215,7 +215,7 @@ regardless of gate mode.
 
 ## Policy control
 
-All three gates are controlled by a single policy knob (shared with the build/test gate):
+All five correctness gates are controlled by a single policy knob (shared with the build/test gate):
 
 ```yaml
 # .loom/policy.yaml
@@ -226,7 +226,7 @@ agents:
 - `warn` (default) — build suite runs; all gate findings are advisory; the PR always opens.
 - `block` — the build suite and the **undocumented-env-var** gate can withhold the PR; drift
   and regression findings remain advisory.
-- `off` — skips the build/test suite AND all three finalize gates entirely.
+- `off` — skips the build/test suite AND all five finalize gates entirely.
 
 > **Note:** there is no separate knob to make drift/regression blocking. They are advisory by
 > design until the contract format is structured enough to extract symbols without

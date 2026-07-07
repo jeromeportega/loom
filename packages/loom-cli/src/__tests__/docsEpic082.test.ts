@@ -19,12 +19,12 @@ describe('epic-082-005: docs/capabilities.md — new check rows and policy knob'
   it('contains a row for the dead-policy-field check', () => {
     assert.match(
       doc,
-      /dead.policy.field/i,
+      /dead-policy-field/i,
       'capabilities.md must contain a row for the dead-policy-field check'
     );
     assert.match(
       doc,
-      /dead.policy.field[\s\S]{0,500}schema|schemas[\s\S]{0,500}dead.policy.field/i,
+      /dead-policy-field[\s\S]{0,500}schema|schemas[\s\S]{0,500}dead-policy-field/i,
       'dead-policy-field row must reference the schema'
     );
   });
@@ -66,7 +66,7 @@ describe('epic-082-005: docs/capabilities.md — new check rows and policy knob'
     if (notDoSection) {
       assert.doesNotMatch(
         notDoSection[0],
-        /dead.policy.field/i,
+        /dead-policy-field/i,
         '"What loom does NOT do" must not list the dead-policy-field check'
       );
       assert.doesNotMatch(
@@ -89,7 +89,7 @@ describe('epic-082-005: README.md — check types and knob', () => {
   it('mentions the dead-policy-field check', () => {
     assert.match(
       doc,
-      /dead.policy.field/i,
+      /dead-policy-field/i,
       'README.md must mention the dead-policy-field check'
     );
   });
@@ -138,12 +138,12 @@ describe('epic-082-005: docs/runbooks/finalize.md — exit-non-zero conditions a
   it('describes the dead-policy-field exit-non-zero condition', () => {
     assert.match(
       doc,
-      /dead.policy.field/i,
+      /dead-policy-field/i,
       'finalize runbook must describe the dead-policy-field check'
     );
     assert.match(
       doc,
-      /dead.policy.field[\s\S]{0,1000}block|block[\s\S]{0,1000}dead.policy.field/i,
+      /dead-policy-field[\s\S]{0,1000}block|block[\s\S]{0,1000}dead-policy-field/i,
       'finalize runbook must describe blocking behavior for dead-policy-field'
     );
   });
