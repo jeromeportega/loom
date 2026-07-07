@@ -21,7 +21,8 @@ class MockEventSource {
   static instances: MockEventSource[] = [];
   url: string;
   close: ReturnType<typeof vi.fn>;
-  private listeners: Record<string, Array<(e: { data: string }) => void>> = {};
+  onerror: ((e: Event) => void) | null = null;
+  private listeners: Record<string, Array<(e: unknown) => void>> = {};
 
   constructor(url: string) {
     this.url = url;
@@ -29,7 +30,7 @@ class MockEventSource {
     MockEventSource.instances.push(this);
   }
 
-  addEventListener(type: string, fn: (e: { data: string }) => void): void {
+  addEventListener(type: string, fn: (e: unknown) => void): void {
     if (!this.listeners[type]) this.listeners[type] = [];
     this.listeners[type].push(fn);
   }
@@ -38,6 +39,16 @@ class MockEventSource {
     const event = { data: JSON.stringify(data) };
     for (const fn of this.listeners[type] ?? []) {
       fn(event);
+    }
+  }
+
+  triggerError(): void {
+    if (this.onerror) this.onerror(new Event('error'));
+  }
+
+  triggerOpen(): void {
+    for (const fn of this.listeners['open'] ?? []) {
+      fn(new Event('open'));
     }
   }
 }
@@ -215,7 +226,7 @@ describe('StoryDetail — SSE lifecycle', () => {
   });
 
   it('appends bytes to log panel when output event story_id matches', async () => {
-    mockStory({ ...baseAgent, log_tail: null });
+    mockStory({ ...baseAgent, status: 'running', log_tail: null });
     renderStoryDetail();
 
     const payload: SseOutputPayload = {
@@ -237,7 +248,7 @@ describe('StoryDetail — SSE lifecycle', () => {
   });
 
   it('ignores output events with non-matching story_id', async () => {
-    mockStory({ ...baseAgent, log_tail: null });
+    mockStory({ ...baseAgent, status: 'running', log_tail: null });
     renderStoryDetail();
 
     const payload: SseOutputPayload = {
@@ -260,7 +271,7 @@ describe('StoryDetail — SSE lifecycle', () => {
 
   it('filters SSE event whose from offset is less than log_tail length', async () => {
     const tail = 'Initial tail content'; // length 20
-    mockStory({ ...baseAgent, log_tail: tail });
+    mockStory({ ...baseAgent, status: 'running', log_tail: tail });
     renderStoryDetail();
 
     // Emit an event whose from (5) falls within the range already in log_tail (0..20)
@@ -281,6 +292,69 @@ describe('StoryDetail — SSE lifecycle', () => {
       const text = screen.getByTestId('log-output').textContent;
       expect(text).toContain('Initial tail content');
       expect(text).not.toContain('overlap bytes');
+    });
+  });
+
+  it('appends only the non-overlapping suffix on partial-overlap SSE event', async () => {
+    // tail is 15 chars; event spans bytes 10–19, straddling the boundary
+    const tail = 'Initial tail co'; // exactly 15 chars
+    mockStory({ ...baseAgent, status: 'running', log_tail: tail });
+    renderStoryDetail();
+
+    // from=10, byteLength=10: bytes 10-14 overlap tail, bytes 15-19 are new
+    const partial: SseOutputPayload = {
+      agent_id: 'agent-001',
+      story_id: 'story-001-001',
+      from: 10,
+      bytes: 'AAAAA12345',
+      byteLength: 10,
+    };
+
+    act(() => {
+      MockEventSource.instances[0].emit('output', partial);
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /log/i }));
+    await waitFor(() => {
+      const text = screen.getByTestId('log-output').textContent;
+      expect(text).toContain('12345');     // 5 bytes beyond the tail boundary
+      expect(text).not.toContain('AAAAA'); // already covered by log_tail
+    });
+  });
+
+  it('shows sse-error banner when onerror fires', async () => {
+    mockStory(runningWithPid);
+    renderStoryDetail();
+
+    act(() => {
+      MockEventSource.instances[0].triggerError();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /log/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId('sse-error')).not.toBeNull();
+    });
+  });
+
+  it('clears sse-error banner when connection reopens', async () => {
+    mockStory(runningWithPid);
+    renderStoryDetail();
+
+    act(() => {
+      MockEventSource.instances[0].triggerError();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /log/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId('sse-error')).not.toBeNull();
+    });
+
+    act(() => {
+      MockEventSource.instances[0].triggerOpen();
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('sse-error')).toBeNull();
     });
   });
 });
@@ -434,6 +508,38 @@ describe('StoryDetail — mutation pending state', () => {
     });
     expect(screen.getByTestId('kill-btn-spinner')).not.toBeNull();
   });
+
+  it('Clean-retry is also disabled while Retry POST is in flight (mutual exclusion)', async () => {
+    vi.mocked(apiModule.apiPost).mockReturnValue(new Promise(() => {}));
+    mockStory(failedAgent);
+    renderStoryDetail();
+
+    const retryBtn = screen.getByTestId('retry-btn') as HTMLButtonElement;
+    const cleanRetryBtn = screen.getByTestId('clean-retry-btn') as HTMLButtonElement;
+    expect(cleanRetryBtn.disabled).toBe(false);
+
+    fireEvent.click(retryBtn);
+
+    await waitFor(() => {
+      expect(cleanRetryBtn.disabled).toBe(true);
+    });
+  });
+
+  it('Retry is also disabled while Clean-retry POST is in flight (mutual exclusion)', async () => {
+    vi.mocked(apiModule.apiPost).mockReturnValue(new Promise(() => {}));
+    mockStory(failedAgent);
+    renderStoryDetail();
+
+    const retryBtn = screen.getByTestId('retry-btn') as HTMLButtonElement;
+    const cleanRetryBtn = screen.getByTestId('clean-retry-btn') as HTMLButtonElement;
+    expect(retryBtn.disabled).toBe(false);
+
+    fireEvent.click(cleanRetryBtn);
+
+    await waitFor(() => {
+      expect(retryBtn.disabled).toBe(true);
+    });
+  });
 });
 
 describe('StoryDetail — mutation success state', () => {
@@ -480,7 +586,7 @@ describe('StoryDetail — mutation success state', () => {
     });
   });
 
-  it('Stop: on 2xx invalidateQueries is called with storyKey and button re-enables', async () => {
+  it('Stop: on 2xx invalidateQueries is called with storiesKey (all stories in epic) and button re-enables', async () => {
     vi.mocked(apiModule.apiPost).mockResolvedValue({ ok: true, status: 200 } as Response);
     mockStory(runningWithPid);
 
@@ -493,7 +599,7 @@ describe('StoryDetail — mutation success state', () => {
     await waitFor(() => {
       expect(invalidateSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          queryKey: queryKeys.story('my-repo', 'epic-001', 'story-001-001'),
+          queryKey: queryKeys.stories('my-repo', 'epic-001'),
         })
       );
     });

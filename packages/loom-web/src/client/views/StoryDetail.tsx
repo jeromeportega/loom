@@ -40,23 +40,36 @@ export function StoryDetail() {
   // under React StrictMode double-invocation and wins.
   const tailLenRef = useRef(0);
 
-  // SSE subscription — resets and reconnects whenever storyId changes.
+  // SSE subscription — resets and reconnects whenever storyId or status changes.
+  // Skips connecting for terminal states to avoid idle connections.
   useEffect(() => {
     if (typeof EventSource === 'undefined') return;
+    if (data?.status === 'done' || data?.status === 'failed') return;
     setLog('');
     tailLenRef.current = 0;
     setSseError(false);
     const es = new EventSource('/api/events');
     es.addEventListener('output', (e: MessageEvent) => {
-      const payload: SseOutputPayload = JSON.parse(e.data);
+      let payload: SseOutputPayload;
+      try {
+        payload = JSON.parse(e.data);
+      } catch {
+        return;
+      }
       if (payload.story_id !== storyId) return;
-      // Skip bytes whose offset falls within the range already covered by log_tail.
-      if (payload.from < tailLenRef.current) return;
+      // Handle partial overlap: skip bytes already covered by log_tail, take the new suffix.
+      if (payload.from < tailLenRef.current) {
+        const skip = tailLenRef.current - payload.from;
+        if (skip >= payload.byteLength) return;
+        setLog(prev => prev + payload.bytes.slice(skip));
+        return;
+      }
       setLog(prev => prev + payload.bytes);
     });
     es.onerror = () => { setSseError(true); };
+    es.addEventListener('open', () => { setSseError(false); });
     return () => { es.close(); };
-  }, [storyId]);
+  }, [storyId, data?.status]);
 
   // When data.log_tail grows (initial load or post-mutation refetch), update the
   // offset floor and clear the SSE-accumulated log — those bytes are now in the tail.
@@ -91,7 +104,7 @@ export function StoryDetail() {
         setter({ pending: false, error: `Request failed (${res.status})` });
       }
     } catch (e) {
-      setter({ pending: false, error: (e as Error).message });
+      setter({ pending: false, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -115,6 +128,7 @@ export function StoryDetail() {
   if (!data) return null;
 
   const storyKey = queryKeys.story(slug, epicId, storyId);
+  const storiesKey = queryKeys.stories(slug, epicId);
   const isRunning = data.status === 'running';
   const isFailed = data.status === 'failed';
   const combinedLog = (data.log_tail ?? '') + log;
@@ -134,7 +148,7 @@ export function StoryDetail() {
                 variant="outline"
                 size="sm"
                 disabled={stopState.pending}
-                onClick={() => { void runMutation('/api/stop', undefined, setStopState, storyKey); }}
+                onClick={() => { void runMutation('/api/stop', undefined, setStopState, storiesKey); }}
                 data-testid="stop-btn"
               >
                 {stopState.pending && (
@@ -172,7 +186,7 @@ export function StoryDetail() {
                 <Button
                   variant="secondary"
                   size="sm"
-                  disabled={retryState.pending}
+                  disabled={retryState.pending || cleanRetryState.pending}
                   onClick={() => { void runMutation(`/api/stories/${storyId}/retry`, undefined, setRetryState, storyKey); }}
                   data-testid="retry-btn"
                 >
@@ -189,7 +203,7 @@ export function StoryDetail() {
                 <Button
                   variant="secondary"
                   size="sm"
-                  disabled={cleanRetryState.pending}
+                  disabled={cleanRetryState.pending || retryState.pending}
                   onClick={() => { void runMutation(`/api/stories/${storyId}/retry`, { clean: true }, setCleanRetryState, storyKey); }}
                   data-testid="clean-retry-btn"
                 >
