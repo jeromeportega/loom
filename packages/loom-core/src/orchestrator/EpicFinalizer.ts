@@ -3,6 +3,9 @@ import { minimatch } from 'minimatch';
 import type Database from 'better-sqlite3';
 import { EpicStore, AgentStore, AuditLog, LeaseStore } from '../state/index.js';
 import type { Story, EpicRecord, TestCommandEntry } from '../types.js';
+import { CodeReviewAgent } from '../review/CodeReviewAgent.js';
+import type { ReviewReport } from '../review/types.js';
+import { ADVERSARIAL_SYSTEM_PROMPT } from '../review/adversarialSystemPrompt.js';
 import type { AutoRetrospective } from './AutoRetrospective.js';
 import { EpicYamlSchema } from '../types.js';
 import { gitSafe, defaultRemote, remoteUrl } from './git.js';
@@ -42,6 +45,13 @@ export interface EpicFinalizerOptions {
    */
   llmClient?: LLMClient;
   llmModel?: string;
+  /**
+   * policy.agents.adversarial_review_model — when set, finalize() spawns a
+   * second CodeReviewAgent pass using this model and the adversarial system
+   * prompt. The result is written to audit_log with action 'adversarial_review'.
+   * When absent or empty, zero cost and zero behavior change.
+   */
+  adversarialReviewModel?: string;
   /**
    * policy.agents.pr_attribution — when 'on', the finalizer prepends a
    * "Loom built this" provenance block to every PR body so reviewers can
@@ -719,6 +729,20 @@ export class EpicFinalizer {
           `regression=${gatesResult.regressions.length}. ` +
           'Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.',
       };
+    }
+
+    // ── Adversarial review pass ───────────────────────────────────────────────
+    // When policy.agents.adversarial_review_model is set, spawn a second
+    // CodeReviewAgent pass using that model and the adversarial system prompt.
+    // The result is written to audit_log so `loom doctor` can surface findings.
+    // Zero cost and zero behavior change when the knob is absent.
+    const advModel = this.opts.adversarialReviewModel;
+    if (advModel && this.opts.llmClient) {
+      try {
+        await this.runAdversarialReview({ epicId, model: advModel, diff: epicDiff, audit });
+      } catch {
+        // Adversarial review failure is observability — never blocks finalize.
+      }
     }
 
     // ── Smoke gate ────────────────────────────────────────────────────────────
@@ -1605,6 +1629,42 @@ export class EpicFinalizer {
       throw new Error(`YAML not found at ${file}`);
     }
     return EpicYamlSchema.parse(yaml.load(fs.readFileSync(file, 'utf8'))).stories;
+  }
+
+  /**
+   * Runs the adversarial review pass for an epic diff (story-082-004, FR-13 scenario f).
+   * Uses `model` — which MUST come from `policy.agents.adversarial_review_model`,
+   * NOT from `policy.agents.model` — so the second pass is truly independent.
+   * Writes one audit_log row with action 'adversarial_review' and the model used.
+   */
+  private async runAdversarialReview(opts: {
+    epicId: string;
+    model: string;
+    diff: string;
+    audit: AuditLog;
+  }): Promise<ReviewReport> {
+    const agent = new CodeReviewAgent({
+      projectRoot: this.opts.projectRoot,
+      llm: this.opts.llmClient!,
+      model: opts.model,
+      systemPrompt: ADVERSARIAL_SYSTEM_PROMPT,
+    });
+    const { report } = await agent.review({
+      story: {
+        storyId: opts.epicId,
+        title: opts.epicId,
+        description: `Adversarial review of epic ${opts.epicId}`,
+        acceptanceCriteria: [],
+      },
+      diff: opts.diff,
+    });
+    opts.audit.record({
+      action: 'adversarial_review',
+      command: opts.epicId,
+      allowed: true,
+      detail: { model: opts.model, findings: report },
+    });
+    return report;
   }
 
   /**

@@ -14,8 +14,10 @@ import {
   formatPolicyError,
   validateCursorModels,
   resolveSmokeCommand,
+  AuditLog,
 } from '@loom-ai/core';
-import type { Policy } from '@loom-ai/core';
+import type { Policy, ReviewFinding, ReviewReport } from '@loom-ai/core';
+import { openProjectDatabase } from '../dbHelper.js';
 import { gateCommandCheck, gateRunnableCheck, getLeadBinary } from './doctorGateCheck.js';
 import { reportPolicyDrift } from './init.js';
 import { checkCapabilitiesCoverage } from '../describe/coverage-check.js';
@@ -25,6 +27,20 @@ interface Check {
   ok: boolean;
   detail: string;
   required: boolean;
+}
+
+/**
+ * Maps adversarial review findings to doctor Checks (story-082-004 FR-10).
+ * `blocker` severity → required:true (error); all others → required:false (warn).
+ * An empty findings array returns an empty array (the caller omits the check).
+ */
+export function adversarialReviewFindingsToChecks(findings: ReviewFinding[]): Check[] {
+  return findings.map((f) => ({
+    name: `adversarial-review: ${f.file}${f.line != null ? `:${f.line}` : ''}`,
+    ok: false,
+    detail: f.issue + (f.suggestion ? ` — ${f.suggestion}` : ''),
+    required: f.severity === 'blocker',
+  }));
 }
 
 /**
@@ -281,6 +297,28 @@ export async function runDoctor(): Promise<void> {
       if (check) checks.push(check);
     } catch {
       /* policy parse errors are surfaced by `loom init` / run, not here */
+    }
+
+    // Surface adversarial review findings from the most recent finalize run.
+    // Findings with severity 'blocker' escalate to required:true (exit 1);
+    // all others are advisory warns (required:false). A row with no findings
+    // is omitted. Best-effort: any DB error is silently skipped.
+    try {
+      const db = openProjectDatabase(process.cwd());
+      const auditLog = new AuditLog(db);
+      const recentRows = auditLog.recent(100);
+      const advRow = recentRows.find((r) => r.action === 'adversarial_review');
+      if (advRow) {
+        const parsed = JSON.parse(advRow.detail ?? '{}') as {
+          model?: string;
+          findings?: ReviewReport;
+        };
+        const report = parsed.findings;
+        const advChecks = adversarialReviewFindingsToChecks(report?.findings ?? []);
+        checks.push(...advChecks);
+      }
+    } catch {
+      /* no DB or no adversarial_review rows — advisory only, skip silently */
     }
   }
 
