@@ -164,7 +164,7 @@ either forgotten or lives in a dependent story not yet merged.
 **Diagnostic format** (emitted to stderr per finding):
 
 ```
-[finalize] no-production-caller: 'checkDeadPolicyFields' (src/orchestrator/GateDeadPolicyField.ts) — only test callers found; annotate with // @loom-public-api to suppress
+[finalize] no-production-caller: 'exportedHelperFn' (src/lib/utils.ts) — only test callers found; annotate with // @loom-public-api to suppress
 ```
 
 **How to fix:**
@@ -224,8 +224,9 @@ agents:
 ```
 
 - `warn` (default) — build suite runs; all gate findings are advisory; the PR always opens.
-- `block` — the build suite and the **undocumented-env-var** gate can withhold the PR; drift
-  and regression findings remain advisory.
+- `block` — the build suite and the **undocumented-env-var**, **no-production-caller**, and
+  **dead-policy-field** gates can withhold the PR; contract-symbol drift and cross-epic
+  regression findings remain advisory.
 - `off` — skips the build/test suite AND all five finalize gates entirely.
 
 > **Note:** there is no separate knob to make drift/regression blocking. They are advisory by
