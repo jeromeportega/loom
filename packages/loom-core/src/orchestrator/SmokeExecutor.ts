@@ -8,47 +8,40 @@ export interface SmokeResult {
   exitCode:        number;
   durationSeconds: number;
   timeoutKilled:   boolean;
+  output:          string;
 }
 
 export interface SmokeRunOptions {
   command:        string;
-  worktreeCwd:    string;
-  timeoutMinutes: number;
-  runner?:        CommandRunner;
+  worktreeCwd:    string;          // merged worktree path — NOT process.cwd()
+  timeoutMinutes: number;          // from policy.agents.smoke_timeout_minutes
+  runner?:        CommandRunner;   // injectable for tests; production default below
 }
 
 const smokeDefaultRunner: CommandRunner = (cmd, cwd, timeoutMs) =>
   new Promise<CommandResult>((resolve) => {
     const started = Date.now();
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn(cmd, {
-        shell:    true,
-        cwd,
-        detached: true,
-        env:      process.env,
-        stdio:    'pipe',
-      });
-    } catch (err) {
-      resolve({
-        exitCode:  null,
-        output:    (err as Error).message ?? String(err),
-        timedOut:  false,
-        durationMs: Date.now() - started,
-      });
-      return;
-    }
+    const child = spawn(cmd, {
+      shell:    true,
+      cwd,
+      detached: true,
+      env:      process.env,
+      stdio:    'pipe',
+    });
 
-    child.stdout?.resume();
-    child.stderr?.resume();
+    const chunks: Buffer[] = [];
+    child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
+    child.stderr?.on('data', (chunk: Buffer) => chunks.push(chunk));
 
     const pid = child.pid;
     let timedOut = false;
 
     const deadline = setTimeout(() => {
-      timedOut = true;
       if (pid !== undefined) {
+        timedOut = true;
         try {
+          // Unix only: kills the entire process group so no child processes survive.
+          // On Windows this throws EINVAL; the fallback kills the shell only (best-effort).
           process.kill(-pid, 'SIGKILL');
         } catch {
           try {
@@ -58,13 +51,14 @@ const smokeDefaultRunner: CommandRunner = (cmd, cwd, timeoutMs) =>
           }
         }
       }
+      // pid undefined: no kill sent; timedOut stays false to avoid misreporting
     }, timeoutMs);
 
-    child.on('error', () => {
+    child.on('error', (err: Error) => {
       clearTimeout(deadline);
       resolve({
         exitCode:  null,
-        output:    '',
+        output:    err.message,
         timedOut,
         durationMs: Date.now() - started,
       });
@@ -74,7 +68,7 @@ const smokeDefaultRunner: CommandRunner = (cmd, cwd, timeoutMs) =>
       clearTimeout(deadline);
       resolve({
         exitCode:  code,
-        output:    '',
+        output:    Buffer.concat(chunks).toString(),
         timedOut,
         durationMs: Date.now() - started,
       });
@@ -99,6 +93,7 @@ export async function runSmoke(opts: SmokeRunOptions): Promise<SmokeResult> {
       exitCode:        result.exitCode ?? 1,
       durationSeconds: result.durationMs / 1000,
       timeoutKilled:   result.timedOut,
+      output:          result.output,
     };
   } catch {
     return {
@@ -106,6 +101,7 @@ export async function runSmoke(opts: SmokeRunOptions): Promise<SmokeResult> {
       exitCode:        1,
       durationSeconds: (Date.now() - started) / 1000,
       timeoutKilled:   false,
+      output:          '',
     };
   }
 }

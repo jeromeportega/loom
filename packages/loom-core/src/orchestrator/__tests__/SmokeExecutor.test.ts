@@ -45,7 +45,7 @@ describe('runSmoke — non-zero exit scenario', () => {
 });
 
 describe('runSmoke — timeout-kill scenario', () => {
-  it('long-running command killed after 0.01 min → timeoutKilled=true, PID no longer alive', async () => {
+  it('long-running command killed after 0.01 min → timeoutKilled=true, returns within 3s, PID no longer alive', async () => {
     const pidFile = path.join(tmpDir, 'smoke-pid.txt');
     process.env.SMOKE_EXEC_PID_FILE = pidFile;
 
@@ -62,13 +62,23 @@ describe('runSmoke — timeout-kill scenario', () => {
     assert.equal(result.timeoutKilled, true);
     assert.ok(elapsed < 3000, `should complete within 3s, took ${elapsed}ms`);
 
+    // Guard against race where child was killed before it could write the PID file
+    if (!fs.existsSync(pidFile)) {
+      assert.fail('PID file not written before kill — child may not have started in time');
+    }
+
     const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
-    let alive = false;
-    try {
-      process.kill(pid, 0);
-      alive = true;
-    } catch {
-      // ESRCH — process is gone, which is expected
+
+    // Allow a brief grace period for the OS to reap the process (handles zombie states)
+    let alive = true;
+    for (let retries = 0; retries < 5; retries++) {
+      try {
+        process.kill(pid, 0);
+        await new Promise<void>(r => setTimeout(r, 100));
+      } catch {
+        alive = false;
+        break;
+      }
     }
     assert.equal(alive, false, `PID ${pid} should be dead after SIGKILL`);
   });
