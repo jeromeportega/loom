@@ -3,6 +3,9 @@ import { minimatch } from 'minimatch';
 import type Database from 'better-sqlite3';
 import { EpicStore, AgentStore, AuditLog, LeaseStore } from '../state/index.js';
 import type { Story, EpicRecord, TestCommandEntry } from '../types.js';
+import { CodeReviewAgent } from '../review/CodeReviewAgent.js';
+import type { ReviewReport } from '../review/types.js';
+import { ADVERSARIAL_SYSTEM_PROMPT } from '../review/adversarialSystemPrompt.js';
 import type { AutoRetrospective } from './AutoRetrospective.js';
 import { EpicYamlSchema } from '../types.js';
 import { gitSafe, defaultRemote, remoteUrl } from './git.js';
@@ -42,6 +45,13 @@ export interface EpicFinalizerOptions {
    */
   llmClient?: LLMClient;
   llmModel?: string;
+  /**
+   * policy.agents.adversarial_review_model — when set, finalize() spawns a
+   * second CodeReviewAgent pass using this model and the adversarial system
+   * prompt. The result is written to audit_log with action 'adversarial_review'.
+   * When absent or empty, zero cost and zero behavior change.
+   */
+  adversarialReviewModel?: string;
   /**
    * policy.agents.pr_attribution — when 'on', the finalizer prepends a
    * "Loom built this" provenance block to every PR body so reviewers can
@@ -702,11 +712,33 @@ export class EpicFinalizer {
       allowed: true,
       detail: { count: gatesResult.regressions.length },
     });
+    audit.record({
+      agent_id: undefined,
+      action: 'epic_finalize_no_caller',
+      command: epicId,
+      allowed: true,
+      detail: {
+        count: gatesResult.noCallers.findings.length,
+        findings: gatesResult.noCallers.findings,
+      },
+    });
+    audit.record({
+      agent_id: undefined,
+      action: 'epic_finalize_dead_field',
+      command: epicId,
+      allowed: true,
+      detail: {
+        count: gatesResult.deadFields.findings.length,
+        findings: gatesResult.deadFields.findings.map(f => f.field),
+      },
+    });
     if (gatesResult.hardFail) {
       epicStore.updateStatus(epicId, 'in_progress',
         `finalize gates blocked: ${gatesResult.symbolDrift.length} drift, ` +
         `${gatesResult.undocumentedEnvVars.length} env-var, ` +
-        `${gatesResult.regressions.length} regression finding(s)`
+        `${gatesResult.regressions.length} regression, ` +
+        `${gatesResult.deadFields.findings.length} dead-field, ` +
+        `${gatesResult.noCallers.findings.length} no-caller finding(s)`
       );
       return {
         status: 'gated',
@@ -716,9 +748,40 @@ export class EpicFinalizer {
         note:
           `Finalize gates BLOCKED ${epicBranch}: symbol-drift=${gatesResult.symbolDrift.length}, ` +
           `undoc-env-var=${gatesResult.undocumentedEnvVars.length}, ` +
-          `regression=${gatesResult.regressions.length}. ` +
-          'Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.',
+          `regression=${gatesResult.regressions.length}, ` +
+          `dead-field=${gatesResult.deadFields.findings.length}, ` +
+          `no-caller=${gatesResult.noCallers.findings.length}. ` +
+          '(Only env-var, epic-introduced dead-field, and no-caller findings block; ' +
+          'drift/regression and pre-existing dead fields are advisory.) ' +
+          'Fix and re-run, set policy.agents.integration_gate=warn to land regardless, ' +
+          'or annotate exports with // @loom-public-api to suppress no-caller findings.',
       };
+    }
+
+    // ── Adversarial review pass ───────────────────────────────────────────────
+    // When policy.agents.adversarial_review_model is set, spawn a second
+    // CodeReviewAgent pass using that model and the adversarial system prompt.
+    // The result is written to audit_log so `loom doctor` can surface findings.
+    // Zero cost and zero behavior change when the knob is absent.
+    const advModel = this.opts.adversarialReviewModel;
+    if (advModel && this.opts.llmClient) {
+      try {
+        await this.runAdversarialReview({ epicId, model: advModel, diff: epicDiff, audit });
+      } catch (err) {
+        // Adversarial review failure never blocks finalize — but it must be
+        // visible, else a misconfigured model id means the operator believes the
+        // review ran when it silently did not (the feature's whole value is
+        // observability). Warn AND record a failed audit row.
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[finalize] adversarial review (${advModel}) failed: ${message}`);
+        audit.record({
+          agent_id: undefined,
+          action: 'adversarial_review',
+          command: epicId,
+          allowed: false,
+          detail: { model: advModel, error: message },
+        });
+      }
     }
 
     // ── Smoke gate ────────────────────────────────────────────────────────────
@@ -1608,6 +1671,42 @@ export class EpicFinalizer {
   }
 
   /**
+   * Runs the adversarial review pass for an epic diff (story-082-004, FR-13 scenario f).
+   * Uses `model` — which MUST come from `policy.agents.adversarial_review_model`,
+   * NOT from `policy.agents.model` — so the second pass is truly independent.
+   * Writes one audit_log row with action 'adversarial_review' and the model used.
+   */
+  private async runAdversarialReview(opts: {
+    epicId: string;
+    model: string;
+    diff: string;
+    audit: AuditLog;
+  }): Promise<ReviewReport> {
+    const agent = new CodeReviewAgent({
+      projectRoot: this.opts.projectRoot,
+      llm: this.opts.llmClient!,
+      model: opts.model,
+      systemPrompt: ADVERSARIAL_SYSTEM_PROMPT,
+    });
+    const { report } = await agent.review({
+      story: {
+        storyId: opts.epicId,
+        title: opts.epicId,
+        description: `Adversarial review of epic ${opts.epicId}`,
+        acceptanceCriteria: [],
+      },
+      diff: opts.diff,
+    });
+    opts.audit.record({
+      action: 'adversarial_review',
+      command: opts.epicId,
+      allowed: true,
+      detail: { model: opts.model, findings: report },
+    });
+    return report;
+  }
+
+  /**
    * Builds the PR body: uses the PrDescriptionAgent when an LLM client is
    * available, otherwise falls back to a hand-rolled body. Any agent failure
    * also falls back — never blocks the PR from opening.
@@ -1820,6 +1919,12 @@ function emitFinalizeGateDiagnostics(result: FinalizeGatesResult): void {
     console.warn(
       `[finalize] cross-epic regression: '${f.symbol}' (pinned by ${f.priorEpicId}) ` +
       `was present before this epic but is gone from the integrated tree`
+    );
+  }
+  for (const f of result.noCallers.findings) {
+    console.warn(
+      `[finalize] no-production-caller: '${f.symbol}' (${f.file}) — all callers are test files. ` +
+      `Add a production caller or annotate with // @loom-public-api`
     );
   }
 }

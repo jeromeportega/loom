@@ -14,8 +14,19 @@ import {
   formatPolicyError,
   validateCursorModels,
   resolveSmokeCommand,
+  AuditLog,
 } from '@loom-ai/core';
-import type { Policy } from '@loom-ai/core';
+import type { Policy, ReviewFinding, ReviewReport } from '@loom-ai/core';
+
+// Mirrors NoCallerFinding from loom-core (GateNoProductionCaller.ts). Defined
+// locally because loom-cli resolves @loom-ai/core from the installed dist which
+// may not yet include the export; we parse this from the audit_log detail field.
+interface NoCallerFinding {
+  symbol: string;
+  file: string;
+  callers: string[];
+}
+import { openProjectDatabase } from '../dbHelper.js';
 import { gateCommandCheck, gateRunnableCheck, getLeadBinary } from './doctorGateCheck.js';
 import { reportPolicyDrift } from './init.js';
 import { checkCapabilitiesCoverage } from '../describe/coverage-check.js';
@@ -25,6 +36,36 @@ interface Check {
   ok: boolean;
   detail: string;
   required: boolean;
+}
+
+/**
+ * Maps adversarial review findings to doctor Checks (story-082-004 FR-10).
+ * `blocker` severity → required:true (error); all others → required:false (warn).
+ * An empty findings array returns an empty array (the caller omits the check).
+ */
+export function adversarialReviewFindingsToChecks(findings: ReviewFinding[]): Check[] {
+  return findings.map((f) => ({
+    name: `adversarial-review: ${f.file}${f.line != null ? `:${f.line}` : ''}`,
+    ok: false,
+    detail: f.issue + (f.suggestion ? ` — ${f.suggestion}` : ''),
+    required: f.severity === 'blocker',
+  }));
+}
+
+/**
+ * Maps no-production-caller findings to doctor Checks (story-082-003).
+ * All findings are advisory warns (required:false) — symbol may be intentional
+ * public API not yet consumed, or the grep may have missed a caller.
+ */
+export function noCallerFindingsToChecks(findings: NoCallerFinding[]): Check[] {
+  return findings.map((f) => ({
+    name: `no-production-caller: ${f.symbol} (${f.file})`,
+    ok: false,
+    detail:
+      `'${f.symbol}' in ${f.file} has no production callers — ` +
+      `annotate with // @loom-public-api to suppress, or add a production call site`,
+    required: false,
+  }));
 }
 
 /**
@@ -281,6 +322,35 @@ export async function runDoctor(): Promise<void> {
       if (check) checks.push(check);
     } catch {
       /* policy parse errors are surfaced by `loom init` / run, not here */
+    }
+
+    // Surface adversarial review and no-production-caller findings from the most
+    // recent finalize run. Best-effort: any DB error is silently skipped.
+    try {
+      const db = openProjectDatabase(process.cwd());
+      const auditLog = new AuditLog(db);
+      const recentRows = auditLog.recent(100);
+      const advRow = recentRows.find((r) => r.action === 'adversarial_review');
+      if (advRow) {
+        const parsed = JSON.parse(advRow.detail ?? '{}') as {
+          model?: string;
+          findings?: ReviewReport;
+        };
+        const report = parsed.findings;
+        const advChecks = adversarialReviewFindingsToChecks(report?.findings ?? []);
+        checks.push(...advChecks);
+      }
+      const noCallerRow = recentRows.find((r) => r.action === 'epic_finalize_no_caller');
+      if (noCallerRow) {
+        const parsed = JSON.parse(noCallerRow.detail ?? '{}') as {
+          count?: number;
+          findings?: NoCallerFinding[];
+        };
+        const noCallerChecks = noCallerFindingsToChecks(parsed.findings ?? []);
+        checks.push(...noCallerChecks);
+      }
+    } catch {
+      /* no DB or no relevant audit rows — advisory only, skip silently */
     }
   }
 

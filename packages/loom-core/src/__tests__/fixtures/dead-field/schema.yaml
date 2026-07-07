@@ -1,0 +1,14 @@
+# Minimal policy schema fixture for GateDeadPolicyField tests.
+# Defines two agents fields: fake_knob (typically dead) and live_knob (with a production read).
+$schema: "http://json-schema.org/draft-07/schema#"
+type: object
+properties:
+  agents:
+    type: object
+    properties:
+      fake_knob:
+        type: string
+        description: "Fictional knob used only in tests — intentionally not read in production"
+      live_knob:
+        type: string
+        description: "Fictional knob that has a production read in test scenario (b)"
