@@ -15,5 +15,6 @@ export function checkNoProductionCallers(_opts: {
   epicDiff: string;
   projectRoot: string;
 }): NoCallerResult {
+  console.warn('[finalize] noCallers gate is a stub — findings skipped until story-082-003 lands');
   return { findings: [], scannedSymbols: [], durationMs: 0 };
 }

@@ -61,8 +61,11 @@ export function checkDeadPolicyFields(opts: {
 // Checks whether any production TypeScript source file contains a property
 // read of the given field. Bare word occurrences (comments, prose) do NOT count.
 function hasProductionRead(field: string, projectRoot: string): boolean {
+  // Escape regex metacharacters so field names like `timeout.ms` don't produce
+  // wildcards in the ERE pattern (a bare `.` would match any character).
+  const esc = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // Matches .fieldName (dot access) or ["fieldName"] or ['fieldName'] (bracket access).
-  const pattern = `\\.${field}\\b|\\["${field}"\\]|\\['${field}'\\]`;
+  const pattern = `\\.${esc}\\b|\\["${esc}"\\]|\\['${esc}'\\]`;
 
   try {
     execFileSync('grep', [
@@ -83,6 +86,9 @@ function hasProductionRead(field: string, projectRoot: string): boolean {
   } catch (err) {
     const e = err as { status?: number };
     if (e.status === 1) return false;
-    return false;
+    // Grep exit 2+ means a scan error (bad pattern, permission denied, missing dir).
+    // Assume live to fail open — reporting a false dead-field blocks PRs in block mode.
+    console.warn('[finalize] grep error scanning for field:', field, err);
+    return true;
   }
 }
