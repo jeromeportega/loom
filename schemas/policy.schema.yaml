@@ -323,6 +323,20 @@ properties:
       # surface in v0.4 (engine-tuning knob, no operator calibration data);
       # it's hardcoded internally. Set test_command if you need to bound the
       # command — anything taking >15 min should be wrapped in a `timeout` call.
+      smoke_command:
+        type: string
+        description: |
+          Explicit smoke command run on the integrated tree after the
+          EpicFinalizer merges all story branches and before opening the PR.
+          When unset the gate auto-detects from package.json scripts.smoke or
+          scripts.verify. Omit to rely on auto-detection.
+      smoke_timeout_minutes:
+        type: number
+        exclusiveMinimum: 0
+        default: 15
+        description: |
+          Wall-clock budget in minutes for the smoke command. Must be a
+          positive number (zero and negatives are rejected). Default 15.
       shared_contract:
         type: string
         enum: [off, on]
