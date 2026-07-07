@@ -376,6 +376,8 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     integrationGate: policy.agents.integration_gate,
     testCommand: policy.agents.test_command,
     testCommands: policy.agents.test_commands,
+    smokeCommand: policy.agents.smoke_command,
+    smokeTimeoutMinutes: policy.agents.smoke_timeout_minutes,
     integrationBranch,
     // Late-bound policy rebind — mirrors the MCP `buildDispatchSupervisor`.
     // At finalize entry, re-read the late-bound fields from disk so a
@@ -389,6 +391,8 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
         allowedRemotes: live.git.allowed_remotes,
         testCommand: live.agents.test_command,
         testCommands: live.agents.test_commands,
+        smokeCommand: live.agents.smoke_command,
+        smokeTimeoutMinutes: live.agents.smoke_timeout_minutes,
         integrationGate: live.agents.integration_gate,
         pushGate: live.agents.push_gate,
         prAttribution: live.agents.pr_attribution,

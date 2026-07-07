@@ -263,14 +263,14 @@ When the resolver returns `null` (no command found), no audit entry is written.
 | `warn` | yes | yes | Audit entry written (`allowed=1`); finalize continues |
 | `warn` | yes | no / timeout | Audit entry written (`allowed=0`); failure annotated to output; PR still opens |
 | `block` | yes | yes | Audit entry written (`allowed=1`); finalize continues |
-| `block` | yes | no / timeout | Audit entry written (`allowed=0`); epic set to `in_progress`; PR **withheld**; `SmokeGateError` thrown |
+| `block` | yes | no / timeout | Audit entry written (`allowed=0`); epic set to `in_progress`; PR **withheld**; finalize returns `status: 'gated'` (same contract as the integration + correctness gates — it does not throw) |
 
 ### Timeout
 
 The default wall-clock budget is **15 minutes**, controlled by `policy.agents.smoke_timeout_minutes`
 (positive integer). On timeout, loom sends **SIGKILL** directly to the entire process group
 (no SIGTERM grace period). The `timeout_killed: true` flag appears in the audit detail and in
-the `SmokeGateError` message when this fires.
+the `gated` result note when this fires.
 
 ### Policy configuration
 
@@ -317,21 +317,25 @@ The check is advisory (`required: false`) — it never makes `loom doctor` exit 
 
 ### Recovery: smoke gate blocked in `block` mode
 
-When the smoke gate blocks a finalize:
+A smoke block behaves exactly like an integration-gate or correctness-gate block: finalize
+returns `status: 'gated'` and the epic is set back to `in_progress` (it is **not** driven to
+`failed`, and it is **not** left in `finalizing`/`publish_pending`). Recovery is therefore the
+same as for any other gate block — **fix and re-run**, not `loom finalize --resume` (which only
+resumes `finalizing`/`publish_pending` epics):
 
 1. The epic status is set back to `in_progress` with a note like
-   `"smoke gate failed: exit 1"` (or `"(timed out)"`).
-2. No PR is opened.
-3. Fix the root cause of the smoke failure (the command in `smoke_command` or the
+   `"smoke gate failed: exit 1"` (or `"(timed out)"`). No PR is opened.
+2. Fix the root cause of the smoke failure (the command in `smoke_command` or the
    auto-detected one from `package.json`).
-4. Re-run:
+3. Re-dispatch the epic:
    ```bash
-   loom finalize --resume <epic-id>
+   loom run <epic-id>
    ```
-   The resume path re-merges only phases that remain, which in practice means it re-runs the
-   smoke gate (and push + PR if smoke passes).
-5. To bypass smoke entirely for this recovery, set `integration_gate: warn` in `policy.yaml`
-   before running `loom finalize --resume` — the re-read late-bound policy will pick it up.
+   The Supervisor re-enters finalize, which re-runs the integration gate, correctness gates,
+   and the smoke gate, then push + PR if all pass.
+4. To bypass smoke for this landing, set `integration_gate: warn` (or `off`) in `policy.yaml`
+   before re-running — the late-bound policy re-read picks it up (an `epic_policy_rebound`
+   audit row records the change).
 
 ---
 

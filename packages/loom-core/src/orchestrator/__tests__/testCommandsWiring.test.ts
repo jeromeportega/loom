@@ -159,4 +159,58 @@ describe('test_commands wiring — policy → EpicFinalizer → real gate execut
       'the frontend entry matched nothing and MUST have been skipped'
     );
   });
+
+  it('runs the smoke command forwarded from policy.agents.smoke_command (epic-079 regression)', async () => {
+    // Guards the epic-079 blocker: smoke_command was implemented + tested at the
+    // finalizer seam but never forwarded from the CLI callers, so the explicit
+    // knob was dead in production. This drives policy.yaml → PolicyEngine →
+    // EpicFinalizer (no injected gate or smokeRunner, so the REAL smoke executor
+    // spawns the command) → finalize, and asserts the command physically ran.
+    const storyId = 'story-091-001';
+    const epicId = 'epic-091';
+    seedApprovedEpic(epicId, [storyObj(storyId)]);
+
+    const db = openDatabase(path.join(repo, '.loom'));
+    const epicStore = new EpicStore(db);
+    const agentStore = new AgentStore(db);
+    epicStore.updateBaseSha(epicId, gitc(['rev-parse', 'HEAD']));
+
+    gitc(['checkout', '-b', `story/${storyId}`]);
+    fs.writeFileSync(path.join(repo, 'backend', 'app.py'), 'x = 2\n');
+    gitc(['add', 'backend/app.py']);
+    gitc(['commit', '-q', '-m', `${storyId}: bump backend`]);
+    gitc(['checkout', '-']);
+
+    const agent = agentStore.create(epicId, storyId, storyId);
+    agentStore.updateStatus(agent.id, 'done');
+
+    const smokeSentinel = path.join(loomHomeDir, 'smoke-ran');
+    const policyYaml = {
+      git: { allowed_remotes: [] },
+      agents: { integration_gate: 'block', smoke_command: `touch ${smokeSentinel}` },
+    };
+    fs.writeFileSync(path.join(repo, '.loom', 'policy.yaml'), yaml.dump(policyYaml));
+
+    const policy = PolicyEngine.load(path.join(repo, '.loom')).policyData;
+    assert.equal(policy.agents.smoke_command, `touch ${smokeSentinel}`, 'policy must surface smoke_command');
+
+    const finalizer = new EpicFinalizer({
+      projectRoot: repo,
+      db,
+      allowedRemotes: [],
+      prStrategy: 'per-epic',
+      integrationGate: policy.agents.integration_gate,
+      smokeCommand: policy.agents.smoke_command,
+      smokeTimeoutMinutes: policy.agents.smoke_timeout_minutes,
+      pushBranch: () => ({ ok: true, output: 'pushed' }),
+      openPr: () => 'https://example.com/pull/1',
+    });
+
+    await finalizer.finalize(epicId);
+
+    assert.ok(
+      fs.existsSync(smokeSentinel),
+      'the smoke command forwarded from policy MUST have physically executed'
+    );
+  });
 });

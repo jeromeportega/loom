@@ -9,7 +9,7 @@ import { openDatabase, resetDatabaseForTest } from '../../state/Database.js';
 import { EpicStore } from '../../state/EpicStore.js';
 import { AgentStore } from '../../state/AgentStore.js';
 import { AuditLog } from '../../state/AuditLog.js';
-import { EpicFinalizer, SmokeGateError } from '../EpicFinalizer.js';
+import { EpicFinalizer } from '../EpicFinalizer.js';
 import type { EpicFinalizerOptions } from '../EpicFinalizer.js';
 import { IntegrationGate } from '../IntegrationGate.js';
 import type { CommandRunner } from '../IntegrationGate.js';
@@ -214,7 +214,7 @@ describe('smoke gate — block mode, pass', () => {
 // ── Block + fail ──────────────────────────────────────────────────────────────
 
 describe('smoke gate — block mode, fail', () => {
-  it('exit 1: SmokeGateError thrown; epic set to in_progress; audit allowed=0; PR not created', async () => {
+  it('exit 1: returns status=gated; epic set to in_progress; audit allowed=0; PR not created', async () => {
     const epicId = 'epic-001';
     const storyId = 'story-001-001';
     const db = openDatabase(path.join(repo, '.loom'));
@@ -230,34 +230,28 @@ describe('smoke gate — block mode, fail', () => {
       durationMs: 200,
     });
 
-    let thrown: unknown;
-    try {
-      await new EpicFinalizer(
-        baseOpts(db, {
-          integrationGate: 'block',
-          smokeCommand:    'fake-smoke',
-          smokeRunner,
-          openPr: () => {
-            openPrCalled = true;
-            return 'https://example.com/pull/42';
-          },
-        })
-      ).finalize(epicId);
-    } catch (err) {
-      thrown = err;
-    }
+    // The smoke gate RETURNS gated (like the integration + correctness gates),
+    // it does NOT throw — so the Supervisor's finalize-error handler can't
+    // overwrite the in_progress status with 'failed'.
+    const result = await new EpicFinalizer(
+      baseOpts(db, {
+        integrationGate: 'block',
+        smokeCommand:    'fake-smoke',
+        smokeRunner,
+        openPr: () => {
+          openPrCalled = true;
+          return 'https://example.com/pull/42';
+        },
+      })
+    ).finalize(epicId);
 
-    assert.ok(thrown instanceof SmokeGateError, 'must throw SmokeGateError in block+fail');
-    assert.match(
-      (thrown as SmokeGateError).message,
-      /exit code 1/,
-      'error message must mention the exit code'
-    );
+    assert.equal(result.status, 'gated', 'must return status=gated in block+fail');
+    assert.match(result.note, /Smoke gate BLOCKED/, 'note must name the smoke gate block');
 
     assert.equal(openPrCalled, false, 'PR must not be created when smoke gate blocks');
 
     const epic = new EpicStore(db).get(epicId);
-    assert.equal(epic?.status, 'in_progress', 'epic status must be set to in_progress before throw');
+    assert.equal(epic?.status, 'in_progress', 'epic status must be set to in_progress');
     assert.equal(epic?.epic_pr_url, null, 'epic_pr_url must remain null');
 
     const entries = smokeAuditEntries(db);
@@ -289,17 +283,12 @@ describe('smoke gate — block mode, timeout', () => {
       durationMs: 900_000,
     });
 
-    let thrown: unknown;
-    try {
-      await new EpicFinalizer(
-        baseOpts(db, { integrationGate: 'block', smokeCommand: 'fake-smoke', smokeRunner })
-      ).finalize(epicId);
-    } catch (err) {
-      thrown = err;
-    }
+    const result = await new EpicFinalizer(
+      baseOpts(db, { integrationGate: 'block', smokeCommand: 'fake-smoke', smokeRunner })
+    ).finalize(epicId);
 
-    assert.ok(thrown instanceof SmokeGateError, 'must throw SmokeGateError on timeout');
-    assert.match((thrown as SmokeGateError).message, /timed out/, 'error message must mention timeout');
+    assert.equal(result.status, 'gated', 'must return status=gated on timeout');
+    assert.match(result.note, /timed out/, 'note must mention timeout');
 
     const epic = new EpicStore(db).get(epicId);
     assert.equal(epic?.status, 'in_progress', 'epic must be set to in_progress on timeout');
@@ -451,13 +440,11 @@ describe('smoke gate — sequencing', () => {
       exitCode: 1, output: 'FAILED', timedOut: false, durationMs: 10,
     });
 
-    try {
-      await new EpicFinalizer(
-        baseOpts(db, { integrationGate: 'block', smokeCommand: 'fake-smoke', smokeRunner })
-      ).finalize(epicId);
-    } catch {
-      // SmokeGateError expected — proceed with assertions
-    }
+    // Block+fail now returns gated (no throw); the assertions below inspect the
+    // audit order and finalize phase regardless of the returned status.
+    await new EpicFinalizer(
+      baseOpts(db, { integrationGate: 'block', smokeCommand: 'fake-smoke', smokeRunner })
+    ).finalize(epicId);
 
     // Verify audit order: finalize-gates entries come BEFORE smoke_gate.
     // Sort by id (AUTOINCREMENT) — same-second entries share a timestamp,
