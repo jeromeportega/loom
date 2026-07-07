@@ -443,6 +443,68 @@ describe('checkNoProductionCallers — composite key deduplication', () => {
   });
 });
 
+// ─── export default is skipped (can't grep by declared name) ─────────────────
+
+describe('checkNoProductionCallers — export default is not tracked', () => {
+  it('does not capture export default function declarations (caller name is unpredictable)', () => {
+    // A caller can do `import renamed from './file'` — grepping for the
+    // declared function name would miss all such callers and produce false positives.
+    const epicDiff = diff('src/defaultExport.ts', [
+      'export default function myDefaultFn() { return 42; }',
+    ]);
+
+    const result = checkNoProductionCallers({ epicDiff, projectRoot: tmpDir });
+    assert.deepEqual(result.scannedSymbols, [], 'export default function must not be tracked');
+    assert.deepEqual(result.findings, []);
+  });
+
+  it('does not capture export default class declarations', () => {
+    const epicDiff = diff('src/defaultClass.ts', [
+      'export default class MyDefaultClass {}',
+    ]);
+
+    const result = checkNoProductionCallers({ epicDiff, projectRoot: tmpDir });
+    assert.deepEqual(result.scannedSymbols, []);
+    assert.deepEqual(result.findings, []);
+  });
+
+  it('still captures non-default exports in the same diff as a default export', () => {
+    // Ensure that skipping the default does not drop the named export on the next line.
+    write('__tests__/mixed.test.ts', "import { namedFn } from '../src/mixed';\n");
+    const epicDiff = [
+      '--- /dev/null',
+      '+++ b/src/mixed.ts',
+      '@@ -0,0 +1,2 @@',
+      '+export default function defaultOnly() {}',
+      '+export function namedFn() { return 1; }',
+    ].join('\n');
+
+    const result = checkNoProductionCallers({ epicDiff, projectRoot: tmpDir });
+    assert.ok(result.scannedSymbols.includes('namedFn'), 'namedFn must still be scanned');
+    assert.ok(!result.scannedSymbols.includes('defaultOnly'), 'defaultOnly must not be scanned');
+  });
+});
+
+// ─── Malformed diff: no +++ b/ header (currentFile stays empty) ───────────────
+
+describe('checkNoProductionCallers — malformed diff with no file header', () => {
+  it('skips exports whose file is empty string (no preceding +++ b/ header)', () => {
+    // A diff without the +++ b/ header line — currentFile never set.
+    const malformedDiff = [
+      '@@ -0,0 +1,1 @@',
+      '+export function noHeaderFn() { return 0; }',
+    ].join('\n');
+
+    const result = checkNoProductionCallers({ epicDiff: malformedDiff, projectRoot: tmpDir });
+    // The export is skipped because its file is '' — no false findings emitted.
+    assert.equal(result.findings.length, 0, 'no findings from a diff with no file header');
+    assert.ok(
+      result.findings.every(f => f.file !== ''),
+      'no finding should have an empty file field'
+    );
+  });
+});
+
 // ─── runFinalizeGates wiring ──────────────────────────────────────────────────
 
 describe('runFinalizeGates — noCallers wiring', () => {

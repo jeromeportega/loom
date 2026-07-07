@@ -18,9 +18,12 @@ const DIFF_FILE_RE = /^\+\+\+ b\/(.+)$/;
 
 // Matches declaration-form exports in the content of an added diff line.
 // Covers: function, async function, function*, class, abstract class,
-//         const, let, var, interface, type, enum, default variants.
+//         const, let, var, interface, type, enum (non-default variants only).
+// NOTE: `export default function/class` is intentionally NOT matched — callers
+// import the default binding under an arbitrary local name, so grepping for the
+// declared function/class name would miss most callers and produce false positives.
 const EXPORT_DECL_RE =
-  /^export\s+(?:default\s+)?(?:async\s+)?(?:abstract\s+)?(?:function\s*\*?\s*|class\s+|const\s+|let\s+|var\s+|interface\s+|type\s+|enum\s+)([A-Za-z_$][A-Za-z0-9_$]*)/;
+  /^export\s+(?!default\s)(?:async\s+)?(?:abstract\s+)?(?:function\s*\*?\s*|class\s+|const\s+|let\s+|var\s+|interface\s+|type\s+|enum\s+)([A-Za-z_$][A-Za-z0-9_$]*)/;
 
 // Matches named-form exports: export { foo, bar as baz } or export type { Foo }.
 const NAMED_EXPORT_RE = /^export\s+(?:type\s+)?\{([^}]+)\}/;
@@ -231,9 +234,17 @@ export function checkNoProductionCallers(opts: {
   const findings: NoCallerFinding[] = [];
 
   for (const entry of exports) {
+    // Skip entries from malformed diff (no +++ b/ header seen before this export).
+    if (!entry.file) continue;
+
     // @loom-public-api annotation unconditionally suppresses the check.
     if (entry.annotated) continue;
 
+    // NOTE: findCallers uses a grep word-boundary pattern that may match symbol
+    // names inside comments or string literals (e.g. `// calls orphanFn`).
+    // This is a known limitation of a static-text search: a comment mention in
+    // a production file will suppress a legitimate finding. The rate is low in
+    // practice since most comments do not import/call by name.
     const callers = findCallers(entry.symbol, entry.file, opts.projectRoot);
 
     // Flag when every caller is a test file (Array.every returns true for []).
