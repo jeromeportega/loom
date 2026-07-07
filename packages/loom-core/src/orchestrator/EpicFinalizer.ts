@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { minimatch } from 'minimatch';
 import type Database from 'better-sqlite3';
 import { EpicStore, AgentStore, AuditLog, LeaseStore } from '../state/index.js';
-import type { Story, EpicRecord } from '../types.js';
+import type { Story, EpicRecord, TestCommandEntry } from '../types.js';
 import type { AutoRetrospective } from './AutoRetrospective.js';
 import { EpicYamlSchema } from '../types.js';
 import { gitSafe, defaultRemote, remoteUrl } from './git.js';
@@ -61,6 +61,8 @@ export interface EpicFinalizerOptions {
   integrationGate?: GateMode;
   /** policy.agents.test_command — explicit gate command (else auto-detected). */
   testCommand?: string;
+  /** policy.agents.test_commands — named per-path gate commands. */
+  testCommands?: TestCommandEntry[];
   /** policy.agents.integration_gate_timeout_minutes, in ms. */
   integrationGateTimeoutMs?: number;
   /** Injectable gate (tests). Defaults to one built from the fields above. */
@@ -159,7 +161,8 @@ export interface EpicFinalizerOptions {
 /** Subset of policy fields the finalizer re-reads at finalize entry. */
 export interface LateboundFinalizerPolicy {
   allowedRemotes?: string[];
-  testCommand?: string;
+  testCommand?:    string;
+  testCommands?:   TestCommandEntry[];
   integrationGate?: GateMode;
   pushGate?: 'off' | 'confirm';
   prAttribution?: 'off' | 'on';
@@ -243,6 +246,8 @@ export class EpicFinalizer {
    * `effectiveIntegratorTestCommand`.
    */
   private effectiveTestCommand?: string;
+  /** Running effective `test_commands` list. Mirrors effectiveTestCommand tracking. */
+  private effectiveTestCommands?: TestCommandEntry[];
 
   constructor(private opts: EpicFinalizerOptions) {
     this.gateMode = opts.integrationGate ?? 'off';
@@ -251,13 +256,15 @@ export class EpicFinalizer {
     this.gate =
       opts.gate ??
       new IntegrationGate({
-        testCommand: opts.testCommand,
-        timeoutMs: opts.integrationGateTimeoutMs ?? 15 * 60_000,
+        testCommand:  opts.testCommand,
+        testCommands: opts.testCommands ?? [],
+        timeoutMs:    opts.integrationGateTimeoutMs ?? 15 * 60_000,
       });
     this.effectiveAllowedRemotes = opts.allowedRemotes;
     this.effectivePushGate = opts.pushGate ?? 'off';
     this.effectivePrAttribution = opts.prAttribution ?? 'off';
     this.effectiveTestCommand = opts.testCommand;
+    this.effectiveTestCommands = opts.testCommands;
   }
 
   /**
@@ -291,14 +298,27 @@ export class EpicFinalizer {
       // The gate is built from testCommand in the constructor; rebuild it
       // so the new command actually runs (was the user's primary pain point).
       this.gate = new IntegrationGate({
-        testCommand: live.testCommand,
-        timeoutMs: this.opts.integrationGateTimeoutMs ?? 15 * 60_000,
+        testCommand:  live.testCommand,
+        testCommands: this.effectiveTestCommands ?? [],
+        timeoutMs:    this.opts.integrationGateTimeoutMs ?? 15 * 60_000,
       });
       // Track the rebind so a second finalize() in the same multi-epic run
       // doesn't fire another spurious audit row (the bug the reviewer found:
       // before this line, every subsequent epic's finalize() saw the policy
       // value as "different from the immutable opts.testCommand" again).
       this.effectiveTestCommand = live.testCommand;
+    }
+    if (
+      live.testCommands !== undefined &&
+      !sameTestCommandsArr(this.effectiveTestCommands, live.testCommands)
+    ) {
+      changes.test_commands = { from: this.effectiveTestCommands ?? null, to: live.testCommands };
+      this.gate = new IntegrationGate({
+        testCommand:  this.effectiveTestCommand,
+        testCommands: live.testCommands,
+        timeoutMs:    this.opts.integrationGateTimeoutMs ?? 15 * 60_000,
+      });
+      this.effectiveTestCommands = live.testCommands;
     }
     if (live.pushGate && live.pushGate !== this.effectivePushGate) {
       changes.push_gate = { from: this.effectivePushGate, to: live.pushGate };
@@ -572,6 +592,7 @@ export class EpicFinalizer {
           amputated: gateOutcome.amputated,
           summary: gateOutcome.summary,
           outputTail: gateOutcome.output.slice(-1000),
+          steps: gateOutcome.steps,
         },
       });
       if (this.gateMode === 'block' && !gateOutcome.ok) {
@@ -1707,7 +1728,28 @@ function emitFinalizeGateDiagnostics(result: FinalizeGatesResult): void {
   }
 }
 
-/** Order-insensitive equality for string arrays (allowed_remotes globs). */
+/**
+ * Structural equality for TestCommandEntry arrays.
+ * Entry order IS significant — test_commands run in declaration order, so reordering
+ * entries is treated as a real policy change and triggers a gate rebuild.
+ * Path-glob order within a single entry is intentionally insensitive (ANY-match
+ * semantics; sameStringArr sorts before comparing).
+ */
+function sameTestCommandsArr(
+  a: TestCommandEntry[] | undefined,
+  b: TestCommandEntry[]
+): boolean {
+  if (!a) return b.length === 0;
+  if (a.length !== b.length) return false;
+  return a.every(
+    (ae, i) =>
+      ae.name === b[i].name &&
+      ae.command === b[i].command &&
+      sameStringArr(ae.paths, b[i].paths),
+  );
+}
+
+/** Order-insensitive equality for string arrays (globs and remotes). */
 function sameStringArr(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   const sa = [...a].sort();

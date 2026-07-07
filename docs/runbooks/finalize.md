@@ -175,6 +175,53 @@ Each row records the epic id and `{ count: N }`. A count of `0` means the gate r
 
 ---
 
+## Path-scoped integration gate (`test_commands`)
+
+When `policy.agents.test_commands` is set, the integration gate selects and runs
+entries based on which files changed in the epic:
+
+```yaml
+# .loom/policy.yaml
+agents:
+  test_commands:
+    - name: api-tests
+      command: "npm test --workspace packages/api"
+      paths:
+        - "packages/api/**"
+    - name: web-tests
+      command: "npm test --workspace packages/web"
+      paths:
+        - "packages/web/**"
+```
+
+**Selection:** each entry is evaluated against the epic's changed file list
+(`git diff --name-only` from the epic base commit to the integrated HEAD). An
+entry is selected when at least one changed file matches at least one of the
+entry's glob patterns (repo-root-relative paths, minimatch default options:
+`dot=false`, `nocase=false`). When the git base cannot be resolved, all entries
+run unconditionally.
+
+**Execution order:** selected entries run sequentially in declaration order. All
+run to completion — there is no fail-fast. Unselected entries are skipped and
+do not contribute a failure.
+
+**Per-entry result reporting:** each entry produces an individual result record —
+name, command, status (`passed` | `failed` | `skipped`), exit code, stdout tail,
+and duration — stored in the `epic_integration_gate` audit row as the `steps`
+field (`loom audit` surfaces this row; `detail.steps[]` contains per-entry
+results). The overall gate fails when any selected entry exits non-zero;
+all-skipped counts as a pass.
+
+**Precedence:** `test_command` (singular) takes precedence over `test_commands`
+when both are set. An empty `test_commands: []` falls through to auto-detection.
+
+**`loom doctor` preflight:** `loom doctor` checks that every `test_commands`
+entry's lead binary resolves on the gate's PATH before dispatch — the same PATH
+the integration gate inherits. Missing binaries are reported as advisory failures
+(`required: false`).
+
+---
+
 ## Related
 
 - [Integration branch runbook](integration-branch.md) — rolling integration branch and lag warnings

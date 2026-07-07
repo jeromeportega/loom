@@ -91,6 +91,27 @@ If any pre-condition fails, the command exits 1 with a human-readable error on s
 
 ---
 
+## Integration gate on the rolling branch
+
+After the EpicFinalizer merges every story branch onto `epic/<id>`, the
+integration gate runs on the integrated tree before the PR opens. The same
+gate config applies whether you use `integration_branch=rolling` or not.
+
+When `policy.agents.test_commands` is configured, the gate evaluates each
+entry's glob patterns against the epic's changed files and runs only the
+matched entries in declaration order. Unmatched entries are skipped. Each
+entry produces a named result (name, command, status, exit code, duration)
+in the audit log.
+
+Under rolling integration, changed files are accumulated across all merged
+stories — an entry whose paths match any story's changes will run.
+
+See [finalize.md](finalize.md) for the full `test_commands` reference,
+including selection semantics, per-entry reporting, and `loom doctor`
+preflight behavior.
+
+---
+
 ## Audit trail
 
 ```bash

@@ -283,6 +283,42 @@ properties:
           auto-detects (npm test / make test / pytest). loom never auto-installs
           dependencies, so if the suite needs a fresh install encode it here,
           e.g. "npm ci && npm test".
+      test_commands:
+        type: array
+        description: |
+          Per-path test commands for polyglot repos. An entry is selected when at
+          least one changed file (repo-root-relative path from git diff) matches at
+          least one of the entry's glob patterns. Unselected entries produce a
+          'skipped' result and do NOT fail the gate. Selected entries run
+          sequentially in declaration order with no fail-fast — all run to
+          completion even if an earlier entry fails (same semantics as the standard
+          gate steps). When the git base commit cannot be resolved, all entries run
+          unconditionally. An empty array falls through to auto-detection.
+          Ignored when test_command is set (test_command takes precedence).
+        items:
+          type: object
+          required: [name, command, paths]
+          properties:
+            name:
+              type: string
+              minLength: 1
+              description: "Human label, surfaced in gate output and audit log"
+            command:
+              type: string
+              minLength: 1
+              description: "Shell command executed at project root (shell: true)"
+            paths:
+              type: array
+              minItems: 1
+              items:
+                type: string
+                minLength: 1
+              description: |
+                Non-empty minimatch globs matched against repo-root-relative changed
+                paths (e.g. "packages/api/**", "src/**/*.ts"). Evaluated with
+                minimatch default options: dot=false (dotfiles not matched by **/*)
+                and nocase=false (case-sensitive). Paths are relative to the repo
+                root, not the worktree.
       # NOTE: integration_gate_timeout_minutes was removed from the public
       # surface in v0.4 (engine-tuning knob, no operator calibration data);
       # it's hardcoded internally. Set test_command if you need to bound the

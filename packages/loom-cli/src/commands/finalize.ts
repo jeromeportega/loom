@@ -60,6 +60,7 @@ export async function runFinalize(epicId: string, opts: FinalizeCommandOptions =
         prStrategy: policy.agents.pr_strategy,
         pushGate: policy.agents.push_gate,
         integrationGate: policy.agents.integration_gate,
+        testCommands: policy.agents.test_commands,
         prAttribution: policy.agents.pr_attribution,
         testCommand: policy.agents.test_command,
         // Late-bound rebind — re-read from disk so a mid-run policy edit takes effect.
@@ -68,6 +69,7 @@ export async function runFinalize(epicId: string, opts: FinalizeCommandOptions =
           return {
             allowedRemotes: live.git.allowed_remotes,
             testCommand: live.agents.test_command,
+            testCommands: live.agents.test_commands,
             integrationGate: live.agents.integration_gate,
             pushGate: live.agents.push_gate,
             prAttribution: live.agents.pr_attribution,

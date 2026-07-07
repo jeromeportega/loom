@@ -300,3 +300,227 @@ describe('gateRunnableCheck — integration: real /bin/sh binary resolution', ()
     }
   });
 });
+
+// ── gateRunnableCheck — test_commands binary preflight ────────────────────────
+
+/** Write a minimal policy YAML with test_commands entries to a .loom dir. */
+function writePolicyWithTestCommands(loomDir: string, entries: Array<{ name: string; command: string; paths: string[] }>): void {
+  const entriesYaml = entries
+    .map((e) => [
+      `    - name: "${e.name}"`,
+      `      command: "${e.command}"`,
+      `      paths:`,
+      ...e.paths.map((p) => `        - "${p}"`),
+    ].join('\n'))
+    .join('\n');
+  fs.writeFileSync(
+    path.join(loomDir, 'policy.yaml'),
+    `agents:\n  test_commands:\n${entriesYaml}\n`
+  );
+}
+
+/** A zero-step plan (simulates test_commands source path from resolveGatePlan). */
+const noStepsPlan = { steps: [] as { name: string; kind: 'unit'; command: string; cwd: string }[], source: 'none' as const, cwd: '/repo' };
+
+describe('gateRunnableCheck — test_commands binary preflight (story-078-003)', () => {
+  it('no issues when all test_commands binaries resolve on PATH', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-tc-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      writePolicyWithTestCommands(path.join(root, '.loom'), [
+        { name: 'unit', command: 'jest --coverage', paths: ['src/**'] },
+      ]);
+      const result = await gateRunnableCheck(root, {
+        resolve: () => noStepsPlan,
+        binaryResolves: () => true,
+      });
+      assert.equal(result.ok, true, `all binaries resolve → ok:true, got: ${result.detail}`);
+      assert.equal(result.required, false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('error when one entry lead binary NOT on PATH — names entry.name and binary', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-tc-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      writePolicyWithTestCommands(path.join(root, '.loom'), [
+        { name: 'unit', command: 'jest --coverage', paths: ['src/**'] },
+      ]);
+      const result = await gateRunnableCheck(root, {
+        resolve: () => noStepsPlan,
+        binaryResolves: () => false,
+      });
+      assert.equal(result.ok, false, `missing binary → ok:false`);
+      assert.equal(result.required, false);
+      assert.ok(result.detail.includes('"unit"'), `detail names entry "unit": ${result.detail}`);
+      assert.ok(result.detail.includes('"jest"'), `detail names binary "jest": ${result.detail}`);
+      assert.ok(
+        result.detail.includes('test_commands entry'),
+        `detail uses naming pattern: ${result.detail}`
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('two missing binaries → two error entries, each naming its own entry', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-tc-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      writePolicyWithTestCommands(path.join(root, '.loom'), [
+        { name: 'unit', command: 'jest --coverage', paths: ['src/**'] },
+        { name: 'e2e', command: 'playwright test', paths: ['e2e/**'] },
+      ]);
+      const result = await gateRunnableCheck(root, {
+        resolve: () => noStepsPlan,
+        binaryResolves: () => false,
+      });
+      assert.equal(result.ok, false);
+      assert.ok(result.detail.includes('"unit"'), `detail names entry "unit": ${result.detail}`);
+      assert.ok(result.detail.includes('"jest"'), `detail names binary "jest": ${result.detail}`);
+      assert.ok(result.detail.includes('"e2e"'), `detail names entry "e2e": ${result.detail}`);
+      assert.ok(result.detail.includes('"playwright"'), `detail names binary "playwright": ${result.detail}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('policy with no test_commands key → skip check, no new issues', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-tc-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.loom', 'policy.yaml'), 'agents: {}\n');
+      const result = await gateRunnableCheck(root, {
+        resolve: () => noStepsPlan,
+        binaryResolves: () => { throw new Error('should not probe any binary'); },
+      });
+      assert.equal(result.ok, true, `no test_commands → ok:true, got: ${result.detail}`);
+      assert.equal(result.required, false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('policy with test_commands: [] → zero entries, no issues', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-tc-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.loom', 'policy.yaml'), 'agents:\n  test_commands: []\n');
+      const result = await gateRunnableCheck(root, {
+        resolve: () => noStepsPlan,
+        binaryResolves: () => { throw new Error('should not probe any binary'); },
+      });
+      assert.equal(result.ok, true, `empty test_commands → ok:true, got: ${result.detail}`);
+      assert.equal(result.required, false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('multi-word command → lead binary extracted as first token only', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-tc-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      writePolicyWithTestCommands(path.join(root, '.loom'), [
+        { name: 'unit', command: 'jest --coverage --watchAll=false', paths: ['src/**'] },
+      ]);
+      let binaryProbed: string | undefined;
+      await gateRunnableCheck(root, {
+        resolve: () => noStepsPlan,
+        binaryResolves: (b) => { binaryProbed = b; return true; },
+      });
+      assert.equal(binaryProbed, 'jest', `lead binary should be "jest", got "${binaryProbed}"`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('leading whitespace in command → trimmed before binary extraction', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-tc-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      // Write the YAML with leading space in the command value
+      fs.writeFileSync(
+        path.join(root, '.loom', 'policy.yaml'),
+        'agents:\n  test_commands:\n    - name: unit\n      command: "  jest"\n      paths:\n        - "src/**"\n'
+      );
+      let binaryProbed: string | undefined;
+      await gateRunnableCheck(root, {
+        resolve: () => noStepsPlan,
+        binaryResolves: (b) => { binaryProbed = b; return true; },
+      });
+      assert.equal(binaryProbed, 'jest', `whitespace-trimmed binary should be "jest", got "${binaryProbed}"`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-detected step binary errors and test_commands errors surface together', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-tc-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      writePolicyWithTestCommands(path.join(root, '.loom'), [
+        { name: 'unit', command: 'jest --coverage', paths: ['src/**'] },
+      ]);
+      const result = await gateRunnableCheck(root, {
+        resolve: () => ({
+          steps: [{ name: 'run', kind: 'unit' as const, command: 'pytest', cwd: root }],
+          source: 'auto-detected' as const,
+          cwd: root,
+        }),
+        binaryResolves: () => false,
+      });
+      assert.equal(result.ok, false, `both missing → ok:false`);
+      assert.equal(result.required, false);
+      assert.ok(result.detail.includes('"pytest"'), `auto-detected binary in detail: ${result.detail}`);
+      assert.ok(result.detail.includes('"jest"'), `test_commands binary in detail: ${result.detail}`);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('gateRunnableCheck — doctor call path integration (story-078-003)', () => {
+  const LOOM_CLI = path.resolve(__dirname, '../index.js');
+
+  it('loom doctor surfaces test_commands missing-binary errors', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-grc-tc-doctor-'));
+    try {
+      fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
+      // Use a nonexistent binary so the check fails without needing binary stubs.
+      fs.writeFileSync(
+        path.join(root, '.loom', 'policy.yaml'),
+        [
+          'agents:',
+          '  test_commands:',
+          '    - name: unit',
+          '      command: "loom-nonexistent-tc-binary-xyz --run"',
+          '      paths:',
+          '        - "src/**"',
+        ].join('\n') + '\n'
+      );
+      let stdout = '';
+      let stderr = '';
+      try {
+        const out = execSync(`node "${LOOM_CLI}" doctor`, {
+          cwd: root,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, LOOM_HOME: path.join(root, '.loom-home') },
+        });
+        stdout = out;
+      } catch (err: unknown) {
+        stdout = (err as { stdout?: string }).stdout ?? '';
+        stderr = (err as { stderr?: string }).stderr ?? '';
+      }
+      assert.ok(
+        (stdout + stderr).includes('loom-nonexistent-tc-binary-xyz'),
+        `doctor output names the missing binary:\nstdout: ${stdout}\nstderr: ${stderr}`
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

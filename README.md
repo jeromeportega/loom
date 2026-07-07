@@ -320,7 +320,33 @@ present), and build steps (`next build`, `go build ./...`, or `cargo build
 reports its own pass/fail and duration. uv-managed Python projects use `uv run
 pytest` (or `uv run --all-packages pytest` for workspaces). Set
 `policy.agents.test_command` to override all detection with a single configured
-command. Build steps (`next build`, `cargo build`) run full compilations and
+command. For polyglot repos, use `test_commands` to run different suites for
+different parts of the tree:
+
+```yaml
+# .loom/policy.yaml
+agents:
+  test_commands:
+    - name: backend
+      command: "npm test --workspace packages/api"
+      paths:
+        - "packages/api/**"
+    - name: frontend
+      command: "npm test --workspace packages/web"
+      paths:
+        - "packages/web/**"
+```
+
+Each entry runs only when a changed file matches one of its glob patterns
+(repo-root-relative, minimatch with `dot=false` and `nocase=false` —
+dotfiles and dot-directories are not matched by `**`). Entries run in
+declaration order; all run to completion — no fail-fast. Unmatched entries
+are skipped without failing the gate. When the base commit cannot be resolved
+(e.g. shallow clone), all entries run unconditionally. `test_command`
+(singular) takes precedence when both are set. `loom doctor` checks that
+every entry's binary resolves on PATH.
+
+Build steps (`next build`, `cargo build`) run full compilations and
 materially increase gate wall-clock — plan accordingly when enabling
 `integration_gate: block`.
 
