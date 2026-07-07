@@ -65,7 +65,7 @@ export function EpicDetail() {
   const epic = epicsData?.epics?.find((e) => e.id === epicId);
   const isPlanned = epic?.status === 'planned';
 
-  const { data: artifacts } = useEpicArtifacts(slug, epicId, isPlanned ?? false);
+  const { data: artifacts, isError: artifactsError } = useEpicArtifacts(slug, epicId, isPlanned);
 
   const [approveState, setApproveState] = useState<MutationState>({ pending: false, error: null });
   const [rejectState, setRejectState] = useState<MutationState>({ pending: false, error: null });
@@ -102,6 +102,11 @@ export function EpicDetail() {
 
   return (
     <div className="p-4">
+      {isPlanned && artifactsError && (
+        <p className="text-destructive text-sm mb-4" data-testid="artifacts-error">
+          Failed to load planning artifacts.
+        </p>
+      )}
       {isPlanned && artifacts && <PlanningArtifactsPanel artifacts={artifacts} />}
       {isPlanned && (
         <div className="flex gap-3 mb-6" data-testid="approve-reject-controls">

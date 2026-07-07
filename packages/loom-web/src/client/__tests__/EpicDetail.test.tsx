@@ -14,6 +14,9 @@ import * as apiModule from '../lib/api';
 vi.mock('../hooks/useEpics');
 vi.mock('../hooks/useStories');
 vi.mock('../lib/api');
+vi.mock('../views/StoryList', () => ({
+  StoryList: () => <div data-testid="story-list-mock" />,
+}));
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -160,7 +163,7 @@ describe('EpicDetail — artifact rendering', () => {
     expect(screen.getByTestId('artifact-prd').textContent).toContain('(not available)');
   });
 
-  it('does NOT call apiFetch for planning-artifacts when status is not planned', () => {
+  it('does NOT call apiFetch for planning-artifacts when status is not planned', async () => {
     vi.mocked(useEpicsModule.useEpics).mockReturnValue(
       makeQueryResult<EpicsResponse>({
         data: { epics: [makeEpic({ status: 'in_progress' })] },
@@ -172,9 +175,25 @@ describe('EpicDetail — artifact rendering', () => {
 
     renderEpicDetail();
 
+    await act(async () => {});
     expect(vi.mocked(apiModule.apiFetch)).not.toHaveBeenCalledWith(
       expect.stringContaining('planning-artifacts')
     );
+  });
+
+  it('shows artifacts-error message when artifact fetch fails', async () => {
+    vi.mocked(apiModule.apiFetch).mockImplementation(async (path: string) => {
+      if (path.includes('planning-artifacts')) {
+        return { ok: false, status: 500, json: async () => ({}) } as Response;
+      }
+      return { ok: true, json: async () => ({ epic_id: 'epic-001', stories: [] }) } as Response;
+    });
+
+    renderEpicDetail();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('artifacts-error')).not.toBeNull();
+    });
   });
 });
 
@@ -389,13 +408,13 @@ describe('EpicDetail — Reject mutation', () => {
 // ─── Routing and composition ──────────────────────────────────────────────────
 
 describe('EpicDetail — routing and composition', () => {
-  it('renders StoryList as a child (heading visible)', () => {
+  it('renders StoryList as a child', () => {
     renderEpicDetail('my-repo', 'epic-001');
 
-    expect(screen.getByText(/Stories — epic-001/)).not.toBeNull();
+    expect(screen.getByTestId('story-list-mock')).not.toBeNull();
   });
 
-  it('useEpicArtifacts is disabled when epic status is not planned', () => {
+  it('useEpicArtifacts is disabled when epic status is not planned', async () => {
     vi.mocked(useEpicsModule.useEpics).mockReturnValue(
       makeQueryResult<EpicsResponse>({
         data: { epics: [makeEpic({ status: 'approved' })] },
@@ -407,6 +426,7 @@ describe('EpicDetail — routing and composition', () => {
 
     renderEpicDetail();
 
+    await act(async () => {});
     // Hook is disabled — apiFetch must not be called for planning-artifacts
     expect(vi.mocked(apiModule.apiFetch)).not.toHaveBeenCalledWith(
       expect.stringContaining('planning-artifacts')
