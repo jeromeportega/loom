@@ -8,7 +8,9 @@ export function useStories(slug: string, epicId: string): UseQueryResult<Stories
   return useQuery({
     queryKey: queryKeys.stories(slug, epicId),
     queryFn: async () => {
-      const res = await apiFetch(`/api/repos/${slug}/epics/${epicId}/stories`);
+      const res = await apiFetch(
+        `/api/repos/${encodeURIComponent(slug)}/epics/${encodeURIComponent(epicId)}/stories`
+      );
       if (!res.ok) {
         const err = Object.assign(new Error(`Fetch failed: ${res.status}`), { status: res.status });
         throw err;
@@ -16,5 +18,10 @@ export function useStories(slug: string, epicId: string): UseQueryResult<Stories
       return res.json() as Promise<StoriesResponse>;
     },
     refetchInterval: POLL_MS,
+    // Fail fast on a 4xx (e.g. 404 "epic not found"); only retry unknown/5xx.
+    retry: (_, err) => {
+      const status = (err as Error & { status?: number }).status;
+      return status == null || status >= 500;
+    },
   });
 }

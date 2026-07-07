@@ -5,6 +5,7 @@
  */
 
 import path from 'node:path';
+import fs from 'node:fs';
 import type { Express } from 'express';
 import type Database from 'better-sqlite3';
 import {
@@ -107,8 +108,14 @@ export function registerRepoRoutes(app: Express, deps: RepoDeps): void {
    * Opens the DB for a project root. Returns the current-project DB when root
    * matches projectRoot (no file I/O). Opens a fresh connection for peer
    * projects; caller must close() it in a finally block.
+   *
+   * Returns null when a registered peer repo has no `.loom` state DB on disk.
+   * `createDatabase` mkdirs the directory, creates the file, and runs
+   * migrations — a read endpoint that is polled every few seconds must NEVER
+   * do that to another repo's disk (matches the `existsSync` guard the
+   * `/api/status` and `/api/projects` peer-DB opens already use).
    */
-  function openDb(root: string): { db: Database.Database; close: () => void } {
+  function openDb(root: string): { db: Database.Database; close: () => void } | null {
     if (root === projectRoot) {
       return { db: deps.db, close: () => {} };
     }
@@ -117,20 +124,19 @@ export function registerRepoRoutes(app: Express, deps: RepoDeps): void {
       policy = PolicyEngine.load(path.join(root, '.loom')).policyData;
     } catch {}
     const { namespaceDir } = resolveRepoStatePaths(root, policy);
-    const pDb = createDatabase(path.join(namespaceDir, 'loom.db'));
+    const dbPath = path.join(namespaceDir, 'loom.db');
+    if (!fs.existsSync(dbPath)) return null; // uninitialized peer — do not create state
+    const pDb = createDatabase(dbPath);
     return { db: pDb, close: () => pDb.close() };
   }
 
   function countEpics(root: string): number {
+    const opened = openDb(root);
+    if (!opened) return 0;
     try {
-      const { db: pDb, close } = openDb(root);
-      try {
-        return new EpicStore(pDb).list({ includeArchived: true }).length;
-      } finally {
-        close();
-      }
-    } catch {
-      return 0;
+      return new EpicStore(opened.db).list({ includeArchived: true }).length;
+    } finally {
+      opened.close();
     }
   }
 
@@ -155,7 +161,12 @@ export function registerRepoRoutes(app: Express, deps: RepoDeps): void {
       res.status(404).json({ error: 'repo not found' });
       return;
     }
-    const { db: pDb, close } = openDb(entry.root);
+    const opened = openDb(entry.root);
+    if (!opened) {
+      res.status(404).json({ error: 'repo not initialized' });
+      return;
+    }
+    const { db: pDb, close } = opened;
     try {
       const epicStore = new EpicStore(pDb);
       const agentStore = new AgentStore(pDb);
@@ -192,7 +203,12 @@ export function registerRepoRoutes(app: Express, deps: RepoDeps): void {
       res.status(404).json({ error: 'repo not found' });
       return;
     }
-    const { db: pDb, close } = openDb(entry.root);
+    const opened = openDb(entry.root);
+    if (!opened) {
+      res.status(404).json({ error: 'repo not initialized' });
+      return;
+    }
+    const { db: pDb, close } = opened;
     try {
       const epicStore = new EpicStore(pDb);
       const epic = epicStore.get(req.params.epicId);
@@ -218,7 +234,12 @@ export function registerRepoRoutes(app: Express, deps: RepoDeps): void {
       res.status(404).json({ error: 'repo not found' });
       return;
     }
-    const { db: pDb, close } = openDb(entry.root);
+    const opened = openDb(entry.root);
+    if (!opened) {
+      res.status(404).json({ error: 'repo not initialized' });
+      return;
+    }
+    const { db: pDb, close } = opened;
     try {
       const epicStore = new EpicStore(pDb);
       const epic = epicStore.get(req.params.epicId);

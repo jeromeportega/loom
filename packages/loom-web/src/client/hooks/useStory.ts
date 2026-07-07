@@ -14,7 +14,9 @@ export function useStory(
   return useQuery({
     queryKey: queryKeys.story(slug, epicId, storyId),
     queryFn: async () => {
-      const res = await apiFetch(`/api/repos/${slug}/epics/${epicId}/stories/${storyId}`);
+      const res = await apiFetch(
+        `/api/repos/${encodeURIComponent(slug)}/epics/${encodeURIComponent(epicId)}/stories/${encodeURIComponent(storyId)}`
+      );
       if (!res.ok) {
         const err = Object.assign(new Error(`Fetch failed: ${res.status}`), { status: res.status });
         throw err;
@@ -26,6 +28,11 @@ export function useStory(
       return status !== undefined && TERMINAL_STATES.has(status as 'done' | 'failed')
         ? false
         : POLL_MS;
+    },
+    // Fail fast on a 4xx (e.g. 404 "story not found"); only retry unknown/5xx.
+    retry: (_, err) => {
+      const status = (err as Error & { status?: number }).status;
+      return status == null || status >= 500;
     },
   });
 }
