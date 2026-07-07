@@ -10,10 +10,25 @@ import * as useStoryModule from '../hooks/useStory';
 import * as apiModule from '../lib/api';
 
 vi.mock('../hooks/useStory');
+// apiPost + apiFetch are mocked; eventSourceUrl stays real (TOKEN is '' in jsdom,
+// so it returns the bare path — the token-in-URL behaviour is unit-tested in
+// api.test.ts where sessionStorage is seeded before import).
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
-  return { ...actual, apiPost: vi.fn() };
+  // eventSourceUrl is a spy that delegates to the real impl — so we can assert
+  // StoryDetail routes the SSE URL through it (the auth fix) while still getting
+  // the real bare-path result (TOKEN is '' in jsdom).
+  return { ...actual, apiPost: vi.fn(), apiFetch: vi.fn(), eventSourceUrl: vi.fn(actual.eventSourceUrl) };
 });
+
+/** Stub the GET /api/agents/:id/log fetch: body + X-Log-Length (absolute bytes). */
+function mockLogFetch(body: string, len = new TextEncoder().encode(body).length) {
+  vi.mocked(apiModule.apiFetch).mockResolvedValue({
+    ok: true,
+    text: async () => body,
+    headers: new Headers({ 'X-Log-Length': String(len) }),
+  } as unknown as Response);
+}
 
 // ─── Mock EventSource ─────────────────────────────────────────────────────────
 
@@ -56,6 +71,10 @@ class MockEventSource {
 beforeEach(() => {
   MockEventSource.instances = [];
   vi.stubGlobal('EventSource', MockEventSource);
+  // Default: the durable-log fetch never resolves, so baseLog stays null and the
+  // SSE de-dup floor stays at 0 (no late setBaseLog → no act() warnings). Tests
+  // that assert on fetched log content call mockLogFetch() and await it.
+  vi.mocked(apiModule.apiFetch).mockReturnValue(new Promise(() => {}) as Promise<Response>);
 });
 
 afterEach(() => {
@@ -147,15 +166,28 @@ describe('StoryDetail — summary tab', () => {
 // ─── Existing: log tab ────────────────────────────────────────────────────────
 
 describe('StoryDetail — log tab', () => {
-  it('shows log_tail text in the log panel', () => {
+  it('shows the full durable log fetched from /api/agents/:id/log', async () => {
+    mockLogFetch('Worker started.\nProcessing...\nDone!');
     mockStory(baseAgent);
     renderStoryDetail();
 
     fireEvent.click(screen.getByRole('tab', { name: /log/i }));
 
     const logOutput = screen.getByTestId('log-output');
-    expect(logOutput.textContent).toContain('Worker started.');
-    expect(logOutput.textContent).toContain('Done!');
+    await waitFor(() => {
+      expect(logOutput.textContent).toContain('Worker started.');
+      expect(logOutput.textContent).toContain('Done!');
+    });
+  });
+
+  it('falls back to log_tail until the durable-log fetch resolves', () => {
+    // apiFetch never resolves → baseLog stays null → log_tail is the placeholder.
+    vi.mocked(apiModule.apiFetch).mockReturnValue(new Promise(() => {}) as Promise<Response>);
+    mockStory(baseAgent);
+    renderStoryDetail();
+
+    fireEvent.click(screen.getByRole('tab', { name: /log/i }));
+    expect(screen.getByTestId('log-output').textContent).toContain('Worker started.');
   });
 });
 
@@ -181,12 +213,15 @@ describe('StoryDetail — 404 story', () => {
 // ─── SSE lifecycle ────────────────────────────────────────────────────────────
 
 describe('StoryDetail — SSE lifecycle', () => {
-  it('constructs exactly one EventSource on first render', () => {
+  it('constructs exactly one authenticated EventSource on first render', () => {
     mockStory(runningWithPid);
     renderStoryDetail();
 
     expect(MockEventSource.instances).toHaveLength(1);
-    expect(MockEventSource.instances[0].url).toBe('/api/events');
+    // Routed through the auth helper (which appends ?token= when a token exists)
+    // rather than a hardcoded string — the fix for the 401'ing SSE seam.
+    expect(vi.mocked(apiModule.eventSourceUrl)).toHaveBeenCalledWith('/api/events');
+    expect(MockEventSource.instances[0].url).toBe('/api/events'); // TOKEN='' in jsdom
   });
 
   it('calls es.close() exactly once on unmount', () => {
@@ -269,25 +304,30 @@ describe('StoryDetail — SSE lifecycle', () => {
     });
   });
 
-  it('filters SSE event whose from offset is less than log_tail length', async () => {
-    const tail = 'Initial tail content'; // length 20
-    mockStory({ ...baseAgent, status: 'running', log_tail: tail });
+  it('drops an SSE event fully covered by the fetched durable log (X-Log-Length anchor)', async () => {
+    // Durable log is 20 bytes; the de-dup floor anchors to X-Log-Length, NOT the
+    // rolling log_tail window. An event within [0,20) is already displayed.
+    mockLogFetch('Initial tail content', 20);
+    mockStory({ ...baseAgent, status: 'running', log_tail: 'stale short tail' });
     renderStoryDetail();
 
-    // Emit an event whose from (5) falls within the range already in log_tail (0..20)
+    // Wait for the base log (and thus anchorRef=20) before emitting.
+    await waitFor(() => {
+      expect(screen.getByTestId('log-output').textContent).toContain('Initial tail content');
+    });
+
     const overlap: SseOutputPayload = {
       agent_id: 'agent-001',
       story_id: 'story-001-001',
       from: 5,
       bytes: 'overlap bytes',
-      byteLength: 13,
+      byteLength: 13, // 5+13=18 <= 20 → fully covered
     };
 
     act(() => {
       MockEventSource.instances[0].emit('output', overlap);
     });
 
-    fireEvent.click(screen.getByRole('tab', { name: /log/i }));
     await waitFor(() => {
       const text = screen.getByTestId('log-output').textContent;
       expect(text).toContain('Initial tail content');
@@ -295,13 +335,17 @@ describe('StoryDetail — SSE lifecycle', () => {
     });
   });
 
-  it('appends only the non-overlapping suffix on partial-overlap SSE event', async () => {
-    // tail is 15 chars; event spans bytes 10–19, straddling the boundary
-    const tail = 'Initial tail co'; // exactly 15 chars
-    mockStory({ ...baseAgent, status: 'running', log_tail: tail });
+  it('appends only the non-overlapping suffix on a partial-overlap SSE event', async () => {
+    // Durable log is 15 bytes; event spans bytes 10–19, straddling the boundary.
+    mockLogFetch('Initial tail co', 15);
+    mockStory({ ...baseAgent, status: 'running', log_tail: null });
     renderStoryDetail();
 
-    // from=10, byteLength=10: bytes 10-14 overlap tail, bytes 15-19 are new
+    await waitFor(() => {
+      expect(screen.getByTestId('log-output').textContent).toContain('Initial tail co');
+    });
+
+    // from=10, byteLength=10: bytes 10-14 overlap the base, bytes 15-19 are new.
     const partial: SseOutputPayload = {
       agent_id: 'agent-001',
       story_id: 'story-001-001',
@@ -314,11 +358,10 @@ describe('StoryDetail — SSE lifecycle', () => {
       MockEventSource.instances[0].emit('output', partial);
     });
 
-    fireEvent.click(screen.getByRole('tab', { name: /log/i }));
     await waitFor(() => {
       const text = screen.getByTestId('log-output').textContent;
-      expect(text).toContain('12345');     // 5 bytes beyond the tail boundary
-      expect(text).not.toContain('AAAAA'); // already covered by log_tail
+      expect(text).toContain('12345');     // 5 bytes beyond the base boundary
+      expect(text).not.toContain('AAAAA'); // already covered by the fetched log
     });
   });
 
@@ -356,6 +399,52 @@ describe('StoryDetail — SSE lifecycle', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('sse-error')).toBeNull();
     });
+  });
+
+  it('clears a stale disconnect banner once the story reaches a terminal state', async () => {
+    // A transient error mid-run raises the banner; when the story completes the
+    // effect re-runs into the terminal branch, which must clear it (not leave a
+    // permanent red banner on every done story).
+    mockStory(runningWithPid);
+    const client = makeClient();
+    // Build a fresh element each time — passing the identical element reference
+    // to rerender() hits React's referential-equality bailout and skips the
+    // re-render (so the changed mock would never be read).
+    const tree = () => (
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/repo/my-repo/epic/epic-001/story/story-001-001']}>
+          <Routes>
+            <Route
+              path="/repo/:slug/epic/:epicId/story/:storyId"
+              element={<StoryDetail />}
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree());
+
+    act(() => {
+      MockEventSource.instances[0].triggerError();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('sse-error')).not.toBeNull();
+    });
+
+    // Story finishes → useStory now returns a terminal snapshot.
+    mockStory(doneAgent);
+    rerender(tree());
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('sse-error')).toBeNull();
+    });
+  });
+
+  it('opens no EventSource for a terminal (done) story', () => {
+    mockStory(doneAgent);
+    renderStoryDetail();
+    expect(MockEventSource.instances).toHaveLength(0);
+    expect(screen.queryByTestId('sse-error')).toBeNull();
   });
 });
 
@@ -413,6 +502,13 @@ describe('StoryDetail — mutation button visibility', () => {
 
   it('Retry and Clean-retry buttons rendered when status=failed', () => {
     mockStory(failedAgent);
+    renderStoryDetail();
+    expect(screen.getByTestId('retry-btn')).not.toBeNull();
+    expect(screen.getByTestId('clean-retry-btn')).not.toBeNull();
+  });
+
+  it('Retry and Clean-retry buttons rendered when status=blocked (server re-dispatches these)', () => {
+    mockStory({ ...baseAgent, status: 'blocked', worker_pid: null });
     renderStoryDetail();
     expect(screen.getByTestId('retry-btn')).not.toBeNull();
     expect(screen.getByTestId('clean-retry-btn')).not.toBeNull();

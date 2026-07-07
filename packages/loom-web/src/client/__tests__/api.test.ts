@@ -111,3 +111,29 @@ describe('apiFetch (existing GET callers unaffected)', () => {
     expect(headers.get('Accept')).toBe('application/json');
   });
 });
+
+// EventSource cannot set request headers, so the SSE URL must carry the token as
+// a query param — otherwise every live-log connection 401s in default token mode.
+describe('eventSourceUrl', () => {
+  it('appends the auth token as a ?token= query param', async () => {
+    const { eventSourceUrl } = await loadApi();
+    expect(eventSourceUrl('/api/events')).toBe(`/api/events?token=${SEEDED_TOKEN}`);
+  });
+
+  it('uses & as the separator when the path already has a query string', async () => {
+    const { eventSourceUrl } = await loadApi();
+    expect(eventSourceUrl('/api/events?since=5')).toBe(`/api/events?since=5&token=${SEEDED_TOKEN}`);
+  });
+
+  it('URL-encodes the token', async () => {
+    window.sessionStorage.setItem('loom_token', 'a b+c/d');
+    const { eventSourceUrl } = await loadApi();
+    expect(eventSourceUrl('/api/events')).toBe('/api/events?token=a%20b%2Bc%2Fd');
+  });
+
+  it('returns the bare path when no token is present (read-only mode)', async () => {
+    window.sessionStorage.clear();
+    const { eventSourceUrl } = await loadApi();
+    expect(eventSourceUrl('/api/events')).toBe('/api/events');
+  });
+});

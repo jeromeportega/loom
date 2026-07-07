@@ -7,7 +7,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Skeleton } from '../components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { apiPost } from '../lib/api';
+import { apiPost, apiFetch, eventSourceUrl } from '../lib/api';
 import { queryKeys } from '../lib/queryKeys';
 import type { SseOutputPayload } from '../../shared/types';
 
@@ -27,28 +27,61 @@ export function StoryDetail() {
   const { data, isLoading, isError, error } = useStory(slug, epicId, storyId);
   const queryClient = useQueryClient();
 
-  const [log, setLog] = useState('');
+  // baseLog: the full durable log fetched on view-enter (the SSE de-dup anchor).
+  // liveLog: bytes appended by the SSE stream since that anchor.
+  const [baseLog, setBaseLog] = useState<string | null>(null);
+  const [liveLog, setLiveLog] = useState('');
   const [sseError, setSseError] = useState(false);
   const [killState, setKillState] = useState<MutationState>(initMutation);
   const [stopState, setStopState] = useState<MutationState>(initMutation);
   const [retryState, setRetryState] = useState<MutationState>(initMutation);
   const [cleanRetryState, setCleanRetryState] = useState<MutationState>(initMutation);
 
-  // Tracks the byte offset covered by the server's log_tail snapshot. SSE events
-  // with from < tailLenRef.current overlap the already-fetched tail and are skipped.
-  // Declared before the SSE effect so the tail effect (declared after) runs second
-  // under React StrictMode double-invocation and wins.
-  const tailLenRef = useRef(0);
+  // Absolute durable-byte offset covered by baseLog + liveLog. The server keys
+  // SSE `output` events to an absolute `from` offset (agents.log_bytes), so the
+  // de-dup floor MUST be an absolute byte length — anchored to X-Log-Length from
+  // GET /api/agents/:id/log — not the rolling, char-counted log_tail window.
+  const anchorRef = useRef(0);
 
-  // SSE subscription — resets and reconnects whenever storyId or status changes.
-  // Skips connecting for terminal states to avoid idle connections.
+  // Live log. On view-enter (or story/status/agent change) fetch the full durable
+  // log and anchor the SSE de-dup floor to its X-Log-Length. Then, for non-terminal
+  // stories, open an *authenticated* SSE stream (token in the URL — EventSource
+  // can't send headers) and append incremental appends keyed to their absolute
+  // `from` offset. Fetching the full log also gives terminal stories their complete
+  // output instead of the truncated log_tail window.
   useEffect(() => {
-    if (typeof EventSource === 'undefined') return;
-    if (data?.status === 'done' || data?.status === 'failed') return;
-    setLog('');
-    tailLenRef.current = 0;
+    const agentId = data?.id;
+    if (!agentId) return;
+    let cancelled = false;
+
+    setLiveLog('');
+    void apiFetch(`/api/agents/${encodeURIComponent(agentId)}/log`)
+      .then(async (res) => {
+        if (cancelled || !res.ok) return;
+        const text = await res.text();
+        if (cancelled) return;
+        const hdr = parseInt(res.headers.get('X-Log-Length') ?? '', 10);
+        const absoluteLen = Number.isFinite(hdr)
+          ? hdr
+          : new TextEncoder().encode(text).length;
+        // Never rewind: if SSE events already advanced the floor past this
+        // snapshot (the server guarantees a ~500ms floor before the first
+        // output, so this is defensive), keep the further offset.
+        anchorRef.current = Math.max(anchorRef.current, absoluteLen);
+        setBaseLog(text);
+      })
+      .catch(() => { /* SSE still streams; display falls back to log_tail */ });
+
+    const terminal = data?.status === 'done' || data?.status === 'failed';
+    if (terminal || typeof EventSource === 'undefined') {
+      // Terminal (or no SSE support): no live stream. Clear any stale disconnect
+      // banner left over from the running phase.
+      setSseError(false);
+      return () => { cancelled = true; };
+    }
+
     setSseError(false);
-    const es = new EventSource('/api/events');
+    const es = new EventSource(eventSourceUrl('/api/events'));
     es.addEventListener('output', (e: MessageEvent) => {
       let payload: SseOutputPayload;
       try {
@@ -57,31 +90,25 @@ export function StoryDetail() {
         return;
       }
       if (payload.story_id !== storyId) return;
-      // Handle partial overlap: skip bytes already covered by log_tail, take the new suffix.
-      if (payload.from < tailLenRef.current) {
-        const skip = tailLenRef.current - payload.from;
-        if (skip >= payload.byteLength) return;
-        setLog(prev => prev + payload.bytes.slice(skip));
-        return;
+      const floor = anchorRef.current;
+      // Entirely covered by the fetched base log — drop.
+      if (payload.from + payload.byteLength <= floor) return;
+      if (payload.from >= floor) {
+        // Contiguous append (from === floor) or ahead of it.
+        setLiveLog(prev => prev + payload.bytes);
+      } else {
+        // Partial overlap — drop the covered byte-prefix, keep the new suffix.
+        // Slice on a byte boundary (UTF-8 safe): from/byteLength are byte counts.
+        const skip = floor - payload.from;
+        const buf = new TextEncoder().encode(payload.bytes);
+        setLiveLog(prev => prev + new TextDecoder().decode(buf.subarray(skip)));
       }
-      setLog(prev => prev + payload.bytes);
+      anchorRef.current = payload.from + payload.byteLength;
     });
     es.onerror = () => { setSseError(true); };
     es.addEventListener('open', () => { setSseError(false); });
-    return () => { es.close(); };
-  }, [storyId, data?.status]);
-
-  // When data.log_tail grows (initial load or post-mutation refetch), update the
-  // offset floor and clear the SSE-accumulated log — those bytes are now in the tail.
-  // Declared after the SSE effect so it runs second under StrictMode, ensuring
-  // tailLenRef reflects the actual tail length after both effects fire.
-  useEffect(() => {
-    const newLen = data?.log_tail?.length ?? 0;
-    if (newLen > tailLenRef.current) {
-      tailLenRef.current = newLen;
-      setLog('');
-    }
-  }, [data?.log_tail]);
+    return () => { cancelled = true; es.close(); };
+  }, [storyId, data?.status, data?.id]);
 
   async function runMutation(
     path: string,
@@ -93,9 +120,8 @@ export function StoryDetail() {
     try {
       const res = await apiPost(path, body);
       if (res.ok) {
-        // Clear SSE log proactively; the refetch will populate a fresh log_tail that
-        // covers all bytes received so far, and the tail effect will update tailLenRef.
-        setLog('');
+        // The invalidate refetches the story; its status change re-runs the log
+        // effect, which re-anchors baseLog and resets liveLog. No manual clear.
         if (queryKey) {
           await queryClient.invalidateQueries({ queryKey });
         }
@@ -130,8 +156,12 @@ export function StoryDetail() {
   const storyKey = queryKeys.story(slug, epicId, storyId);
   const storiesKey = queryKeys.stories(slug, epicId);
   const isRunning = data.status === 'running';
-  const isFailed = data.status === 'failed';
-  const combinedLog = (data.log_tail ?? '') + log;
+  // Retry / Clean-retry apply to any story the server will re-dispatch — failed
+  // OR blocked (StoryRetryService refuses only a still-running story). The pre-
+  // React UI offered these on both; dropping 'blocked' left escalated stories
+  // with no controls at all.
+  const isRetryable = data.status === 'failed' || data.status === 'blocked';
+  const combinedLog = (baseLog ?? data.log_tail ?? '') + liveLog;
 
   return (
     <div className="p-4">
@@ -140,7 +170,7 @@ export function StoryDetail() {
         <Badge variant={statusVariant(data.status)}>{data.status}</Badge>
       </div>
 
-      {(isRunning || isFailed) && (
+      {(isRunning || isRetryable) && (
         <div className="flex flex-wrap gap-2 mb-4">
           {isRunning && (
             <div className="flex flex-col gap-1">
@@ -154,7 +184,7 @@ export function StoryDetail() {
                 {stopState.pending && (
                   <span className="mr-1 animate-spin inline-block" data-testid="stop-btn-spinner">⟳</span>
                 )}
-                Stop
+                Stop run
               </Button>
               {stopState.error && (
                 <p className="text-xs text-destructive" data-testid="stop-error">{stopState.error}</p>
@@ -180,7 +210,7 @@ export function StoryDetail() {
               )}
             </div>
           )}
-          {isFailed && (
+          {isRetryable && (
             <>
               <div className="flex flex-col gap-1">
                 <Button
