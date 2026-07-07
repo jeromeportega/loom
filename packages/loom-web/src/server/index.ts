@@ -563,11 +563,16 @@ export function createApp(opts: CreateAppOptions): Express {
   }));
 
   // ─── Static frontend (built React) ───────────────────────────────────────
-  if (opts.staticDir) {
-    app.use(express.static(opts.staticDir));
+  // Default to the Vite SPA output directory when no override is provided.
+  // The check gates on file existence so the dev workflow (Vite dev server
+  // proxying /api to Express) is unaffected when client-dist hasn't been built.
+  const defaultStaticDir = path.join(__dirname, '../../client-dist');
+  const resolvedStaticDir = opts.staticDir ?? (fs.existsSync(defaultStaticDir) ? defaultStaticDir : undefined);
+  if (resolvedStaticDir) {
+    app.use(express.static(resolvedStaticDir));
     // SPA fallback for client-side routing.
     app.get(/^(?!\/api\/).+/, (_req, res) => {
-      res.sendFile(path.join(opts.staticDir!, 'index.html'));
+      res.sendFile('index.html', { root: resolvedStaticDir });
     });
   }
 
