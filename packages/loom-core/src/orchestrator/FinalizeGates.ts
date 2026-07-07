@@ -32,7 +32,8 @@ export interface FinalizeGatesResult {
   deadFields: DeadFieldResult;
   noCallers: NoCallerResult;
   /** true when mode === 'block' AND (undocumented env-var found
-   *  OR deadFields.findings.length > 0 OR noCallers.findings.length > 0). */
+   *  OR deadFields.findings.length > 0).
+   *  noCallers is excluded until story-082-003 ships the real gate. */
   hardFail: boolean;
 }
 
@@ -294,7 +295,10 @@ export async function runFinalizeGates(opts: {
   }
 
   // ── Dead-policy-field gate: agents schema fields with zero production reads. ──
-  const schemaPath = path.join(opts.contractRoot, 'schemas', 'policy.schema.yaml');
+  // Use treeRoot (not contractRoot): the schema lives at the project root, not the
+  // .loom/ contract directory. contractRoot and treeRoot differ in rolling-integration
+  // mode; conflating them causes this gate to silently no-op when run in production.
+  const schemaPath = path.join(opts.treeRoot, 'schemas', 'policy.schema.yaml');
   const deadFields = checkDeadPolicyFields({ schemaPath, projectRoot: opts.treeRoot });
   for (const f of deadFields.findings) {
     console.warn(`[finalize] dead policy field: '${f.field}' — ${f.reason}`);
@@ -306,15 +310,16 @@ export async function runFinalizeGates(opts: {
     projectRoot: opts.treeRoot,
   });
 
-  // Only the undocumented-env-var, dead-policy-field, and no-production-caller
-  // gates are precise enough to WITHHOLD a PR. Symbol drift and cross-epic
-  // regression are heuristics over prose-heavy markdown contracts — always
-  // advisory, never hard-fail, regardless of mode.
+  // Only the undocumented-env-var and dead-policy-field gates are precise enough
+  // to WITHHOLD a PR right now. Symbol drift and cross-epic regression are
+  // heuristics over prose-heavy markdown contracts — always advisory.
+  // TODO(story-082-003): add `noCallers.findings.length > 0` once the real
+  // GateNoProductionCaller lands; the current stub always returns [] so including
+  // it here would make the comment misleading and cannot block in practice.
   const hardFail =
     opts.mode === 'block' &&
     (undocumentedEnvVars.length > 0 ||
-      deadFields.findings.length > 0 ||
-      noCallers.findings.length > 0);
+      deadFields.findings.length > 0);
 
   return { symbolDrift, undocumentedEnvVars, regressions, deadFields, noCallers, hardFail };
 }

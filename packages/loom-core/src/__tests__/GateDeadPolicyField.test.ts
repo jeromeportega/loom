@@ -378,4 +378,32 @@ describe('runFinalizeGates — dead-field gate wiring', () => {
     assert.ok('noCallers' in result, 'result must have noCallers field');
     assert.ok(Array.isArray(result.noCallers.findings), 'noCallers.findings must be an array');
   });
+
+  it('schema is read from treeRoot, not contractRoot, when they differ', async () => {
+    // The schema lives in the project tree (treeRoot), not in the contract dir
+    // (contractRoot). If these are conflated, the gate silently returns no
+    // findings regardless of schema content.
+    const contractRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-fg-cr-'));
+    try {
+      // Write schema to treeRoot (tmpDir) only — not to contractRoot.
+      writeSchema(['fake_knob']);
+
+      const result = await runFinalizeGates({
+        contractRoot,       // different from treeRoot
+        treeRoot: tmpDir,   // schema lives here
+        headRef: 'HEAD',
+        baseRef: 'HEAD',
+        epicId: 'epic-test',
+        epicDiff: '',
+        mode: 'block',
+        deliveredEpicIds: [],
+      });
+
+      assert.ok(result.deadFields.findings.length > 0, 'dead-field gate must fire from treeRoot schema');
+      assert.equal(result.deadFields.findings[0].field, 'fake_knob');
+      assert.equal(result.hardFail, true, 'hardFail must be true in block mode with a dead field');
+    } finally {
+      fs.rmSync(contractRoot, { recursive: true, force: true });
+    }
+  });
 });
