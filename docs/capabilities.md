@@ -398,6 +398,8 @@ truth.
 `policy.agents.skill_gen_model`
 `policy.agents.skill_judge_min_score`
 `policy.agents.skill_promote_after`
+`policy.agents.smoke_command`
+`policy.agents.smoke_timeout_minutes`
 `policy.agents.stale_planning_minutes`
 `policy.agents.stall_recovery_budget`
 `policy.agents.story_absolute_cap_minutes`

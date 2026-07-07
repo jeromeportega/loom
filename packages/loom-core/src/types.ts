@@ -640,6 +640,14 @@ export const PolicySchema = z.object({
       worker_auth: z.enum(['inherit', 'session']).default('inherit'),
       integration_branch_lag_threshold: z.number().int().min(1).default(10),
       stale_planning_minutes:           z.number().int().min(1).default(30),
+      // Smoke command for the post-finalize smoke gate (epic-079). When set,
+      // EpicFinalizer runs this command on the integrated tree before opening
+      // the PR. Unset = resolver auto-detects from package.json scripts.
+      smoke_command: z.string().optional(),
+      // Wall-clock budget for the smoke command in minutes. Must be positive.
+      // Default 15 — chosen to cover a typical integration smoke suite without
+      // blocking the finalize path for an unreasonable time.
+      smoke_timeout_minutes: z.number().positive().default(15),
     })
     .default({}),
   mcp: z
