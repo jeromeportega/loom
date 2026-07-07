@@ -4,7 +4,7 @@ import path from 'node:path';
 export interface NoCallerFinding {
   symbol: string;   // exported symbol name
   file: string;     // source file that exports it (repo-relative)
-  callers: string[]; // all found call sites (all are test files)
+  callers: string[]; // all found reference sites (all are test files, or none)
 }
 
 export interface NoCallerResult {
@@ -28,6 +28,15 @@ const EXPORT_DECL_RE =
 // Matches named-form exports: export { foo, bar as baz } or export type { Foo }.
 const NAMED_EXPORT_RE = /^export\s+(?:type\s+)?\{([^}]+)\}/;
 
+// A pure re-export line ("barrel") — it forwards the symbol without USING it.
+// Covers `export { x } from '...'`, `export type { x } from '...'`, and
+// `export * from '...'` / `export * as ns from '...'`. Loom-core barrel-exports
+// nearly every symbol through orchestrator/index.ts + src/index.ts, so counting
+// these as callers would make this gate VACUOUS: an orphan that is only
+// barrel-exported (the default worker convention) would look "called" and the
+// epic-076 defect class this gate targets would be invisible.
+const RE_EXPORT_RE = /^\s*export\s+(?:type\s+)?(?:\{[^}]*\}|\*(?:\s+as\s+[A-Za-z_$][\w$]*)?)\s+from\s+/;
+
 // Annotation that unconditionally suppresses a no-production-caller finding.
 const PUBLIC_API_ANNOTATION = '@loom-public-api';
 
@@ -44,8 +53,27 @@ function isTestFile(filePath: string): boolean {
     /[._]test\.[mc]?[jt]sx?$/.test(norm) ||
     /[._]spec\.[mc]?[jt]sx?$/.test(norm) ||
     /(^|\/)__tests__\//.test(norm) ||
-    /(^|\/)test\//.test(norm)
+    /(^|\/)test\//.test(norm) ||
+    /(^|\/)fixtures?\//.test(norm)
   );
+}
+
+/** True when `content` DECLARES `symbol` (its own definition), not a use. */
+function isDeclarationLine(content: string, symbol: string): boolean {
+  const t = content.trim();
+  const decl = EXPORT_DECL_RE.exec(t);
+  if (decl && decl[1] === symbol) return true;
+  const named = NAMED_EXPORT_RE.exec(t);
+  // Only the local re-export form (`export { foo }` with no `from`) is the
+  // source's own declaration; `export { foo } from '…'` is handled as a barrel.
+  if (named && !/\bfrom\b/.test(t)) {
+    for (const part of named[1].split(',')) {
+      const tokens = part.trim().split(/\s+as\s+/);
+      const exportedName = (tokens[1] ?? tokens[0]).trim();
+      if (exportedName === symbol) return true;
+    }
+  }
+  return false;
 }
 
 interface ExportEntry {
@@ -65,7 +93,6 @@ function extractExportsFromDiff(epicDiff: string): ExportEntry[] {
   let prevContent = '';
 
   for (const rawLine of epicDiff.split('\n')) {
-    // Track current file from diff headers; reset annotation state per file.
     const fileMatch = DIFF_FILE_RE.exec(rawLine);
     if (fileMatch) {
       currentFile = fileMatch[1];
@@ -73,16 +100,11 @@ function extractExportsFromDiff(epicDiff: string): ExportEntry[] {
       continue;
     }
 
-    // Hunk headers (@@ ... @@) reset the annotation state so an annotation in
-    // one hunk cannot accidentally suppress an export in the next.
     if (rawLine.startsWith('@@')) {
       prevContent = '';
       continue;
     }
 
-    // Skip removed diff lines (covers both the --- old-file header and any -prefixed
-    // removal). Reset prevContent so a @loom-public-api annotation cannot bleed
-    // forward through a removed declaration onto the next added export.
     if (rawLine.startsWith('-')) {
       prevContent = '';
       continue;
@@ -92,11 +114,10 @@ function extractExportsFromDiff(epicDiff: string): ExportEntry[] {
     const isContext = rawLine.startsWith(' ');
     if (!isAdded && !isContext) continue;
 
-    const content = rawLine.slice(1); // strip leading +/space
+    const content = rawLine.slice(1);
     const trimmed = content.trim();
 
     if (isAdded && trimmed) {
-      // Declaration-form: export function foo, export const bar, etc.
       const declMatch = EXPORT_DECL_RE.exec(trimmed);
       if (declMatch) {
         entries.push({
@@ -106,12 +127,12 @@ function extractExportsFromDiff(epicDiff: string): ExportEntry[] {
         });
       }
 
-      // Named-form: export { foo, bar as baz } or export type { Foo }.
+      // Named-form: export { foo, bar as baz }. A re-export (`… from '…'`) is a
+      // barrel line, not a new local export — skip it as an export SOURCE.
       const namedMatch = NAMED_EXPORT_RE.exec(trimmed);
-      if (namedMatch) {
+      if (namedMatch && !RE_EXPORT_RE.test(content)) {
         const annotated = prevContent.includes(PUBLIC_API_ANNOTATION);
         for (const part of namedMatch[1].split(',')) {
-          // "local as exported" — the public name is the alias if present.
           const tokens = part.trim().split(/\s+as\s+/);
           const exportedName = (tokens[1] ?? tokens[0]).trim();
           if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(exportedName)) {
@@ -121,7 +142,6 @@ function extractExportsFromDiff(epicDiff: string): ExportEntry[] {
       }
     }
 
-    // Track last non-blank line (context or added) for annotation detection.
     if (trimmed) prevContent = trimmed;
   }
 
@@ -129,18 +149,24 @@ function extractExportsFromDiff(epicDiff: string): ExportEntry[] {
 }
 
 /**
- * Searches `projectRoot` recursively for TypeScript/JavaScript source files
- * that mention `symbol` as a whole word. Returns repo-relative paths.
- * The export's own source file (`sourceFile`) is excluded.
- * Ignores node_modules, dist, and dist-test directories.
+ * Searches `projectRoot` for production source lines that genuinely USE
+ * `symbol` (import or call), and returns the repo-relative files that do.
  *
- * Uses an explicit extended-regex word boundary (`[A-Za-z0-9_$]`) rather than
- * grep -w because -w treats `$` as a non-word character: searching for `stream$`
- * with -w would match inside `notstream$` since grep sees a boundary at `$`.
- * The explicit character class covers the full TypeScript identifier alphabet.
+ * Line-level (grep -n) so it can exclude, per matching line:
+ *  - test files (they never count as production callers);
+ *  - the symbol's own declaration line in its source file;
+ *  - pure re-export / barrel lines (`export { x } from '…'`, `export * from`) —
+ *    a forward is not a use, and loom barrels everything, so counting them would
+ *    make the gate vacuous.
+ * A same-file usage (the source file referencing the symbol on a non-declaration
+ * line) DOES count — an exported-for-testing helper used within its own module
+ * has a real production caller.
  */
-function findCallers(symbol: string, sourceFile: string, projectRoot: string): string[] {
-  // Escape $ in the symbol for use in an extended regex pattern.
+function findCallers(
+  symbol: string,
+  sourceFile: string,
+  projectRoot: string
+): { production: string[]; test: string[] } {
   const escaped = symbol.replace(/\$/g, '\\$');
   const pattern = `(^|[^A-Za-z0-9_$])${escaped}([^A-Za-z0-9_$]|$)`;
 
@@ -149,9 +175,8 @@ function findCallers(symbol: string, sourceFile: string, projectRoot: string): s
     out = execFileSync(
       'grep',
       [
-        '-r',                       // recursive
-        '-l',                       // list matching files only (no line output)
-        '-E',                       // extended regex (portable; macOS BSD grep supports -E)
+        '-rn',                       // recursive, with line numbers + content
+        '-E',
         '--include=*.ts',
         '--include=*.tsx',
         '--include=*.mts',
@@ -161,6 +186,7 @@ function findCallers(symbol: string, sourceFile: string, projectRoot: string): s
         '--exclude-dir=node_modules',
         '--exclude-dir=dist',
         '--exclude-dir=dist-test',
+        '--exclude-dir=client-dist',
         '--exclude-dir=.git',
         '-e', pattern,
         projectRoot,
@@ -172,36 +198,41 @@ function findCallers(symbol: string, sourceFile: string, projectRoot: string): s
       }
     );
   } catch (err) {
-    // grep exits 1 when no files match — that is not an error.
     const e = err as { status?: number };
-    if (e.status === 1) return [];
-    // Unexpected grep failure: treat as no callers found rather than crashing.
-    return [];
+    if (e.status === 1) return { production: [], test: [] };
+    return { production: [], test: [] };
   }
 
-  const callers: string[] = [];
+  const production = new Set<string>();
+  const test = new Set<string>();
+  const src = sourceFile.replace(/\\/g, '/');
   for (const line of out.split('\n')) {
-    const absPath = line.trim();
-    if (!absPath) continue;
-    const rel = path.relative(projectRoot, absPath).replace(/\\/g, '/');
-    // Exclude the file that exports the symbol.
-    if (rel === sourceFile || rel === sourceFile.replace(/\\/g, '/')) continue;
-    callers.push(rel);
+    // grep -rn output: `<abs-path>:<lineno>:<content>` (paths have no colons).
+    const m = /^([^:]+):\d+:(.*)$/.exec(line);
+    if (!m) continue;
+    const rel = path.relative(projectRoot, m[1]).replace(/\\/g, '/');
+    const content = m[2];
+    if (RE_EXPORT_RE.test(content)) continue;    // barrel forward — not a use at all
+    if (rel === src && isDeclarationLine(content, symbol)) continue; // the decl itself
+    if (isTestFile(rel)) test.add(rel);          // test reference — doesn't count as production
+    else production.add(rel);                    // real production use (import/call/in-file)
   }
-  return callers;
+  return { production: [...production], test: [...test] };
 }
 
 /**
  * Static checker. Extracts every export added in `epicDiff`, searches
- * `projectRoot` for their import and call sites, and returns a finding for
- * each export whose only callers are test files (or that has no callers at
- * all).
+ * `projectRoot` for genuine production uses, and returns a finding for each
+ * export with zero production callers (only test callers, barrel forwards, or
+ * nothing at all).
  *
  * Rules:
- *  - An export annotated `// @loom-public-api` on the immediately preceding
- *    non-blank diff line is skipped unconditionally.
- *  - Zero callers is treated identically to all-test callers (flagged).
- *  - Cross-package imports count as production callers and suppress findings.
+ *  - An export annotated `// @loom-public-api` on the preceding non-blank diff
+ *    line is skipped unconditionally.
+ *  - An export whose SOURCE file is itself a test/fixture file is not scanned.
+ *  - Zero production callers is flagged (whether the only refs are test files,
+ *    barrel forwards, or none).
+ *  - Cross-package and same-file production uses both count as callers.
  *  - An empty `epicDiff` produces an empty result immediately.
  */
 export function checkNoProductionCallers(opts: {
@@ -216,10 +247,6 @@ export function checkNoProductionCallers(opts: {
 
   const raw = extractExportsFromDiff(opts.epicDiff);
 
-  // Deduplicate by composite key (symbol + file) so that identically-named
-  // exports from different files each receive their own caller search. Deduping
-  // by symbol name alone would silently drop same-named exports from any file
-  // after the first occurrence in the diff.
   const seen = new Set<string>();
   const exports: ExportEntry[] = [];
   for (const e of raw) {
@@ -230,26 +257,27 @@ export function checkNoProductionCallers(opts: {
     }
   }
 
-  const scannedSymbols: string[] = exports.map(e => e.symbol);
+  const scannedSymbols: string[] = [];
   const findings: NoCallerFinding[] = [];
 
   for (const entry of exports) {
-    // Skip entries from malformed diff (no +++ b/ header seen before this export).
     if (!entry.file) continue;
+    // Exports DEFINED in a test/fixture file are not a production surface.
+    if (isTestFile(entry.file)) continue;
+    scannedSymbols.push(entry.symbol);
 
-    // @loom-public-api annotation unconditionally suppresses the check.
     if (entry.annotated) continue;
 
-    // NOTE: findCallers uses a grep word-boundary pattern that may match symbol
-    // names inside comments or string literals (e.g. `// calls orphanFn`).
-    // This is a known limitation of a static-text search: a comment mention in
-    // a production file will suppress a legitimate finding. The rate is low in
-    // practice since most comments do not import/call by name.
-    const callers = findCallers(entry.symbol, entry.file, opts.projectRoot);
+    // NOTE: a comment/string mention of the symbol in a production file (e.g.
+    // `// calls orphanFn`) is still matched by the word-boundary grep and
+    // suppresses the finding — an inherent limit of static text search. Rare in
+    // practice; a genuinely dead symbol is almost never name-dropped in prose.
+    const { production, test } = findCallers(entry.symbol, entry.file, opts.projectRoot);
 
-    // Flag when every caller is a test file (Array.every returns true for []).
-    if (callers.every(c => isTestFile(c))) {
-      findings.push({ symbol: entry.symbol, file: entry.file, callers });
+    if (production.length === 0) {
+      // No genuine production use — flag it. `callers` lists the test-file
+      // references (empty when there are no callers at all).
+      findings.push({ symbol: entry.symbol, file: entry.file, callers: test });
     }
   }
 

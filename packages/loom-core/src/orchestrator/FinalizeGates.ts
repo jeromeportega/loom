@@ -296,8 +296,17 @@ export async function runFinalizeGates(opts: {
   // mode; conflating them causes this gate to silently no-op when run in production.
   const schemaPath = path.join(opts.treeRoot, 'schemas', 'policy.schema.yaml');
   const deadFields = checkDeadPolicyFields({ schemaPath, projectRoot: opts.treeRoot });
+  // Only dead fields the epic ITSELF introduced/touched can hard-fail — a
+  // repo-wide blocking check would gate every unrelated epic forever on any
+  // pre-existing dead knob (the epic-077 over-reach). Pre-existing dead fields
+  // are still surfaced as advisory warnings so they get cleaned up.
+  const epicDeadFields = fieldsAddedInSchemaDiff(
+    opts.epicDiff,
+    deadFields.findings.map(f => f.field)
+  );
   for (const f of deadFields.findings) {
-    console.warn(`[finalize] dead policy field: '${f.field}' — ${f.reason}`);
+    const scope = epicDeadFields.has(f.field) ? 'introduced by this epic' : 'pre-existing';
+    console.warn(`[finalize] dead policy field: '${f.field}' (${scope}) — ${f.reason}`);
   }
 
   // ── No-production-caller gate: exported symbols in the diff that are only
@@ -314,10 +323,38 @@ export async function runFinalizeGates(opts: {
   const hardFail =
     opts.mode === 'block' &&
     (undocumentedEnvVars.length > 0 ||
-      deadFields.findings.length > 0 ||
+      epicDeadFields.size > 0 ||
       noCallers.findings.length > 0);
 
   return { symbolDrift, undocumentedEnvVars, regressions, deadFields, noCallers, hardFail };
+}
+
+/**
+ * Given the epic's unified diff and a set of candidate field names, returns the
+ * subset whose definition line (`<field>:`) was ADDED to
+ * `schemas/policy.schema.yaml` by this epic — i.e. the fields this epic itself
+ * introduced. Used to scope the dead-policy-field gate's hard-fail to the epic's
+ * own additions rather than every pre-existing dead knob in the schema.
+ */
+function fieldsAddedInSchemaDiff(epicDiff: string, fields: string[]): Set<string> {
+  const touched = new Set<string>();
+  if (fields.length === 0) return touched;
+  let inSchema = false;
+  for (const line of epicDiff.split('\n')) {
+    const fm = /^\+\+\+ b\/(.+)$/.exec(line);
+    if (fm) {
+      inSchema = /schemas\/policy\.schema\.yaml$/.test(fm[1]);
+      continue;
+    }
+    if (!inSchema) continue;
+    if (!line.startsWith('+') || line.startsWith('+++')) continue;
+    const t = line.slice(1).trim();
+    for (const f of fields) {
+      const esc = f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`^${esc}\\s*:`).test(t)) touched.add(f);
+    }
+  }
+  return touched;
 }
 
 /**

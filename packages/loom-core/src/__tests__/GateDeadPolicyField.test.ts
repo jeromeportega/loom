@@ -300,17 +300,30 @@ describe('runFinalizeGates — dead-field gate wiring', () => {
     fs.writeFileSync(path.join(tmpDir, 'schemas', 'policy.schema.yaml'), yaml + '\n');
   }
 
-  async function runGates(mode: 'off' | 'warn' | 'block') {
+  async function runGates(mode: 'off' | 'warn' | 'block', epicDiff = '') {
     return runFinalizeGates({
       contractRoot: tmpDir,
       treeRoot: tmpDir,
       headRef: 'HEAD',
       baseRef: 'HEAD',
       epicId: 'epic-test',
-      epicDiff: '',
+      epicDiff,
       mode,
       deliveredEpicIds: [],
     });
+  }
+
+  // A unified diff that ADDS `field` to schemas/policy.schema.yaml — i.e. the
+  // epic itself introduced the (dead) knob. Only epic-introduced dead fields
+  // hard-fail; pre-existing ones are advisory (the epic-077 over-reach lesson).
+  function schemaAdd(field: string): string {
+    return [
+      '--- a/schemas/policy.schema.yaml',
+      '+++ b/schemas/policy.schema.yaml',
+      '@@ -6,0 +7,2 @@',
+      `+      ${field}:`,
+      '+        type: string',
+    ].join('\n');
   }
 
   it('dead field in schema + no production read → deadFields.findings is non-empty', async () => {
@@ -323,13 +336,26 @@ describe('runFinalizeGates — dead-field gate wiring', () => {
     assert.equal(result.deadFields.findings[0].field, 'fake_knob');
   });
 
-  it('mode=block with dead field → hardFail=true', async () => {
+  it('mode=block with an EPIC-INTRODUCED dead field → hardFail=true', async () => {
     writeSchema(['fake_knob']);
 
-    const result = await runGates('block');
+    // The epic's diff adds fake_knob to the schema — this is the 078/079 case
+    // (a new knob shipped without a production read). It must hard-fail.
+    const result = await runGates('block', schemaAdd('fake_knob'));
 
     assert.ok(result.deadFields.findings.length > 0, 'finding must be non-empty');
-    assert.equal(result.hardFail, true, 'block mode with dead field must set hardFail=true');
+    assert.equal(result.hardFail, true, 'block mode with an epic-introduced dead field must hardFail');
+  });
+
+  it('mode=block with a PRE-EXISTING dead field (not in the diff) → advisory, hardFail=false', async () => {
+    writeSchema(['fake_knob']);
+
+    // The dead field is already in the schema; this epic did not touch it.
+    // It is surfaced as a finding (advisory) but must NOT block an unrelated epic.
+    const result = await runGates('block', '');
+
+    assert.ok(result.deadFields.findings.length > 0, 'pre-existing dead field is still reported');
+    assert.equal(result.hardFail, false, 'a pre-existing dead field must NOT hardFail (no over-reach)');
   });
 
   it('mode=warn with dead field → hardFail=false', async () => {
@@ -394,7 +420,7 @@ describe('runFinalizeGates — dead-field gate wiring', () => {
         headRef: 'HEAD',
         baseRef: 'HEAD',
         epicId: 'epic-test',
-        epicDiff: '',
+        epicDiff: schemaAdd('fake_knob'), // epic-introduced → eligible to hardFail
         mode: 'block',
         deliveredEpicIds: [],
       });

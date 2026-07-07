@@ -722,11 +722,22 @@ export class EpicFinalizer {
         findings: gatesResult.noCallers.findings,
       },
     });
+    audit.record({
+      agent_id: undefined,
+      action: 'epic_finalize_dead_field',
+      command: epicId,
+      allowed: true,
+      detail: {
+        count: gatesResult.deadFields.findings.length,
+        findings: gatesResult.deadFields.findings.map(f => f.field),
+      },
+    });
     if (gatesResult.hardFail) {
       epicStore.updateStatus(epicId, 'in_progress',
         `finalize gates blocked: ${gatesResult.symbolDrift.length} drift, ` +
         `${gatesResult.undocumentedEnvVars.length} env-var, ` +
         `${gatesResult.regressions.length} regression, ` +
+        `${gatesResult.deadFields.findings.length} dead-field, ` +
         `${gatesResult.noCallers.findings.length} no-caller finding(s)`
       );
       return {
@@ -738,7 +749,10 @@ export class EpicFinalizer {
           `Finalize gates BLOCKED ${epicBranch}: symbol-drift=${gatesResult.symbolDrift.length}, ` +
           `undoc-env-var=${gatesResult.undocumentedEnvVars.length}, ` +
           `regression=${gatesResult.regressions.length}, ` +
+          `dead-field=${gatesResult.deadFields.findings.length}, ` +
           `no-caller=${gatesResult.noCallers.findings.length}. ` +
+          '(Only env-var, epic-introduced dead-field, and no-caller findings block; ' +
+          'drift/regression and pre-existing dead fields are advisory.) ' +
           'Fix and re-run, set policy.agents.integration_gate=warn to land regardless, ' +
           'or annotate exports with // @loom-public-api to suppress no-caller findings.',
       };
@@ -753,8 +767,20 @@ export class EpicFinalizer {
     if (advModel && this.opts.llmClient) {
       try {
         await this.runAdversarialReview({ epicId, model: advModel, diff: epicDiff, audit });
-      } catch {
-        // Adversarial review failure is observability — never blocks finalize.
+      } catch (err) {
+        // Adversarial review failure never blocks finalize — but it must be
+        // visible, else a misconfigured model id means the operator believes the
+        // review ran when it silently did not (the feature's whole value is
+        // observability). Warn AND record a failed audit row.
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[finalize] adversarial review (${advModel}) failed: ${message}`);
+        audit.record({
+          agent_id: undefined,
+          action: 'adversarial_review',
+          command: epicId,
+          allowed: false,
+          detail: { model: advModel, error: message },
+        });
       }
     }
 

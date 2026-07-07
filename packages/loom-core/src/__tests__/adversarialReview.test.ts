@@ -12,18 +12,24 @@
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import yaml from 'js-yaml';
 import {
   openDatabase,
   resetDatabaseForTest,
   EpicFinalizer,
+  EpicStore,
+  AgentStore,
   AuditLog,
+  IntegrationGate,
   MockLLMClient,
 } from '../index.js';
 import { ADVERSARIAL_SYSTEM_PROMPT } from '../review/adversarialSystemPrompt.js';
 import type { AuditLog as AuditLogType } from '../state/AuditLog.js';
+import type { Story } from '../types.js';
 
 // ── ADVERSARIAL_SYSTEM_PROMPT content (FR-8) ─────────────────────────────────
 
@@ -286,5 +292,123 @@ describe('EpicFinalizer.runAdversarialReview — audit_log wiring (FR-9)', () =>
     assert.ok(Array.isArray(detail.findings?.findings), 'detail.findings must be a ReviewReport');
     assert.equal(detail.findings!.findings!.length, 1);
     assert.equal(detail.findings!.findings![0].severity, 'blocker');
+  });
+});
+
+// ── REAL-SEAM: finalize() actually reaches + runs the adversarial pass ────────
+//
+// The tests above call the private runAdversarialReview() directly, which cannot
+// prove that finalize() itself invokes it (deleting the finalize→adversarial call
+// site would leave them green). This drives the REAL finalize() per-epic path to
+// completion with a green integration gate and asserts the adversarial LLM was
+// invoked under the adversarial model — the seam that would otherwise be
+// mock-hidden.
+
+describe('EpicFinalizer.finalize() — real adversarial-review seam', () => {
+  let repo: string;
+  let prevLoomHome: string | undefined;
+  let loomHomeDir: string;
+
+  function gitc(args: string[], cwd = repo): string {
+    return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  }
+  function greenGate(): IntegrationGate {
+    return new IntegrationGate({
+      testCommand: 'noop',
+      runner: () => ({ exitCode: 0, output: 'ok', timedOut: false, durationMs: 1 }),
+    });
+  }
+  function storyObj(id: string): Story {
+    return {
+      id, title: `Story ${id}`, description: 'Do the thing.',
+      acceptance_criteria: ['it works'], estimated_complexity: 'small', dependencies: [],
+    };
+  }
+  function seedApprovedEpic(db: ReturnType<typeof openDatabase>, epicId: string, stories: Story[]): void {
+    const epicYaml = {
+      epic_id: epicId, title: `Epic ${epicId}`, status: 'planned', priority: 'must-have',
+      prd_ref: 'x', requirements: ['FR-1'], stories,
+    };
+    const rel = `.loom/planning/${epicId}/epics/${epicId}.yaml`;
+    const abs = path.join(repo, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, yaml.dump(epicYaml));
+    const store = new EpicStore(db);
+    store.create(epicId, epicYaml.title, rel);
+    store.updateStatus(epicId, 'approved');
+  }
+
+  beforeEach(() => {
+    resetDatabaseForTest();
+    prevLoomHome = process.env.LOOM_HOME;
+    loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-adv-home-'));
+    process.env.LOOM_HOME = loomHomeDir;
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-adv-seam-'));
+    gitc(['init', '-q']);
+    gitc(['config', 'user.email', 'test@loom.dev']);
+    gitc(['config', 'user.name', 'Loom Test']);
+    gitc(['config', 'commit.gpgsign', 'false']);
+    fs.writeFileSync(path.join(repo, 'src.ts'), 'export const x = 1;\n');
+    fs.mkdirSync(path.join(repo, '.loom'), { recursive: true });
+    gitc(['add', '.']);
+    gitc(['commit', '-q', '-m', 'initial']);
+  });
+
+  afterEach(() => {
+    resetDatabaseForTest();
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(loomHomeDir, { recursive: true, force: true });
+    if (prevLoomHome === undefined) delete process.env.LOOM_HOME;
+    else process.env.LOOM_HOME = prevLoomHome;
+  });
+
+  it('finalize() invokes the adversarial pass under adversarial_review_model (not agents.model)', async () => {
+    const storyId = 'story-001-001';
+    const epicId = 'epic-001';
+    const db = openDatabase(path.join(repo, '.loom'));
+    seedApprovedEpic(db, epicId, [storyObj(storyId)]);
+    const epicStore = new EpicStore(db);
+    const agentStore = new AgentStore(db);
+    epicStore.updateBaseSha(epicId, gitc(['rev-parse', 'HEAD']));
+
+    gitc(['checkout', '-b', `story/${storyId}`]);
+    fs.writeFileSync(path.join(repo, 'src.ts'), 'export const x = 2;\n');
+    gitc(['add', 'src.ts']);
+    gitc(['commit', '-q', '-m', `${storyId}: bump`]);
+    gitc(['checkout', '-']);
+    const agent = agentStore.create(epicId, storyId, storyId);
+    agentStore.updateStatus(agent.id, 'done');
+
+    const mockLlm = new MockLLMClient(['```json\n{"findings":[],"summary":"clean"}\n```']);
+    const audit = new AuditLog(db);
+
+    const finalizer = new EpicFinalizer({
+      projectRoot: repo,
+      db,
+      allowedRemotes: [],
+      prStrategy: 'per-epic',
+      integrationGate: 'warn',           // gates run advisory — never gate the clean epic
+      gate: greenGate(),
+      llmClient: mockLlm,
+      llmModel: 'claude-sonnet-4-6',      // agents.model — must NOT drive the adversarial pass
+      adversarialReviewModel: 'claude-opus-4-8',
+      pushBranch: () => ({ ok: true, output: 'pushed' }),
+      openPr: () => 'https://example.com/pull/1',
+    });
+
+    await finalizer.finalize(epicId);
+
+    // The REAL finalize() path must have reached + run the adversarial review.
+    assert.ok(mockLlm.requests.length >= 1, 'finalize() must invoke the adversarial LLM pass');
+    assert.ok(
+      mockLlm.requests.some(r => r.model === 'claude-opus-4-8'),
+      'the adversarial pass must run under adversarial_review_model'
+    );
+    assert.ok(
+      !mockLlm.requests.some(r => r.model === 'claude-sonnet-4-6'),
+      'the adversarial pass must NOT use agents.model'
+    );
+    const rows = audit.recent(20).filter(r => r.action === 'adversarial_review' && r.allowed);
+    assert.equal(rows.length, 1, 'finalize() must write one adversarial_review audit row');
   });
 });

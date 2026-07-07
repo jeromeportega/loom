@@ -69,14 +69,24 @@ function hasProductionRead(field: string, projectRoot: string): boolean {
 
   try {
     execFileSync('grep', [
-      '-r',                      // recursive
-      '-q',                      // quiet: exit 0 on first match, no output
-      '-E',                      // extended regex
-      '--include=*.ts',          // TypeScript source files only
-      '--exclude-dir=__tests__', // skip test directories
-      '--exclude-dir=fixtures',  // skip fixture directories
-      '--exclude=*.test.ts',     // skip test files
-      '--exclude=*.spec.ts',     // skip spec files
+      '-r',                          // recursive
+      '-q',                          // quiet: exit 0 on first match, no output
+      '-E',                          // extended regex
+      '--include=*.ts',              // TypeScript source files only
+      // Skip heavy non-source trees. Without these, `grep -r --include=*.ts`
+      // still WALKS node_modules (its thousands of `.d.ts` files match `*.ts`),
+      // making each per-field grep scan the whole dependency tree — 43 fields ×
+      // that walk was ~48s per finalize. Excluding them drops it under a second.
+      '--exclude-dir=node_modules',
+      '--exclude-dir=dist',
+      '--exclude-dir=dist-test',
+      '--exclude-dir=client-dist',
+      '--exclude-dir=.git',
+      '--exclude-dir=.loom',
+      '--exclude-dir=__tests__',     // skip test directories
+      '--exclude-dir=fixtures',      // skip fixture directories
+      '--exclude=*.test.ts',         // skip test files
+      '--exclude=*.spec.ts',         // skip spec files
       pattern,
       projectRoot,
     ], {
