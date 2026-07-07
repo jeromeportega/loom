@@ -1,4 +1,5 @@
 export { CodeReviewAgent, parseReviewReport } from './CodeReviewAgent.js';
+export { ADVERSARIAL_SYSTEM_PROMPT } from './adversarialSystemPrompt.js';
 export type {
   CodeReviewAgentOptions,
   CodeReviewInput,

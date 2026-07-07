@@ -8,6 +8,8 @@ export interface CodeReviewAgentOptions {
   llm: LLMClient;
   /** Model id — defaults to the policy planning-tier model. */
   model: string;
+  /** Optional system prompt override. When set, replaces the skill-loaded prompt. */
+  systemPrompt?: string;
 }
 
 export interface CodeReviewInput {
@@ -46,9 +48,13 @@ export class CodeReviewAgent {
   constructor(private opts: CodeReviewAgentOptions) {}
 
   async review(input: CodeReviewInput): Promise<CodeReviewResult> {
-    const skillStore = new SkillStore({ projectRoot: this.opts.projectRoot });
-    const skill = skillStore.load('loom-code-review');
-    const systemBody = [skill ?? FALLBACK_SYSTEM, '', JSON_INSTRUCTIONS].join('\n');
+    const systemBody = this.opts.systemPrompt
+      ? [this.opts.systemPrompt, '', JSON_INSTRUCTIONS].join('\n')
+      : (() => {
+          const skillStore = new SkillStore({ projectRoot: this.opts.projectRoot });
+          const skill = skillStore.load('loom-code-review');
+          return [skill ?? FALLBACK_SYSTEM, '', JSON_INSTRUCTIONS].join('\n');
+        })();
 
     const userContent = [
       `Review the diff for story ${input.story.storyId} (${input.story.title}).`,

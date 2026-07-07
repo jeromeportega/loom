@@ -65,6 +65,7 @@ export async function runFinalize(epicId: string, opts: FinalizeCommandOptions =
         smokeTimeoutMinutes: policy.agents.smoke_timeout_minutes,
         prAttribution: policy.agents.pr_attribution,
         testCommand: policy.agents.test_command,
+        adversarialReviewModel: policy.agents.adversarial_review_model || undefined,
         // Late-bound rebind — re-read from disk so a mid-run policy edit takes effect.
         refreshPolicy: () => {
           const live = PolicyEngine.load(loomDir).policyData;

@@ -371,6 +371,7 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     prStrategy: policy.agents.pr_strategy,
     llmClient: finalizerLlm,
     llmModel: policy.agents.model,
+    adversarialReviewModel: policy.agents.adversarial_review_model || undefined,
     prAttribution: policy.agents.pr_attribution,
     pushGate: policy.agents.push_gate,
     integrationGate: policy.agents.integration_gate,
