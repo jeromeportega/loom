@@ -23,6 +23,10 @@ import { ensureLoomHome } from '../home/ensureLoomHome.js';
 import { routeArtifacts } from '../home/artifactRouter.js';
 import { commitArtifacts } from '../home/commitArtifacts.js';
 import { runFinalizeGates, type FinalizeGateMode, type FinalizeGatesResult } from './FinalizeGates.js';
+import { resolveSmokeCommand } from './SmokeResolver.js';
+import { runSmoke } from './SmokeExecutor.js';
+import type { CommandRunner } from './IntegrationGate.js';
+import type { Policy } from '../types.js';
 
 export interface EpicFinalizerOptions {
   projectRoot: string;
@@ -67,6 +71,12 @@ export interface EpicFinalizerOptions {
   integrationGateTimeoutMs?: number;
   /** Injectable gate (tests). Defaults to one built from the fields above. */
   gate?: IntegrationGate;
+  /** policy.agents.smoke_command — explicit smoke command (else auto-detected from package.json). */
+  smokeCommand?: string;
+  /** policy.agents.smoke_timeout_minutes — wall-clock budget for the smoke command. Default 15 min. */
+  smokeTimeoutMinutes?: number;
+  /** Injectable smoke runner (tests). Defaults to the real process-spawning runner in runSmoke. */
+  smokeRunner?: CommandRunner;
   /**
    * policy.agents.integration_branch. When 'rolling', the Supervisor already
    * merged each story into a live `epic/<id>` as it completed, so finalize
@@ -166,6 +176,8 @@ export interface LateboundFinalizerPolicy {
   integrationGate?: GateMode;
   pushGate?: 'off' | 'confirm';
   prAttribution?: 'off' | 'on';
+  smokeCommand?: string;
+  smokeTimeoutMinutes?: number;
 }
 
 export interface FinalizeResult {
@@ -248,6 +260,9 @@ export class EpicFinalizer {
   private effectiveTestCommand?: string;
   /** Running effective `test_commands` list. Mirrors effectiveTestCommand tracking. */
   private effectiveTestCommands?: TestCommandEntry[];
+  /** Running effective smoke command + timeout. Mirrors effectiveTestCommand tracking. */
+  private effectiveSmokeCommand?: string;
+  private effectiveSmokeTimeoutMinutes?: number;
 
   constructor(private opts: EpicFinalizerOptions) {
     this.gateMode = opts.integrationGate ?? 'off';
@@ -265,6 +280,8 @@ export class EpicFinalizer {
     this.effectivePrAttribution = opts.prAttribution ?? 'off';
     this.effectiveTestCommand = opts.testCommand;
     this.effectiveTestCommands = opts.testCommands;
+    this.effectiveSmokeCommand = opts.smokeCommand;
+    this.effectiveSmokeTimeoutMinutes = opts.smokeTimeoutMinutes;
   }
 
   /**
@@ -319,6 +336,22 @@ export class EpicFinalizer {
         timeoutMs:    this.opts.integrationGateTimeoutMs ?? 15 * 60_000,
       });
       this.effectiveTestCommands = live.testCommands;
+    }
+    if (live.smokeCommand !== undefined && live.smokeCommand !== this.effectiveSmokeCommand) {
+      changes.smoke_command = { from: this.effectiveSmokeCommand ?? null, to: live.smokeCommand };
+      // No gate rebuild needed: the smoke step reads effectiveSmokeCommand directly
+      // at finalize time (unlike the integration gate, which is prebuilt).
+      this.effectiveSmokeCommand = live.smokeCommand;
+    }
+    if (
+      live.smokeTimeoutMinutes !== undefined &&
+      live.smokeTimeoutMinutes !== this.effectiveSmokeTimeoutMinutes
+    ) {
+      changes.smoke_timeout_minutes = {
+        from: this.effectiveSmokeTimeoutMinutes ?? null,
+        to: live.smokeTimeoutMinutes,
+      };
+      this.effectiveSmokeTimeoutMinutes = live.smokeTimeoutMinutes;
     }
     if (live.pushGate && live.pushGate !== this.effectivePushGate) {
       changes.push_gate = { from: this.effectivePushGate, to: live.pushGate };
@@ -686,6 +719,69 @@ export class EpicFinalizer {
           `regression=${gatesResult.regressions.length}. ` +
           'Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.',
       };
+    }
+
+    // ── Smoke gate ────────────────────────────────────────────────────────────
+    // Runs after integration gate and all test_commands complete. Respects the
+    // same integration_gate mode: 'off' skips entirely (no resolver call, no
+    // audit); resolver returning null silently skips; 'block' withholds the PR
+    // on failure; 'warn' annotates and continues (ADR-005).
+    if (this.gateMode !== 'off') {
+      const smokeTimeoutMinutes = this.effectiveSmokeTimeoutMinutes ?? 15;
+      // resolveSmokeCommand only reads policy.agents.smoke_command; pass the
+      // minimal shape the resolver needs rather than a full Policy object.
+      // Uses the effective (rebound) command so a mid-run policy edit takes effect.
+      const policyForSmoke = {
+        agents: { smoke_command: this.effectiveSmokeCommand },
+      } as unknown as Policy;
+      const resolvedSmokeCmd = await resolveSmokeCommand(gitRoot, policyForSmoke);
+      if (resolvedSmokeCmd !== null) {
+        console.log(`[finalize] smoke: running smoke gate`);
+        const smokeResult = await runSmoke({
+          command:        resolvedSmokeCmd,
+          worktreeCwd:    gitRoot,
+          timeoutMinutes: smokeTimeoutMinutes,
+          runner:         this.opts.smokeRunner,
+        });
+        const smokeFailed = smokeResult.exitCode !== 0 || smokeResult.timeoutKilled;
+        audit.record({
+          action:  'smoke_gate',
+          command: resolvedSmokeCmd,
+          allowed: !smokeFailed,
+          detail:  {
+            exit_code:        smokeResult.exitCode,
+            duration_seconds: smokeResult.durationSeconds,
+            timeout_killed:   smokeResult.timeoutKilled,
+            gate_mode:        this.gateMode,
+          },
+        });
+        if (smokeFailed) {
+          if (this.gateMode === 'block') {
+            // Return 'gated' (NOT throw) so the smoke gate lands the epic in the
+            // same recoverable state as the integration + correctness gates. A
+            // thrown error is caught by Supervisor.finalizeAndGateDone, which
+            // calls epics.fail() and overwrites this in_progress with 'failed' —
+            // diverging from every other gate. Re-run after fixing to retry.
+            epicStore.updateStatus(epicId, 'in_progress',
+              `smoke gate failed: exit ${smokeResult.exitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''}`
+            );
+            return {
+              status: 'gated',
+              conflicted,
+              merged,
+              cleaned: [],
+              note:
+                `Smoke gate BLOCKED ${epicBranch}: '${resolvedSmokeCmd}' exited ${smokeResult.exitCode}` +
+                `${smokeResult.timeoutKilled ? ` (timed out after ${smokeTimeoutMinutes}m)` : ''}. ` +
+                'Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.',
+            };
+          } else {
+            console.warn(
+              `[finalize] smoke: exit ${smokeResult.exitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''} — proceeding in warn mode`
+            );
+          }
+        }
+      }
     }
 
     // Gate passed (or wasn't blocking). The epic is now review-ready: commit

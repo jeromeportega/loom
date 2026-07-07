@@ -159,3 +159,4 @@ export type {
   CrossRepoEdgeError,
 } from './crossRepoReadiness.js';
 export { CyclicRepoDependencyError, assertNoCycles, detectCyclesInEpicYaml } from './actions/approveAndDispatch.js';
+export { resolveSmokeCommand } from './SmokeResolver.js';

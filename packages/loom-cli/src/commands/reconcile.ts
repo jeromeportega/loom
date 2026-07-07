@@ -70,6 +70,8 @@ export async function runReconcile(epicId: string, opts: ReconcileCommandOptions
         prAttribution: policy.agents.pr_attribution,
         testCommand: policy.agents.test_command,
         testCommands: policy.agents.test_commands,
+        smokeCommand: policy.agents.smoke_command,
+        smokeTimeoutMinutes: policy.agents.smoke_timeout_minutes,
         // Late-bound rebind — re-read from disk so a mid-run policy edit takes effect.
         refreshPolicy: () => {
           const live = PolicyEngine.load(loomDir).policyData;
@@ -77,6 +79,8 @@ export async function runReconcile(epicId: string, opts: ReconcileCommandOptions
             allowedRemotes: live.git.allowed_remotes,
             testCommand: live.agents.test_command,
             testCommands: live.agents.test_commands,
+            smokeCommand: live.agents.smoke_command,
+            smokeTimeoutMinutes: live.agents.smoke_timeout_minutes,
             integrationGate: live.agents.integration_gate,
             pushGate: live.agents.push_gate,
             prAttribution: live.agents.pr_attribution,

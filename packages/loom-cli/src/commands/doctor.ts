@@ -13,8 +13,10 @@ import {
   describePolicyIssues,
   formatPolicyError,
   validateCursorModels,
+  resolveSmokeCommand,
 } from '@loom-ai/core';
-import { gateCommandCheck, gateRunnableCheck } from './doctorGateCheck.js';
+import type { Policy } from '@loom-ai/core';
+import { gateCommandCheck, gateRunnableCheck, getLeadBinary } from './doctorGateCheck.js';
 import { reportPolicyDrift } from './init.js';
 import { checkCapabilitiesCoverage } from '../describe/coverage-check.js';
 
@@ -120,6 +122,80 @@ export function runCapabilitiesMode(opts?: { program?: Command; root?: string })
   }
 }
 
+/** Check whether `bin` resolves under the current process PATH using /bin/sh. */
+function isOnPath(bin: string): boolean {
+  try {
+    execFileSync('/bin/sh', ['-c', 'command -v "$1"', '--', bin], {
+      env: { ...process.env, PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface SmokeDoctorDeps {
+  resolveFn?: (root: string, policy: Policy) => Promise<string | null>;
+  isOnPathFn?: (bin: string) => boolean;
+}
+
+/**
+ * `loom doctor` smoke-command check: resolves the effective smoke command and
+ * reports whether the lead binary is on PATH. Advisory (required: false) — a
+ * missing smoke binary is a warn, never a hard doctor failure.
+ */
+export async function smokeDoctorCheck(
+  projectRoot: string,
+  deps?: SmokeDoctorDeps,
+): Promise<Check> {
+  const name = 'smoke-command';
+  try {
+    let policy: Policy;
+    try {
+      policy = PolicyEngine.load(path.join(projectRoot, '.loom')).policyData;
+    } catch {
+      policy = PolicyEngine.defaultPolicy();
+    }
+
+    const resolveFn = deps?.resolveFn ?? resolveSmokeCommand;
+    const isOnPathFn = deps?.isOnPathFn ?? isOnPath;
+
+    const cmd = await resolveFn(projectRoot, policy);
+    if (cmd === null) {
+      return { name, ok: true, detail: 'none resolved', required: false };
+    }
+
+    const bin = getLeadBinary(cmd);
+    if (bin === null) {
+      // Absolute or relative path — check existence rather than PATH lookup.
+      const firstToken = cmd.trim().split(/\s+/)[0];
+      const found = fs.existsSync(firstToken);
+      return {
+        name,
+        ok: found,
+        detail: found
+          ? `${cmd} — found at path`
+          : `${cmd} — NOT found at path`,
+        required: false,
+      };
+    }
+
+    const found = isOnPathFn(bin);
+    return {
+      name,
+      ok: found,
+      detail: found
+        ? `${cmd} — binary '${bin}' found on PATH`
+        : `${cmd} — binary '${bin}' NOT found on PATH`,
+      required: false,
+    };
+  } catch (err) {
+    return { name, ok: true, detail: `check skipped (${(err as Error).message})`, required: false };
+  }
+}
+
 /** Returns the first line of `<bin> <args>` output, or null if the binary is absent. */
 function probe(bin: string, args: string[]): string | null {
   try {
@@ -183,6 +259,7 @@ export async function runDoctor(): Promise<void> {
 
   checks.push(gateCommandCheck(process.cwd()));
   checks.push(await gateRunnableCheck(process.cwd()));
+  checks.push(await smokeDoctorCheck(process.cwd()));
 
   const loomDir = path.join(process.cwd(), '.loom');
   const initialized = fs.existsSync(path.join(loomDir, 'policy.yaml'));

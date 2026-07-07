@@ -222,7 +222,124 @@ the integration gate inherits. Missing binaries are reported as advisory failure
 
 ---
 
+## Smoke gate
+
+After the three correctness gates pass (or are skipped), loom runs the **smoke gate** — a
+quick command on the integrated worktree to verify the merged code still starts, routes, or
+behaves correctly. It is not a substitute for the build/test suite in the integration gate;
+it is a lightweight last check that the final assembled artifact is viable.
+
+### Finalize sequence
+
+```
+merge story branches
+  ↓
+integration gate (build / test suite)
+  ↓
+correctness gates (symbol drift · env-var · regression)
+  ↓
+smoke gate  ←── this section
+  ↓
+review phase → push → open PR
+```
+
+### Command resolution
+
+When `integration_gate` is not `off`, loom resolves the smoke command in priority order:
+
+1. `policy.agents.smoke_command` (when set to a non-empty string)
+2. `package.json scripts.smoke` → `"npm run smoke"`
+3. `package.json scripts.verify` → `"npm run verify"`
+4. `null` — step is silently skipped; finalize continues
+
+When the resolver returns `null` (no command found), no audit entry is written.
+
+### Gate-mode behavior table
+
+| `integration_gate` | smoke command resolved? | smoke exits 0 | Result |
+|---|---|---|---|
+| `off` | (not called) | — | Step skipped; no audit entry |
+| `warn` or `block` | `null` | — | Step silently skipped; finalize continues |
+| `warn` | yes | yes | Audit entry written (`allowed=1`); finalize continues |
+| `warn` | yes | no / timeout | Audit entry written (`allowed=0`); failure annotated to output; PR still opens |
+| `block` | yes | yes | Audit entry written (`allowed=1`); finalize continues |
+| `block` | yes | no / timeout | Audit entry written (`allowed=0`); epic set to `in_progress`; PR **withheld**; finalize returns `status: 'gated'` (same contract as the integration + correctness gates — it does not throw) |
+
+### Timeout
+
+The default wall-clock budget is **15 minutes**, controlled by `policy.agents.smoke_timeout_minutes`
+(positive integer). On timeout, loom sends **SIGKILL** directly to the entire process group
+(no SIGTERM grace period). The `timeout_killed: true` flag appears in the audit detail and in
+the `gated` result note when this fires.
+
+### Policy configuration
+
+```yaml
+# .loom/policy.yaml
+agents:
+  smoke_command: "npm run smoke"    # optional; overrides auto-detection
+  smoke_timeout_minutes: 15         # default; positive integer
+  integration_gate: block           # off | warn | block — governs smoke gate mode
+```
+
+### Audit row
+
+Every completed smoke run (pass or fail) writes a `smoke_gate` row to the audit log:
+
+```
+action:      smoke_gate
+command:     <the resolved command string>
+allowed:     1 (pass) | 0 (fail)
+detail:
+  exit_code:        <integer>
+  duration_seconds: <float>
+  timeout_killed:   true | false
+  gate_mode:        "block" | "warn"
+```
+
+Inspect via:
+
+```bash
+loom audit | grep smoke_gate
+```
+
+### `loom doctor` preflight
+
+`loom doctor` runs `smokeDoctorCheck` after the existing gate-runnable check. It resolves the
+smoke command (using the same resolver) and reports whether the lead binary is found on PATH:
+
+- **`pass` / `detail: "none resolved"`** — no smoke command detected; the step will be skipped.
+- **`pass` / `detail: "<cmd> — binary '<bin>' (found on PATH)"`** — command detected; binary present.
+- **`warn` / `detail: "<cmd> — binary '<bin>' NOT found on PATH"`** — command detected; binary missing.
+  Install the missing binary or override `smoke_command` in `policy.yaml`.
+
+The check is advisory (`required: false`) — it never makes `loom doctor` exit non-zero on its own.
+
+### Recovery: smoke gate blocked in `block` mode
+
+A smoke block behaves exactly like an integration-gate or correctness-gate block: finalize
+returns `status: 'gated'` and the epic is set back to `in_progress` (it is **not** driven to
+`failed`, and it is **not** left in `finalizing`/`publish_pending`). Recovery is therefore the
+same as for any other gate block — **fix and re-run**, not `loom finalize --resume` (which only
+resumes `finalizing`/`publish_pending` epics):
+
+1. The epic status is set back to `in_progress` with a note like
+   `"smoke gate failed: exit 1"` (or `"(timed out)"`). No PR is opened.
+2. Fix the root cause of the smoke failure (the command in `smoke_command` or the
+   auto-detected one from `package.json`).
+3. Re-dispatch the epic:
+   ```bash
+   loom run <epic-id>
+   ```
+   The Supervisor re-enters finalize, which re-runs the integration gate, correctness gates,
+   and the smoke gate, then push + PR if all pass.
+4. To bypass smoke for this landing, set `integration_gate: warn` (or `off`) in `policy.yaml`
+   before re-running — the late-bound policy re-read picks it up (an `epic_policy_rebound`
+   audit row records the change).
+
+---
+
 ## Related
 
 - [Integration branch runbook](integration-branch.md) — rolling integration branch and lag warnings
-- [`docs/capabilities.md`](../capabilities.md) — full capability reference, including the Finalize correctness gates row
+- [`docs/capabilities.md`](../capabilities.md) — full capability reference, including the Finalize correctness gates row and Smoke gate row
