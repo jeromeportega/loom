@@ -350,7 +350,19 @@ Build steps (`next build`, `cargo build`) run full compilations and
 materially increase gate wall-clock — plan accordingly when enabling
 `integration_gate: block`.
 
-Immediately after the integration gate, three **finalize correctness gates** run: **contract-symbol drift** (every significant symbol this epic's shared contract pins is still present somewhere in the integrated tree), **undocumented env-var** (new `process.env.VAR` references are documented in `.env.example`, ambient vars allow-listed — automatically skipped when `.env.example` is absent), and **cross-epic regression** (a symbol a prior delivered epic pinned that was present before this epic is gone after it). Presence is tested against the integrated git tree, not a diff. All three respect the `policy.agents.integration_gate` knob (`off` / `warn` / `block`), but **only the precise undocumented-env-var gate can withhold a PR** under `block` — drift and regression are always advisory (printed, never blocking) because they are heuristics over prose-heavy contracts. See `docs/runbooks/finalize.md`.
+Immediately after the integration gate, three **finalize correctness gates** run: **contract-symbol drift** (every significant symbol this epic's shared contract pins is still present somewhere in the integrated tree), **undocumented env-var** (new `process.env.VAR` references are documented in `.env.example`, ambient vars allow-listed — automatically skipped when `.env.example` is absent), and **cross-epic regression** (a symbol a prior delivered epic pinned that was present before this epic is gone after it). Presence is tested against the integrated git tree, not a diff. All three respect the `policy.agents.integration_gate` knob (`off` / `warn` / `block`), but **only the precise undocumented-env-var gate can withhold a PR** under `block` — drift and regression are always advisory (printed, never blocking) because they are heuristics over prose-heavy contracts.
+
+After the correctness gates, loom runs a **smoke gate** — a quick command on the integrated worktree to verify the merged code still starts or behaves correctly. The gate is governed by the same `integration_gate` knob. Use `policy.agents.smoke_command` to configure an explicit command; when unset, loom auto-detects from `package.json`: `scripts.smoke` → `npm run smoke`, then `scripts.verify` → `npm run verify`, else the step is skipped. Set `policy.agents.smoke_timeout_minutes` to control the wall-clock budget (default: 15 minutes; the process group is SIGKILLed on timeout). In `block` mode a failing smoke gate withholds the PR and sets the epic back to `in_progress`; in `warn` mode the failure is noted but the PR still opens.
+
+```yaml
+# .loom/policy.yaml
+agents:
+  smoke_command: "npm run smoke"          # optional explicit command
+  smoke_timeout_minutes: 15               # default; positive integer
+  integration_gate: block                 # off | warn | block — governs smoke too
+```
+
+See `docs/runbooks/finalize.md`.
 
 `policy.agents.pr_strategy` is the knob; only `per-epic` is accepted (one PR per repository for cross-repo epics; the landing order is controlled by the coordinator, not this knob).
 
