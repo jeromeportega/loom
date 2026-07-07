@@ -1,9 +1,44 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import React from 'react';
 import { AppContent } from '../App';
+
+// Provide minimal API responses so real view components can render.
+// Stories list returns an empty list; story detail returns a stub row.
+beforeEach(() => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockImplementation((url: string) => {
+      const data =
+        typeof url === 'string' && /\/stories\/[^/]+$/.test(url)
+          ? {
+              id: 'a1',
+              story_id: 'story-001-001',
+              epic_id: 'epic-001',
+              story_title: null,
+              status: 'done',
+              pr_url: null,
+              started_at: null,
+              updated_at: '2024-01-01T00:00:00Z',
+              review_status: null,
+              review_summary: null,
+              tokens_total: null,
+              cost_usd: null,
+              request_count: null,
+              worktree_path: null,
+              branch_name: null,
+              stall_reason: null,
+              model: null,
+              log_tail: null,
+              worker_pid: null,
+            }
+          : { epic_id: 'epic-001', stories: [] };
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+    }),
+  );
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -39,12 +74,14 @@ describe('App routing', () => {
 
   it('/repo/:slug/epic/:epicId renders StoryList', async () => {
     renderApp(['/repo/test-slug/epic/epic-001']);
-    expect(await screen.findByText(/StoryList/i)).not.toBeNull();
+    // Real StoryList renders a "Stories —" heading once data loads.
+    expect(await screen.findByText(/Stories —/i)).not.toBeNull();
   });
 
   it('/repo/:slug/epic/:epicId/story/:storyId renders StoryDetail without RepositoryList', async () => {
     renderApp(['/repo/test-slug/epic/epic-001/story/story-001-001']);
-    expect(await screen.findByText(/StoryDetail/i)).not.toBeNull();
+    // Real StoryDetail renders the story_id in an h2 once data loads.
+    expect(await screen.findByText('story-001-001')).not.toBeNull();
     expect(screen.queryByText(/RepositoryList/i)).toBeNull();
   });
 });
