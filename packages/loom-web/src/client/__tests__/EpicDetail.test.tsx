@@ -161,6 +161,8 @@ describe('EpicDetail — artifact rendering', () => {
     expect(await screen.findByTestId('artifact-brief')).not.toBeNull();
     expect(screen.getByTestId('artifact-brief').textContent).toContain('(not available)');
     expect(screen.getByTestId('artifact-prd').textContent).toContain('(not available)');
+    expect(screen.getByTestId('artifact-architecture').textContent).toContain('(not available)');
+    expect(screen.getByTestId('artifact-yaml').textContent).toContain('(not available)');
   });
 
   it('does NOT call apiFetch for planning-artifacts when status is not planned', async () => {
@@ -243,6 +245,22 @@ describe('EpicDetail — Approve/Reject button presence', () => {
     vi.mocked(useEpicsModule.useEpics).mockReturnValue(
       makeQueryResult<EpicsResponse>({
         data: { epics: [makeEpic({ status: 'failed' })] },
+        isLoading: false,
+        isSuccess: true,
+        status: 'success',
+      })
+    );
+
+    renderEpicDetail();
+
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /reject/i })).toBeNull();
+  });
+
+  it('hides Approve and Reject buttons when status is approved (post-approve state)', () => {
+    vi.mocked(useEpicsModule.useEpics).mockReturnValue(
+      makeQueryResult<EpicsResponse>({
+        data: { epics: [makeEpic({ status: 'approved' })] },
         isLoading: false,
         isSuccess: true,
         status: 'success',
@@ -402,6 +420,60 @@ describe('EpicDetail — Reject mutation', () => {
 
     expect(screen.getByTestId('reject-error').textContent).toContain('403');
     expect((screen.getByRole('button', { name: /reject/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+// ─── Epics query loading / error states ──────────────────────────────────────
+
+describe('EpicDetail — epics loading/error states', () => {
+  it('shows a loading indicator while epics query is in flight', () => {
+    vi.mocked(useEpicsModule.useEpics).mockReturnValue(
+      makeQueryResult<EpicsResponse>({
+        data: undefined,
+        isLoading: true,
+        isSuccess: false,
+        status: 'pending',
+      })
+    );
+
+    renderEpicDetail();
+
+    expect(screen.getByTestId('epics-loading')).not.toBeNull();
+  });
+
+  it('shows an error message when epics query fails', () => {
+    vi.mocked(useEpicsModule.useEpics).mockReturnValue(
+      makeQueryResult<EpicsResponse>({
+        data: undefined,
+        isLoading: false,
+        isSuccess: false,
+        isError: true,
+        status: 'error',
+      })
+    );
+
+    renderEpicDetail();
+
+    expect(screen.getByTestId('epics-error')).not.toBeNull();
+  });
+
+  it('shows a loading indicator while planning artifacts are loading', async () => {
+    // Delay the apiFetch resolution to keep the artifacts query loading
+    let resolveArtifacts!: (r: Response) => void;
+    vi.mocked(apiModule.apiFetch).mockReturnValueOnce(
+      new Promise<Response>((resolve) => { resolveArtifacts = resolve; })
+    );
+
+    renderEpicDetail();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('artifacts-loading')).not.toBeNull();
+    });
+
+    // Resolve to clean up
+    await act(async () => {
+      resolveArtifacts({ ok: true, json: async () => mockArtifacts } as Response);
+    });
   });
 });
 

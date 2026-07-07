@@ -60,12 +60,16 @@ function PlanningArtifactsPanel({ artifacts }: { artifacts: PlanningArtifacts })
 export function EpicDetail() {
   const { slug = '', epicId = '' } = useParams<{ slug: string; epicId: string }>();
   const queryClient = useQueryClient();
-  const { data: epicsData } = useEpics(slug);
+  const { data: epicsData, isLoading: epicsLoading, isError: epicsError } = useEpics(slug);
 
   const epic = epicsData?.epics?.find((e) => e.id === epicId);
   const isPlanned = epic?.status === 'planned';
 
-  const { data: artifacts, isError: artifactsError } = useEpicArtifacts(slug, epicId, isPlanned);
+  const {
+    data: artifacts,
+    isLoading: artifactsLoading,
+    isError: artifactsError,
+  } = useEpicArtifacts(slug, epicId, isPlanned ?? false);
 
   const [approveState, setApproveState] = useState<MutationState>({ pending: false, error: null });
   const [rejectState, setRejectState] = useState<MutationState>({ pending: false, error: null });
@@ -100,11 +104,24 @@ export function EpicDetail() {
     }
   }
 
+  if (epicsLoading) {
+    return <div className="p-4 text-muted-foreground text-sm" data-testid="epics-loading">Loading…</div>;
+  }
+
+  if (epicsError) {
+    return <div className="p-4 text-destructive text-sm" data-testid="epics-error">Failed to load epic.</div>;
+  }
+
   return (
     <div className="p-4">
       {isPlanned && artifactsError && (
         <p className="text-destructive text-sm mb-4" data-testid="artifacts-error">
           Failed to load planning artifacts.
+        </p>
+      )}
+      {isPlanned && artifactsLoading && (
+        <p className="text-muted-foreground text-sm mb-4" data-testid="artifacts-loading">
+          Loading planning artifacts…
         </p>
       )}
       {isPlanned && artifacts && <PlanningArtifactsPanel artifacts={artifacts} />}
