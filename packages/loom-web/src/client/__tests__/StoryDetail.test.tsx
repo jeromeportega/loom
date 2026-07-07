@@ -257,6 +257,32 @@ describe('StoryDetail — SSE lifecycle', () => {
       expect(screen.getByTestId('log-output').textContent).not.toContain('should not appear');
     });
   });
+
+  it('filters SSE event whose from offset is less than log_tail length', async () => {
+    const tail = 'Initial tail content'; // length 20
+    mockStory({ ...baseAgent, log_tail: tail });
+    renderStoryDetail();
+
+    // Emit an event whose from (5) falls within the range already in log_tail (0..20)
+    const overlap: SseOutputPayload = {
+      agent_id: 'agent-001',
+      story_id: 'story-001-001',
+      from: 5,
+      bytes: 'overlap bytes',
+      byteLength: 13,
+    };
+
+    act(() => {
+      MockEventSource.instances[0].emit('output', overlap);
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /log/i }));
+    await waitFor(() => {
+      const text = screen.getByTestId('log-output').textContent;
+      expect(text).toContain('Initial tail content');
+      expect(text).not.toContain('overlap bytes');
+    });
+  });
 });
 
 // ─── Type check: LiveEvent output branch ─────────────────────────────────────
@@ -327,6 +353,8 @@ describe('StoryDetail — mutation button visibility', () => {
 });
 
 // ─── Mutation button: correct endpoint ───────────────────────────────────────
+// Note: x-loom-token header coverage is verified by the apiPost unit tests in
+// api.test.ts (story-083-001). These tests capture path/body via the apiPost mock.
 
 describe('StoryDetail — mutation button endpoints', () => {
   beforeEach(() => {
@@ -449,6 +477,29 @@ describe('StoryDetail — mutation success state', () => {
           queryKey: queryKeys.story('my-repo', 'epic-001', 'story-001-001'),
         })
       );
+    });
+  });
+
+  it('Stop: on 2xx invalidateQueries is called with storyKey and button re-enables', async () => {
+    vi.mocked(apiModule.apiPost).mockResolvedValue({ ok: true, status: 200 } as Response);
+    mockStory(runningWithPid);
+
+    const qc = makeClient();
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries').mockResolvedValue();
+    renderStoryDetail(qc);
+
+    fireEvent.click(screen.getByTestId('stop-btn'));
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queryKey: queryKeys.story('my-repo', 'epic-001', 'story-001-001'),
+        })
+      );
+    });
+
+    await waitFor(() => {
+      expect((screen.getByTestId('stop-btn') as HTMLButtonElement).disabled).toBe(false);
     });
   });
 });

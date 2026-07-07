@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useStory } from '../hooks/useStory';
@@ -28,21 +28,47 @@ export function StoryDetail() {
   const queryClient = useQueryClient();
 
   const [log, setLog] = useState('');
+  const [sseError, setSseError] = useState(false);
   const [killState, setKillState] = useState<MutationState>(initMutation);
   const [stopState, setStopState] = useState<MutationState>(initMutation);
   const [retryState, setRetryState] = useState<MutationState>(initMutation);
   const [cleanRetryState, setCleanRetryState] = useState<MutationState>(initMutation);
 
+  // Tracks the byte offset covered by the server's log_tail snapshot. SSE events
+  // with from < tailLenRef.current overlap the already-fetched tail and are skipped.
+  // Declared before the SSE effect so the tail effect (declared after) runs second
+  // under React StrictMode double-invocation and wins.
+  const tailLenRef = useRef(0);
+
+  // SSE subscription — resets and reconnects whenever storyId changes.
   useEffect(() => {
     if (typeof EventSource === 'undefined') return;
+    setLog('');
+    tailLenRef.current = 0;
+    setSseError(false);
     const es = new EventSource('/api/events');
     es.addEventListener('output', (e: MessageEvent) => {
       const payload: SseOutputPayload = JSON.parse(e.data);
       if (payload.story_id !== storyId) return;
+      // Skip bytes whose offset falls within the range already covered by log_tail.
+      if (payload.from < tailLenRef.current) return;
       setLog(prev => prev + payload.bytes);
     });
+    es.onerror = () => { setSseError(true); };
     return () => { es.close(); };
   }, [storyId]);
+
+  // When data.log_tail grows (initial load or post-mutation refetch), update the
+  // offset floor and clear the SSE-accumulated log — those bytes are now in the tail.
+  // Declared after the SSE effect so it runs second under StrictMode, ensuring
+  // tailLenRef reflects the actual tail length after both effects fire.
+  useEffect(() => {
+    const newLen = data?.log_tail?.length ?? 0;
+    if (newLen > tailLenRef.current) {
+      tailLenRef.current = newLen;
+      setLog('');
+    }
+  }, [data?.log_tail]);
 
   async function runMutation(
     path: string,
@@ -54,6 +80,9 @@ export function StoryDetail() {
     try {
       const res = await apiPost(path, body);
       if (res.ok) {
+        // Clear SSE log proactively; the refetch will populate a fresh log_tail that
+        // covers all bytes received so far, and the tail effect will update tailLenRef.
+        setLog('');
         if (queryKey) {
           await queryClient.invalidateQueries({ queryKey });
         }
@@ -105,7 +134,7 @@ export function StoryDetail() {
                 variant="outline"
                 size="sm"
                 disabled={stopState.pending}
-                onClick={() => { void runMutation('/api/stop', undefined, setStopState); }}
+                onClick={() => { void runMutation('/api/stop', undefined, setStopState, storyKey); }}
                 data-testid="stop-btn"
               >
                 {stopState.pending && (
@@ -242,6 +271,11 @@ export function StoryDetail() {
           </dl>
         </TabsContent>
         <TabsContent value="log" forceMount>
+          {sseError && (
+            <p className="text-xs text-destructive mb-1" data-testid="sse-error">
+              Live log disconnected — output may be incomplete.
+            </p>
+          )}
           <pre
             className="text-xs overflow-auto bg-muted p-3 rounded font-mono mt-2"
             data-testid="log-output"
