@@ -8,6 +8,21 @@
 
 import type { PlanningPhase, IntakeVerdict } from '@loom-ai/core';
 
+// ─── New types added by story-081-002 ────────────────────────────────────────
+
+export interface RepoSummary {
+  slug: string;          // path.basename(root)
+  root: string;          // absolute path to project root
+  is_current: boolean;
+  epic_count: number;
+  registered_at: string; // ISO 8601
+}
+
+export interface ReposResponse   { repos: RepoSummary[] }
+export interface EpicsResponse   { epics: EpicStatus[] }
+export interface StoriesResponse { epic_id: string; stories: AgentSummary[] }
+// GET …/stories/:storyId returns AgentDetail directly — no envelope wrapper
+
 export interface EpicStatus {
   id: string;
   title: string;

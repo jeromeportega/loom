@@ -40,6 +40,7 @@ import { registerMutationRoutes } from './routes/mutations.js';
 import { registerOpportunityRoutes } from './routes/opportunities.js';
 import { registerProposeRoutes } from './routes/propose.js';
 import { registerLessonRoutes } from './routes/lessons.js';
+import { registerRepoRoutes } from './routes/repos.js';
 import { makeResolveProjectDb } from './resolveProjectDb.js';
 
 export interface CreateAppOptions {
@@ -561,6 +562,16 @@ export function createApp(opts: CreateAppOptions): Express {
     pollMs: opts.ssePollMs,
     loomdir: path.join(currentProjectRoot, '.loom'),
   }));
+
+  // ─── repo routes (story-081-002) — /api/repos/* ──────────────────────────
+  registerRepoRoutes(app, { db: opts.db, projectRoot: currentProjectRoot });
+
+  // ─── API 404 catch-all — must be after all /api/* route registrations ────
+  // Ensures unknown /api/* paths return JSON (not the SPA index.html or
+  // Express's default text/html "Cannot GET /api/…" response).
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'not found' });
+  });
 
   // ─── Static frontend (built React) ───────────────────────────────────────
   // Default to the Vite SPA output directory when no override is provided.
