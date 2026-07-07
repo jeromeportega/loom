@@ -17,5 +17,6 @@ export function useRepos(): UseQueryResult<ReposResponse> {
       return res.json() as Promise<ReposResponse>;
     },
     refetchInterval: POLL_MS,
+    retry: (_, err) => (err as Error & { status?: number })?.status == null || (err as Error & { status?: number }).status >= 500,
   });
 }

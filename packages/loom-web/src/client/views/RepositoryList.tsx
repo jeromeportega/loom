@@ -10,9 +10,6 @@ export function RepositoryList() {
 
   return (
     <div data-testid="repository-list">
-      {/* sr-only label keeps App routing tests passing after stub replacement */}
-      <span className="sr-only">RepositoryList</span>
-
       {isLoading && (
         <>
           <Skeleton className="h-20 w-full mb-4" />

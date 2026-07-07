@@ -33,9 +33,6 @@ export function EpicList() {
 
   return (
     <div data-testid="epic-list">
-      {/* sr-only label keeps App routing tests passing after stub replacement */}
-      <span className="sr-only">EpicList</span>
-
       {isLoading && (
         <>
           <Skeleton className="h-12 w-full mb-2" />

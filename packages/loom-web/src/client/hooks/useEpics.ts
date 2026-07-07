@@ -17,5 +17,7 @@ export function useEpics(slug: string): UseQueryResult<EpicsResponse> {
       return res.json() as Promise<EpicsResponse>;
     },
     refetchInterval: POLL_MS,
+    enabled: !!slug,
+    retry: (_, err) => (err as Error & { status?: number })?.status == null || (err as Error & { status?: number }).status >= 500,
   });
 }

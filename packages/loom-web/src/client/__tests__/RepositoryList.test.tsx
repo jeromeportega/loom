@@ -1,9 +1,9 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import React from 'react';
-import type { UseQueryResult } from '@tanstack/react-query';
 import type { ReposResponse } from '../../shared/types';
+import { makeQueryResult } from '../testUtils';
 
 // Mock the hook and useNavigate before importing the component
 vi.mock('../hooks/useRepos');
@@ -22,35 +22,6 @@ const mockRepo = {
   epic_count: 3,
   registered_at: '2026-01-01T00:00:00.000Z',
 };
-
-function makeQueryResult<T>(overrides: Partial<UseQueryResult<T>>): UseQueryResult<T> {
-  return {
-    data: undefined,
-    isLoading: false,
-    isError: false,
-    isPending: false,
-    isSuccess: false,
-    error: null,
-    status: 'pending',
-    fetchStatus: 'idle',
-    isFetching: false,
-    isRefetching: false,
-    isStale: false,
-    isPlaceholderData: false,
-    dataUpdatedAt: 0,
-    errorUpdatedAt: 0,
-    failureCount: 0,
-    failureReason: null,
-    errorUpdateCount: 0,
-    isFetchedAfterMount: false,
-    isFetched: false,
-    isInitialLoading: false,
-    isLoadingError: false,
-    isRefetchError: false,
-    refetch: vi.fn(),
-    ...overrides,
-  } as unknown as UseQueryResult<T>;
-}
 
 function renderRepositoryList() {
   return render(
@@ -86,12 +57,8 @@ describe('RepositoryList — loading state', () => {
       makeQueryResult<ReposResponse>({ isLoading: true, isPending: true, status: 'pending' })
     );
 
-    renderRepositoryList();
-    // Skeletons render as divs with animate-pulse; query by class name text content won't work
-    // Check that no repo card text is present
-    expect(screen.queryByText('my-repo')).toBeNull();
-    // At least one skeleton is rendered (data-testid not available, check class presence via container)
     const { container } = renderRepositoryList();
+    expect(screen.queryByText('my-repo')).toBeNull();
     expect(container.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0);
   });
 });

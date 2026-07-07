@@ -28,13 +28,13 @@ function renderApp(entries: string[] = ['/']) {
 describe('App routing', () => {
   it('/ renders RepositoryList', async () => {
     renderApp(['/']);
-    expect(await screen.findByText(/RepositoryList/i)).not.toBeNull();
+    expect(await screen.findByTestId('repository-list')).not.toBeNull();
   });
 
   it('/repo/:slug renders EpicList without RepositoryList', async () => {
     renderApp(['/repo/test-slug']);
-    expect(await screen.findByText(/EpicList/i)).not.toBeNull();
-    expect(screen.queryByText(/RepositoryList/i)).toBeNull();
+    expect(await screen.findByTestId('epic-list')).not.toBeNull();
+    expect(screen.queryByTestId('repository-list')).toBeNull();
   });
 
   it('/repo/:slug/epic/:epicId renders StoryList', async () => {
@@ -129,16 +129,16 @@ describe('History traversal', () => {
     );
 
     // Initially at /
-    expect(await screen.findByText(/RepositoryList/i)).not.toBeNull();
+    expect(await screen.findByTestId('repository-list')).not.toBeNull();
 
     // Navigate forward to /repo/test-slug
     fireEvent.click(screen.getByTestId('go-forward'));
-    expect(await screen.findByText(/EpicList/i)).not.toBeNull();
-    expect(screen.queryByText(/RepositoryList/i)).toBeNull();
+    expect(await screen.findByTestId('epic-list')).not.toBeNull();
+    expect(screen.queryByTestId('repository-list')).toBeNull();
 
     // Navigate back to /
     fireEvent.click(screen.getByTestId('go-back'));
-    expect(await screen.findByText(/RepositoryList/i)).not.toBeNull();
-    expect(screen.queryByText(/EpicList/i)).toBeNull();
+    expect(await screen.findByTestId('repository-list')).not.toBeNull();
+    expect(screen.queryByTestId('epic-list')).toBeNull();
   });
 });
