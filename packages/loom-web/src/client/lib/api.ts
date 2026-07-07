@@ -31,3 +31,15 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   if (TOKEN) headers.set('x-loom-token', TOKEN);
   return fetch(path, { ...init, headers });
 }
+
+/** POST helper: sends JSON body with auth token. Returns raw Response — never throws on non-2xx. */
+export function apiPost(path: string, body?: unknown): Promise<Response> {
+  const headers = new Headers();
+  if (TOKEN) headers.set('x-loom-token', TOKEN);
+  headers.set('Content-Type', 'application/json');
+  return fetch(path, {
+    method: 'POST',
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+}
