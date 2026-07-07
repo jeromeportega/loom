@@ -369,6 +369,7 @@ truth.
 <!-- coverage:command:end -->
 
 <!-- coverage:knob:start -->
+`policy.agents.adversarial_review_model`
 `policy.agents.auto_resume_attempts`
 `policy.agents.budget_tokens_per_story`
 `policy.agents.context_notes`

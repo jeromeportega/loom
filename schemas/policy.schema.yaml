@@ -337,6 +337,11 @@ properties:
         description: |
           Wall-clock budget in minutes for the smoke command. Must be a
           positive number (zero and negatives are rejected). Default 15.
+      adversarial_review_model:
+        type: string
+        description: >
+          Optional model ID for the adversarial review pass run by loom finalize.
+          When absent or empty, no second pass runs. Example: claude-opus-4-8
       shared_contract:
         type: string
         enum: [off, on]

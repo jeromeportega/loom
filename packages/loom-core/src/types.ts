@@ -648,6 +648,9 @@ export const PolicySchema = z.object({
       // Default 15 — chosen to cover a typical integration smoke suite without
       // blocking the finalize path for an unreasonable time.
       smoke_timeout_minutes: z.number().positive().default(15),
+      adversarial_review_model: z.string().optional(),
+      // Model ID for the independent adversarial review pass run by loom finalize.
+      // When absent or empty, no second pass runs and behavior is identical to baseline.
     })
     .default({}),
   mcp: z
