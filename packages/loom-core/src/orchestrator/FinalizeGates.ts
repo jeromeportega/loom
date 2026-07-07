@@ -4,6 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { SharedContract } from './SharedContract.js';
 import { checkUndocumentedEnvVars } from './GateEnvVar.js';
 import { checkCrossEpicRegressions } from './GateRegression.js';
+import { checkDeadPolicyFields, type DeadFieldResult } from './GateDeadPolicyField.js';
+import { checkNoProductionCallers, type NoCallerResult } from './GateNoProductionCaller.js';
 
 export type FinalizeGateMode = 'off' | 'warn' | 'block';
 
@@ -27,9 +29,10 @@ export interface FinalizeGatesResult {
   symbolDrift: SymbolDriftFinding[];
   undocumentedEnvVars: EnvVarFinding[];
   regressions: RegressionFinding[];
-  /** true only when mode === 'block' AND the (precise) env-var gate found an
-   *  undocumented variable. Symbol drift and cross-epic regression are advisory
-   *  and never contribute to hardFail. */
+  deadFields: DeadFieldResult;
+  noCallers: NoCallerResult;
+  /** true when mode === 'block' AND (undocumented env-var found
+   *  OR deadFields.findings.length > 0 OR noCallers.findings.length > 0). */
   hardFail: boolean;
 }
 
@@ -228,7 +231,14 @@ export async function runFinalizeGates(opts: {
   deliveredEpicIds: string[];
 }): Promise<FinalizeGatesResult> {
   if (opts.mode === 'off') {
-    return { symbolDrift: [], undocumentedEnvVars: [], regressions: [], hardFail: false };
+    return {
+      symbolDrift: [],
+      undocumentedEnvVars: [],
+      regressions: [],
+      deadFields: { findings: [], scannedFields: [], durationMs: 0 },
+      noCallers: { findings: [], scannedSymbols: [], durationMs: 0 },
+      hardFail: false,
+    };
   }
 
   // ── Symbol-drift gate: this epic's own pinned symbols must exist at head. ──
@@ -283,20 +293,30 @@ export async function runFinalizeGates(opts: {
     }
   }
 
-  // Only the undocumented-env-var gate is precise enough to WITHHOLD a PR: it is
-  // an exact set-membership test (an env var the code reads that is absent from
-  // .env.example), with an ambient-var allowlist, so its findings are real. The
-  // symbol-drift and cross-epic-regression gates are heuristics over
-  // prose-heavy markdown contracts — genuinely useful as advisory signals but
-  // still carrying a non-zero false-positive rate (measured on loom's own 64
-  // contracts). They are therefore ALWAYS advisory: emitted as warnings for the
-  // operator, but never a hard-fail, regardless of mode. Escalating them to a
-  // blocker would let a mis-extracted prose word withhold a correct epic — the
-  // exact failure the review of this gate flagged. `mode` still gates whether
-  // they run at all (mode='off' skips everything above).
-  const hardFail = opts.mode === 'block' && undocumentedEnvVars.length > 0;
+  // ── Dead-policy-field gate: agents schema fields with zero production reads. ──
+  const schemaPath = path.join(opts.contractRoot, 'schemas', 'policy.schema.yaml');
+  const deadFields = checkDeadPolicyFields({ schemaPath, projectRoot: opts.treeRoot });
+  for (const f of deadFields.findings) {
+    console.warn(`[finalize] dead policy field: '${f.field}' — ${f.reason}`);
+  }
 
-  return { symbolDrift, undocumentedEnvVars, regressions, hardFail };
+  // ── No-production-caller gate: exported functions never called in production. ──
+  const noCallers = checkNoProductionCallers({
+    epicDiff: opts.epicDiff,
+    projectRoot: opts.treeRoot,
+  });
+
+  // Only the undocumented-env-var, dead-policy-field, and no-production-caller
+  // gates are precise enough to WITHHOLD a PR. Symbol drift and cross-epic
+  // regression are heuristics over prose-heavy markdown contracts — always
+  // advisory, never hard-fail, regardless of mode.
+  const hardFail =
+    opts.mode === 'block' &&
+    (undocumentedEnvVars.length > 0 ||
+      deadFields.findings.length > 0 ||
+      noCallers.findings.length > 0);
+
+  return { symbolDrift, undocumentedEnvVars, regressions, deadFields, noCallers, hardFail };
 }
 
 /**
