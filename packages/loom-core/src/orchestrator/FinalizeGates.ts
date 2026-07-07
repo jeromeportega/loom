@@ -32,8 +32,9 @@ export interface FinalizeGatesResult {
   deadFields: DeadFieldResult;
   noCallers: NoCallerResult;
   /** true when mode === 'block' AND (undocumented env-var found
-   *  OR deadFields.findings.length > 0).
-   *  noCallers is excluded until story-082-003 ships the real gate. */
+   *  OR deadFields.findings.length > 0 OR noCallers.findings.length > 0).
+   *  Symbol drift and cross-epic regression are advisory and never contribute
+   *  to hardFail. */
   hardFail: boolean;
 }
 
@@ -231,15 +232,10 @@ export async function runFinalizeGates(opts: {
   mode: FinalizeGateMode;
   deliveredEpicIds: string[];
 }): Promise<FinalizeGatesResult> {
+  const emptyNoCallers: NoCallerResult = { findings: [], scannedSymbols: [], durationMs: 0 };
+  const emptyDeadFields: DeadFieldResult = { findings: [], scannedFields: [], durationMs: 0 };
   if (opts.mode === 'off') {
-    return {
-      symbolDrift: [],
-      undocumentedEnvVars: [],
-      regressions: [],
-      deadFields: { findings: [], scannedFields: [], durationMs: 0 },
-      noCallers: { findings: [], scannedSymbols: [], durationMs: 0 },
-      hardFail: false,
-    };
+    return { symbolDrift: [], undocumentedEnvVars: [], regressions: [], deadFields: emptyDeadFields, noCallers: emptyNoCallers, hardFail: false };
   }
 
   // ── Symbol-drift gate: this epic's own pinned symbols must exist at head. ──
@@ -304,22 +300,22 @@ export async function runFinalizeGates(opts: {
     console.warn(`[finalize] dead policy field: '${f.field}' — ${f.reason}`);
   }
 
-  // ── No-production-caller gate: exported functions never called in production. ──
+  // ── No-production-caller gate: exported symbols in the diff that are only
+  // called by test files are flagged as possibly-cosmetic wiring. ──────────────
   const noCallers = checkNoProductionCallers({
     epicDiff: opts.epicDiff,
     projectRoot: opts.treeRoot,
   });
 
-  // Only the undocumented-env-var and dead-policy-field gates are precise enough
-  // to WITHHOLD a PR right now. Symbol drift and cross-epic regression are
-  // heuristics over prose-heavy markdown contracts — always advisory.
-  // TODO(story-082-003): add `noCallers.findings.length > 0` once the real
-  // GateNoProductionCaller lands; the current stub always returns [] so including
-  // it here would make the comment misleading and cannot block in practice.
+  // The undocumented-env-var, dead-policy-field, and no-production-caller gates
+  // are precise enough to WITHHOLD a PR: all are exact set-membership / pattern
+  // tests with allowlists, so their findings are real. Symbol drift and
+  // cross-epic regression are heuristics — always advisory, never hard-fail.
   const hardFail =
     opts.mode === 'block' &&
     (undocumentedEnvVars.length > 0 ||
-      deadFields.findings.length > 0);
+      deadFields.findings.length > 0 ||
+      noCallers.findings.length > 0);
 
   return { symbolDrift, undocumentedEnvVars, regressions, deadFields, noCallers, hardFail };
 }

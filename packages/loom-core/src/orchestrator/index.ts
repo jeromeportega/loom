@@ -160,3 +160,6 @@ export type {
 } from './crossRepoReadiness.js';
 export { CyclicRepoDependencyError, assertNoCycles, detectCyclesInEpicYaml } from './actions/approveAndDispatch.js';
 export { resolveSmokeCommand } from './SmokeResolver.js';
+export type { NoCallerFinding, NoCallerResult } from './GateNoProductionCaller.js';
+export { checkNoProductionCallers } from './GateNoProductionCaller.js';
+

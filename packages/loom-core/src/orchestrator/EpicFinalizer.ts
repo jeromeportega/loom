@@ -712,11 +712,22 @@ export class EpicFinalizer {
       allowed: true,
       detail: { count: gatesResult.regressions.length },
     });
+    audit.record({
+      agent_id: undefined,
+      action: 'epic_finalize_no_caller',
+      command: epicId,
+      allowed: true,
+      detail: {
+        count: gatesResult.noCallers.findings.length,
+        findings: gatesResult.noCallers.findings,
+      },
+    });
     if (gatesResult.hardFail) {
       epicStore.updateStatus(epicId, 'in_progress',
         `finalize gates blocked: ${gatesResult.symbolDrift.length} drift, ` +
         `${gatesResult.undocumentedEnvVars.length} env-var, ` +
-        `${gatesResult.regressions.length} regression finding(s)`
+        `${gatesResult.regressions.length} regression, ` +
+        `${gatesResult.noCallers.findings.length} no-caller finding(s)`
       );
       return {
         status: 'gated',
@@ -726,8 +737,10 @@ export class EpicFinalizer {
         note:
           `Finalize gates BLOCKED ${epicBranch}: symbol-drift=${gatesResult.symbolDrift.length}, ` +
           `undoc-env-var=${gatesResult.undocumentedEnvVars.length}, ` +
-          `regression=${gatesResult.regressions.length}. ` +
-          'Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.',
+          `regression=${gatesResult.regressions.length}, ` +
+          `no-caller=${gatesResult.noCallers.findings.length}. ` +
+          'Fix and re-run, set policy.agents.integration_gate=warn to land regardless, ' +
+          'or annotate exports with // @loom-public-api to suppress no-caller findings.',
       };
     }
 
@@ -1880,6 +1893,12 @@ function emitFinalizeGateDiagnostics(result: FinalizeGatesResult): void {
     console.warn(
       `[finalize] cross-epic regression: '${f.symbol}' (pinned by ${f.priorEpicId}) ` +
       `was present before this epic but is gone from the integrated tree`
+    );
+  }
+  for (const f of result.noCallers.findings) {
+    console.warn(
+      `[finalize] no-production-caller: '${f.symbol}' (${f.file}) — all callers are test files. ` +
+      `Add a production caller or annotate with // @loom-public-api`
     );
   }
 }

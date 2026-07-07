@@ -17,6 +17,15 @@ import {
   AuditLog,
 } from '@loom-ai/core';
 import type { Policy, ReviewFinding, ReviewReport } from '@loom-ai/core';
+
+// Mirrors NoCallerFinding from loom-core (GateNoProductionCaller.ts). Defined
+// locally because loom-cli resolves @loom-ai/core from the installed dist which
+// may not yet include the export; we parse this from the audit_log detail field.
+interface NoCallerFinding {
+  symbol: string;
+  file: string;
+  callers: string[];
+}
 import { openProjectDatabase } from '../dbHelper.js';
 import { gateCommandCheck, gateRunnableCheck, getLeadBinary } from './doctorGateCheck.js';
 import { reportPolicyDrift } from './init.js';
@@ -40,6 +49,22 @@ export function adversarialReviewFindingsToChecks(findings: ReviewFinding[]): Ch
     ok: false,
     detail: f.issue + (f.suggestion ? ` — ${f.suggestion}` : ''),
     required: f.severity === 'blocker',
+  }));
+}
+
+/**
+ * Maps no-production-caller findings to doctor Checks (story-082-003).
+ * All findings are advisory warns (required:false) — symbol may be intentional
+ * public API not yet consumed, or the grep may have missed a caller.
+ */
+export function noCallerFindingsToChecks(findings: NoCallerFinding[]): Check[] {
+  return findings.map((f) => ({
+    name: `no-production-caller: ${f.symbol} (${f.file})`,
+    ok: false,
+    detail:
+      `'${f.symbol}' in ${f.file} has no production callers — ` +
+      `annotate with // @loom-public-api to suppress, or add a production call site`,
+    required: false,
   }));
 }
 
@@ -299,10 +324,8 @@ export async function runDoctor(): Promise<void> {
       /* policy parse errors are surfaced by `loom init` / run, not here */
     }
 
-    // Surface adversarial review findings from the most recent finalize run.
-    // Findings with severity 'blocker' escalate to required:true (exit 1);
-    // all others are advisory warns (required:false). A row with no findings
-    // is omitted. Best-effort: any DB error is silently skipped.
+    // Surface adversarial review and no-production-caller findings from the most
+    // recent finalize run. Best-effort: any DB error is silently skipped.
     try {
       const db = openProjectDatabase(process.cwd());
       const auditLog = new AuditLog(db);
@@ -317,8 +340,17 @@ export async function runDoctor(): Promise<void> {
         const advChecks = adversarialReviewFindingsToChecks(report?.findings ?? []);
         checks.push(...advChecks);
       }
+      const noCallerRow = recentRows.find((r) => r.action === 'epic_finalize_no_caller');
+      if (noCallerRow) {
+        const parsed = JSON.parse(noCallerRow.detail ?? '{}') as {
+          count?: number;
+          findings?: NoCallerFinding[];
+        };
+        const noCallerChecks = noCallerFindingsToChecks(parsed.findings ?? []);
+        checks.push(...noCallerChecks);
+      }
     } catch {
-      /* no DB or no adversarial_review rows — advisory only, skip silently */
+      /* no DB or no relevant audit rows — advisory only, skip silently */
     }
   }
 
