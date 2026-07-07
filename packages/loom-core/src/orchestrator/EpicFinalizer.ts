@@ -718,14 +718,10 @@ export class EpicFinalizer {
     // on failure; 'warn' annotates and continues (ADR-005).
     if (this.gateMode !== 'off') {
       const smokeTimeoutMinutes = this.opts.smokeTimeoutMinutes ?? 15;
-      // resolveSmokeCommand only reads policy.agents.smoke_command — the cast is
-      // safe. Threading the full Policy through EpicFinalizerOptions is avoided
-      // to keep the interface lean; smoke-specific fields live in opts.smokeCommand.
+      // resolveSmokeCommand only reads policy.agents.smoke_command; pass the
+      // minimal shape the resolver needs rather than a full Policy object.
       const policyForSmoke = {
-        agents: {
-          smoke_command: this.opts.smokeCommand,
-          smoke_timeout_minutes: smokeTimeoutMinutes,
-        },
+        agents: { smoke_command: this.opts.smokeCommand },
       } as unknown as Policy;
       const resolvedSmokeCmd = await resolveSmokeCommand(gitRoot, policyForSmoke);
       if (resolvedSmokeCmd !== null) {
@@ -736,27 +732,27 @@ export class EpicFinalizer {
           timeoutMinutes: smokeTimeoutMinutes,
           runner:         this.opts.smokeRunner,
         });
-        const smokeExitCode = smokeResult.exitCode ?? -1;
+        const smokeFailed = smokeResult.exitCode !== 0 || smokeResult.timeoutKilled;
         audit.record({
           action:  'smoke_gate',
           command: resolvedSmokeCmd,
-          allowed: smokeExitCode === 0,
+          allowed: !smokeFailed,
           detail:  {
-            exit_code:        smokeExitCode,
+            exit_code:        smokeResult.exitCode,
             duration_seconds: smokeResult.durationSeconds,
             timeout_killed:   smokeResult.timeoutKilled,
             gate_mode:        this.gateMode,
           },
         });
-        if (smokeExitCode !== 0) {
+        if (smokeFailed) {
           if (this.gateMode === 'block') {
             epicStore.updateStatus(epicId, 'in_progress',
-              `smoke gate failed: exit ${smokeExitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''}`
+              `smoke gate failed: exit ${smokeResult.exitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''}`
             );
             throw new SmokeGateError(smokeResult);
           } else {
             console.warn(
-              `[finalize] smoke: exit ${smokeExitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''} — proceeding in warn mode`
+              `[finalize] smoke: exit ${smokeResult.exitCode}${smokeResult.timeoutKilled ? ' (timed out)' : ''} — proceeding in warn mode`
             );
           }
         }

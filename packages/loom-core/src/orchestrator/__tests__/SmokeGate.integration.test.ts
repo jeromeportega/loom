@@ -462,13 +462,16 @@ describe('smoke gate — sequencing', () => {
     // Verify audit order: finalize-gates entries come BEFORE smoke_gate.
     // Sort by id (AUTOINCREMENT) — same-second entries share a timestamp,
     // so id is the only stable proxy for insertion order.
+    // Use epic_finalize_regression as the anchor — it is written unconditionally
+    // at the end of the finalize-gates block, regardless of whether any regressions
+    // were found (i.e. it is always present when gateMode !== 'off').
     const allEntries = new AuditLog(db).recent(50).sort((a, b) => a.id - b.id); // ASC by insertion order
-    const driftIdx = allEntries.findIndex((e) => e.action === 'epic_finalize_symbol_drift');
+    const gateIdx  = allEntries.findIndex((e) => e.action === 'epic_finalize_regression');
     const smokeIdx = allEntries.findIndex((e) => e.action === 'smoke_gate');
 
-    assert.ok(driftIdx >= 0, 'epic_finalize_symbol_drift audit entry must exist');
+    assert.ok(gateIdx >= 0, 'epic_finalize_regression audit entry must exist (written unconditionally after runFinalizeGates)');
     assert.ok(smokeIdx >= 0, 'smoke_gate audit entry must exist');
-    assert.ok(driftIdx < smokeIdx, 'smoke_gate must appear after finalize-gates entries in audit log');
+    assert.ok(gateIdx < smokeIdx, 'smoke_gate must appear after finalize-gates entries in audit log');
 
     // Smoke runs BEFORE the review phase update: if smoke blocked, review phase must not be set
     const epic = new EpicStore(db).get(epicId);
