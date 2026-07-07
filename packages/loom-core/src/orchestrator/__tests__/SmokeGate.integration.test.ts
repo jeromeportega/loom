@@ -202,7 +202,7 @@ describe('smoke gate — block mode, pass', () => {
     assert.equal(detail.exit_code, 0, 'audit detail.exit_code = 0');
     assert.equal(detail.timeout_killed, false, 'audit detail.timeout_killed = false');
 
-    // Finalize proceeds (no SmokeGateError thrown)
+    // Finalize proceeds past a passing smoke gate.
     assert.ok(result.status === 'merged' || result.status === 'partial', 'finalize proceeds past smoke');
 
     // Epic must not be set to in_progress
