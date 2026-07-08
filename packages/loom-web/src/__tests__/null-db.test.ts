@@ -215,31 +215,50 @@ describe('null-db server — resolveProjectDb null guard returns 404', () => {
     });
     assert.equal(res.status, 404);
   });
+
+  it('POST /api/stop → 404 (no current project)', async () => {
+    const res = await fetch(`${baseUrl}/api/stop`, {
+      method: 'POST',
+      headers: JSON_AUTH,
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('POST /api/epics/:id/resume → 404 (no current project)', async () => {
+    const res = await fetch(`${baseUrl}/api/epics/epic-001/resume`, {
+      method: 'POST',
+      headers: JSON_AUTH,
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('POST /api/agents/:id/kill → 404 (no current project)', async () => {
+    const res = await fetch(`${baseUrl}/api/agents/agent-001/kill`, {
+      method: 'POST',
+      headers: JSON_AUTH,
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 404);
+  });
 });
 
-// ─── No 5xx responses ─────────────────────────────────────────────────────────
+// ─── No 5xx responses — mutation routes ──────────────────────────────────────
+//
+// GET routes are already verified by the 204 suite above (204 is implicitly < 500).
+// This suite focuses on mutation routes: approve/reject/retry go through
+// resolveProjectDb (→ 404), stop/resume/kill likewise; archive hits the blanket
+// 204 handler. None should 500.
 
-describe('null-db server — no 5xx responses from any db-scoped route', () => {
+describe('null-db server — no 5xx responses from mutation routes', () => {
   const routes: Array<{ method: string; path: string }> = [
-    { method: 'GET', path: '/api/status' },
-    { method: 'GET', path: '/api/epics/epic-001' },
-    { method: 'GET', path: '/api/epics/epic-001/planning-artifacts' },
-    { method: 'GET', path: '/api/agents/agent-001' },
-    { method: 'GET', path: '/api/agents/agent-001/log' },
-    { method: 'GET', path: '/api/agents/agent-001/audit' },
-    { method: 'GET', path: '/api/agents/agent-001/traces' },
-    { method: 'GET', path: '/api/epics/epic-001/traces' },
-    { method: 'GET', path: '/api/skills' },
-    { method: 'GET', path: '/api/skills/jwt-auth/history' },
-    { method: 'GET', path: '/api/cost' },
-    { method: 'GET', path: '/api/projects' },
-    { method: 'GET', path: '/api/repos' },
-    { method: 'GET', path: '/api/inbox' },
-    { method: 'GET', path: '/api/lessons' },
-    { method: 'GET', path: '/api/opportunities' },
     { method: 'POST', path: '/api/epics/epic-001/approve' },
     { method: 'POST', path: '/api/epics/epic-001/reject' },
     { method: 'POST', path: '/api/stories/story-001-001/retry' },
+    { method: 'POST', path: '/api/stop' },
+    { method: 'POST', path: '/api/epics/epic-001/resume' },
+    { method: 'POST', path: '/api/agents/agent-001/kill' },
     { method: 'POST', path: '/api/epics/epic-001/archive' },
   ];
 
@@ -291,7 +310,8 @@ describe('null-db server — no unhandledRejection fires when traversing all rou
       }
 
       // Allow event loop to flush any pending microtasks / rejections.
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      // A wider window (10ms) catches async middleware that settles after a single tick.
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
       assert.deepEqual(rejections, [], 'no unhandledRejection events should fire');
     } finally {
       process.removeListener('unhandledRejection', handler);

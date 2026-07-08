@@ -55,8 +55,8 @@ export interface CreateAppOptions {
   /**
    * Pre-computed union of active-loom_home + machine-default registries.
    * Produced by buildUnifiedRegistry() at server startup.
-   * All route modules share this single validated set for path-traversal checks.
-   * When omitted, defaults to an empty Map (stub until story-085-003 merges).
+   * Accepted now so callers can wire it up; consumed when story-085-003 merges.
+   * TODO(story-085-003): pass to registerRepoRoutes and makeResolveProjectDb.
    */
   unifiedRegistry?: Map<string, ProjectEntry>;
   /** SSE poll interval in ms. Default 500. Lower in tests for snappier asserts. */
@@ -120,22 +120,6 @@ export function createApp(opts: CreateAppOptions): Express {
   // Use a non-null fallback only for routes that need a path but won't reach db.
   const currentProjectRoot: string = opts.projectRoot ?? process.cwd();
 
-  // Isolation stubs for registry.ts (story-085-003). Replace with real imports
-  // once that story merges. Signatures match the real functions exactly.
-  const _resolveActiveLoomHome = (_loomDir: string | null, machineDefault: string): string =>
-    machineDefault;
-  const _buildUnifiedRegistry = (
-    _activeLoomHome: string,
-    _machineDefaultLoomHome: string,
-    _currentProject: { projectRoot: string; loomDir: string } | null
-  ): { registry: Map<string, ProjectEntry>; selfHealOccurred: boolean } => ({
-    registry: new Map<string, ProjectEntry>(),
-    selfHealOccurred: false,
-  });
-  // Suppress unused-variable warnings until story-085-003 activates these stubs.
-  void _resolveActiveLoomHome;
-  void _buildUnifiedRegistry;
-
   // Null-safe resolver: when db is null there is no host project. Any route
   // that calls resolveProjectDb without a ?project param gets a 404, matching
   // the "no current project" state. Routes with a valid ?project param proceed
@@ -151,20 +135,23 @@ export function createApp(opts: CreateAppOptions): Express {
 
   // ─── Routes registered unconditionally (agnostic to null db) ────────────
 
-  // Repo routes: read from ProjectRegistry, not from the current-project db.
-  // Works correctly when db is null and registry is empty → returns { repos: [] }.
-  registerRepoRoutes(app, {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    db: opts.db!,
-    projectRoot: currentProjectRoot,
-  });
+  // Repo routes: registerRepoRoutes passes deps.db straight into openDb's
+  // current-project short-circuit path; a null db there would crash EpicStore.
+  // Guard here: when db is null, serve an empty list directly.
+  if (opts.db !== null) {
+    registerRepoRoutes(app, { db: opts.db, projectRoot: currentProjectRoot });
+  } else {
+    app.get('/api/repos', (_req, res) => {
+      res.json({ repos: [] });
+    });
+  }
 
   // Mutation routes: all handlers call resolveProjectDb(req) first. When db is
-  // null, the null resolver above throws 404, which the mutation catch block
-  // converts to a 404 JSON response. No 500s, no unhandled rejections.
+  // null, the null resolver above throws 404, which each mutation's catch block
+  // converts to a 404 JSON response. deps.db is declared non-null in MutationDeps
+  // but is never directly accessed in handlers (they use resolved.db) — safe cast.
   registerMutationRoutes(app, {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    db: opts.db!,
+    db: opts.db as Database.Database,
     resolveProjectDb,
     projectRoot: currentProjectRoot,
     loomBin: opts.loomBin,
