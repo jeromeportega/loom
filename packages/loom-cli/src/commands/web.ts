@@ -99,7 +99,9 @@ interface RunWebInternals {
  */
 export async function runWeb(opts: WebOptions = {}, _internals: RunWebInternals = {}): Promise<void> {
   const resolverFn = _internals._resolveWebRoot ?? resolveWebRoot;
-  const resolved = resolverFn(process.cwd(), new ProjectRegistry(), defaultMachineConfigPath());
+  // Pass undefined for registry so resolveWebRoot uses its own internal default,
+  // matching the pre-refactor call site and avoiding a wasted allocation in tests.
+  const resolved = resolverFn(process.cwd(), undefined, defaultMachineConfigPath());
   const projectRoot = resolved?.projectRoot ?? null;
 
   const db = projectRoot !== null ? openProjectDatabase(projectRoot) : null;

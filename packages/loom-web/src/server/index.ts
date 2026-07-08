@@ -104,23 +104,21 @@ export function createApp(opts: CreateAppOptions): Express {
   // readOnly=true: GET/HEAD pass tokenless; non-GET/HEAD → 403 without token.
   app.use('/api', accessGuard({ token: opts.token, readOnly: opts.readOnly ?? false }));
 
-  // ─── Static frontend (built React) ───────────────────────────────────────
-  // Registered before the db-null guard so the SPA bundle is served even when
-  // no project is loaded — the React app loads; API routes are limited to /api/health.
+  // Resolve the static dir once; registration happens below in each code path.
   const defaultStaticDir = path.join(__dirname, '../../client-dist');
   const resolvedStaticDir = opts.staticDir ?? (fs.existsSync(defaultStaticDir) ? defaultStaticDir : undefined);
-  if (resolvedStaticDir) {
-    app.use(express.static(resolvedStaticDir));
-    // SPA fallback for client-side routing.
-    app.get(/^(?!\/api\/).+/, (_req, res) => {
-      res.sendFile('index.html', { root: resolvedStaticDir });
-    });
-  }
 
   if (opts.db === null) {
-    // TODO: add project-agnostic route handlers (repos list, health) and return 204
-    // for current-project endpoints when no project is loaded.
-    app.use('/api', (_req, res) => { res.status(404).json({ error: 'not found' }); });
+    // No current project: serve the SPA bundle first so the React app loads,
+    // then return 204 (not 404) for any authenticated /api/* request so the
+    // SPA can distinguish "no project loaded" from "unknown route".
+    if (resolvedStaticDir) {
+      app.use(express.static(resolvedStaticDir));
+      app.get(/^(?!\/api\/).+/, (_req, res) => {
+        res.sendFile('index.html', { root: resolvedStaticDir });
+      });
+    }
+    app.use('/api', (_req, res) => { res.status(204).end(); });
     return app;
   }
 
@@ -586,6 +584,18 @@ export function createApp(opts: CreateAppOptions): Express {
 
   // ─── repo routes (story-081-002) — /api/repos/* ──────────────────────────
   registerRepoRoutes(app, { db: opts.db, projectRoot: currentProjectRoot });
+
+  // ─── Static frontend (built React) ───────────────────────────────────────
+  // Registered after all /api/* routes so that express.static() does not
+  // perform unnecessary filesystem stat() calls on every API request, and the
+  // SPA fallback cannot shadow future non-/api/ route handlers added above.
+  if (resolvedStaticDir) {
+    app.use(express.static(resolvedStaticDir));
+    // SPA fallback for client-side routing (non-/api/ paths only).
+    app.get(/^(?!\/api\/).+/, (_req, res) => {
+      res.sendFile('index.html', { root: resolvedStaticDir });
+    });
+  }
 
   // ─── API 404 catch-all — must be after all /api/* route registrations ────
   // Ensures unknown /api/* paths return JSON (not the SPA index.html or
