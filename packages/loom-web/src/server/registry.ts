@@ -104,6 +104,9 @@ export function buildUnifiedRegistry(
 /**
  * Reads a projects.json registry file and returns its raw entries.
  * Returns [] when the file is absent or malformed — never throws.
+ * (Vanished-root pruning is intentionally NOT done here — the union is a
+ * documented startup snapshot; pruning belongs at the display layer where it
+ * won't conflate with the merge-logic tests. Tracked as a follow-up.)
  */
 function readRegistryFile(registryPath: string): ProjectEntry[] {
   if (!fs.existsSync(registryPath)) return [];

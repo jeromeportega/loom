@@ -28,8 +28,9 @@ wins):
    Current-project routes return 204 (no content); the repo list view still
    shows all registered repos normally. No error is printed; startup succeeds.
 
-The resolved project root (or `(no project)` in no-project mode) is printed
-to stdout at startup so you can confirm which project is being served.
+The resolved project root (or `(none) — federated view across all registered
+repos` in no-project mode) is printed to stdout at startup so you can confirm
+which project is being served.
 
 ## Active loom_home resolution
 

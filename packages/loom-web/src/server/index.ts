@@ -195,8 +195,8 @@ export function createApp(opts: CreateAppOptions): Express {
 
   // ─── Route modules (owned by sibling stories; mounted here) ─────────────
   registerAutonomyRoutes(app, { epicStore, auditLog });
-  registerFleetRoutes(app, { epicStore, agentStore, db: opts.db, projectRoot: currentProjectRoot });
-  registerInboxRoutes(app, { epicStore, agentStore, projectRoot: currentProjectRoot });
+  registerFleetRoutes(app, { epicStore, agentStore, db: opts.db, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });
+  registerInboxRoutes(app, { epicStore, agentStore, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });
 
   // ─── GET /api/status — federated list of EpicStatus across all repos ─────
   // Aggregates every loom-init'ed repo on this machine, not just the one the
@@ -258,10 +258,15 @@ export function createApp(opts: CreateAppOptions): Express {
       res.status(400).json({ error: 'unknown project root' });
       return;
     }
-    const [scopedEpics, scopedAgents, scopedRoot, scopedCleanup, scopedAudit] =
+    const scoped =
       peer === 'current'
         ? ([epicStore, agentStore, currentProjectRoot, () => {}, auditLog] as const)
         : openPeer(peer);
+    if (scoped === null) {
+      res.status(404).json({ error: 'project not initialized' });
+      return;
+    }
+    const [scopedEpics, scopedAgents, scopedRoot, scopedCleanup, scopedAudit] = scoped;
     try {
       const epic = scopedEpics.get(req.params.id);
       if (!epic) {
@@ -313,10 +318,15 @@ export function createApp(opts: CreateAppOptions): Express {
       res.status(400).json({ error: 'unknown project root' });
       return;
     }
-    const [scopedEpics, , scopedRoot, scopedCleanup] =
+    const scoped =
       peer === 'current'
         ? ([epicStore, agentStore, currentProjectRoot, () => {}] as const)
         : openPeer(peer);
+    if (scoped === null) {
+      res.status(404).json({ error: 'project not initialized' });
+      return;
+    }
+    const [scopedEpics, , scopedRoot, scopedCleanup] = scoped;
     try {
       const epic = scopedEpics.get(req.params.id);
       if (!epic) {
@@ -579,10 +589,15 @@ export function createApp(opts: CreateAppOptions): Express {
       res.status(400).json({ error: 'unknown project root' });
       return;
     }
-    const [scopedEpics, , , scopedCleanup, scopedAudit] =
+    const scoped =
       peer === 'current'
         ? ([epicStore, agentStore, currentProjectRoot, () => {}, auditLog] as const)
         : openPeer(peer);
+    if (scoped === null) {
+      res.status(404).json({ error: 'project not initialized' });
+      return;
+    }
+    const [scopedEpics, , , scopedCleanup, scopedAudit] = scoped;
     try {
       const epic = scopedEpics.get(req.params.id);
       if (!epic) {
@@ -732,7 +747,7 @@ function resolvePeerProject(
  */
 function openPeer(
   root: string
-): readonly [EpicStore, AgentStore, string, () => void, AuditLog] {
+): readonly [EpicStore, AgentStore, string, () => void, AuditLog] | null {
   // createDatabase() — fresh connection, NOT the openDatabase() singleton.
   // The singleton would alias the current-project DB and close-on-cleanup
   // would tear down the long-lived connection the rest of the server uses.
@@ -746,7 +761,15 @@ function openPeer(
     peerPolicy = { loom_home: '' };
   }
   const { namespaceDir: peerNsDir } = resolveRepoStatePaths(root, peerPolicy);
-  const peerDb = createDatabase(path.join(peerNsDir, 'loom.db'));
+  const peerDbPath = path.join(peerNsDir, 'loom.db');
+  // A read endpoint must NEVER materialize another repo's state on disk.
+  // createDatabase() mkdirs + creates the file + runs migrations, so guard on
+  // existsSync — matching repos.ts openDb and the /api/status + /api/projects
+  // peer opens. An uninitialized peer yields null (caller → 404) instead of a
+  // freshly-created .loom/loom.db. (The federation union now surfaces more peer
+  // roots to this path, which is why the guard matters here too.)
+  if (!fs.existsSync(peerDbPath)) return null;
+  const peerDb = createDatabase(peerDbPath);
   const peerEpics = new EpicStore(peerDb);
   const peerAgents = new AgentStore(peerDb);
   const peerAudit = new AuditLog(peerDb);
