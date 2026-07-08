@@ -304,6 +304,7 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
         llm: createLLMClient(policy.agents.llm_backend),
         model: modelFor(policy, 'skill_gen'),
         skillStore,
+        judgeMinScore: policy.agents.skill_judge_min_score,
         autoProposer,
         autoProposeMode: policy.agents.skill_auto_propose,
       });
@@ -512,6 +513,7 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     stallRecoveryBudget: policy.agents.stall_recovery_budget,
     // epic-067: per-worker read-scope settings.json
     loomScriptPath: process.argv[1],
+    pruneOrphans: policy.agents.prune_orphan_worktrees !== 'off',
   };
 
   const supervisor = new Supervisor(supervisorOpts);

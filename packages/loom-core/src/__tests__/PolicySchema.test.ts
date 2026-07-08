@@ -69,6 +69,53 @@ describe('adversarial_review_model — non-string rejected', () => {
   });
 });
 
+// ─── skill_judge_min_score ────────────────────────────────────────────────────
+
+describe('skill_judge_min_score — optional number field', () => {
+  it('accepts a numeric value and round-trips it', () => {
+    const result = PolicySchema.parse({ agents: { skill_judge_min_score: 0.9 } });
+    assert.strictEqual(result.agents.skill_judge_min_score, 0.9);
+  });
+
+  it('is undefined when absent (no default)', () => {
+    const result = PolicySchema.parse({ agents: {} });
+    assert.strictEqual(result.agents.skill_judge_min_score, undefined);
+  });
+
+  it('rejects a string value with a ZodError', () => {
+    assert.throws(
+      () => PolicySchema.parse({ agents: { skill_judge_min_score: 'high' } }),
+      (err: unknown) => err instanceof ZodError
+    );
+  });
+});
+
+// ─── prune_orphan_worktrees ───────────────────────────────────────────────────
+
+describe('prune_orphan_worktrees — enum field with default', () => {
+  it('accepts "off" and round-trips it', () => {
+    const result = PolicySchema.parse({ agents: { prune_orphan_worktrees: 'off' } });
+    assert.strictEqual(result.agents.prune_orphan_worktrees, 'off');
+  });
+
+  it('accepts "on" and round-trips it', () => {
+    const result = PolicySchema.parse({ agents: { prune_orphan_worktrees: 'on' } });
+    assert.strictEqual(result.agents.prune_orphan_worktrees, 'on');
+  });
+
+  it('defaults to "on" when absent', () => {
+    const result = PolicySchema.parse({ agents: {} });
+    assert.strictEqual(result.agents.prune_orphan_worktrees, 'on');
+  });
+
+  it('rejects an invalid enum value "maybe" with a ZodError', () => {
+    assert.throws(
+      () => PolicySchema.parse({ agents: { prune_orphan_worktrees: 'maybe' } }),
+      (err: unknown) => err instanceof ZodError
+    );
+  });
+});
+
 // ─── Schema YAML assertions ───────────────────────────────────────────────────
 
 describe('adversarial_review_model — policy.schema.yaml content', () => {
