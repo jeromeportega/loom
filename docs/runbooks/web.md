@@ -24,21 +24,45 @@ wins):
    registered project).
 3. **Machine config** — `~/.loom/config.json` has a `project_root` field
    pointing to an initialized repo → serve that root.
-4. **Error** — exits 1 with:
-   ```
-   loom is not initialized in this directory and no loom project is registered. Run `loom init` first.
-   ```
+4. **No-project mode** — server starts with no current project resolved.
+   Current-project routes return 204 (no content); the repo list view still
+   shows all registered repos normally. No error is printed; startup succeeds.
 
-The resolved project root is printed to stdout at startup so you can confirm
-which project is being served.
+The resolved project root (or `(no project)` in no-project mode) is printed
+to stdout at startup so you can confirm which project is being served.
+
+## Active loom_home resolution
+
+The *active loom_home* is the registry directory loom uses for federation and
+self-heal writes. It is resolved in this order (first match wins):
+
+1. **`LOOM_HOME` env var** — if set, this path is used as-is.
+2. **`policy.loom_home` from the served project** — if a current project was
+   resolved and its `.loom/policy.yaml` sets `loom_home`, that path is used.
+3. **Machine default** — `~/.loom` (the default loom home directory).
+
+When no current project is resolved (no-project mode), step 2 is skipped and
+the resolution falls through to step 1 or step 3.
 
 ## Federated list view
 
-Regardless of which project root was resolved, the web UI list view always
-federates across **every loom-init'ed repo on the machine**, grouped by
-project name (current project first). The resolved project root determines
-which state database backs the server; the UI queries each registered project
-for its epic list.
+The repo list view federates entries from **two registry sources**, merged at
+startup:
+
+1. **Machine-default registry** — `~/.loom/projects.json` (entries loaded
+   first as the base layer).
+2. **Active loom_home registry** — `<active-loom_home>/projects.json` (entries
+   overlaid on top; active-loom_home wins on conflict when the same project
+   root appears in both).
+
+If the resolved current project is absent from both registries, it is
+force-included in the in-memory list **and** written back to the active
+loom_home registry (`<active-loom_home>/projects.json`) so subsequent runs
+find it there automatically. This self-heal write is best-effort: any
+filesystem error is silently swallowed and never causes startup to fail.
+
+The resolved project root determines which state database backs the server;
+the UI queries each registered project for its epic list.
 
 ## Options
 
