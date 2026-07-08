@@ -44,12 +44,13 @@ import { registerRepoRoutes } from './routes/repos.js';
 import { makeResolveProjectDb } from './resolveProjectDb.js';
 
 export interface CreateAppOptions {
-  db: Database.Database;
+  /** null when no current project resolved; current-project routes return 204. */
+  db: Database.Database | null;
   token: string;
   /** Absolute path to the built React bundle; when set, served at /. */
   staticDir?: string;
-  /** Project root — used by SkillStore for discovery. Default: cwd. */
-  projectRoot?: string;
+  /** Project root — used by SkillStore for discovery. null when no current project. */
+  projectRoot?: string | null;
   /** SSE poll interval in ms. Default 500. Lower in tests for snappier asserts. */
   ssePollMs?: number;
   /**
@@ -102,6 +103,24 @@ export function createApp(opts: CreateAppOptions): Express {
   // to the old requireToken behavior).
   // readOnly=true: GET/HEAD pass tokenless; non-GET/HEAD → 403 without token.
   app.use('/api', accessGuard({ token: opts.token, readOnly: opts.readOnly ?? false }));
+
+  // Resolve the static dir once; registration happens below in each code path.
+  const defaultStaticDir = path.join(__dirname, '../../client-dist');
+  const resolvedStaticDir = opts.staticDir ?? (fs.existsSync(defaultStaticDir) ? defaultStaticDir : undefined);
+
+  if (opts.db === null) {
+    // No current project: serve the SPA bundle first so the React app loads,
+    // then return 204 (not 404) for any authenticated /api/* request so the
+    // SPA can distinguish "no project loaded" from "unknown route".
+    if (resolvedStaticDir) {
+      app.use(express.static(resolvedStaticDir));
+      app.get(/^(?!\/api\/).+/, (_req, res) => {
+        res.sendFile('index.html', { root: resolvedStaticDir });
+      });
+    }
+    app.use('/api', (_req, res) => { res.status(204).end(); });
+    return app;
+  }
 
   const epicStore = new EpicStore(opts.db);
   const agentStore = new AgentStore(opts.db);
@@ -566,26 +585,24 @@ export function createApp(opts: CreateAppOptions): Express {
   // ─── repo routes (story-081-002) — /api/repos/* ──────────────────────────
   registerRepoRoutes(app, { db: opts.db, projectRoot: currentProjectRoot });
 
+  // ─── Static frontend (built React) ───────────────────────────────────────
+  // Registered after all /api/* routes so that express.static() does not
+  // perform unnecessary filesystem stat() calls on every API request, and the
+  // SPA fallback cannot shadow future non-/api/ route handlers added above.
+  if (resolvedStaticDir) {
+    app.use(express.static(resolvedStaticDir));
+    // SPA fallback for client-side routing (non-/api/ paths only).
+    app.get(/^(?!\/api\/).+/, (_req, res) => {
+      res.sendFile('index.html', { root: resolvedStaticDir });
+    });
+  }
+
   // ─── API 404 catch-all — must be after all /api/* route registrations ────
   // Ensures unknown /api/* paths return JSON (not the SPA index.html or
   // Express's default text/html "Cannot GET /api/…" response).
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'not found' });
   });
-
-  // ─── Static frontend (built React) ───────────────────────────────────────
-  // Default to the Vite SPA output directory when no override is provided.
-  // The check gates on file existence so the dev workflow (Vite dev server
-  // proxying /api to Express) is unaffected when client-dist hasn't been built.
-  const defaultStaticDir = path.join(__dirname, '../../client-dist');
-  const resolvedStaticDir = opts.staticDir ?? (fs.existsSync(defaultStaticDir) ? defaultStaticDir : undefined);
-  if (resolvedStaticDir) {
-    app.use(express.static(resolvedStaticDir));
-    // SPA fallback for client-side routing.
-    app.get(/^(?!\/api\/).+/, (_req, res) => {
-      res.sendFile('index.html', { root: resolvedStaticDir });
-    });
-  }
 
   return app;
 }
