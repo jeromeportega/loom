@@ -26,6 +26,7 @@ import {
   createDatabase,
   resolveRepoStatePaths,
 } from '@loom-ai/core';
+import type { ProjectEntry } from '@loom-ai/core';
 
 export interface ResolvedProject {
   db: Database.Database;
@@ -44,24 +45,33 @@ export type ResolveProjectDb = (req: Request) => ResolvedProject;
 /**
  * Factory that binds a resolver to the host project's long-lived stores.
  * Host DB is never closed by the resolver; only fresh peer connections are.
+ *
+ * When hostDb is null (no current project resolved), any request without a
+ * ?project param throws a 404-coded error — the caller must handle it.
  */
 export function makeResolveProjectDb(
-  hostDb: Database.Database,
-  hostProjectRoot: string
+  hostDb: Database.Database | null,
+  hostProjectRoot: string | null,
+  /** Pre-computed unified registry used for path-traversal validation. Falls back to ProjectRegistry when omitted. */
+  unifiedRegistry?: Map<string, ProjectEntry>,
 ): ResolveProjectDb {
-  const hostEpicStore = new EpicStore(hostDb);
-  const hostAgentStore = new AgentStore(hostDb);
-  const hostAuditLog = new AuditLog(hostDb);
+  // Pre-create host stores only when a DB is available
+  const hostEpicStore = hostDb ? new EpicStore(hostDb) : null;
+  const hostAgentStore = hostDb ? new AgentStore(hostDb) : null;
+  const hostAuditLog = hostDb ? new AuditLog(hostDb) : null;
 
   return function resolveProjectDb(req: Request): ResolvedProject {
     const raw = req.query.project;
 
     if (typeof raw !== 'string' || raw.length === 0 || raw === hostProjectRoot) {
+      if (hostDb === null || hostProjectRoot === null) {
+        throw Object.assign(new Error('no current project'), { statusCode: 404 });
+      }
       return {
         db: hostDb,
-        epicStore: hostEpicStore,
-        agentStore: hostAgentStore,
-        auditLog: hostAuditLog,
+        epicStore: hostEpicStore!,
+        agentStore: hostAgentStore!,
+        auditLog: hostAuditLog!,
         cwd: hostProjectRoot,
         project_root: hostProjectRoot,
         cleanup: () => {},
@@ -69,7 +79,9 @@ export function makeResolveProjectDb(
     }
 
     // Security: validate against registry BEFORE opening any file path.
-    const known = new ProjectRegistry().list().map((e) => e.root);
+    const known = unifiedRegistry
+      ? [...unifiedRegistry.keys()]
+      : new ProjectRegistry().list().map((e) => e.root);
     if (!known.includes(raw)) {
       const err = new Error(`unknown project root: ${raw}`);
       (err as NodeJS.ErrnoException).code = 'ENOTREGISTERED';
