@@ -367,10 +367,10 @@ describe('createApp — no-project startup (FR-7 test a)', () => {
     loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-noproj-home-'));
     process.env.LOOM_HOME = loomHomeDir;
 
-    // db: null triggers the inline GET /api/repos → { repos: [] } early-exit in
-    // createApp rather than delegating to registerRepoRoutes. The unifiedRegistry
-    // arg is accepted but not consumed on the null-db path — this intentionally
-    // tests the no-project startup scenario, not the registry union plumbing.
+    // db: null is the no-project startup path. createApp mounts registerRepoRoutes
+    // UNCONDITIONALLY (it is null-safe), so the unifiedRegistry IS consumed here —
+    // an empty map yields an empty list. Federation-in-null-mode (a populated map)
+    // is asserted by the dedicated test below.
     const app = createApp({ db: null, projectRoot: null, unifiedRegistry: new Map(), token: 'test' });
     server = http.createServer(app);
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -396,6 +396,44 @@ describe('createApp — no-project startup (FR-7 test a)', () => {
     assert.equal(res.status, 200);
     const body = await res.json() as { repos: unknown[] };
     assert.ok(Array.isArray(body.repos) && body.repos.length === 0, 'repos must be an empty array');
+  });
+});
+
+// ─── FR-7 test (a2): no-project mode still FEDERATES a populated registry ─────
+// The epic-085 defect hardcoded `{ repos: [] }` on the null-db path, so a
+// launched-from-anywhere dashboard showed a permanently blank homepage even
+// when repos were registered. With registerRepoRoutes mounted unconditionally,
+// a populated unifiedRegistry must surface even with no current project.
+
+describe('createApp — no-project mode federates a populated registry (FR-7 test a2)', () => {
+  let baseUrl: string;
+  let server: http.Server;
+
+  beforeEach(async () => {
+    const registry = new Map([
+      ['/federated/repo-a', { root: '/federated/repo-a', registeredAt: '2020-01-01T00:00:00Z' }],
+      ['/federated/repo-b', { root: '/federated/repo-b', registeredAt: '2020-01-02T00:00:00Z' }],
+    ]);
+    const app = createApp({ db: null, projectRoot: null, unifiedRegistry: registry, token: 'test' });
+    server = http.createServer(app);
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterEach(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(err => (err ? reject(err) : resolve())));
+  });
+
+  it('GET /api/repos lists both registered repos even with no current project', async () => {
+    const res = await fetch(`${baseUrl}/api/repos`, { headers: { 'x-loom-token': 'test' } });
+    assert.equal(res.status, 200);
+    const body = await res.json() as { repos: Array<{ root: string; epic_count: number }> };
+    const roots = body.repos.map(r => r.root).sort();
+    assert.deepEqual(roots, ['/federated/repo-a', '/federated/repo-b']);
+    // Uninitialized peers (no .loom/loom.db) report 0 epics rather than crashing.
+    assert.ok(body.repos.every(r => r.epic_count === 0));
   });
 });
 

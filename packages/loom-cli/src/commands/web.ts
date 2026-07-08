@@ -1,9 +1,10 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { createApp, newToken } from '@loom-ai/web';
+import { createApp, newToken, resolveActiveLoomHome, buildUnifiedRegistry } from '@loom-ai/web';
 import type { CreateAppOptions } from '@loom-ai/web';
 import { ProjectRegistry, defaultMachineConfigPath } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
@@ -110,8 +111,25 @@ export async function runWeb(opts: WebOptions = {}, _internals: RunWebInternals 
   const loomBin = resolveLoomBin();
   const readOnly = opts.readOnly ?? process.env.LOOM_WEB_READONLY === '1';
 
+  // Build the unified federation registry so the dashboard lists every
+  // loom-init'ed repo regardless of loom_home redirection or launch directory:
+  // the union of the ACTIVE loom_home (LOOM_HOME env → served project's
+  // policy.loom_home → machine default) and the machine-default loom_home.
+  // machineDefault is the true ~/.loom — NOT loomHome(), which honors LOOM_HOME
+  // and would collapse both legs into a single registry.
+  const loomDir = resolved?.loomDir ?? null;
+  const machineDefaultLoomHome = path.join(os.homedir(), '.loom');
+  const activeLoomHome = resolveActiveLoomHome(loomDir, machineDefaultLoomHome);
+  const { registry: unifiedRegistry } = buildUnifiedRegistry(
+    activeLoomHome,
+    machineDefaultLoomHome,
+    projectRoot !== null
+      ? { projectRoot, loomDir: loomDir ?? path.join(projectRoot, '.loom') }
+      : null
+  );
+
   const createAppFn = _internals._createApp ?? createApp;
-  const app = createAppFn({ db, token, staticDir, projectRoot, loomBin, readOnly });
+  const app = createAppFn({ db, token, staticDir, projectRoot, loomBin, readOnly, unifiedRegistry });
   const listenFn = _internals._listen ?? listen;
   const startPort = opts.port ?? 8765;
   const port = await listenFn(app, startPort);
@@ -119,6 +137,11 @@ export async function runWeb(opts: WebOptions = {}, _internals: RunWebInternals 
 
   console.log('');
   console.log(`  🌐 loom web — http://127.0.0.1:${port}/`);
+  console.log(
+    projectRoot !== null
+      ? `  Project: ${projectRoot}`
+      : '  Project: (none) — federated view across all registered repos'
+  );
   if (readOnly) {
     console.log('  Read-only mode: GET routes are public; mutations require the write token.');
   }

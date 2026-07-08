@@ -119,6 +119,15 @@ export function createApp(opts: CreateAppOptions): Express {
   // Use a non-null fallback only for routes that need a path but won't reach db.
   const currentProjectRoot: string = opts.projectRoot ?? process.cwd();
 
+  // The federation registry — the unified active-loom_home + machine-default set
+  // built at startup by runWeb (buildUnifiedRegistry). Every registry consumer
+  // (repo list, /api/status, /api/projects, peer-project path guard) reads THIS
+  // set so a repo registered under either loom_home is visible and routable.
+  // Fall back to the plain machine registry only when a caller did not supply one
+  // (older/test callers) — production always supplies it.
+  const federatedRegistry = (): ProjectEntry[] =>
+    opts.unifiedRegistry ? [...opts.unifiedRegistry.values()] : new ProjectRegistry().list();
+
   // Null-safe resolver: when db is null there is no host project. Any route
   // that calls resolveProjectDb without a ?project param gets a 404, matching
   // the "no current project" state. Routes with a valid ?project param proceed
@@ -134,16 +143,18 @@ export function createApp(opts: CreateAppOptions): Express {
 
   // ─── Routes registered unconditionally (agnostic to null db) ────────────
 
-  // Repo routes: registerRepoRoutes passes deps.db straight into openDb's
-  // current-project short-circuit path; a null db there would crash EpicStore.
-  // Guard here: when db is null, serve an empty list directly.
-  if (opts.db !== null) {
-    registerRepoRoutes(app, { db: opts.db, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });
-  } else {
-    app.get('/api/repos', (_req, res) => {
-      res.json({ repos: [] });
-    });
-  }
+  // Repo routes: mounted UNCONDITIONALLY, including the null-db (no current
+  // project) case — registerRepoRoutes is null-safe (its openDb short-circuits
+  // only when a registry entry's root equals a NON-null projectRoot, and it
+  // opens peer DBs for every other entry). This is what makes the federated
+  // repo list — the SPA homepage — populate even when launched from a directory
+  // with no current project. (Passing db:null with a stub `{repos:[]}` here was
+  // the epic-085 federation defect: the homepage was permanently blank.)
+  registerRepoRoutes(app, {
+    db: opts.db,
+    projectRoot: opts.projectRoot ?? null,
+    unifiedRegistry: opts.unifiedRegistry,
+  });
 
   // Mutation routes: all handlers call resolveProjectDb(req) first. When db is
   // null, the null resolver above throws 404, which each mutation's catch block
@@ -208,8 +219,8 @@ export function createApp(opts: CreateAppOptions): Express {
     result.push(
       ...rollupEpics(epicStore, agentStore, currentProjectRoot, true, includeArchived)
     );
-    // Then every other registered project.
-    const registryEntries = new ProjectRegistry().list();
+    // Then every other registered project (across both loom_homes).
+    const registryEntries = federatedRegistry();
     for (const entry of registryEntries) {
       if (entry.root === currentProjectRoot) continue;
       try {
@@ -242,7 +253,7 @@ export function createApp(opts: CreateAppOptions): Express {
   // to route the lookup at one of the federated peer projects (the path
   // matches `project_root` from /api/status).
   app.get('/api/epics/:id', (req, res) => {
-    const peer = resolvePeerProject(req.query.project, currentProjectRoot);
+    const peer = resolvePeerProject(req.query.project, currentProjectRoot, federatedRegistry().map((e) => e.root));
     if (peer === 'invalid') {
       res.status(400).json({ error: 'unknown project root' });
       return;
@@ -297,7 +308,7 @@ export function createApp(opts: CreateAppOptions): Express {
   // epic row, bodies are read from disk on demand, missing files surface as
   // null rather than as errors.
   app.get('/api/epics/:id/planning-artifacts', (req, res) => {
-    const peer = resolvePeerProject(req.query.project, currentProjectRoot);
+    const peer = resolvePeerProject(req.query.project, currentProjectRoot, federatedRegistry().map((e) => e.root));
     if (peer === 'invalid') {
       res.status(400).json({ error: 'unknown project root' });
       return;
@@ -460,7 +471,7 @@ export function createApp(opts: CreateAppOptions): Express {
   // its own loom web; this endpoint is the directory for "where am I
   // running loom?" The full SSE federation lands as a follow-up.
   app.get('/api/projects', (_req, res) => {
-    const entries = new ProjectRegistry().list();
+    const entries = federatedRegistry();
     const projects = entries.map((entry) => {
       const projectName = path.basename(entry.root);
       const isCurrent = entry.root === (opts.projectRoot ?? process.cwd());
@@ -563,7 +574,7 @@ export function createApp(opts: CreateAppOptions): Express {
   // and supervisor selection. Pass ?project=<root> to act on a federated peer
   // epic; the body's `archived` flag toggles (default true = archive).
   app.post('/api/epics/:id/archive', (req, res) => {
-    const peer = resolvePeerProject(req.query.project, currentProjectRoot);
+    const peer = resolvePeerProject(req.query.project, currentProjectRoot, federatedRegistry().map((e) => e.root));
     if (peer === 'invalid') {
       res.status(400).json({ error: 'unknown project root' });
       return;
@@ -705,12 +716,12 @@ function rollupEpics(
  */
 function resolvePeerProject(
   raw: unknown,
-  currentRoot: string
+  currentRoot: string,
+  knownRoots: string[]
 ): 'current' | 'invalid' | string {
   if (typeof raw !== 'string' || raw.length === 0) return 'current';
   if (raw === currentRoot) return 'current';
-  const known = new ProjectRegistry().list().map((e) => e.root);
-  if (!known.includes(raw)) return 'invalid';
+  if (!knownRoots.includes(raw)) return 'invalid';
   return raw;
 }
 
@@ -902,3 +913,4 @@ function parseDetail(raw: string | null): Record<string, unknown> {
 }
 
 export { newToken } from './auth.js';
+export { resolveActiveLoomHome, buildUnifiedRegistry } from './registry.js';
