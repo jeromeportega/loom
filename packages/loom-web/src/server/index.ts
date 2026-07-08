@@ -18,6 +18,7 @@ import {
   deriveBlocked,
   STANDALONE_KIND,
   type IntakeVerdict,
+  type ProjectEntry,
 } from '@loom-ai/core';
 import type {
   EpicStatus,
@@ -51,6 +52,13 @@ export interface CreateAppOptions {
   staticDir?: string;
   /** Project root — used by SkillStore for discovery. null when no current project. */
   projectRoot?: string | null;
+  /**
+   * Pre-computed union of active-loom_home + machine-default registries.
+   * Produced by buildUnifiedRegistry() at server startup.
+   * All route modules share this single validated set for path-traversal checks.
+   * When omitted, defaults to an empty Map (stub until story-085-003 merges).
+   */
+  unifiedRegistry?: Map<string, ProjectEntry>;
   /** SSE poll interval in ms. Default 500. Lower in tests for snappier asserts. */
   ssePollMs?: number;
   /**
@@ -108,10 +116,67 @@ export function createApp(opts: CreateAppOptions): Express {
   const defaultStaticDir = path.join(__dirname, '../../client-dist');
   const resolvedStaticDir = opts.staticDir ?? (fs.existsSync(defaultStaticDir) ? defaultStaticDir : undefined);
 
+  // Project root: null when no project resolved (null db case).
+  // Use a non-null fallback only for routes that need a path but won't reach db.
+  const currentProjectRoot: string = opts.projectRoot ?? process.cwd();
+
+  // Isolation stubs for registry.ts (story-085-003). Replace with real imports
+  // once that story merges. Signatures match the real functions exactly.
+  const _resolveActiveLoomHome = (_loomDir: string | null, machineDefault: string): string =>
+    machineDefault;
+  const _buildUnifiedRegistry = (
+    _activeLoomHome: string,
+    _machineDefaultLoomHome: string,
+    _currentProject: { projectRoot: string; loomDir: string } | null
+  ): { registry: Map<string, ProjectEntry>; selfHealOccurred: boolean } => ({
+    registry: new Map<string, ProjectEntry>(),
+    selfHealOccurred: false,
+  });
+  // Suppress unused-variable warnings until story-085-003 activates these stubs.
+  void _resolveActiveLoomHome;
+  void _buildUnifiedRegistry;
+
+  // Null-safe resolver: when db is null there is no host project. Any route
+  // that calls resolveProjectDb without a ?project param gets a 404, matching
+  // the "no current project" state. Routes with a valid ?project param proceed
+  // normally via the real resolver (requires a non-null db as the host though,
+  // so this stub always throws — peer-project routing also requires a host db
+  // to be meaningful).
+  const resolveProjectDb = opts.db !== null
+    ? makeResolveProjectDb(opts.db, currentProjectRoot)
+    : ((): never => {
+        const err = new Error('no current project');
+        throw Object.assign(err, { statusCode: 404 });
+      }) as unknown as ReturnType<typeof makeResolveProjectDb>;
+
+  // ─── Routes registered unconditionally (agnostic to null db) ────────────
+
+  // Repo routes: read from ProjectRegistry, not from the current-project db.
+  // Works correctly when db is null and registry is empty → returns { repos: [] }.
+  registerRepoRoutes(app, {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    db: opts.db!,
+    projectRoot: currentProjectRoot,
+  });
+
+  // Mutation routes: all handlers call resolveProjectDb(req) first. When db is
+  // null, the null resolver above throws 404, which the mutation catch block
+  // converts to a 404 JSON response. No 500s, no unhandled rejections.
+  registerMutationRoutes(app, {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    db: opts.db!,
+    resolveProjectDb,
+    projectRoot: currentProjectRoot,
+    loomBin: opts.loomBin,
+  });
+
+  // ─── Null-db path: serve SPA + 204 for remaining /api/* routes ──────────
   if (opts.db === null) {
-    // No current project: serve the SPA bundle first so the React app loads,
+    // No current project: serve the SPA bundle so the React app loads,
     // then return 204 (not 404) for any authenticated /api/* request so the
     // SPA can distinguish "no project loaded" from "unknown route".
+    // Repos and mutation routes registered above are matched first; the
+    // catch-all below only fires for routes not yet handled.
     if (resolvedStaticDir) {
       app.use(express.static(resolvedStaticDir));
       app.get(/^(?!\/api\/).+/, (_req, res) => {
@@ -122,27 +187,19 @@ export function createApp(opts: CreateAppOptions): Express {
     return app;
   }
 
+  // ─── Non-null db: initialize stores and register remaining routes ────────
   const epicStore = new EpicStore(opts.db);
   const agentStore = new AgentStore(opts.db);
   const auditLog = new AuditLog(opts.db);
   const skillUsage = new SkillUsageStore(opts.db);
-  const skillStore = new SkillStore({ projectRoot: opts.projectRoot ?? process.cwd() });
+  const skillStore = new SkillStore({ projectRoot: currentProjectRoot });
   const decisionTraces = new DecisionTraceStore(opts.db);
-
-  const currentProjectRoot = opts.projectRoot ?? process.cwd();
-  const resolveProjectDb = makeResolveProjectDb(opts.db, currentProjectRoot);
   const workerLogs = new WorkerLogStore(path.join(currentProjectRoot, '.loom'));
 
   // ─── Route modules (owned by sibling stories; mounted here) ─────────────
   registerAutonomyRoutes(app, { epicStore, auditLog });
   registerFleetRoutes(app, { epicStore, agentStore, db: opts.db, projectRoot: currentProjectRoot });
   registerInboxRoutes(app, { epicStore, agentStore, projectRoot: currentProjectRoot });
-  registerMutationRoutes(app, {
-    db: opts.db,
-    resolveProjectDb,
-    projectRoot: currentProjectRoot,
-    loomBin: opts.loomBin,
-  });
 
   // ─── GET /api/status — federated list of EpicStatus across all repos ─────
   // Aggregates every loom-init'ed repo on this machine, not just the one the
@@ -582,10 +639,8 @@ export function createApp(opts: CreateAppOptions): Express {
     loomdir: path.join(currentProjectRoot, '.loom'),
   }));
 
-  // ─── repo routes (story-081-002) — /api/repos/* ──────────────────────────
-  registerRepoRoutes(app, { db: opts.db, projectRoot: currentProjectRoot });
-
   // ─── Static frontend (built React) ───────────────────────────────────────
+  // (repo routes are registered unconditionally above the null-db check)
   // Registered after all /api/* routes so that express.static() does not
   // perform unnecessary filesystem stat() calls on every API request, and the
   // SPA fallback cannot shadow future non-/api/ route handlers added above.
