@@ -55,6 +55,13 @@ export interface PlanResult {
   epicPaths: string[];
   storyCount: number;
   storiesEnriched: number;
+  /**
+   * True when the Architect tech_notes enrichment genuinely failed (no attempt
+   * parsed after retries), vs a valid-but-empty result. The planning gate hard-
+   * blocks a plan with failed enrichment. Always false on the standalone path
+   * (which produces its own inline tech_notes without the Architect step).
+   */
+  techNotesEnrichmentFailed: boolean;
   usage: LLMUsage;
   /**
    * Set only on the standalone-story path (intake_routing + size='story').
@@ -414,6 +421,9 @@ export class Planner {
       // in a single pass — equivalent to what the Architect's enrichment pass does
       // for the epic pipeline. Report 1 so CLI output is accurate.
       storiesEnriched: 1,
+      // Standalone produces its own inline tech_notes (no Architect step), so
+      // enrichment can never be in the failed state here.
+      techNotesEnrichmentFailed: false,
       usage,
       // Signal to CLI surfaces that this is a standalone story (runId IS story-NNN).
       standaloneStoryId: runId,
@@ -503,6 +513,7 @@ export class Planner {
       epicPaths: pm.epicPaths,
       storyCount,
       storiesEnriched: architect.storiesEnriched,
+      techNotesEnrichmentFailed: architect.techNotesEnrichmentFailed,
       usage,
     };
   }
