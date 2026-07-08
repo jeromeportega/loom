@@ -356,8 +356,6 @@ export const PolicySchema = z.object({
   agents: z
     .object({
       max_concurrent: z.number().int().min(1).default(5),
-      worktree_isolation: z.boolean().default(true),
-      require_human_pr_merge: z.boolean().default(true),
       // LLM backend for planning. Both are session-based (no API key, no API
       // billing) and use the developer's existing Claude Code or Cursor login.
       llm_backend: z.enum(['claude-cli', 'cursor-cli']).default('claude-cli'),

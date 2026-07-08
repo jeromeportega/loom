@@ -393,14 +393,10 @@ truth.
 `policy.agents.pr_strategy`
 `policy.agents.prune_orphan_worktrees`
 `policy.agents.qa_planning`
-`policy.agents.require_human_pr_merge`
 `policy.agents.review_timeout_minutes`
 `policy.agents.shared_contract`
-`policy.agents.skill_demote_failure_ratio`
-`policy.agents.skill_demote_min_samples`
 `policy.agents.skill_gen_model`
 `policy.agents.skill_judge_min_score`
-`policy.agents.skill_promote_after`
 `policy.agents.smoke_command`
 `policy.agents.smoke_timeout_minutes`
 `policy.agents.stale_planning_minutes`
@@ -414,7 +410,6 @@ truth.
 `policy.agents.test_command`
 `policy.agents.test_commands`
 `policy.agents.worker_backend`
-`policy.agents.worktree_isolation`
 `policy.filesystem.allowed_read_root`
 `policy.filesystem.allowed_write_root`
 `policy.filesystem.protected_paths`
