@@ -222,4 +222,13 @@ describe('PolicySchema — five removed fields are silently stripped (story-084-
       'max_concurrent must equal 5 (its schema default) after stripping the removed fields',
     );
   });
+
+  it('agents.prune_orphan_worktrees equals its declared default ("on") — strip does not corrupt new fields', () => {
+    const result = PolicySchema.parse(INPUT_WITH_REMOVED_FIELDS);
+    assert.strictEqual(
+      result.agents.prune_orphan_worktrees,
+      'on',
+      'prune_orphan_worktrees must equal "on" (its schema default) after stripping the removed fields',
+    );
+  });
 });

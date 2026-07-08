@@ -21,7 +21,7 @@ import {
   SPAWN_STAGGER_MAX_MS,
 } from '../orchestrator/resilience/constants.js';
 import type { LLMClient } from '../llm/index.js';
-import type { Story } from '../types.js';
+import { PolicySchema, type Story } from '../types.js';
 
 let repo: string;
 
@@ -3199,6 +3199,31 @@ describe('Supervisor — pruneOrphans option (story-084-004)', () => {
     assert.ok(
       !fs.existsSync(orphanPath),
       'orphan worktree must be removed by default when pruneOrphans is not set',
+    );
+  });
+
+  it('policy wiring: prune_orphan_worktrees "off" → pruneOrphans false — orphan NOT removed', async () => {
+    // Validates the full wiring path: PolicySchema.parse() with prune_orphan_worktrees: 'off'
+    // produces false via the run.ts expression `policy.agents.prune_orphan_worktrees !== 'off'`.
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+    const orphanPath = createOrphanWorktree();
+
+    const policy = PolicySchema.parse({ agents: { prune_orphan_worktrees: 'off' } });
+    // This mirrors the exact wiring expression in run.ts:
+    const pruneOrphans = policy.agents.prune_orphan_worktrees !== 'off';
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: new MockWorkerRunner({ status: 'done' }),
+      maxConcurrent: 1,
+      pruneOrphans,
+    }).run();
+
+    assert.ok(
+      fs.existsSync(orphanPath),
+      'orphan worktree must not be removed when policy prune_orphan_worktrees is "off"',
     );
   });
 });
