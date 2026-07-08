@@ -5,7 +5,7 @@
  * Owner: story-085-003 (story-085-004 extends)
  */
 
-import { describe, it, before, after, beforeEach, afterEach, mock } from 'node:test';
+import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -362,8 +362,6 @@ describe('createApp — no-project startup (FR-7 test a)', () => {
   let prevLoomHome: string | undefined;
   let loomHomeDir: string;
 
-  // Use beforeEach/afterEach so LOOM_HOME mutation is scoped to each test,
-  // preventing cross-describe races if test concurrency is ever enabled.
   beforeEach(async () => {
     prevLoomHome = process.env.LOOM_HOME;
     loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-noproj-home-'));
@@ -410,8 +408,6 @@ describe('createApp — unregistered slug 404 guard (FR-7 test d)', () => {
   let prevLoomHome: string | undefined;
   let loomHomeDir: string;
 
-  // Use beforeEach/afterEach so LOOM_HOME mutation is scoped to each test,
-  // preventing cross-describe races if test concurrency is ever enabled.
   beforeEach(async () => {
     prevLoomHome = process.env.LOOM_HOME;
     loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-404guard-home-'));
