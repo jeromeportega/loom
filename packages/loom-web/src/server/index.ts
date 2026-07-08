@@ -55,8 +55,7 @@ export interface CreateAppOptions {
   /**
    * Pre-computed union of active-loom_home + machine-default registries.
    * Produced by buildUnifiedRegistry() at server startup.
-   * Accepted now so callers can wire it up; consumed when story-085-003 merges.
-   * TODO(story-085-003): pass to registerRepoRoutes and makeResolveProjectDb.
+   * All route modules share this single validated set for path-traversal checks.
    */
   unifiedRegistry?: Map<string, ProjectEntry>;
   /** SSE poll interval in ms. Default 500. Lower in tests for snappier asserts. */
@@ -127,7 +126,7 @@ export function createApp(opts: CreateAppOptions): Express {
   // so this stub always throws — peer-project routing also requires a host db
   // to be meaningful).
   const resolveProjectDb = opts.db !== null
-    ? makeResolveProjectDb(opts.db, currentProjectRoot)
+    ? makeResolveProjectDb(opts.db, currentProjectRoot, opts.unifiedRegistry)
     : ((): never => {
         const err = new Error('no current project');
         throw Object.assign(err, { statusCode: 404 });
@@ -139,7 +138,7 @@ export function createApp(opts: CreateAppOptions): Express {
   // current-project short-circuit path; a null db there would crash EpicStore.
   // Guard here: when db is null, serve an empty list directly.
   if (opts.db !== null) {
-    registerRepoRoutes(app, { db: opts.db, projectRoot: currentProjectRoot });
+    registerRepoRoutes(app, { db: opts.db, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });
   } else {
     app.get('/api/repos', (_req, res) => {
       res.json({ repos: [] });

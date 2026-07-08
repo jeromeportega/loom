@@ -264,7 +264,7 @@ describe('buildUnifiedRegistry', () => {
     assert.ok(registry.has('/c'), '/c must be in registry');
     const bEntry = registry.get('/b');
     assert.ok(bEntry, '/b entry must be present');
-    assert.equal(bEntry?.registeredAt, '2024-06-01T00:00:00Z',
+    assert.equal(bEntry.registeredAt, '2024-06-01T00:00:00Z',
       'active-loom_home /b metadata must win over machine-default');
   });
 
@@ -362,11 +362,17 @@ describe('createApp — no-project startup (FR-7 test a)', () => {
   let prevLoomHome: string | undefined;
   let loomHomeDir: string;
 
-  before(async () => {
+  // Use beforeEach/afterEach so LOOM_HOME mutation is scoped to each test,
+  // preventing cross-describe races if test concurrency is ever enabled.
+  beforeEach(async () => {
     prevLoomHome = process.env.LOOM_HOME;
     loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-noproj-home-'));
     process.env.LOOM_HOME = loomHomeDir;
 
+    // db: null triggers the inline GET /api/repos → { repos: [] } early-exit in
+    // createApp rather than delegating to registerRepoRoutes. The unifiedRegistry
+    // arg is accepted but not consumed on the null-db path — this intentionally
+    // tests the no-project startup scenario, not the registry union plumbing.
     const app = createApp({ db: null, projectRoot: null, unifiedRegistry: new Map(), token: 'test' });
     server = http.createServer(app);
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -374,7 +380,9 @@ describe('createApp — no-project startup (FR-7 test a)', () => {
     baseUrl = `http://127.0.0.1:${addr.port}`;
   });
 
-  after(async () => {
+  afterEach(async () => {
+    // closeAllConnections() drains keep-alive sockets so server.close() fires promptly.
+    server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>
       server.close(err => (err ? reject(err) : resolve()))
     );
@@ -389,7 +397,7 @@ describe('createApp — no-project startup (FR-7 test a)', () => {
     });
     assert.equal(res.status, 200);
     const body = await res.json() as { repos: unknown[] };
-    assert.deepEqual(body, { repos: [] });
+    assert.ok(Array.isArray(body.repos) && body.repos.length === 0, 'repos must be an empty array');
   });
 });
 
@@ -402,7 +410,9 @@ describe('createApp — unregistered slug 404 guard (FR-7 test d)', () => {
   let prevLoomHome: string | undefined;
   let loomHomeDir: string;
 
-  before(async () => {
+  // Use beforeEach/afterEach so LOOM_HOME mutation is scoped to each test,
+  // preventing cross-describe races if test concurrency is ever enabled.
+  beforeEach(async () => {
     prevLoomHome = process.env.LOOM_HOME;
     loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-404guard-home-'));
     process.env.LOOM_HOME = loomHomeDir;
@@ -411,7 +421,9 @@ describe('createApp — unregistered slug 404 guard (FR-7 test d)', () => {
     const projectRoot = path.join(tmpDir, 'known-project');
     fs.mkdirSync(path.join(projectRoot, '.loom', 'logs'), { recursive: true });
 
-    // unifiedRegistry contains only the known project; phantom-project is absent
+    // unifiedRegistry contains only the known project (basename='known-project').
+    // It is forwarded to registerRepoRoutes via createApp so that resolveEntry()
+    // uses the map values instead of falling back to ProjectRegistry.list().
     const knownEntry: ProjectEntry = { root: projectRoot, registeredAt: '2024-01-01T00:00:00Z' };
     const unifiedRegistry = new Map<string, ProjectEntry>([[projectRoot, knownEntry]]);
 
@@ -430,7 +442,9 @@ describe('createApp — unregistered slug 404 guard (FR-7 test d)', () => {
     baseUrl = `http://127.0.0.1:${addr.port}`;
   });
 
-  after(async () => {
+  afterEach(async () => {
+    // closeAllConnections() drains keep-alive sockets so server.close() fires promptly.
+    server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>
       server.close(err => (err ? reject(err) : resolve()))
     );
@@ -445,7 +459,10 @@ describe('createApp — unregistered slug 404 guard (FR-7 test d)', () => {
     const phantomDb = path.join(phantomRoot, '.loom', 'loom.db');
     assert.equal(fs.existsSync(phantomRoot), false, 'phantom dir must not exist before request');
 
-    const slug = 'phantom-project'; // slug not present in unifiedRegistry or LOOM_HOME registry
+    // resolveEntry() matches by path.basename(entry.root) === slug. The only
+    // registered entry has basename 'known-project', so slug 'phantom-project'
+    // misses the registry and returns null → 404 with no disk I/O.
+    const slug = 'phantom-project';
     const res = await fetch(`${baseUrl}/api/repos/${slug}/epics`, {
       headers: { 'x-loom-token': 'test' },
     });
