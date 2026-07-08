@@ -650,8 +650,10 @@ export const PolicySchema = z.object({
       // Model ID for the independent adversarial review pass run by loom finalize.
       // When absent or empty, no second pass runs and behavior is identical to baseline.
       // Minimum judge score for SkillGenerator to accept a candidate (0-10). When
-      // absent, SkillGenerator falls back to its hardcoded default of 6.
-      skill_judge_min_score: z.number().optional(),
+      // absent, SkillGenerator falls back to its hardcoded default of 6. Bounded to
+      // the judge's 0-10 rubric so an out-of-range value can't silently accept every
+      // candidate (< 1) or reject every candidate forever (> 10).
+      skill_judge_min_score: z.number().min(0).max(10).optional(),
       // Controls whether the Supervisor prunes orphaned worktrees at run end.
       // 'on' (default) — prune done/merged worktrees after finalizers run.
       // 'off'          — skip pruning (e.g. when debugging a completed worktree).

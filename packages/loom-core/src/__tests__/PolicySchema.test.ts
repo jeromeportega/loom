@@ -71,15 +71,34 @@ describe('adversarial_review_model — non-string rejected', () => {
 
 // ─── skill_judge_min_score ────────────────────────────────────────────────────
 
-describe('skill_judge_min_score — optional number field', () => {
-  it('accepts a numeric value and round-trips it', () => {
-    const result = PolicySchema.parse({ agents: { skill_judge_min_score: 0.9 } });
-    assert.strictEqual(result.agents.skill_judge_min_score, 0.9);
+describe('skill_judge_min_score — optional number field, bounded 0-10', () => {
+  it('accepts an in-range value and round-trips it', () => {
+    const result = PolicySchema.parse({ agents: { skill_judge_min_score: 7 } });
+    assert.strictEqual(result.agents.skill_judge_min_score, 7);
+  });
+
+  it('accepts the boundary values 0 and 10', () => {
+    assert.strictEqual(PolicySchema.parse({ agents: { skill_judge_min_score: 0 } }).agents.skill_judge_min_score, 0);
+    assert.strictEqual(PolicySchema.parse({ agents: { skill_judge_min_score: 10 } }).agents.skill_judge_min_score, 10);
   });
 
   it('is undefined when absent (no default)', () => {
     const result = PolicySchema.parse({ agents: {} });
     assert.strictEqual(result.agents.skill_judge_min_score, undefined);
+  });
+
+  it('rejects a value above 10 (would reject every candidate forever)', () => {
+    assert.throws(
+      () => PolicySchema.parse({ agents: { skill_judge_min_score: 11 } }),
+      (err: unknown) => err instanceof ZodError
+    );
+  });
+
+  it('rejects a negative value', () => {
+    assert.throws(
+      () => PolicySchema.parse({ agents: { skill_judge_min_score: -1 } }),
+      (err: unknown) => err instanceof ZodError
+    );
   });
 
   it('rejects a string value with a ZodError', () => {

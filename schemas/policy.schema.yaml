@@ -120,6 +120,8 @@ properties:
         description: "Optional token budget per story agent (for cost control)"
       skill_judge_min_score:
         type: number
+        minimum: 0
+        maximum: 10
         default: 6
         description: "A generated skill scoring below this (0-10) is rejected by the judge"
       min_brief_quality_score:
