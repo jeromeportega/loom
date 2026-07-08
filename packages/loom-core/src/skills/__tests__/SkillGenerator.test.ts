@@ -250,3 +250,76 @@ describe('SkillGenerator — existing behavior unchanged (AC4, AC6)', () => {
     assert.equal(result, null, 'rejected skill must return null');
   });
 });
+
+// ── judgeMinScore threshold contract (story-084-004) ─────────────────────────
+
+/**
+ * Each case uses a fresh SkillGenerator instance with its own DB + options
+ * object so there is no cross-test contamination.
+ */
+function makeGeneratorWithMinScore(
+  llm: LLMClient,
+  judgeMinScore?: number,
+): { generator: SkillGenerator; agentId: string } {
+  const db = createDatabase(':memory:');
+  const epicStore = new EpicStore(db);
+  epicStore.create('epic-084', 'Policy wiring epic');
+  const agentStore = new AgentStore(db);
+  const agent = agentStore.create('epic-084', 'story-084-004', 'Test story');
+  const skillStore = new SkillStore({
+    projectRoot: tmpDir,
+    globalSkillsDir: path.join(tmpDir, 'global-skills'),
+    bundledSkillsDir: undefined,
+  });
+  const generator = new SkillGenerator({
+    db,
+    llm,
+    model: 'haiku',
+    skillStore,
+    judgeMinScore, // undefined → default (6) applies
+  });
+  return { generator, agentId: agent.id };
+}
+
+describe('SkillGenerator — judgeMinScore: 0.9 threshold (story-084-004)', () => {
+  it('accepts a candidate with score above the threshold (0.95 >= 0.9)', async () => {
+    const judgeJson = JSON.stringify({ score: 0.95, verdict: 'accept', reason: 'solid pattern' });
+    const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, 0.9);
+    const result = await generator.afterStory(agentId, MINIMAL_STORY);
+    assert.notEqual(result, null, 'score 0.95 must be accepted when judgeMinScore is 0.9');
+  });
+
+  it('rejects a candidate with score below the threshold (0.85 < 0.9)', async () => {
+    const judgeJson = JSON.stringify({ score: 0.85, verdict: 'accept', reason: 'borderline' });
+    const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, 0.9);
+    const result = await generator.afterStory(agentId, MINIMAL_STORY);
+    assert.equal(result, null, 'score 0.85 must be rejected when judgeMinScore is 0.9');
+  });
+
+  it('accepts a candidate at the exact threshold (0.9 >= 0.9) — implementation uses strict < comparison', async () => {
+    // SkillGenerator.ts line 122: `verdict.score < minScore` — equal is NOT rejected.
+    const judgeJson = JSON.stringify({ score: 0.9, verdict: 'accept', reason: 'exactly at threshold' });
+    const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, 0.9);
+    const result = await generator.afterStory(agentId, MINIMAL_STORY);
+    assert.notEqual(result, null, 'score exactly at threshold must be accepted (strict < comparison)');
+  });
+
+  it('default fallback (judgeMinScore absent): score 5 is rejected (5 < default 6)', async () => {
+    const judgeJson = JSON.stringify({ score: 5, verdict: 'accept', reason: 'below default threshold' });
+    const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, undefined);
+    const result = await generator.afterStory(agentId, MINIMAL_STORY);
+    assert.equal(result, null, 'score 5 must be rejected when default judgeMinScore (6) applies via ?? 6 fallback');
+  });
+
+  it('default fallback (judgeMinScore absent): score 7 is accepted (7 >= default 6)', async () => {
+    const judgeJson = JSON.stringify({ score: 7, verdict: 'accept', reason: 'above default threshold' });
+    const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, undefined);
+    const result = await generator.afterStory(agentId, MINIMAL_STORY);
+    assert.notEqual(result, null, 'score 7 must be accepted when default judgeMinScore (6) applies via ?? 6 fallback');
+  });
+});

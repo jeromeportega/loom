@@ -3124,3 +3124,81 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
     assert.equal(dispatchOrder[2], 'story-001-002', 'third dispatch is story-001-002');
   });
 });
+
+// ── pruneOrphans option (story-084-004) ──────────────────────────────────────
+//
+// Verifies that pruneOrphans: false causes the Supervisor to skip orphan-worktree
+// pruning and pruneOrphans: true (or undefined/default) causes pruning to run.
+//
+// Strategy: create a real git worktree at .loom/worktrees/orphan-test with no
+// corresponding agent DB record (making it a "no-agent" orphan), then assert
+// whether the worktree survives or is removed after Supervisor.run().
+
+describe('Supervisor — pruneOrphans option (story-084-004)', () => {
+  function createOrphanWorktree(): string {
+    const orphanId = 'orphan-test';
+    const wtPath = path.join(repo, '.loom', 'worktrees', orphanId);
+    // Ensure the parent directory exists; git worktree add creates the leaf dir.
+    fs.mkdirSync(path.join(repo, '.loom', 'worktrees'), { recursive: true });
+    // Create a real git worktree with no agent DB record — qualifies as "no-agent" orphan.
+    gitc(['worktree', 'add', '-b', `story/${orphanId}`, wtPath]);
+    return wtPath;
+  }
+
+  it('pruneOrphans: false — orphan worktree is NOT removed', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+    const orphanPath = createOrphanWorktree();
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: new MockWorkerRunner({ status: 'done' }),
+      maxConcurrent: 1,
+      pruneOrphans: false,
+    }).run();
+
+    assert.ok(
+      fs.existsSync(orphanPath),
+      'orphan worktree must not be removed when pruneOrphans is false',
+    );
+  });
+
+  it('pruneOrphans: true — orphan worktree IS removed', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+    const orphanPath = createOrphanWorktree();
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: new MockWorkerRunner({ status: 'done' }),
+      maxConcurrent: 1,
+      pruneOrphans: true,
+    }).run();
+
+    assert.ok(
+      !fs.existsSync(orphanPath),
+      'orphan worktree must be removed when pruneOrphans is true',
+    );
+  });
+
+  it('pruneOrphans: undefined (default on) — orphan worktree IS removed', async () => {
+    seedEpic('epic-001', [story('story-001-001')]);
+    const db = openDatabase(path.join(repo, '.loom'));
+    const orphanPath = createOrphanWorktree();
+
+    await new Supervisor({
+      projectRoot: repo,
+      db,
+      worker: new MockWorkerRunner({ status: 'done' }),
+      maxConcurrent: 1,
+      // pruneOrphans omitted — defaults to pruning-enabled behavior
+    }).run();
+
+    assert.ok(
+      !fs.existsSync(orphanPath),
+      'orphan worktree must be removed by default when pruneOrphans is not set',
+    );
+  });
+});
