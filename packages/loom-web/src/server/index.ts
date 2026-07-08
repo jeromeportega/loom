@@ -44,12 +44,13 @@ import { registerRepoRoutes } from './routes/repos.js';
 import { makeResolveProjectDb } from './resolveProjectDb.js';
 
 export interface CreateAppOptions {
-  db: Database.Database;
+  /** null when no current project resolved; current-project routes return 204. */
+  db: Database.Database | null;
   token: string;
   /** Absolute path to the built React bundle; when set, served at /. */
   staticDir?: string;
-  /** Project root — used by SkillStore for discovery. Default: cwd. */
-  projectRoot?: string;
+  /** Project root — used by SkillStore for discovery. null when no current project. */
+  projectRoot?: string | null;
   /** SSE poll interval in ms. Default 500. Lower in tests for snappier asserts. */
   ssePollMs?: number;
   /**
@@ -102,6 +103,14 @@ export function createApp(opts: CreateAppOptions): Express {
   // to the old requireToken behavior).
   // readOnly=true: GET/HEAD pass tokenless; non-GET/HEAD → 403 without token.
   app.use('/api', accessGuard({ token: opts.token, readOnly: opts.readOnly ?? false }));
+
+  if (opts.db === null) {
+    // No current project resolved. story-085-002 adds proper null-path route handlers
+    // (204 for current-project-scoped endpoints, unified registry for /api/repos, etc.).
+    // For now: API 404 catch-all so Express doesn't return text/html for unknown routes.
+    app.use('/api', (_req, res) => { res.status(404).json({ error: 'not found' }); });
+    return app;
+  }
 
   const epicStore = new EpicStore(opts.db);
   const agentStore = new AgentStore(opts.db);
