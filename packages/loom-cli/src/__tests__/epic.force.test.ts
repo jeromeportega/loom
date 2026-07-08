@@ -47,6 +47,9 @@ function pipelineResponder(opts: {
   ready: boolean;
   score: number;
   onPlannerStart?: () => void;
+  /** Override the tech_notes (Architect task B) response. Default: valid-but-empty.
+   *  Pass an unparseable string to simulate a genuine enrichment failure. */
+  techNotesResponse?: string;
 }) {
   return (req: LLMRequest): string => {
     const last = req.messages[req.messages.length - 1].content;
@@ -104,7 +107,8 @@ function pipelineResponder(opts: {
     }
     if (last.includes('Headless task A: produce the architecture'))
       return '# Architecture\n\n## Architecture Philosophy\nBoring tech.';
-    if (last.includes('Headless task B: produce per-story')) return '```json\n{"tech_notes":{}}\n```';
+    if (last.includes('Headless task B: produce per-story'))
+      return opts.techNotesResponse ?? '```json\n{"tech_notes":{}}\n```';
     throw new Error('unexpected planning message: ' + last.slice(0, 60));
   };
 }
@@ -406,5 +410,47 @@ describe('formatTechNotesMetric', () => {
   it('all enriched: produces tech_notes N of N', () => {
     const result = formatTechNotesMetric(5, 5);
     assert.match(result, /tech_notes 5 of 5/);
+  });
+});
+
+// End-to-end wiring for the tech_notes enrichment-failure gate: drive the real
+// runEpic and assert the reject+exit path (and the valid-empty non-block path)
+// actually fire — the seam evaluatePlanningGate/ArchitectAgent unit tests can't
+// reach on their own.
+describe('loom epic — tech_notes enrichment-failure gate (E2E)', () => {
+  function epicStatuses(): string[] {
+    const { dbPath } = resolveRepoStatePaths(tmpDir, {});
+    const probe = new Database(dbPath, { readonly: true });
+    try {
+      return (probe.prepare('SELECT status FROM epics').all() as Array<{ status: string }>).map(r => r.status);
+    } finally {
+      probe.close();
+    }
+  }
+
+  it('rejects the epic and exits non-zero when Architect enrichment fails outright', async () => {
+    // Brief passes; the Architect tech_notes call returns unparseable JSON on every
+    // attempt → enrichmentFailed=true → gate rejects + exits before any approve hint.
+    const llm = new MockLLMClient(
+      pipelineResponder({ ready: true, score: 9, techNotesResponse: 'not valid json — enrichment failed' })
+    );
+    const exitCode = await runEpicCapture(BRIEF, { llm });
+    assert.equal(exitCode, 1, 'a failed-enrichment plan must exit non-zero');
+    const statuses = epicStatuses();
+    assert.ok(statuses.length > 0, 'an epic row was reserved');
+    assert.ok(
+      statuses.every(s => s === 'rejected'),
+      `failed-enrichment epic must be rejected (non-approvable), got ${JSON.stringify(statuses)}`
+    );
+  });
+
+  it('completes (no exit) when enrichment returns a valid-but-empty map — a warn, not a block', async () => {
+    const llm = new MockLLMClient(pipelineResponder({ ready: true, score: 9 })); // default valid-empty
+    const exitCode = await runEpicCapture(BRIEF, { llm });
+    assert.equal(exitCode, null, 'a valid-but-empty plan is a soft warning, not a hard failure');
+    assert.ok(
+      epicStatuses().some(s => s === 'planned'),
+      'valid-empty plan stays planned (approvable)'
+    );
   });
 });
