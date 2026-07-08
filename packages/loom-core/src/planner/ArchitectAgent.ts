@@ -21,6 +21,13 @@ export interface ArchitectResult {
   storiesEnriched: number;
   storiesMissingNotes: string[];
   /**
+   * True when the tech_notes enrichment step genuinely FAILED — no attempt ever
+   * parsed (provider errors / unparseable output after retries), as opposed to a
+   * model that parsed cleanly but returned an empty map. The planning gate hard-
+   * blocks on this; a valid-empty result is only a soft warning.
+   */
+  techNotesEnrichmentFailed: boolean;
+  /**
    * Epic-wide shared implementation contract (interfaces + ownership map),
    * produced only when ctx.sharedContract is on. Undefined otherwise. The
    * Planner persists it per-epic for worker-prompt injection at dispatch.
@@ -107,6 +114,7 @@ export class ArchitectAgent {
       epics,
       storiesEnriched: enriched,
       storiesMissingNotes: missing,
+      techNotesEnrichmentFailed: techNotes.failed,
       sharedContract,
       usage,
     };
@@ -153,31 +161,62 @@ export class ArchitectAgent {
     systemPrompt: string,
     architectureContent: string,
     epicsJson: string
-  ): Promise<{ map: Record<string, string>; usage: LLMUsage }> {
-    const response = await this.ctx.llm.complete({
-      model: this.ctx.model,
-      system: [{ text: systemPrompt, cache: true }],
-      messages: [
-        {
-          role: 'user',
-          content:
-            'Perform Headless task B: produce per-story tech_notes JSON.\n\n' +
-            'ARCHITECTURE:\n---\n' +
-            architectureContent +
-            '\n\nEPIC BREAKDOWN (provide a tech_notes entry for every story id):\n---\n' +
-            epicsJson,
-        },
-      ],
-    });
+  ): Promise<{ map: Record<string, string>; usage: LLMUsage; failed: boolean }> {
+    // tech_notes drive worker execution quality, so an empty/unparseable result
+    // is worth retrying: under resource contention a single call can come back
+    // truncated or malformed, silently yielding zero enrichment. Retry the whole
+    // call (a fresh attempt, not a continuation) on a provider error, a parse
+    // failure, OR an empty map. Usage accrues across attempts.
+    //
+    // `failed` distinguishes a genuine enrichment FAILURE (no attempt ever parsed
+    // — provider errors / unparseable output, the epic-086 contention scenario)
+    // from a valid-but-empty result (the model parsed cleanly but returned no
+    // notes). Only a true failure trips the downstream planning gate's hard block;
+    // a valid-empty map is a soft warning — this keeps the gate from firing on a
+    // model that legitimately returns `{}` while still catching the failure mode.
+    const MAX_ATTEMPTS = 2;
+    let usage: LLMUsage = { ...EMPTY_USAGE };
+    let lastParsed: Record<string, string> | null = null;
 
-    try {
-      const json = extractJsonBlock(response.text);
-      const envelope = TechNotesEnvelopeSchema.parse(json);
-      return { map: envelope.tech_notes, usage: response.usage };
-    } catch {
-      // tech_notes are advisory enrichment — a parse failure should not abort
-      // the whole planning run. Return an empty map; stories keep no notes.
-      return { map: {}, usage: response.usage };
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      let response;
+      try {
+        response = await this.ctx.llm.complete({
+          model: this.ctx.model,
+          system: [{ text: systemPrompt, cache: true }],
+          messages: [
+            {
+              role: 'user',
+              content:
+                'Perform Headless task B: produce per-story tech_notes JSON.\n\n' +
+                'ARCHITECTURE:\n---\n' +
+                architectureContent +
+                '\n\nEPIC BREAKDOWN (provide a tech_notes entry for every story id):\n---\n' +
+                epicsJson,
+            },
+          ],
+        });
+      } catch {
+        // Provider error (rate limit / network / timeout) — retry if budget remains.
+        continue;
+      }
+      usage = addUsage(usage, response.usage);
+
+      try {
+        const json = extractJsonBlock(response.text);
+        const envelope = TechNotesEnvelopeSchema.parse(json);
+        lastParsed = envelope.tech_notes; // a successful parse (even if empty)
+        if (Object.keys(envelope.tech_notes).length > 0) {
+          return { map: envelope.tech_notes, usage, failed: false };
+        }
+        // Parsed but empty — retry for better coverage, but this is NOT a failure.
+      } catch {
+        // Parse failure — retry if budget remains.
+      }
     }
+
+    // Retries exhausted. failed=true ONLY when no attempt ever parsed successfully
+    // (all provider errors / unparseable) — the case the gate hard-blocks.
+    return { map: lastParsed ?? {}, usage, failed: lastParsed === null };
   }
 }

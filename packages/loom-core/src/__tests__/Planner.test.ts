@@ -371,6 +371,56 @@ describe('ArchitectAgent', () => {
     assert.ok(fs.existsSync(arch.architecturePath));
     assert.equal(arch.storiesEnriched, 0);
     assert.equal(arch.storiesMissingNotes.length, 2);
+    // No attempt ever parsed → this is a genuine enrichment FAILURE (the case the
+    // planning gate hard-blocks).
+    assert.equal(arch.techNotesEnrichmentFailed, true);
+  });
+
+  it('retries tech_notes generation and recovers when the first response is unparseable', async () => {
+    // Under contention a single enrichment call can return truncated/malformed
+    // output; the retry recovers full coverage instead of silently shipping 0.
+    let techNotesCalls = 0;
+    const llm = new MockLLMClient((req) => {
+      const last = req.messages[req.messages.length - 1].content;
+      if (last.includes('Headless task A: produce the architecture')) return ARCH_DOC;
+      if (last.includes('Headless task B: produce per-story')) {
+        techNotesCalls++;
+        return techNotesCalls === 1 ? 'not valid json — first attempt fails' : archTechNotesJson(last);
+      }
+      throw new Error(`unexpected: ${last.slice(0, 60)}`);
+    });
+    const pmLlm = new MockLLMClient(fullPipelineResponder);
+    const pm = await new PMAgent(ctx(pmLlm)).run(ANALYST_BRIEF, 1);
+    const arch = await new ArchitectAgent(ctx(llm)).run(PM_PRD, pm.epics);
+
+    assert.equal(techNotesCalls, 2, 'tech_notes call is retried once after the unparseable first response');
+    assert.equal(arch.storiesEnriched, 2, 'retry recovered full tech_notes coverage');
+    assert.equal(arch.storiesMissingNotes.length, 0);
+    assert.equal(arch.techNotesEnrichmentFailed, false, 'a successful retry is not a failure');
+  });
+
+  it('retries a valid-but-empty map but does NOT flag it as a failure', async () => {
+    // A parsed-but-empty tech_notes map is retried for better coverage, but it is
+    // NOT an enrichment FAILURE — the model responded cleanly, it just returned no
+    // notes. So the gate must not hard-block it (only a never-parsed result fails).
+    let techNotesCalls = 0;
+    const emptyEnvelope = '```json\n' + JSON.stringify({ tech_notes: {} }) + '\n```';
+    const llm = new MockLLMClient((req) => {
+      const last = req.messages[req.messages.length - 1].content;
+      if (last.includes('Headless task A: produce the architecture')) return ARCH_DOC;
+      if (last.includes('Headless task B: produce per-story')) {
+        techNotesCalls++;
+        return emptyEnvelope; // always parses, always empty
+      }
+      throw new Error(`unexpected: ${last.slice(0, 60)}`);
+    });
+    const pmLlm = new MockLLMClient(fullPipelineResponder);
+    const pm = await new PMAgent(ctx(pmLlm)).run(ANALYST_BRIEF, 1);
+    const arch = await new ArchitectAgent(ctx(llm)).run(PM_PRD, pm.epics);
+
+    assert.equal(techNotesCalls, 2, 'empty map is retried, bounded to the attempt budget (2)');
+    assert.equal(arch.storiesEnriched, 0, '0 enriched — empty map yielded no notes');
+    assert.equal(arch.techNotesEnrichmentFailed, false, 'a valid-but-empty parse is NOT an enrichment failure');
   });
 
   it('emits the shared contract only when ctx.sharedContract is on', async () => {

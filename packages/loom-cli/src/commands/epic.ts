@@ -266,6 +266,29 @@ export async function runEpic(
   // Drain any partial line not terminated by a newline in the final streamed chunk.
   printer.flush();
 
+  const isStandaloneResult = result.standaloneStoryId !== undefined;
+
+  // Planning-quality gate. The Architect tech_notes enrichment can genuinely FAIL
+  // under resource contention / transient errors (the epic-086 case: it silently
+  // yielded zero tech_notes yet the run still offered the plan for dispatch).
+  // When enrichment failed outright, refuse to present the plan: mark it rejected
+  // (non-approvable) and exit non-zero, so a guidance-less plan is never a single
+  // step away from being run. A merely partial (some-missing) result is a soft
+  // warning; a standalone story carries its own inline notes and is exempt.
+  const gate = evaluatePlanningGate({
+    isStandalone: isStandaloneResult,
+    storyCount: result.storyCount,
+    storiesEnriched: result.storiesEnriched,
+    enrichmentFailed: result.techNotesEnrichmentFailed,
+  });
+  if (gate.outcome === 'fail') {
+    for (const epicId of result.epicIds) store.reject(epicId, gate.verdict);
+    console.error('\n  Planning gate FAILED — the Architect produced no technical guidance.');
+    console.error(`  ${gate.verdict}`);
+    console.error('  The plan was rejected and will not be offered for execution. Plan again with `loom weave`.\n');
+    process.exit(1);
+  }
+
   console.log('  Planning complete.\n');
   console.log(`  Run:           ${result.runId}`);
   console.log(`  Brief:         ${rel(projectRoot, result.briefPath)}`);
@@ -273,7 +296,6 @@ export async function runEpic(
   console.log(`  Architecture:  ${rel(projectRoot, result.architecturePath)}`);
   console.log('');
   const plannerModel = modelFor(policy, 'planning');
-  const isStandaloneResult = result.standaloneStoryId !== undefined;
   for (const epicId of result.epicIds) {
     // `model` is '' on the test-seam path where llm is null — guard before writing.
     if (plannerModel) store.setPlannerModel(epicId, plannerModel);
@@ -290,6 +312,9 @@ export async function runEpic(
       `  ${result.epicIds.length} epic(s), ${result.storyCount} stories ` +
         `${formatTechNotesMetric(result.storiesEnriched, result.storyCount)}.`
     );
+    if (gate.outcome === 'warn') {
+      console.log(`  WARNING: ${gate.verdict} Consider re-running planning for full coverage.`);
+    }
   }
   const billed = result.usage.inputTokens + result.usage.outputTokens;
   console.log(
@@ -326,6 +351,60 @@ function rel(root: string, abs: string): string {
 
 export function formatTechNotesMetric(storiesEnriched: number, storyCount: number): string {
   return `tech_notes ${storiesEnriched} of ${storyCount}`;
+}
+
+export interface PlanningGateResult {
+  /** 'ok' — proceed; 'warn' — proceed with a notice; 'fail' — reject + exit non-zero. */
+  outcome: 'ok' | 'warn' | 'fail';
+  /** Machine-readable verdict; written to the rejected epic's `error` column on 'fail'. */
+  verdict: string;
+}
+
+/**
+ * Planning-quality gate on tech_notes coverage.
+ *
+ * The Architect enrichment step can genuinely FAIL under resource contention or a
+ * transient error — no attempt parses, and the run silently ships zero tech_notes
+ * (observed when planning concurrently with a running epic). tech_notes drive
+ * worker execution quality, so a multi-story plan whose enrichment FAILED is
+ * degraded and must not be presented for execution. A merely partial result (the
+ * model parsed but left some stories un-noted, incl. a valid-but-empty map) is a
+ * soft warning, not a hard block — we only hard-fail an outright enrichment
+ * failure so the gate doesn't fire on a model that legitimately returns few/no
+ * notes. Standalone stories carry their own inline tech_notes and are exempt; an
+ * empty (zero-story) plan is left to other validation.
+ *
+ * - 'fail' — multi-story plan, enrichment FAILED → caller rejects + exits 1.
+ * - 'warn' — some/all stories missing notes (but enrichment did not fail) → notice.
+ * - 'ok'   — full coverage, standalone, or zero-story.
+ */
+export function evaluatePlanningGate(input: {
+  isStandalone: boolean;
+  storyCount: number;
+  storiesEnriched: number;
+  enrichmentFailed: boolean;
+}): PlanningGateResult {
+  if (input.isStandalone || input.storyCount === 0) {
+    return { outcome: 'ok', verdict: '' };
+  }
+  if (input.enrichmentFailed) {
+    return {
+      outcome: 'fail',
+      verdict:
+        `planning gate: the Architect tech_notes enrichment failed (0 of ` +
+        `${input.storyCount} stories enriched after retries) — no technical guidance ` +
+        `was produced. Plan again.`,
+    };
+  }
+  if (input.storiesEnriched < input.storyCount) {
+    return {
+      outcome: 'warn',
+      verdict:
+        `${input.storyCount - input.storiesEnriched} of ${input.storyCount} ` +
+        `stories are missing tech_notes.`,
+    };
+  }
+  return { outcome: 'ok', verdict: '' };
 }
 
 /**
