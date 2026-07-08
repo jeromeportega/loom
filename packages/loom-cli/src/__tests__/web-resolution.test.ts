@@ -212,14 +212,13 @@ describe('runWeb — null-tolerant when no project resolves', () => {
           _listen: async (_app, startPort) => startPort,
         }
       );
+      assert.equal(exitWasCalled, false, 'process.exit must not be called when no project resolves');
+      assert.ok(capturedArgs !== undefined, 'createApp must be called');
+      assert.strictEqual(capturedArgs?.db, null, 'createApp must be called with db: null');
+      assert.strictEqual(capturedArgs?.projectRoot, null, 'createApp must be called with projectRoot: null');
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (process as any).exit = origExit;
     }
-
-    assert.equal(exitWasCalled, false, 'process.exit must not be called when no project resolves');
-    assert.ok(capturedArgs !== undefined, 'createApp must be called');
-    assert.strictEqual(capturedArgs?.db, null, 'createApp must be called with db: null');
-    assert.strictEqual(capturedArgs?.projectRoot, null, 'createApp must be called with projectRoot: null');
   });
 });

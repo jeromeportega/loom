@@ -104,10 +104,22 @@ export function createApp(opts: CreateAppOptions): Express {
   // readOnly=true: GET/HEAD pass tokenless; non-GET/HEAD → 403 without token.
   app.use('/api', accessGuard({ token: opts.token, readOnly: opts.readOnly ?? false }));
 
+  // ─── Static frontend (built React) ───────────────────────────────────────
+  // Registered before the db-null guard so the SPA bundle is served even when
+  // no project is loaded — the React app loads; API routes are limited to /api/health.
+  const defaultStaticDir = path.join(__dirname, '../../client-dist');
+  const resolvedStaticDir = opts.staticDir ?? (fs.existsSync(defaultStaticDir) ? defaultStaticDir : undefined);
+  if (resolvedStaticDir) {
+    app.use(express.static(resolvedStaticDir));
+    // SPA fallback for client-side routing.
+    app.get(/^(?!\/api\/).+/, (_req, res) => {
+      res.sendFile('index.html', { root: resolvedStaticDir });
+    });
+  }
+
   if (opts.db === null) {
-    // No current project resolved. story-085-002 adds proper null-path route handlers
-    // (204 for current-project-scoped endpoints, unified registry for /api/repos, etc.).
-    // For now: API 404 catch-all so Express doesn't return text/html for unknown routes.
+    // TODO: add project-agnostic route handlers (repos list, health) and return 204
+    // for current-project endpoints when no project is loaded.
     app.use('/api', (_req, res) => { res.status(404).json({ error: 'not found' }); });
     return app;
   }
@@ -581,20 +593,6 @@ export function createApp(opts: CreateAppOptions): Express {
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'not found' });
   });
-
-  // ─── Static frontend (built React) ───────────────────────────────────────
-  // Default to the Vite SPA output directory when no override is provided.
-  // The check gates on file existence so the dev workflow (Vite dev server
-  // proxying /api to Express) is unaffected when client-dist hasn't been built.
-  const defaultStaticDir = path.join(__dirname, '../../client-dist');
-  const resolvedStaticDir = opts.staticDir ?? (fs.existsSync(defaultStaticDir) ? defaultStaticDir : undefined);
-  if (resolvedStaticDir) {
-    app.use(express.static(resolvedStaticDir));
-    // SPA fallback for client-side routing.
-    app.get(/^(?!\/api\/).+/, (_req, res) => {
-      res.sendFile('index.html', { root: resolvedStaticDir });
-    });
-  }
 
   return app;
 }
