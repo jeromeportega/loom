@@ -281,28 +281,33 @@ function makeGeneratorWithMinScore(
   return { generator, agentId: agent.id };
 }
 
-describe('SkillGenerator — judgeMinScore: 0.9 threshold (story-084-004)', () => {
-  it('accepts a candidate with score above the threshold (0.95 >= 0.9)', async () => {
-    const judgeJson = JSON.stringify({ score: 0.95, verdict: 'accept', reason: 'solid pattern' });
+// SkillJudge returns scores on a 0–10 integer scale (documented in the prompt
+// as "RUBRIC (0–10, only if hard criteria pass — score each dimension 0-2)").
+// The default threshold is 6; judgeMinScore overrides it. All test scores here
+// use that same 0–10 scale so the threshold values are semantically meaningful.
+
+describe('SkillGenerator — judgeMinScore threshold (story-084-004)', () => {
+  it('accepts a candidate with score above the threshold (8 >= 7)', async () => {
+    const judgeJson = JSON.stringify({ score: 8, verdict: 'accept', reason: 'solid pattern' });
     const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
-    const { generator, agentId } = makeGeneratorWithMinScore(fake, 0.9);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, 7);
     const result = await generator.afterStory(agentId, MINIMAL_STORY);
-    assert.notEqual(result, null, 'score 0.95 must be accepted when judgeMinScore is 0.9');
+    assert.notEqual(result, null, 'score 8 must be accepted when judgeMinScore is 7');
   });
 
-  it('rejects a candidate with score below the threshold (0.85 < 0.9)', async () => {
-    const judgeJson = JSON.stringify({ score: 0.85, verdict: 'accept', reason: 'borderline' });
+  it('rejects a candidate with score below the threshold (5 < 7)', async () => {
+    const judgeJson = JSON.stringify({ score: 5, verdict: 'accept', reason: 'borderline' });
     const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
-    const { generator, agentId } = makeGeneratorWithMinScore(fake, 0.9);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, 7);
     const result = await generator.afterStory(agentId, MINIMAL_STORY);
-    assert.equal(result, null, 'score 0.85 must be rejected when judgeMinScore is 0.9');
+    assert.equal(result, null, 'score 5 must be rejected when judgeMinScore is 7');
   });
 
-  it('accepts a candidate at the exact threshold (0.9 >= 0.9) — implementation uses strict < comparison', async () => {
+  it('accepts a candidate at the exact threshold (7 >= 7) — implementation uses strict < comparison', async () => {
     // SkillGenerator uses strict-less-than (<) when comparing score to the threshold, so exact equality is accepted.
-    const judgeJson = JSON.stringify({ score: 0.9, verdict: 'accept', reason: 'exactly at threshold' });
+    const judgeJson = JSON.stringify({ score: 7, verdict: 'accept', reason: 'exactly at threshold' });
     const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
-    const { generator, agentId } = makeGeneratorWithMinScore(fake, 0.9);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, 7);
     const result = await generator.afterStory(agentId, MINIMAL_STORY);
     assert.notEqual(result, null, 'score exactly at threshold must be accepted (strict < comparison)');
   });
@@ -327,32 +332,33 @@ describe('SkillGenerator — judgeMinScore: 0.9 threshold (story-084-004)', () =
 // ── policy wiring: skill_judge_min_score → judgeMinScore (story-084-004) ──────
 //
 // Validates the full wiring path: PolicySchema.parse() with skill_judge_min_score
-// produces the value that, when passed as judgeMinScore, causes the expected
-// acceptance/rejection behavior. The FakeLLM returns scores on the same 0–1
-// scale as the threshold, which is correct for unit-testing the < comparison.
+// produces the correct value that, when passed as judgeMinScore, causes the expected
+// acceptance/rejection behavior. Scores are on the same 0–10 scale the real LLM uses.
 
 describe('SkillGenerator — policy wiring: skill_judge_min_score (story-084-004)', () => {
-  it('policy with skill_judge_min_score: 0.9 rejects candidate with score 0.85', async () => {
-    const policy = PolicySchema.parse({ agents: { skill_judge_min_score: 0.9 } });
-    const judgeJson = JSON.stringify({ score: 0.85, verdict: 'accept', reason: 'borderline' });
+  it('policy with skill_judge_min_score: 7 rejects candidate with score 5', async () => {
+    const policy = PolicySchema.parse({ agents: { skill_judge_min_score: 7 } });
+    assert.strictEqual(policy.agents.skill_judge_min_score, 7, 'schema must preserve the value 7 without coercion');
+    const judgeJson = JSON.stringify({ score: 5, verdict: 'accept', reason: 'borderline' });
     const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
     const { generator, agentId } = makeGeneratorWithMinScore(fake, policy.agents.skill_judge_min_score);
     const result = await generator.afterStory(agentId, MINIMAL_STORY);
-    assert.equal(result, null, 'score 0.85 must be rejected when policy skill_judge_min_score is 0.9');
+    assert.equal(result, null, 'score 5 must be rejected when policy skill_judge_min_score is 7');
   });
 
-  it('policy with skill_judge_min_score: 0.9 accepts candidate with score 0.95', async () => {
-    const policy = PolicySchema.parse({ agents: { skill_judge_min_score: 0.9 } });
-    const judgeJson = JSON.stringify({ score: 0.95, verdict: 'accept', reason: 'solid pattern' });
+  it('policy with skill_judge_min_score: 7 accepts candidate with score 8', async () => {
+    const policy = PolicySchema.parse({ agents: { skill_judge_min_score: 7 } });
+    assert.strictEqual(policy.agents.skill_judge_min_score, 7, 'schema must preserve the value 7 without coercion');
+    const judgeJson = JSON.stringify({ score: 8, verdict: 'accept', reason: 'solid pattern' });
     const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
     const { generator, agentId } = makeGeneratorWithMinScore(fake, policy.agents.skill_judge_min_score);
     const result = await generator.afterStory(agentId, MINIMAL_STORY);
-    assert.notEqual(result, null, 'score 0.95 must be accepted when policy skill_judge_min_score is 0.9');
+    assert.notEqual(result, null, 'score 8 must be accepted when policy skill_judge_min_score is 7');
   });
 
   it('absent policy field → undefined → default 6 applies (score 5 rejected)', async () => {
     const policy = PolicySchema.parse({ agents: {} });
-    // skill_judge_min_score is undefined; SkillGenerator falls back to 6 via ?? 6
+    assert.strictEqual(policy.agents.skill_judge_min_score, undefined, 'absent field must remain undefined after parse');
     const judgeJson = JSON.stringify({ score: 5, verdict: 'accept', reason: 'below default' });
     const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
     const { generator, agentId } = makeGeneratorWithMinScore(fake, policy.agents.skill_judge_min_score);

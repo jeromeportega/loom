@@ -3135,8 +3135,14 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
 // whether the worktree survives or is removed after Supervisor.run().
 
 describe('Supervisor — pruneOrphans option (story-084-004)', () => {
+  // Each test creates a git worktree on branch `story/orphan-<n>` where n is a
+  // monotonically incrementing counter so successive calls within the same test
+  // cannot collide on the branch name. The outer afterEach destroys the entire
+  // repo dir between tests, so there is no cross-test leakage.
+  let _orphanCounter = 0;
+
   function createOrphanWorktree(): string {
-    const orphanId = 'orphan-test';
+    const orphanId = `orphan-test-${++_orphanCounter}`;
     const wtPath = path.join(repo, '.loom', 'worktrees', orphanId);
     // Ensure the parent directory exists; git worktree add creates the leaf dir.
     fs.mkdirSync(path.join(repo, '.loom', 'worktrees'), { recursive: true });
