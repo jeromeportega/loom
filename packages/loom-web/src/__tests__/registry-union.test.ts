@@ -5,7 +5,7 @@
  * Owner: story-085-003 (story-085-004 extends)
  */
 
-import { describe, it, beforeEach, afterEach, mock } from 'node:test';
+import { describe, it, before, after, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,6 +15,8 @@ import express from 'express';
 import type { AddressInfo } from 'node:net';
 import { resolveActiveLoomHome, buildUnifiedRegistry } from '../server/registry.js';
 import { registerRepoRoutes } from '../server/routes/repos.js';
+import { createApp } from '../server/index.js';
+import { createDatabase } from '@loom-ai/core';
 import type { ProjectEntry } from '@loom-ai/core';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -236,6 +238,52 @@ describe('buildUnifiedRegistry', () => {
     assert.equal(withProject.size, 1);
     assert.ok(withProject.has(projectRoot));
   });
+
+  // ─── FR-7 test (b): 3-way union with overlap ─────────────────────────────
+
+  it('(b) 3-way union /a /b /c where /b overlaps: size=3, active-loom_home metadata wins', () => {
+    const activeHome = path.join(tmpDir, 'active-3way');
+    const machineHome = path.join(tmpDir, 'machine-3way');
+
+    // active-loom_home registry: /a and /b (with /b registeredAt = '2024-06-01')
+    writeRegistry(activeHome, [
+      { root: '/a', registeredAt: '2024-01-01T00:00:00Z' },
+      { root: '/b', registeredAt: '2024-06-01T00:00:00Z' },
+    ]);
+    // machine-default registry: /b and /c (with /b registeredAt = '2024-01-01' — lower priority)
+    writeRegistry(machineHome, [
+      { root: '/b', registeredAt: '2024-01-01T00:00:00Z' },
+      { root: '/c', registeredAt: '2024-02-01T00:00:00Z' },
+    ]);
+
+    const { registry } = buildUnifiedRegistry(activeHome, machineHome, null);
+
+    assert.equal(registry.size, 3, 'union must contain /a, /b, /c (3 entries)');
+    assert.ok(registry.has('/a'), '/a must be in registry');
+    assert.ok(registry.has('/b'), '/b must be in registry');
+    assert.ok(registry.has('/c'), '/c must be in registry');
+    const bEntry = registry.get('/b');
+    assert.ok(bEntry, '/b entry must be present');
+    assert.equal(bEntry?.registeredAt, '2024-06-01T00:00:00Z',
+      'active-loom_home /b metadata must win over machine-default');
+  });
+
+  // ─── FR-7 test (c): force-include with explicit path ─────────────────────
+
+  it('(c) force-include currentProject.projectRoot=/x: /x appears in returned map', () => {
+    const activeHome = path.join(tmpDir, 'active-force-x');
+    const machineHome = path.join(tmpDir, 'machine-force-x');
+    // Both registries intentionally empty (no projects.json files written)
+
+    const { registry } = buildUnifiedRegistry(activeHome, machineHome, {
+      projectRoot: '/x',
+      loomDir: '/x/.loom',
+    });
+
+    assert.ok(registry.has('/x'), '/x must be force-included even when absent from both registries');
+    const entry = registry.get('/x');
+    assert.equal(entry?.root, '/x', 'force-included entry must have root=/x');
+  });
 });
 
 // ─── GET /api/repos integration ───────────────────────────────────────────────
@@ -302,6 +350,112 @@ describe('GET /api/repos — integration via registerRepoRoutes', () => {
 
     // No disk side effects
     assert.equal(fs.existsSync(phantom), false, 'phantom dir must not be created by the handler');
+    assert.equal(fs.existsSync(phantomDb), false, 'no DB must be created at phantom path');
+  });
+});
+
+// ─── FR-7 test (a): createApp no-project startup ──────────────────────────────
+
+describe('createApp — no-project startup (FR-7 test a)', () => {
+  let baseUrl: string;
+  let server: http.Server;
+  let prevLoomHome: string | undefined;
+  let loomHomeDir: string;
+
+  before(async () => {
+    prevLoomHome = process.env.LOOM_HOME;
+    loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-noproj-home-'));
+    process.env.LOOM_HOME = loomHomeDir;
+
+    const app = createApp({ db: null, projectRoot: null, unifiedRegistry: new Map(), token: 'test' });
+    server = http.createServer(app);
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve, reject) =>
+      server.close(err => (err ? reject(err) : resolve()))
+    );
+    fs.rmSync(loomHomeDir, { recursive: true, force: true });
+    if (prevLoomHome === undefined) delete process.env.LOOM_HOME;
+    else process.env.LOOM_HOME = prevLoomHome;
+  });
+
+  it('(a) GET /api/repos returns 200 { repos: [] } when server starts with no current project', async () => {
+    const res = await fetch(`${baseUrl}/api/repos`, {
+      headers: { 'x-loom-token': 'test' },
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json() as { repos: unknown[] };
+    assert.deepEqual(body, { repos: [] });
+  });
+});
+
+// ─── FR-7 test (d): createApp 404 guard, no disk side-effects ─────────────────
+
+describe('createApp — unregistered slug 404 guard (FR-7 test d)', () => {
+  let baseUrl: string;
+  let server: http.Server;
+  let tmpDir: string;
+  let prevLoomHome: string | undefined;
+  let loomHomeDir: string;
+
+  before(async () => {
+    prevLoomHome = process.env.LOOM_HOME;
+    loomHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-404guard-home-'));
+    process.env.LOOM_HOME = loomHomeDir;
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-404guard-test-'));
+    const projectRoot = path.join(tmpDir, 'known-project');
+    fs.mkdirSync(path.join(projectRoot, '.loom', 'logs'), { recursive: true });
+
+    // unifiedRegistry contains only the known project; phantom-project is absent
+    const knownEntry: ProjectEntry = { root: projectRoot, registeredAt: '2024-01-01T00:00:00Z' };
+    const unifiedRegistry = new Map<string, ProjectEntry>([[projectRoot, knownEntry]]);
+
+    const db = createDatabase(':memory:');
+    const app = createApp({
+      db,
+      projectRoot,
+      unifiedRegistry,
+      token: 'test',
+      loomBin: ['true'],
+      ssePollMs: 50,
+    });
+    server = http.createServer(app);
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve, reject) =>
+      server.close(err => (err ? reject(err) : resolve()))
+    );
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(loomHomeDir, { recursive: true, force: true });
+    if (prevLoomHome === undefined) delete process.env.LOOM_HOME;
+    else process.env.LOOM_HOME = prevLoomHome;
+  });
+
+  it('(d) unregistered slug → 404, no files created under that path', async () => {
+    const phantomRoot = path.join(tmpDir, 'phantom-project');
+    const phantomDb = path.join(phantomRoot, '.loom', 'loom.db');
+    assert.equal(fs.existsSync(phantomRoot), false, 'phantom dir must not exist before request');
+
+    const slug = 'phantom-project'; // slug not present in unifiedRegistry or LOOM_HOME registry
+    const res = await fetch(`${baseUrl}/api/repos/${slug}/epics`, {
+      headers: { 'x-loom-token': 'test' },
+    });
+
+    assert.equal(res.status, 404);
+    const body = await res.json() as { error: string };
+    assert.equal(body.error, 'repo not found');
+
+    // No disk side-effects: handler must not create any files under the phantom path
+    assert.equal(fs.existsSync(phantomRoot), false, 'phantom dir must not be created by the handler');
     assert.equal(fs.existsSync(phantomDb), false, 'no DB must be created at phantom path');
   });
 });
