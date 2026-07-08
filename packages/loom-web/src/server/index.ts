@@ -18,6 +18,7 @@ import {
   deriveBlocked,
   STANDALONE_KIND,
   type IntakeVerdict,
+  type ProjectEntry,
 } from '@loom-ai/core';
 import type {
   EpicStatus,
@@ -44,12 +45,19 @@ import { registerRepoRoutes } from './routes/repos.js';
 import { makeResolveProjectDb } from './resolveProjectDb.js';
 
 export interface CreateAppOptions {
-  db: Database.Database;
+  /** null when no current project resolved; current-project routes return 204. */
+  db: Database.Database | null;
   token: string;
   /** Absolute path to the built React bundle; when set, served at /. */
   staticDir?: string;
-  /** Project root — used by SkillStore for discovery. Default: cwd. */
-  projectRoot?: string;
+  /** Project root — used by SkillStore for discovery. null when no current project. */
+  projectRoot?: string | null;
+  /**
+   * Pre-computed union of active-loom_home + machine-default registries.
+   * Produced by buildUnifiedRegistry() at server startup.
+   * All route modules share this single validated set for path-traversal checks.
+   */
+  unifiedRegistry?: Map<string, ProjectEntry>;
   /** SSE poll interval in ms. Default 500. Lower in tests for snappier asserts. */
   ssePollMs?: number;
   /**
@@ -103,27 +111,92 @@ export function createApp(opts: CreateAppOptions): Express {
   // readOnly=true: GET/HEAD pass tokenless; non-GET/HEAD → 403 without token.
   app.use('/api', accessGuard({ token: opts.token, readOnly: opts.readOnly ?? false }));
 
-  const epicStore = new EpicStore(opts.db);
-  const agentStore = new AgentStore(opts.db);
-  const auditLog = new AuditLog(opts.db);
-  const skillUsage = new SkillUsageStore(opts.db);
-  const skillStore = new SkillStore({ projectRoot: opts.projectRoot ?? process.cwd() });
-  const decisionTraces = new DecisionTraceStore(opts.db);
+  // Resolve the static dir once; registration happens below in each code path.
+  const defaultStaticDir = path.join(__dirname, '../../client-dist');
+  const resolvedStaticDir = opts.staticDir ?? (fs.existsSync(defaultStaticDir) ? defaultStaticDir : undefined);
 
-  const currentProjectRoot = opts.projectRoot ?? process.cwd();
-  const resolveProjectDb = makeResolveProjectDb(opts.db, currentProjectRoot);
-  const workerLogs = new WorkerLogStore(path.join(currentProjectRoot, '.loom'));
+  // Project root: null when no project resolved (null db case).
+  // Use a non-null fallback only for routes that need a path but won't reach db.
+  const currentProjectRoot: string = opts.projectRoot ?? process.cwd();
 
-  // ─── Route modules (owned by sibling stories; mounted here) ─────────────
-  registerAutonomyRoutes(app, { epicStore, auditLog });
-  registerFleetRoutes(app, { epicStore, agentStore, db: opts.db, projectRoot: currentProjectRoot });
-  registerInboxRoutes(app, { epicStore, agentStore, projectRoot: currentProjectRoot });
-  registerMutationRoutes(app, {
+  // The federation registry — the unified active-loom_home + machine-default set
+  // built at startup by runWeb (buildUnifiedRegistry). Every registry consumer
+  // (repo list, /api/status, /api/projects, peer-project path guard) reads THIS
+  // set so a repo registered under either loom_home is visible and routable.
+  // Fall back to the plain machine registry only when a caller did not supply one
+  // (older/test callers) — production always supplies it.
+  const federatedRegistry = (): ProjectEntry[] =>
+    opts.unifiedRegistry ? [...opts.unifiedRegistry.values()] : new ProjectRegistry().list();
+
+  // Null-safe resolver: when db is null there is no host project. Any route
+  // that calls resolveProjectDb without a ?project param gets a 404, matching
+  // the "no current project" state. Routes with a valid ?project param proceed
+  // normally via the real resolver (requires a non-null db as the host though,
+  // so this stub always throws — peer-project routing also requires a host db
+  // to be meaningful).
+  const resolveProjectDb = opts.db !== null
+    ? makeResolveProjectDb(opts.db, currentProjectRoot, opts.unifiedRegistry)
+    : ((): never => {
+        const err = new Error('no current project');
+        throw Object.assign(err, { statusCode: 404 });
+      }) as unknown as ReturnType<typeof makeResolveProjectDb>;
+
+  // ─── Routes registered unconditionally (agnostic to null db) ────────────
+
+  // Repo routes: mounted UNCONDITIONALLY, including the null-db (no current
+  // project) case — registerRepoRoutes is null-safe (its openDb short-circuits
+  // only when a registry entry's root equals a NON-null projectRoot, and it
+  // opens peer DBs for every other entry). This is what makes the federated
+  // repo list — the SPA homepage — populate even when launched from a directory
+  // with no current project. (Passing db:null with a stub `{repos:[]}` here was
+  // the epic-085 federation defect: the homepage was permanently blank.)
+  registerRepoRoutes(app, {
     db: opts.db,
+    projectRoot: opts.projectRoot ?? null,
+    unifiedRegistry: opts.unifiedRegistry,
+  });
+
+  // Mutation routes: all handlers call resolveProjectDb(req) first. When db is
+  // null, the null resolver above throws 404, which each mutation's catch block
+  // converts to a 404 JSON response. deps.db is declared non-null in MutationDeps
+  // but is never directly accessed in handlers (they use resolved.db) — safe cast.
+  registerMutationRoutes(app, {
+    db: opts.db as Database.Database,
     resolveProjectDb,
     projectRoot: currentProjectRoot,
     loomBin: opts.loomBin,
   });
+
+  // ─── Null-db path: serve SPA + 204 for remaining /api/* routes ──────────
+  if (opts.db === null) {
+    // No current project: serve the SPA bundle so the React app loads,
+    // then return 204 (not 404) for any authenticated /api/* request so the
+    // SPA can distinguish "no project loaded" from "unknown route".
+    // Repos and mutation routes registered above are matched first; the
+    // catch-all below only fires for routes not yet handled.
+    if (resolvedStaticDir) {
+      app.use(express.static(resolvedStaticDir));
+      app.get(/^(?!\/api\/).+/, (_req, res) => {
+        res.sendFile('index.html', { root: resolvedStaticDir });
+      });
+    }
+    app.use('/api', (_req, res) => { res.status(204).end(); });
+    return app;
+  }
+
+  // ─── Non-null db: initialize stores and register remaining routes ────────
+  const epicStore = new EpicStore(opts.db);
+  const agentStore = new AgentStore(opts.db);
+  const auditLog = new AuditLog(opts.db);
+  const skillUsage = new SkillUsageStore(opts.db);
+  const skillStore = new SkillStore({ projectRoot: currentProjectRoot });
+  const decisionTraces = new DecisionTraceStore(opts.db);
+  const workerLogs = new WorkerLogStore(path.join(currentProjectRoot, '.loom'));
+
+  // ─── Route modules (owned by sibling stories; mounted here) ─────────────
+  registerAutonomyRoutes(app, { epicStore, auditLog });
+  registerFleetRoutes(app, { epicStore, agentStore, db: opts.db, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });
+  registerInboxRoutes(app, { epicStore, agentStore, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });
 
   // ─── GET /api/status — federated list of EpicStatus across all repos ─────
   // Aggregates every loom-init'ed repo on this machine, not just the one the
@@ -146,8 +219,8 @@ export function createApp(opts: CreateAppOptions): Express {
     result.push(
       ...rollupEpics(epicStore, agentStore, currentProjectRoot, true, includeArchived)
     );
-    // Then every other registered project.
-    const registryEntries = new ProjectRegistry().list();
+    // Then every other registered project (across both loom_homes).
+    const registryEntries = federatedRegistry();
     for (const entry of registryEntries) {
       if (entry.root === currentProjectRoot) continue;
       try {
@@ -180,15 +253,20 @@ export function createApp(opts: CreateAppOptions): Express {
   // to route the lookup at one of the federated peer projects (the path
   // matches `project_root` from /api/status).
   app.get('/api/epics/:id', (req, res) => {
-    const peer = resolvePeerProject(req.query.project, currentProjectRoot);
+    const peer = resolvePeerProject(req.query.project, currentProjectRoot, federatedRegistry().map((e) => e.root));
     if (peer === 'invalid') {
       res.status(400).json({ error: 'unknown project root' });
       return;
     }
-    const [scopedEpics, scopedAgents, scopedRoot, scopedCleanup, scopedAudit] =
+    const scoped =
       peer === 'current'
         ? ([epicStore, agentStore, currentProjectRoot, () => {}, auditLog] as const)
         : openPeer(peer);
+    if (scoped === null) {
+      res.status(404).json({ error: 'project not initialized' });
+      return;
+    }
+    const [scopedEpics, scopedAgents, scopedRoot, scopedCleanup, scopedAudit] = scoped;
     try {
       const epic = scopedEpics.get(req.params.id);
       if (!epic) {
@@ -235,15 +313,20 @@ export function createApp(opts: CreateAppOptions): Express {
   // epic row, bodies are read from disk on demand, missing files surface as
   // null rather than as errors.
   app.get('/api/epics/:id/planning-artifacts', (req, res) => {
-    const peer = resolvePeerProject(req.query.project, currentProjectRoot);
+    const peer = resolvePeerProject(req.query.project, currentProjectRoot, federatedRegistry().map((e) => e.root));
     if (peer === 'invalid') {
       res.status(400).json({ error: 'unknown project root' });
       return;
     }
-    const [scopedEpics, , scopedRoot, scopedCleanup] =
+    const scoped =
       peer === 'current'
         ? ([epicStore, agentStore, currentProjectRoot, () => {}] as const)
         : openPeer(peer);
+    if (scoped === null) {
+      res.status(404).json({ error: 'project not initialized' });
+      return;
+    }
+    const [scopedEpics, , scopedRoot, scopedCleanup] = scoped;
     try {
       const epic = scopedEpics.get(req.params.id);
       if (!epic) {
@@ -398,7 +481,7 @@ export function createApp(opts: CreateAppOptions): Express {
   // its own loom web; this endpoint is the directory for "where am I
   // running loom?" The full SSE federation lands as a follow-up.
   app.get('/api/projects', (_req, res) => {
-    const entries = new ProjectRegistry().list();
+    const entries = federatedRegistry();
     const projects = entries.map((entry) => {
       const projectName = path.basename(entry.root);
       const isCurrent = entry.root === (opts.projectRoot ?? process.cwd());
@@ -501,15 +584,20 @@ export function createApp(opts: CreateAppOptions): Express {
   // and supervisor selection. Pass ?project=<root> to act on a federated peer
   // epic; the body's `archived` flag toggles (default true = archive).
   app.post('/api/epics/:id/archive', (req, res) => {
-    const peer = resolvePeerProject(req.query.project, currentProjectRoot);
+    const peer = resolvePeerProject(req.query.project, currentProjectRoot, federatedRegistry().map((e) => e.root));
     if (peer === 'invalid') {
       res.status(400).json({ error: 'unknown project root' });
       return;
     }
-    const [scopedEpics, , , scopedCleanup, scopedAudit] =
+    const scoped =
       peer === 'current'
         ? ([epicStore, agentStore, currentProjectRoot, () => {}, auditLog] as const)
         : openPeer(peer);
+    if (scoped === null) {
+      res.status(404).json({ error: 'project not initialized' });
+      return;
+    }
+    const [scopedEpics, , , scopedCleanup, scopedAudit] = scoped;
     try {
       const epic = scopedEpics.get(req.params.id);
       if (!epic) {
@@ -563,8 +651,18 @@ export function createApp(opts: CreateAppOptions): Express {
     loomdir: path.join(currentProjectRoot, '.loom'),
   }));
 
-  // ─── repo routes (story-081-002) — /api/repos/* ──────────────────────────
-  registerRepoRoutes(app, { db: opts.db, projectRoot: currentProjectRoot });
+  // ─── Static frontend (built React) ───────────────────────────────────────
+  // (repo routes are registered unconditionally above the null-db check)
+  // Registered after all /api/* routes so that express.static() does not
+  // perform unnecessary filesystem stat() calls on every API request, and the
+  // SPA fallback cannot shadow future non-/api/ route handlers added above.
+  if (resolvedStaticDir) {
+    app.use(express.static(resolvedStaticDir));
+    // SPA fallback for client-side routing (non-/api/ paths only).
+    app.get(/^(?!\/api\/).+/, (_req, res) => {
+      res.sendFile('index.html', { root: resolvedStaticDir });
+    });
+  }
 
   // ─── API 404 catch-all — must be after all /api/* route registrations ────
   // Ensures unknown /api/* paths return JSON (not the SPA index.html or
@@ -572,20 +670,6 @@ export function createApp(opts: CreateAppOptions): Express {
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'not found' });
   });
-
-  // ─── Static frontend (built React) ───────────────────────────────────────
-  // Default to the Vite SPA output directory when no override is provided.
-  // The check gates on file existence so the dev workflow (Vite dev server
-  // proxying /api to Express) is unaffected when client-dist hasn't been built.
-  const defaultStaticDir = path.join(__dirname, '../../client-dist');
-  const resolvedStaticDir = opts.staticDir ?? (fs.existsSync(defaultStaticDir) ? defaultStaticDir : undefined);
-  if (resolvedStaticDir) {
-    app.use(express.static(resolvedStaticDir));
-    // SPA fallback for client-side routing.
-    app.get(/^(?!\/api\/).+/, (_req, res) => {
-      res.sendFile('index.html', { root: resolvedStaticDir });
-    });
-  }
 
   return app;
 }
@@ -647,12 +731,12 @@ function rollupEpics(
  */
 function resolvePeerProject(
   raw: unknown,
-  currentRoot: string
+  currentRoot: string,
+  knownRoots: string[]
 ): 'current' | 'invalid' | string {
   if (typeof raw !== 'string' || raw.length === 0) return 'current';
   if (raw === currentRoot) return 'current';
-  const known = new ProjectRegistry().list().map((e) => e.root);
-  if (!known.includes(raw)) return 'invalid';
+  if (!knownRoots.includes(raw)) return 'invalid';
   return raw;
 }
 
@@ -663,7 +747,7 @@ function resolvePeerProject(
  */
 function openPeer(
   root: string
-): readonly [EpicStore, AgentStore, string, () => void, AuditLog] {
+): readonly [EpicStore, AgentStore, string, () => void, AuditLog] | null {
   // createDatabase() — fresh connection, NOT the openDatabase() singleton.
   // The singleton would alias the current-project DB and close-on-cleanup
   // would tear down the long-lived connection the rest of the server uses.
@@ -677,7 +761,15 @@ function openPeer(
     peerPolicy = { loom_home: '' };
   }
   const { namespaceDir: peerNsDir } = resolveRepoStatePaths(root, peerPolicy);
-  const peerDb = createDatabase(path.join(peerNsDir, 'loom.db'));
+  const peerDbPath = path.join(peerNsDir, 'loom.db');
+  // A read endpoint must NEVER materialize another repo's state on disk.
+  // createDatabase() mkdirs + creates the file + runs migrations, so guard on
+  // existsSync — matching repos.ts openDb and the /api/status + /api/projects
+  // peer opens. An uninitialized peer yields null (caller → 404) instead of a
+  // freshly-created .loom/loom.db. (The federation union now surfaces more peer
+  // roots to this path, which is why the guard matters here too.)
+  if (!fs.existsSync(peerDbPath)) return null;
+  const peerDb = createDatabase(peerDbPath);
   const peerEpics = new EpicStore(peerDb);
   const peerAgents = new AgentStore(peerDb);
   const peerAudit = new AuditLog(peerDb);
@@ -844,3 +936,4 @@ function parseDetail(raw: string | null): Record<string, unknown> {
 }
 
 export { newToken } from './auth.js';
+export { resolveActiveLoomHome, buildUnifiedRegistry } from './registry.js';

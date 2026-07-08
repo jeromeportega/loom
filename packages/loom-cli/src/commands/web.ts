@@ -1,9 +1,11 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { createApp, newToken } from '@loom-ai/web';
+import { createApp, newToken, resolveActiveLoomHome, buildUnifiedRegistry } from '@loom-ai/web';
+import type { CreateAppOptions } from '@loom-ai/web';
 import { ProjectRegistry, defaultMachineConfigPath } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
@@ -42,15 +44,16 @@ function readMachineConfigProjectRoot(configPath: string): string | null {
  *   1. CWD has `.loom/policy.yaml` → serve CWD.
  *   2. ProjectRegistry has at least one entry → serve the first registered project.
  *   3. Machine config has `project_root` pointing to an initialized repo → serve it.
- *   4. Throw with a clear message.
+ *   4. Return null — the server starts with no current project.
  *
+ * Never throws; never calls process.exit. Returns null when no project resolves.
  * Optional parameters are for dependency injection in tests.
  */
 export function resolveWebRoot(
   cwd: string,
   registry?: ProjectRegistry,
   machineConfigPath?: string
-): { projectRoot: string; loomDir: string } {
+): { projectRoot: string; loomDir: string } | null {
   const cwdLoomDir = path.join(cwd, '.loom');
   if (fs.existsSync(path.join(cwdLoomDir, 'policy.yaml'))) {
     return { projectRoot: cwd, loomDir: cwdLoomDir };
@@ -60,7 +63,7 @@ export function resolveWebRoot(
   // Pick the first REGISTERED project that is still initialized. A registered
   // root whose `.loom/` was removed (or whose directory was recreated) would
   // otherwise be served with a freshly-minted empty DB — a silently blank
-  // dashboard. Skip such entries and fall through to machine config / error.
+  // dashboard. Skip such entries and fall through to machine config / null.
   for (const project of reg.list()) {
     const projLoomDir = path.join(project.root, '.loom');
     if (fs.existsSync(path.join(projLoomDir, 'policy.yaml'))) {
@@ -77,38 +80,68 @@ export function resolveWebRoot(
     }
   }
 
-  throw new Error(
-    'loom is not initialized in this directory and no loom project is registered. Run `loom init` first.'
-  );
+  return null;
+}
+
+/** Dependency-injection seams used only in unit tests. */
+interface RunWebInternals {
+  _resolveWebRoot?: typeof resolveWebRoot;
+  _createApp?: (opts: CreateAppOptions) => ReturnType<typeof createApp>;
+  _listen?: (app: ReturnType<typeof createApp>, startPort: number) => Promise<number>;
 }
 
 /**
  * `loom web` — launches the loom dashboard server, prints the URL with
  * a per-launch random token, and opens the browser. Binds 127.0.0.1 only;
  * the token defends against rogue same-machine processes.
+ *
+ * When no loom project resolves (uninitialized directory, empty registry,
+ * no machine config), the server still starts with `currentProject = null`.
  */
-export async function runWeb(opts: WebOptions = {}): Promise<void> {
-  let projectRoot: string;
-  let loomDir: string;
-  try {
-    ({ projectRoot, loomDir } = resolveWebRoot(process.cwd()));
-  } catch (err) {
-    console.error((err as Error).message);
-    process.exit(1);
-  }
-  const db = openProjectDatabase(projectRoot);
+export async function runWeb(opts: WebOptions = {}, _internals: RunWebInternals = {}): Promise<void> {
+  const resolverFn = _internals._resolveWebRoot ?? resolveWebRoot;
+  // Pass undefined for registry so resolveWebRoot uses its own internal default,
+  // matching the pre-refactor call site and avoiding a wasted allocation in tests.
+  const resolved = resolverFn(process.cwd(), undefined, defaultMachineConfigPath());
+  const projectRoot = resolved?.projectRoot ?? null;
+
+  const db = projectRoot !== null ? openProjectDatabase(projectRoot) : null;
   const token = newToken();
   const staticDir = resolveStaticDir();
   const loomBin = resolveLoomBin();
   const readOnly = opts.readOnly ?? process.env.LOOM_WEB_READONLY === '1';
 
-  const app = createApp({ db, token, staticDir, projectRoot, loomBin, readOnly });
+  // Build the unified federation registry so the dashboard lists every
+  // loom-init'ed repo regardless of loom_home redirection or launch directory:
+  // the union of the ACTIVE loom_home (LOOM_HOME env → served project's
+  // policy.loom_home → machine default) and the machine-default loom_home.
+  // machineDefault is the true ~/.loom — NOT loomHome(), which honors LOOM_HOME
+  // and would collapse both legs into a single registry.
+  const loomDir = resolved?.loomDir ?? null;
+  const machineDefaultLoomHome = path.join(os.homedir(), '.loom');
+  const activeLoomHome = resolveActiveLoomHome(loomDir, machineDefaultLoomHome);
+  const { registry: unifiedRegistry } = buildUnifiedRegistry(
+    activeLoomHome,
+    machineDefaultLoomHome,
+    projectRoot !== null
+      ? { projectRoot, loomDir: loomDir ?? path.join(projectRoot, '.loom') }
+      : null
+  );
+
+  const createAppFn = _internals._createApp ?? createApp;
+  const app = createAppFn({ db, token, staticDir, projectRoot, loomBin, readOnly, unifiedRegistry });
+  const listenFn = _internals._listen ?? listen;
   const startPort = opts.port ?? 8765;
-  const port = await listen(app, startPort);
+  const port = await listenFn(app, startPort);
   const url = `http://127.0.0.1:${port}/#token=${token}`;
 
   console.log('');
   console.log(`  🌐 loom web — http://127.0.0.1:${port}/`);
+  console.log(
+    projectRoot !== null
+      ? `  Project: ${projectRoot}`
+      : '  Project: (none) — federated view across all registered repos'
+  );
   if (readOnly) {
     console.log('  Read-only mode: GET routes are public; mutations require the write token.');
   }
@@ -216,9 +249,9 @@ export const spec: CommandDescription = {
     { command: 'loom web --no-open --read-only', description: 'Launch without opening a browser, in read-only mode' },
   ],
   exitCodes: [
-    { code: 0, meaning: 'Dashboard started successfully' },
-    { code: 1, meaning: 'Port binding failed or loom not initialized' },
+    { code: 0, meaning: 'Dashboard started successfully (with or without a current project)' },
+    { code: 1, meaning: 'Port binding failed' },
   ],
-  errors: ['loom is not initialized — run `loom init` first', 'Port already in use'],
+  errors: ['Port already in use'],
   relationships: { prerequisites: ['init'], nextSteps: [] },
 };

@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import type { Express } from 'express';
 import type Database from 'better-sqlite3';
 import { EpicStore, AgentStore, ProjectRegistry, createDatabase, deriveBlocked, PolicyEngine, resolveRepoStatePaths } from '@loom-ai/core';
+import type { ProjectEntry } from '@loom-ai/core';
 import type { EpicCost } from '../../shared/types.js';
 import type { FleetCard, FleetStory, AutonomyLevel } from '../../shared/fleet.js';
 
@@ -30,6 +31,8 @@ export interface FleetDeps {
   db: Database.Database;
   /** Absolute path of the project the web server was launched in. Default: cwd. */
   projectRoot?: string;
+  /** Unified active + machine-default registry; falls back to ProjectRegistry.list(). */
+  unifiedRegistry?: Map<string, ProjectEntry>;
   // All other RouteDeps fields are accepted but unused (structural subtype).
   [key: string]: unknown;
 }
@@ -46,7 +49,7 @@ export function registerFleetRoutes(app: Express, deps: FleetDeps): void {
     );
 
     // Peer projects — same best-effort federation pattern as /api/status.
-    const registryEntries = new ProjectRegistry().list();
+    const registryEntries = deps.unifiedRegistry ? [...deps.unifiedRegistry.values()] : new ProjectRegistry().list();
     for (const entry of registryEntries) {
       if (entry.root === currentProjectRoot) continue;
       let peerLoomHome: string | undefined;

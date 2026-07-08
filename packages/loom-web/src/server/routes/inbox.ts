@@ -20,6 +20,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { Express } from 'express';
 import { EpicStore, AgentStore, ProjectRegistry, PolicyEngine, createDatabase, resolveRepoStatePaths } from '@loom-ai/core';
+import type { ProjectEntry } from '@loom-ai/core';
 import type { InboxEntry } from '../../shared/inbox.js';
 
 export interface InboxDeps {
@@ -27,6 +28,8 @@ export interface InboxDeps {
   agentStore: AgentStore;
   /** Absolute path of the project the web server was launched in. Default: cwd. */
   projectRoot?: string;
+  /** Unified active + machine-default registry; falls back to ProjectRegistry.list(). */
+  unifiedRegistry?: Map<string, ProjectEntry>;
   // All other RouteDeps fields are accepted but unused (structural subtype).
   [key: string]: unknown;
 }
@@ -42,7 +45,7 @@ export function registerInboxRoutes(app: Express, deps: InboxDeps): void {
     collectEntries(deps.epicStore, deps.agentStore, currentProjectRoot, now, entries);
 
     // Peer projects — best-effort federation, same pattern as /api/status.
-    const registryEntries = new ProjectRegistry().list();
+    const registryEntries = deps.unifiedRegistry ? [...deps.unifiedRegistry.values()] : new ProjectRegistry().list();
     for (const entry of registryEntries) {
       if (entry.root === currentProjectRoot) continue;
       const peerLoomDir = path.join(entry.root, '.loom');

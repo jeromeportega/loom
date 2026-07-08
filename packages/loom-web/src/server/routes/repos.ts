@@ -19,6 +19,7 @@ import {
   deriveBlocked,
   STANDALONE_KIND,
 } from '@loom-ai/core';
+import type { ProjectEntry } from '@loom-ai/core';
 import type {
   RepoSummary,
   ReposResponse,
@@ -30,8 +31,15 @@ import type {
 } from '../../shared/types.js';
 
 export interface RepoDeps {
-  db: Database.Database;
-  projectRoot: string;
+  /** null when no current project resolved. */
+  db: Database.Database | null;
+  /** null when no current project resolved. */
+  projectRoot: string | null;
+  /**
+   * Pre-computed unified registry (active + machine-default loom_homes merged).
+   * When omitted, falls back to ProjectRegistry.list() for backward compatibility.
+   */
+  unifiedRegistry?: Map<string, ProjectEntry>;
 }
 
 const STALL_ACTIONS = ['worker_timeout_warn', 'worker_watchdog_warn'];
@@ -99,15 +107,22 @@ function countByStatus(
 export function registerRepoRoutes(app: Express, deps: RepoDeps): void {
   const { projectRoot } = deps;
 
+  /** Returns all registry entries from the unified registry, or falls back to ProjectRegistry. */
+  function getRegistryEntries(): ProjectEntry[] {
+    return deps.unifiedRegistry
+      ? [...deps.unifiedRegistry.values()]
+      : new ProjectRegistry().list();
+  }
+
   /** Returns the first registry entry whose basename matches slug, or null. */
-  function resolveEntry(slug: string): { root: string; registeredAt: string } | null {
-    return new ProjectRegistry().list().find(e => path.basename(e.root) === slug) ?? null;
+  function resolveEntry(slug: string): ProjectEntry | null {
+    return getRegistryEntries().find(e => path.basename(e.root) === slug) ?? null;
   }
 
   /**
    * Opens the DB for a project root. Returns the current-project DB when root
-   * matches projectRoot (no file I/O). Opens a fresh connection for peer
-   * projects; caller must close() it in a finally block.
+   * matches projectRoot and db is available (no file I/O). Opens a fresh
+   * connection for peer projects; caller must close() it in a finally block.
    *
    * Returns null when a registered peer repo has no `.loom` state DB on disk.
    * `createDatabase` mkdirs the directory, creates the file, and runs
@@ -116,7 +131,7 @@ export function registerRepoRoutes(app: Express, deps: RepoDeps): void {
    * `/api/status` and `/api/projects` peer-DB opens already use).
    */
   function openDb(root: string): { db: Database.Database; close: () => void } | null {
-    if (root === projectRoot) {
+    if (root === projectRoot && deps.db !== null) {
       return { db: deps.db, close: () => {} };
     }
     let policy: { loom_home?: string } = {};
@@ -140,9 +155,9 @@ export function registerRepoRoutes(app: Express, deps: RepoDeps): void {
     }
   }
 
-  // GET /api/repos — list all registered repos
+  // GET /api/repos — list all registered repos (union of active + machine-default registries)
   app.get('/api/repos', (_req, res) => {
-    const entries = new ProjectRegistry().list();
+    const entries = getRegistryEntries();
     const repos: RepoSummary[] = entries.map(entry => ({
       slug: path.basename(entry.root),
       root: entry.root,
