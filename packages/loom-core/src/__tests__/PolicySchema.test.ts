@@ -69,6 +69,72 @@ describe('adversarial_review_model — non-string rejected', () => {
   });
 });
 
+// ─── skill_judge_min_score ────────────────────────────────────────────────────
+
+describe('skill_judge_min_score — optional number field, bounded 0-10', () => {
+  it('accepts an in-range value and round-trips it', () => {
+    const result = PolicySchema.parse({ agents: { skill_judge_min_score: 7 } });
+    assert.strictEqual(result.agents.skill_judge_min_score, 7);
+  });
+
+  it('accepts the boundary values 0 and 10', () => {
+    assert.strictEqual(PolicySchema.parse({ agents: { skill_judge_min_score: 0 } }).agents.skill_judge_min_score, 0);
+    assert.strictEqual(PolicySchema.parse({ agents: { skill_judge_min_score: 10 } }).agents.skill_judge_min_score, 10);
+  });
+
+  it('is undefined when absent (no default)', () => {
+    const result = PolicySchema.parse({ agents: {} });
+    assert.strictEqual(result.agents.skill_judge_min_score, undefined);
+  });
+
+  it('rejects a value above 10 (would reject every candidate forever)', () => {
+    assert.throws(
+      () => PolicySchema.parse({ agents: { skill_judge_min_score: 11 } }),
+      (err: unknown) => err instanceof ZodError
+    );
+  });
+
+  it('rejects a negative value', () => {
+    assert.throws(
+      () => PolicySchema.parse({ agents: { skill_judge_min_score: -1 } }),
+      (err: unknown) => err instanceof ZodError
+    );
+  });
+
+  it('rejects a string value with a ZodError', () => {
+    assert.throws(
+      () => PolicySchema.parse({ agents: { skill_judge_min_score: 'high' } }),
+      (err: unknown) => err instanceof ZodError
+    );
+  });
+});
+
+// ─── prune_orphan_worktrees ───────────────────────────────────────────────────
+
+describe('prune_orphan_worktrees — enum field with default', () => {
+  it('accepts "off" and round-trips it', () => {
+    const result = PolicySchema.parse({ agents: { prune_orphan_worktrees: 'off' } });
+    assert.strictEqual(result.agents.prune_orphan_worktrees, 'off');
+  });
+
+  it('accepts "on" and round-trips it', () => {
+    const result = PolicySchema.parse({ agents: { prune_orphan_worktrees: 'on' } });
+    assert.strictEqual(result.agents.prune_orphan_worktrees, 'on');
+  });
+
+  it('defaults to "on" when absent', () => {
+    const result = PolicySchema.parse({ agents: {} });
+    assert.strictEqual(result.agents.prune_orphan_worktrees, 'on');
+  });
+
+  it('rejects an invalid enum value "maybe" with a ZodError', () => {
+    assert.throws(
+      () => PolicySchema.parse({ agents: { prune_orphan_worktrees: 'maybe' } }),
+      (err: unknown) => err instanceof ZodError
+    );
+  });
+});
+
 // ─── Schema YAML assertions ───────────────────────────────────────────────────
 
 describe('adversarial_review_model — policy.schema.yaml content', () => {
@@ -120,6 +186,68 @@ describe('adversarial_review_model — policy.schema.yaml content', () => {
     assert.ok(
       !fieldBlock.includes('default:'),
       'adversarial_review_model must not have a default value in the schema'
+    );
+  });
+});
+
+// ─── Five removed fields: silent strip contract (story-084-004) ──────────────
+//
+// The five fields removed by story-084-001 (worktree_isolation, require_human_pr_merge,
+// skill_promote_after, skill_demote_failure_ratio, skill_demote_min_samples) must
+// be silently stripped by Zod's default (non-strict) object parsing — no error,
+// no presence on the parsed result, and no corruption of other fields' defaults.
+
+describe('PolicySchema — five removed fields are silently stripped (story-084-004)', () => {
+  const REMOVED_FIELDS = [
+    'worktree_isolation',
+    'require_human_pr_merge',
+    'skill_promote_after',
+    'skill_demote_failure_ratio',
+    'skill_demote_min_samples',
+  ] as const;
+
+  const INPUT_WITH_REMOVED_FIELDS = {
+    agents: {
+      worktree_isolation: true,
+      require_human_pr_merge: true,
+      skill_promote_after: 3,
+      skill_demote_failure_ratio: 0.5,
+      skill_demote_min_samples: 3,
+    },
+  };
+
+  it('parses without throwing even when all five removed fields are present', () => {
+    assert.doesNotThrow(
+      () => PolicySchema.parse(INPUT_WITH_REMOVED_FIELDS),
+      'PolicySchema.parse must not throw when all five removed fields are set',
+    );
+  });
+
+  for (const field of REMOVED_FIELDS) {
+    it(`removed field "${field}" is absent from the parsed result`, () => {
+      const result = PolicySchema.parse(INPUT_WITH_REMOVED_FIELDS);
+      assert.ok(
+        !(field in result.agents),
+        `"${field}" must not appear on the parsed agents object (Zod strips unknown keys)`,
+      );
+    });
+  }
+
+  it('agents.max_concurrent equals its declared default (5) — strip does not corrupt other fields', () => {
+    const result = PolicySchema.parse(INPUT_WITH_REMOVED_FIELDS);
+    assert.strictEqual(
+      result.agents.max_concurrent,
+      5,
+      'max_concurrent must equal 5 (its schema default) after stripping the removed fields',
+    );
+  });
+
+  it('agents.prune_orphan_worktrees equals its declared default ("on") — strip does not corrupt new fields', () => {
+    const result = PolicySchema.parse(INPUT_WITH_REMOVED_FIELDS);
+    assert.strictEqual(
+      result.agents.prune_orphan_worktrees,
+      'on',
+      'prune_orphan_worktrees must equal "on" (its schema default) after stripping the removed fields',
     );
   });
 });

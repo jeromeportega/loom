@@ -76,10 +76,10 @@ describe('loadEnvLayer — mapping happy path', () => {
     assert.equal(typeof get(tree, 'agents.max_concurrent'), 'number');
   });
 
-  it('LOOM_AGENTS_WORKTREE_ISOLATION (boolean) → agents.worktree_isolation', () => {
-    const { tree } = loadEnvLayer({ LOOM_AGENTS_WORKTREE_ISOLATION: 'false' });
-    assert.equal(get(tree, 'agents.worktree_isolation'), false);
-    assert.equal(typeof get(tree, 'agents.worktree_isolation'), 'boolean');
+  it('LOOM_CROSS_REPO_ENABLED (boolean) → cross_repo.enabled', () => {
+    const { tree } = loadEnvLayer({ LOOM_CROSS_REPO_ENABLED: 'false' });
+    assert.equal(get(tree, 'cross_repo.enabled'), false);
+    assert.equal(typeof get(tree, 'cross_repo.enabled'), 'boolean');
   });
 
   it('LOOM_MCP_REGISTRY → mcp.registry', () => {
@@ -103,13 +103,13 @@ describe('loadEnvLayer — mapping happy path', () => {
 
 describe('loadEnvLayer — coercion against target zod field', () => {
   it('boolean field: "true" → true', () => {
-    const { tree } = loadEnvLayer({ LOOM_AGENTS_WORKTREE_ISOLATION: 'true' });
-    assert.strictEqual(get(tree, 'agents.worktree_isolation'), true);
+    const { tree } = loadEnvLayer({ LOOM_CROSS_REPO_ENABLED: 'true' });
+    assert.strictEqual(get(tree, 'cross_repo.enabled'), true);
   });
 
   it('boolean field: "false" → false', () => {
-    const { tree } = loadEnvLayer({ LOOM_AGENTS_WORKTREE_ISOLATION: 'false' });
-    assert.strictEqual(get(tree, 'agents.worktree_isolation'), false);
+    const { tree } = loadEnvLayer({ LOOM_CROSS_REPO_ENABLED: 'false' });
+    assert.strictEqual(get(tree, 'cross_repo.enabled'), false);
   });
 
   it('boolean field: bad value → ignored with warning, key absent', () => {
@@ -117,8 +117,8 @@ describe('loadEnvLayer — coercion against target zod field', () => {
     const orig = console.warn;
     console.warn = () => { warned = true; };
     try {
-      const { tree } = loadEnvLayer({ LOOM_AGENTS_WORKTREE_ISOLATION: 'yes' });
-      assert.ok(!hasKey(tree, 'agents.worktree_isolation'), 'bad boolean must be absent');
+      const { tree } = loadEnvLayer({ LOOM_CROSS_REPO_ENABLED: 'yes' });
+      assert.ok(!hasKey(tree, 'cross_repo.enabled'), 'bad boolean must be absent');
     } finally { console.warn = orig; }
     assert.ok(warned, 'must emit a warning for bad boolean');
   });

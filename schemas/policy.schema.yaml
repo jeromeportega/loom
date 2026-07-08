@@ -77,14 +77,6 @@ properties:
           common case) loom uses this value as the global fallback so
           parallel `loom run`s on one machine don't collectively run
           N × max_concurrent workers.
-      worktree_isolation:
-        type: boolean
-        default: true
-        description: "Each story agent runs in its own git worktree"
-      require_human_pr_merge:
-        type: boolean
-        default: true
-        description: "Agents open PRs but cannot merge them"
       llm_backend:
         type: string
         enum: [claude-cli, cursor-cli]
@@ -126,20 +118,10 @@ properties:
       budget_tokens_per_story:
         type: integer
         description: "Optional token budget per story agent (for cost control)"
-      skill_promote_after:
-        type: integer
-        default: 3
-        description: "Successful canary injections before a candidate skill is promoted to active"
-      skill_demote_failure_ratio:
-        type: number
-        default: 0.5
-        description: "Failure ratio at which an active skill is demoted to disabled"
-      skill_demote_min_samples:
-        type: integer
-        default: 3
-        description: "Minimum injections before demotion can trigger (avoids tiny-sample noise)"
       skill_judge_min_score:
         type: number
+        minimum: 0
+        maximum: 10
         default: 6
         description: "A generated skill scoring below this (0-10) is rejected by the judge"
       min_brief_quality_score:

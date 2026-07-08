@@ -356,8 +356,6 @@ export const PolicySchema = z.object({
   agents: z
     .object({
       max_concurrent: z.number().int().min(1).default(5),
-      worktree_isolation: z.boolean().default(true),
-      require_human_pr_merge: z.boolean().default(true),
       // LLM backend for planning. Both are session-based (no API key, no API
       // billing) and use the developer's existing Claude Code or Cursor login.
       llm_backend: z.enum(['claude-cli', 'cursor-cli']).default('claude-cli'),
@@ -651,6 +649,15 @@ export const PolicySchema = z.object({
       adversarial_review_model: z.string().optional(),
       // Model ID for the independent adversarial review pass run by loom finalize.
       // When absent or empty, no second pass runs and behavior is identical to baseline.
+      // Minimum judge score for SkillGenerator to accept a candidate (0-10). When
+      // absent, SkillGenerator falls back to its hardcoded default of 6. Bounded to
+      // the judge's 0-10 rubric so an out-of-range value can't silently accept every
+      // candidate (< 1) or reject every candidate forever (> 10).
+      skill_judge_min_score: z.number().min(0).max(10).optional(),
+      // Controls whether the Supervisor prunes orphaned worktrees at run end.
+      // 'on' (default) — prune done/merged worktrees after finalizers run.
+      // 'off'          — skip pruning (e.g. when debugging a completed worktree).
+      prune_orphan_worktrees: z.enum(['off', 'on']).default('on'),
     })
     .default({}),
   mcp: z

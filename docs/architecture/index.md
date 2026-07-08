@@ -272,8 +272,6 @@ const PolicySchema = z.object({
   }),
   agents: z.object({
     max_concurrent: z.number().int().min(1).max(10).default(3),
-    worktree_isolation: z.boolean().default(true),
-    require_human_pr_merge: z.boolean().default(true),
     model: z.string().default('claude-sonnet-4-6'),
     budget_tokens_per_story: z.number().optional(),
   }),

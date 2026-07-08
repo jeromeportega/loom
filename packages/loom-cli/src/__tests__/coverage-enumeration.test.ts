@@ -196,8 +196,8 @@ describe('operatorKnobs — happy path', () => {
     assert.ok(knobs.has('git.protected_branches'), 'expected "git.protected_branches" in knobs');
   });
 
-  it('includes agents.worktree_isolation', () => {
-    assert.ok(knobs.has('agents.worktree_isolation'), 'expected "agents.worktree_isolation"');
+  it('includes agents.model', () => {
+    assert.ok(knobs.has('agents.model'), 'expected "agents.model" in knobs');
   });
 
   it('includes git.allowed_remotes', () => {

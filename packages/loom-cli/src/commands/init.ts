@@ -506,12 +506,6 @@ agents:
   # Max number of story agents running simultaneously
   max_concurrent: 5
 
-  # Each story agent runs in its own git worktree
-  worktree_isolation: true
-
-  # Agents open PRs but cannot merge them — human reviews required
-  require_human_pr_merge: true
-
   # LLM backend for planning and skill generation. Both are session-based
   # (no API key, no API billing) and use the developer's existing login.
   #   claude-cli — session-based via the Claude Code login.
