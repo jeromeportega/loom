@@ -227,8 +227,8 @@ describe('runRecover — routing (finalizing)', () => {
     );
     assert.equal(exitCode, 1, 'publish_pending must exit 1 — epic still not done');
     assert.ok(
-      errors.some((e) => /loom publish/.test(e)),
-      'publish_pending must print guidance to run loom publish'
+      errors.some((e) => /loom recover/.test(e)),
+      'publish_pending must print guidance to run loom recover'
     );
   });
 });

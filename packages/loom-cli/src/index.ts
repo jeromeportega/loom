@@ -246,11 +246,11 @@ export function buildProgram(): Command {
 
   // ─── loom reconcile (deprecated alias → loom recover) ────────────────────────
   program.command('reconcile', { hidden: true })
-    .allowUnknownOption()
     .argument('<epic-id>', 'Epic to recover')
-    .action(async (epicId: string) => {
+    .option('--pr <url>', 'PR URL for squash-merge path')
+    .action(async (epicId: string, opts: { pr?: string }) => {
       process.stderr.write(`→ use loom recover ${epicId}\n`);
-      await runRecover(epicId);
+      await runRecover(epicId, { pr: opts.pr });
     });
 
   // ─── loom sync ───────────────────────────────────────────────────────────────

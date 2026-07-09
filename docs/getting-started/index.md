@@ -152,8 +152,8 @@ loom migrate           # ensures loom-home exists, migrates DB + planning scratc
 loom migrate --dry-run # preview what would be migrated without touching anything
 ```
 
-Re-running `loom migrate` is idempotent — an already-migrated repo reports
-"nothing to do". Net-new installs can ignore `loom migrate` entirely; their
+Re-running loom migrate is idempotent — an already-migrated repo reports
+"nothing to do". Net-new installs can ignore loom migrate entirely; their
 first `loom run` triggers the same migration automatically.
 
 ## Monitoring cost with `loom cost`
