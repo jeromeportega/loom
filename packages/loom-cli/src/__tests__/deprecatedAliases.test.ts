@@ -256,14 +256,14 @@ describe('deprecated alias stubs — unknown options are tolerated', () => {
     );
   });
 
-  it('loom reconcile with unknown --pr option still writes redirect notice', async () => {
+  it('loom reconcile with --pr option still writes redirect notice', async () => {
     const result = await captureAlias(() =>
       buildProgram().parseAsync(['node', 'loom', 'reconcile', 'epic-009', '--pr', 'https://example.com/pr/2'])
     );
     const allStderr = result.stderrWrites.join('');
     assert.ok(
       allStderr.includes('→ use loom recover epic-009'),
-      `redirect must appear even with extra options; got: ${JSON.stringify(allStderr)}`
+      `redirect must appear even with --pr; got: ${JSON.stringify(allStderr)}`
     );
   });
 
@@ -356,8 +356,11 @@ describe('runProjects — no argument (existing behavior unchanged)', () => {
 describe('runProjects — with project-root argument', () => {
   let projectDir: string;
   let loomHomeForProject: string;
+  let prevLoomHomeInner: string | undefined;
 
   beforeEach(() => {
+    // Save LOOM_HOME set by the outer beforeEach so we can restore it symmetrically.
+    prevLoomHomeInner = process.env.LOOM_HOME;
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-projdir-'));
     loomHomeForProject = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-projhome-'));
     // Point LOOM_HOME to our test home so the registry is isolated
@@ -367,6 +370,10 @@ describe('runProjects — with project-root argument', () => {
   afterEach(() => {
     fs.rmSync(projectDir, { recursive: true, force: true });
     fs.rmSync(loomHomeForProject, { recursive: true, force: true });
+    // Restore LOOM_HOME to what the outer beforeEach set, so the outer afterEach
+    // runs resetDatabaseForTest() against the correct home.
+    if (prevLoomHomeInner === undefined) delete process.env.LOOM_HOME;
+    else process.env.LOOM_HOME = prevLoomHomeInner;
   });
 
   it('shows only the matching project when root is provided', () => {

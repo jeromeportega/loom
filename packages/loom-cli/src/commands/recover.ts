@@ -32,7 +32,7 @@ export async function runRecover(epicId: string, opts?: RecoverCommandOptions): 
 
     if (epic.status === 'finalizing' || epic.status === 'publish_pending') {
       if (opts?.pr) {
-        console.warn('  Note: --pr is only used on the reconcile path; ignored for finalizing/publish_pending epics.');
+        console.error('  Note: --pr is only used on the reconcile path; ignored for finalizing/publish_pending epics.');
       }
 
       let result: FinalizeResult;
@@ -121,7 +121,9 @@ export async function runRecover(epicId: string, opts?: RecoverCommandOptions): 
       process.exit(1);
     }
 
-    // Default: delegate to reconcile for merged-outside-loom and all other states
+    // Default: delegate to reconcile for merged-outside-loom and all other states.
+    // runReconcile uses the same global DB singleton (still open here); the if (db.open)
+    // guard in finally below prevents a double-close if runReconcile closes it first.
     await runReconcile(epicId, { pr: opts?.pr });
   } finally {
     if (db.open) db.close();
@@ -130,6 +132,7 @@ export async function runRecover(epicId: string, opts?: RecoverCommandOptions): 
 
 export const spec: CommandDescription = {
   name: 'recover',
+  audience: 'operator',
   summary: 'Drive a stuck epic to done (auto-detects finalizing, publish_pending, or merged-outside-loom state)',
   whenToUse: 'Use when an epic is stranded: in finalizing, publish_pending, or merged outside loom.',
   arguments: [
