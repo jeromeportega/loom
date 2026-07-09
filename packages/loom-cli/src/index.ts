@@ -263,7 +263,7 @@ export function buildProgram(): Command {
     });
 
   // ─── loom release ────────────────────────────────────────────────────────────
-  applySpec(program.command('release'), releaseSpec)
+  applySpec(program.command('release', { hidden: true }), releaseSpec)
     .action((version: string) => {
       runRelease(version);
     });
@@ -332,7 +332,7 @@ export function buildProgram(): Command {
     });
 
   // ─── loom pull-guidance ──────────────────────────────────────────────────────
-  applySpec(program.command('pull-guidance'), pullGuidanceSpec)
+  applySpec(program.command('pull-guidance', { hidden: true }), pullGuidanceSpec)
     .action((storyId: string, opts: { json?: boolean }) => {
       runPullGuidance(storyId, { json: opts.json });
     });
@@ -344,7 +344,7 @@ export function buildProgram(): Command {
     });
 
   // ─── loom migrate ────────────────────────────────────────────────────────────
-  applySpec(program.command('migrate'), migrateSpec)
+  applySpec(program.command('migrate', { hidden: true }), migrateSpec)
     .action((opts: { dryRun?: boolean; relocateCommittedArtifacts?: boolean }) => {
       runMigrate({ dryRun: opts.dryRun, relocateCommittedArtifacts: opts.relocateCommittedArtifacts });
     });
@@ -395,19 +395,19 @@ export function buildProgram(): Command {
     });
 
   // ─── loom scan ──────────────────────────────────────────────────────────────
-  applySpec(program.command('scan'), scanSpec)
+  applySpec(program.command('scan', { hidden: true }), scanSpec)
     .action(async (opts: { json?: boolean; project?: string }) => {
       await runScanCommand({ json: opts.json, project: opts.project });
     });
 
   // ─── loom opportunities ─────────────────────────────────────────────────────
-  applySpec(program.command('opportunities'), specOpportunities)
+  applySpec(program.command('opportunities', { hidden: true }), specOpportunities)
     .action((opts: { json?: boolean }) => {
       runOpportunitiesCommand({ json: opts.json });
     });
 
   // ─── loom propose ───────────────────────────────────────────────────────────
-  applySpec(program.command('propose'), proposeSpec)
+  applySpec(program.command('propose', { hidden: true }), proposeSpec)
     .action(async (opts: { topLessons?: string | number; topOpps?: string | number; json?: boolean }) => {
       let topLessons: number | undefined;
       if (opts.topLessons !== undefined) {
