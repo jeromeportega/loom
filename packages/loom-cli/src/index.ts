@@ -139,6 +139,7 @@ export function buildProgram(): Command {
 
   // ─── loom epic (deprecated alias → loom weave) ───────────────────────────────
   program.command('epic', { hidden: true })
+    .allowUnknownOption()
     .argument('<brief>', 'Brief for the epic')
     .action(async (brief: string) => {
       process.stderr.write('→ use loom weave <brief>\n');
@@ -245,6 +246,7 @@ export function buildProgram(): Command {
 
   // ─── loom reconcile (deprecated alias → loom recover) ────────────────────────
   program.command('reconcile', { hidden: true })
+    .allowUnknownOption()
     .argument('<epic-id>', 'Epic to recover')
     .action(async (epicId: string) => {
       process.stderr.write(`→ use loom recover ${epicId}\n`);
@@ -259,6 +261,7 @@ export function buildProgram(): Command {
 
   // ─── loom publish (deprecated alias → loom recover) ──────────────────────────
   program.command('publish', { hidden: true })
+    .allowUnknownOption()
     .argument('<epic-id>', 'Epic to recover')
     .action(async (epicId: string) => {
       process.stderr.write(`→ use loom recover ${epicId}\n`);
@@ -267,6 +270,7 @@ export function buildProgram(): Command {
 
   // ─── loom finalize (deprecated alias → loom recover) ─────────────────────────
   program.command('finalize', { hidden: true })
+    .allowUnknownOption()
     .argument('<epic-id>', 'Epic to recover')
     .action(async (epicId: string) => {
       process.stderr.write(`→ use loom recover ${epicId}\n`);
@@ -350,6 +354,7 @@ export function buildProgram(): Command {
 
   // ─── loom project (deprecated alias → loom projects) ─────────────────────────
   program.command('project', { hidden: true })
+    .allowUnknownOption()
     .argument('[project-root]', 'Project root to show')
     .action((root: string | undefined) => {
       process.stderr.write('→ use loom projects\n');

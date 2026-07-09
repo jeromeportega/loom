@@ -292,8 +292,9 @@ describe('loom epic --force', () => {
 });
 
 describe('loom epic commander wiring', () => {
-  it('exposes --force on the epic command help', () => {
-    const help = execFileSync('node', [LOOM_CLI, 'epic', '--help'], {
+  it('exposes --force on the weave command help (epic is a deprecated alias)', () => {
+    // loom epic is now a hidden deprecated alias → loom weave carries --force
+    const help = execFileSync('node', [LOOM_CLI, 'weave', '--help'], {
       cwd: tmpDir,
       encoding: 'utf8',
     });

@@ -20,7 +20,7 @@ function loadLatestEpic(projectRoot: string): { id: string; status: string; titl
     try {
       const epics = new EpicStore(db).list();
       const sorted = [...epics].sort((a, b) =>
-        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0
+        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : 1
       );
       const last = sorted[sorted.length - 1];
       if (last) return { id: last.id, status: last.status, title: last.title };

@@ -59,8 +59,10 @@ async function captureAlias(fn: () => unknown): Promise<AliasCapture> {
 
   class ExitSignal extends Error {}
 
-  stderrObj.write = (chunk: string | Uint8Array) => {
+  stderrObj.write = (chunk: string | Uint8Array, ...rest: unknown[]) => {
     stderrWrites.push(chunk.toString());
+    const last = rest[rest.length - 1];
+    if (typeof last === 'function') (last as () => void)();
     return true;
   };
   (process as unknown as { exit: (c?: number) => never }).exit = (c?: number) => {
@@ -236,6 +238,43 @@ describe('loom project (alias) — redirect notice', () => {
     assert.ok(
       allLogs.includes('No loom projects registered'),
       `expected no-projects message; got logs: ${JSON.stringify(result.logs)}`
+    );
+  });
+});
+
+// ─── Unit: unknown options do not crash alias stubs ───────────────────────────
+
+describe('deprecated alias stubs — unknown options are tolerated', () => {
+  it('loom publish with unknown --pr option still writes redirect notice', async () => {
+    const result = await captureAlias(() =>
+      buildProgram().parseAsync(['node', 'loom', 'publish', 'epic-007', '--pr', 'https://example.com/pr/1'])
+    );
+    const allStderr = result.stderrWrites.join('');
+    assert.ok(
+      allStderr.includes('→ use loom recover epic-007'),
+      `redirect must appear even with extra options; got: ${JSON.stringify(allStderr)}`
+    );
+  });
+
+  it('loom reconcile with unknown --pr option still writes redirect notice', async () => {
+    const result = await captureAlias(() =>
+      buildProgram().parseAsync(['node', 'loom', 'reconcile', 'epic-009', '--pr', 'https://example.com/pr/2'])
+    );
+    const allStderr = result.stderrWrites.join('');
+    assert.ok(
+      allStderr.includes('→ use loom recover epic-009'),
+      `redirect must appear even with extra options; got: ${JSON.stringify(allStderr)}`
+    );
+  });
+
+  it('loom epic with unknown --verbose option still writes redirect notice', async () => {
+    const result = await captureAlias(() =>
+      buildProgram().parseAsync(['node', 'loom', 'epic', 'some brief', '--verbose'])
+    );
+    const allStderr = result.stderrWrites.join('');
+    assert.ok(
+      allStderr.includes('→ use loom weave <brief>'),
+      `redirect must appear even with extra options; got: ${JSON.stringify(allStderr)}`
     );
   });
 });
