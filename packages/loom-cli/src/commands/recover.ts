@@ -30,6 +30,10 @@ export async function runRecover(epicId: string, opts?: RecoverCommandOptions): 
   }
 
   if (epic.status === 'finalizing' || epic.status === 'publish_pending') {
+    if (opts?.pr) {
+      console.warn('  Note: --pr is only used on the reconcile path; ignored for finalizing/publish_pending epics.');
+    }
+
     let result: FinalizeResult;
     if (opts?._resume) {
       result = await opts._resume(epicId);
@@ -58,6 +62,7 @@ export async function runRecover(epicId: string, opts?: RecoverCommandOptions): 
           const live = PolicyEngine.load(loomDir).policyData;
           return {
             allowedRemotes: live.git.allowed_remotes,
+            prStrategy: live.agents.pr_strategy,
             testCommand: live.agents.test_command,
             testCommands: live.agents.test_commands,
             smokeCommand: live.agents.smoke_command,
@@ -72,14 +77,17 @@ export async function runRecover(epicId: string, opts?: RecoverCommandOptions): 
     }
 
     console.log('');
-    if (result.status === 'merged') {
+    if (result.status === 'merged' || result.status === 'partial') {
       if (result.url) console.log(`  PR: ${result.url}`);
+      if (result.status === 'partial') console.log('  Note: finalization completed with conflicts in some stories.');
       console.log(`  ${result.note}`);
       console.log('');
       return;
     }
     if (result.status === 'skipped') {
-      console.log(`  Epic ${epicId} finalization skipped (nothing to do).`);
+      const currentEpic = epicStore.get(epicId);
+      const currentStatus = currentEpic?.status ?? 'unknown';
+      console.log(`  Epic ${epicId} finalization skipped — current status: ${currentStatus}`);
       console.log('');
       return;
     }

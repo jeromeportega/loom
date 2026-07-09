@@ -156,6 +156,22 @@ describe('runRecover — routing (finalizing)', () => {
     assert.equal(exitCode, 1);
     assert.ok(errors.some((e) => /push failed/.test(e)), 'failure note must be printed');
   });
+
+  it('exits 0 when resume() returns partial (finalized with conflicts)', async () => {
+    seedEpic('epic-001', 'finalizing');
+    const { exitCode } = await capture(() =>
+      runRecover('epic-001', {
+        _resume: () => ({
+          status: 'partial',
+          conflicted: ['a.ts'],
+          merged: [],
+          cleaned: [],
+          note: 'finalized with conflicts',
+        }),
+      })
+    );
+    assert.equal(exitCode, null, 'partial result must exit 0, not 1');
+  });
 });
 
 // ─── Routing: publish_pending → resume() ─────────────────────────────────────
@@ -174,6 +190,23 @@ describe('runRecover — routing (publish_pending)', () => {
     );
     assert.ok(resumeCalled, '_resume must be called for a publish_pending epic');
     assert.equal(exitCode, null, 'exits 0 on successful resume');
+  });
+
+  it('exits 1 and prints the note when resume() fails for a publish_pending epic', async () => {
+    seedEpic('epic-001', 'publish_pending');
+    const { exitCode, errors } = await capture(() =>
+      runRecover('epic-001', {
+        _resume: () => ({
+          status: 'failed',
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: 'push failed: timeout',
+        }),
+      })
+    );
+    assert.equal(exitCode, 1, 'failed resume for publish_pending must exit 1');
+    assert.ok(errors.some((e) => /push failed: timeout/.test(e)), 'failure note must appear in stderr');
   });
 });
 
