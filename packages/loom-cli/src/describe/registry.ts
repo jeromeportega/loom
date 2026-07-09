@@ -35,6 +35,7 @@ import { specSearch as retrieveSearchSpec, specRead as retrieveReadSpec } from '
 import { spec as costSpec } from '../commands/cost.js';
 import { spec as finalizeSpec } from '../commands/finalize.js';
 import { syncSpec } from '../commands/sync.js';
+import { spec as recoverSpec } from '../commands/recover.js';
 // <command specs>
 
 /**
@@ -84,6 +85,7 @@ export function collectSpecs(): CommandDescription[] {
     costSpec,
     finalizeSpec,
     syncSpec,
+    recoverSpec,
     // <command specs>
   ];
 }
