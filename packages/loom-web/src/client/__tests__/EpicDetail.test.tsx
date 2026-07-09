@@ -352,7 +352,7 @@ describe('EpicDetail — Approve mutation', () => {
 // ─── Reject mutation UX ───────────────────────────────────────────────────────
 
 describe('EpicDetail — Reject mutation', () => {
-  it('calls apiPost with the reject endpoint on click', async () => {
+  it('calls apiPost with the reject endpoint (no body) when the reason is blank', async () => {
     renderEpicDetail();
 
     fireEvent.click(screen.getByRole('button', { name: /reject/i }));
@@ -360,6 +360,22 @@ describe('EpicDetail — Reject mutation', () => {
     await waitFor(() => {
       expect(vi.mocked(apiModule.apiPost)).toHaveBeenCalledWith(
         '/api/epics/epic-001/reject'
+      );
+    });
+  });
+
+  it('threads the trimmed reason into the reject POST body when filled', async () => {
+    renderEpicDetail();
+
+    fireEvent.change(screen.getByTestId('reject-reason-input'), {
+      target: { value: '  scope too broad  ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /reject/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked(apiModule.apiPost)).toHaveBeenCalledWith(
+        '/api/epics/epic-001/reject',
+        { reason: 'scope too broad' }
       );
     });
   });

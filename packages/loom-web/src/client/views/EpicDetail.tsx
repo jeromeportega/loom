@@ -73,6 +73,7 @@ export function EpicDetail() {
 
   const [approveState, setApproveState] = useState<MutationState>({ pending: false, error: null });
   const [rejectState, setRejectState] = useState<MutationState>({ pending: false, error: null });
+  const [rejectReason, setRejectReason] = useState('');
 
   async function handleApprove() {
     setApproveState({ pending: true, error: null });
@@ -92,7 +93,12 @@ export function EpicDetail() {
   async function handleReject() {
     setRejectState({ pending: true, error: null });
     try {
-      const res = await apiPost(`/api/epics/${encodeURIComponent(epicId)}/reject`);
+      // Thread the optional reason (matching `loom reject --reason`) so a plan
+      // rejected from the dashboard records WHY in the audit trail. Omit the body
+      // entirely when blank so the no-reason call stays a bare POST.
+      const trimmed = rejectReason.trim();
+      const path = `/api/epics/${encodeURIComponent(epicId)}/reject`;
+      const res = trimmed ? await apiPost(path, { reason: trimmed }) : await apiPost(path);
       if (res.ok) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.epics(slug) });
         setRejectState({ pending: false, error: null });
@@ -126,46 +132,57 @@ export function EpicDetail() {
       )}
       {isPlanned && artifacts && <PlanningArtifactsPanel artifacts={artifacts} />}
       {isPlanned && (
-        <div className="flex gap-3 mb-6" data-testid="approve-reject-controls">
-          <div>
-            <Button
-              onClick={handleApprove}
-              disabled={approveState.pending}
-              data-testid="approve-button"
-            >
-              {approveState.pending && (
-                <span className="mr-1 animate-spin" data-testid="approve-spinner" aria-hidden>
-                  ⟳
-                </span>
+        <div className="mb-6" data-testid="approve-reject-controls">
+          <div className="flex gap-3">
+            <div>
+              <Button
+                onClick={handleApprove}
+                disabled={approveState.pending}
+                data-testid="approve-button"
+              >
+                {approveState.pending && (
+                  <span className="mr-1 animate-spin" data-testid="approve-spinner" aria-hidden>
+                    ⟳
+                  </span>
+                )}
+                Approve
+              </Button>
+              {approveState.error && (
+                <p className="text-destructive text-sm mt-1" data-testid="approve-error">
+                  {approveState.error}
+                </p>
               )}
-              Approve
-            </Button>
-            {approveState.error && (
-              <p className="text-destructive text-sm mt-1" data-testid="approve-error">
-                {approveState.error}
-              </p>
-            )}
-          </div>
-          <div>
-            <Button
-              variant="destructive"
-              onClick={handleReject}
-              disabled={rejectState.pending}
-              data-testid="reject-button"
-            >
-              {rejectState.pending && (
-                <span className="mr-1 animate-spin" data-testid="reject-spinner" aria-hidden>
-                  ⟳
-                </span>
+            </div>
+            <div>
+              <Button
+                variant="destructive"
+                onClick={handleReject}
+                disabled={rejectState.pending}
+                data-testid="reject-button"
+              >
+                {rejectState.pending && (
+                  <span className="mr-1 animate-spin" data-testid="reject-spinner" aria-hidden>
+                    ⟳
+                  </span>
+                )}
+                Reject
+              </Button>
+              {rejectState.error && (
+                <p className="text-destructive text-sm mt-1" data-testid="reject-error">
+                  {rejectState.error}
+                </p>
               )}
-              Reject
-            </Button>
-            {rejectState.error && (
-              <p className="text-destructive text-sm mt-1" data-testid="reject-error">
-                {rejectState.error}
-              </p>
-            )}
+            </div>
           </div>
+          <textarea
+            className="mt-3 w-full max-w-md rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
+            rows={2}
+            placeholder="Rejection reason (optional) — recorded in the audit log"
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            disabled={rejectState.pending}
+            data-testid="reject-reason-input"
+          />
         </div>
       )}
       <StoryList />

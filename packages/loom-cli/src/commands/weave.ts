@@ -29,7 +29,7 @@ export async function runWeave(
 
 export const spec: CommandDescription = {
   name: 'weave',
-  summary: 'Plan an epic from a brief using the same Analyst→PM→Architect pipeline as `loom epic`',
+  summary: 'Plan an epic from a brief using the Analyst→PM→Architect pipeline',
   whenToUse: 'Use when you have a clear feature idea to plan via the weave intake path. Pass a one-paragraph brief; loom runs the planning pipeline and outputs a structured epic YAML.',
   arguments: [
     { name: 'brief', type: 'string', required: true, description: 'One paragraph describing what to build' },

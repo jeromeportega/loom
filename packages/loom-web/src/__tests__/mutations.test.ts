@@ -136,6 +136,35 @@ describe('mutations — POST /api/epics/:id/reject', () => {
     const body = (await res.json()) as { status: string; epic_id: string };
     assert.equal(body.status, 'rejected');
     assert.equal(body.epic_id, 'epic-reject-001');
+
+    // The reason must actually persist, not just echo in the response. This is
+    // the seam a mocked-out client test can't see: if express.json() were ever
+    // mounted after the routes, or the body field renamed, the reason would
+    // silently drop while the 200 above stayed green. Assert both sinks —
+    // epics.reason and the audit_log row that backs the "recorded in the audit
+    // log" promise on the dashboard textarea.
+    const stored = db
+      .prepare('SELECT reason FROM epics WHERE id = ?')
+      .get('epic-reject-001') as { reason: string | null };
+    assert.equal(stored.reason, 'needs more scoping');
+    const audit = db
+      .prepare("SELECT detail FROM audit_log WHERE action = 'epic_rejected' AND command = ?")
+      .get('epic-reject-001') as { detail: string | null } | undefined;
+    assert.ok(audit, 'expected an epic_rejected audit_log row');
+    assert.deepEqual(JSON.parse(audit.detail as string), { reason: 'needs more scoping' });
+  });
+
+  it('happy path: blank/omitted reason → 200, reason persists as NULL', async () => {
+    new EpicStore(db).create('epic-reject-blank', 'No reason given');
+    const res = await fetch(`${baseUrl}/api/epics/epic-reject-blank/reject`, {
+      method: 'POST',
+      headers: withToken,
+    });
+    assert.equal(res.status, 200);
+    const stored = db
+      .prepare('SELECT reason FROM epics WHERE id = ?')
+      .get('epic-reject-blank') as { reason: string | null };
+    assert.equal(stored.reason, null);
   });
 
   it('auth failure: missing x-loom-token → 403', async () => {
