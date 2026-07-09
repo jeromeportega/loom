@@ -161,14 +161,14 @@ describe('buildManifest', () => {
     }
   });
 
-  it('returned manifest includes commands from collectSpecs()', () => {
+  it('returned manifest includes only operator-audience commands from collectSpecs()', () => {
     const program = new Command();
     const manifest = buildManifest(program);
-    const specs = collectSpecs();
+    const operatorSpecs = collectSpecs().filter((s) => (s.audience ?? 'operator') === 'operator');
     assert.equal(
       manifest.commands.length,
-      specs.length,
-      'manifest.commands must equal collectSpecs() count'
+      operatorSpecs.length,
+      'manifest.commands must equal operator-audience collectSpecs() count'
     );
   });
 

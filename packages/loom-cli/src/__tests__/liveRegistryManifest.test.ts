@@ -1,4 +1,4 @@
-// story-009-001: factory purity (AC4), publishSpec collected (AC2), manifest completeness (AC1, AC3).
+// story-009-001: factory purity (AC4), recoverSpec collected (AC2), manifest completeness (AC1, AC3).
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildProgram } from '../index.js';
@@ -32,39 +32,34 @@ describe('buildProgram factory purity (AC4 enabling refactor)', () => {
     assert.equal(program.name(), 'loom');
   });
 
-  it('registers publish as a top-level command', () => {
+  it('registers recover as a top-level command', () => {
     const names = program.commands.map((c) => c.name());
-    assert.ok(names.includes('publish'), `expected publish in top-level commands; got: ${names.join(', ')}`);
-  });
-
-  it('registers release as a top-level command', () => {
-    const names = program.commands.map((c) => c.name());
-    assert.ok(names.includes('release'), `expected release in top-level commands; got: ${names.join(', ')}`);
-  });
-
-  it('help text mentions publish (no user-facing regression)', () => {
-    assert.ok(program.helpInformation().includes('publish'), 'loom --help must mention publish');
-  });
-
-  it('help text mentions release (no user-facing regression)', () => {
-    assert.ok(program.helpInformation().includes('release'), 'loom --help must mention release');
+    assert.ok(names.includes('recover'), `expected recover in top-level commands; got: ${names.join(', ')}`);
   });
 });
 
-// ─── publish collected into collectSpecs (AC2) ───────────────────────────────
+// ─── recover collected into collectSpecs (AC2) ───────────────────────────────
 
-describe('collectSpecs includes publishSpec (AC2)', () => {
-  it('collectSpecs() returns a spec named "publish"', () => {
+describe('collectSpecs includes recoverSpec (AC2)', () => {
+  it('collectSpecs() returns a spec named "recover"', () => {
     const specs = collectSpecs();
     const names = specs.map((s) => s.name);
-    assert.ok(names.includes('publish'), `publish not found in collectSpecs(); got: ${names.join(', ')}`);
+    assert.ok(names.includes('recover'), `recover not found in collectSpecs(); got: ${names.join(', ')}`);
   });
 
-  it('publish spec has a non-empty summary', () => {
+  it('recover spec has a non-empty summary', () => {
     const specs = collectSpecs();
-    const pub = specs.find((s) => s.name === 'publish');
-    assert.ok(pub, 'publish spec must exist in collectSpecs()');
-    assert.ok(pub.summary.length > 0, 'publish spec summary must be non-empty');
+    const rec = specs.find((s) => s.name === 'recover');
+    assert.ok(rec, 'recover spec must exist in collectSpecs()');
+    assert.ok(rec.summary.length > 0, 'recover spec summary must be non-empty');
+  });
+
+  it('recover spec has operator audience (visible in loom describe)', () => {
+    const specs = collectSpecs();
+    const rec = specs.find((s) => s.name === 'recover');
+    assert.ok(rec, 'recover spec must exist in collectSpecs()');
+    const audience = rec.audience ?? 'operator';
+    assert.equal(audience, 'operator', 'recover must have operator audience so it appears in loom describe');
   });
 });
 
@@ -87,25 +82,34 @@ describe('buildManifest via live buildProgram() (AC1, AC3)', () => {
     assert.equal(manifest.source, 'live-commander-registry');
   });
 
-  it('manifest commands contains publish with non-empty summary (AC3)', () => {
-    const pub = manifest.commands.find((c) => c.name === 'publish');
-    assert.ok(pub, 'publish must appear in manifest.commands');
-    assert.ok(pub.summary.length > 0, 'publish CommandDescription must have a non-empty summary');
+  it('manifest commands contains recover with non-empty summary', () => {
+    const rec = manifest.commands.find((c) => c.name === 'recover');
+    assert.ok(rec, 'recover must appear in manifest.commands');
+    assert.ok(rec.summary.length > 0, 'recover CommandDescription must have a non-empty summary');
   });
 
-  it('manifest commands contains release with non-empty summary (AC3)', () => {
-    const rel = manifest.commands.find((c) => c.name === 'release');
-    assert.ok(rel, 'release must appear in manifest.commands');
-    assert.ok(rel.summary.length > 0, 'release CommandDescription must have a non-empty summary');
-  });
-
-  it('every live command enumerated by enumerateRegisteredCommands has a spec in the manifest (AC1)', () => {
-    const liveNames = enumerateRegisteredCommands(buildProgram());
+  it('manifest commands does not contain internal commands (publish, release, scan, epic, etc.)', () => {
+    const internalNames = ['publish', 'release', 'scan', 'opportunities', 'propose', 'pull-guidance',
+      'migrate', 'reconcile', 'finalize', 'epic', 'project', 'describe'];
     const manifestNames = new Set(manifest.commands.map((c) => c.name));
+    for (const name of internalNames) {
+      assert.ok(
+        !manifestNames.has(name),
+        `internal command "${name}" must not appear in manifest.commands (audience=internal)`
+      );
+    }
+  });
+
+  it('every registered command has a spec in collectSpecs() (cross-check invariant, AC1)', () => {
+    // After audience filtering, manifest.commands only contains operator specs.
+    // The cross-check invariant compares against collectSpecs() (all specs, including internal),
+    // not manifest.commands — so internal commands still have specs even if not in the manifest output.
+    const liveNames = enumerateRegisteredCommands(buildProgram());
+    const allSpecNames = new Set(collectSpecs().map((s) => s.name));
     for (const name of liveNames) {
       assert.ok(
-        manifestNames.has(name),
-        `live command "${name}" is not represented in the manifest — collectSpecs() is incomplete`
+        allSpecNames.has(name),
+        `live command "${name}" has no spec in collectSpecs() — add a CommandDescription`
       );
     }
   });

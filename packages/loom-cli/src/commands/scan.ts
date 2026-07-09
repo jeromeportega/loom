@@ -176,6 +176,7 @@ export function runOpportunitiesCommand(opts: { json?: boolean } = {}): void {
 
 export const spec: CommandDescription = {
   name: 'scan',
+  audience: 'internal',
   summary: 'Scan for opportunities and produce a ranked board',
   whenToUse: 'Use to discover technical debt, test gaps, and improvement opportunities in the current project. Makes one LLM call; stores results for `loom opportunities` and `loom propose`.',
   arguments: [],
@@ -202,6 +203,7 @@ export const spec: CommandDescription = {
 
 export const specOpportunities: CommandDescription = {
   name: 'opportunities',
+  audience: 'internal',
   summary: 'Show the current opportunity board (no new scan)',
   whenToUse: 'Use after `loom scan` to view the stored opportunity board without making another LLM call.',
   arguments: [],

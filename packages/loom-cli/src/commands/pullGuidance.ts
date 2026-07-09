@@ -34,6 +34,7 @@ export function runPullGuidance(storyId: string, opts: PullGuidanceOptions = {})
 
 export const spec: CommandDescription = {
   name: 'pull-guidance',
+  audience: 'internal',
   summary: 'Print new operator guidance for a story since last pull',
   whenToUse: 'Used by worker agents to read operator guidance messages written via `loom guide`. Returns only new content since the last pull.',
   arguments: [

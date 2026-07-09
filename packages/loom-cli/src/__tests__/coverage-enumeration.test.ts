@@ -34,10 +34,6 @@ describe('operatorCommands(buildProgram())', () => {
     assert.ok(tokens.has('init'), 'expected "init" in operator commands');
   });
 
-  it('contains epic', () => {
-    assert.ok(tokens.has('epic'), 'expected "epic" in operator commands');
-  });
-
   it('contains approve', () => {
     assert.ok(tokens.has('approve'), 'expected "approve" in operator commands');
   });

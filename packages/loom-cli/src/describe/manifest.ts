@@ -17,7 +17,9 @@ export function buildManifest(program: Command): Manifest {
   ).version;
 
   const specs = collectSpecs();
-  const registered = enumerateRegisteredCommands(program);
+  const registered = enumerateRegisteredCommands(program); // includes hidden
+
+  // Invariant: every registered command (visible OR hidden) must have a spec in collectSpecs()
   if (registered.length > 0) {
     const specNames = new Set(specs.map((s) => s.name));
     const unregistered = registered.filter((name) => !specNames.has(name));
@@ -29,10 +31,13 @@ export function buildManifest(program: Command): Manifest {
     }
   }
 
+  // Manifest output: operator-audience only (hidden/internal commands excluded)
+  const operatorSpecs = specs.filter((s) => (s.audience ?? 'operator') === 'operator');
+
   return ManifestSchema.parse({
     loomVersion,
     source: 'live-commander-registry',
-    commands: specs,
+    commands: operatorSpecs,
     workflows: WORKFLOWS,
   });
 }

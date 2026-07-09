@@ -39,14 +39,12 @@ One interface over the engine:
 | **Read the produced artifacts** | `loom artifacts <epic-id>` | Returns brief / PRD / architecture / epic YAML bodies. Web UI renders them inline above the Approve button for `planned` epics. |
 | **Approve a plan** | `loom approve <epic-id\|story-id> [--run]` | Releases the epic for execution. Approve on its own does **not** dispatch workers — it flips the epic to `approved` and prints `Next: run loom run <id> to dispatch` using the actual id. For standalone stories routed via `intake_routing`, use `loom approve story-NNN` (the user-facing id); `epic-NNN` also works but the output always renders the story id. Pass the opt-in `--run` flag (explicit id required) to chain straight into the same `loom run` dispatch path after approving; bare `loom approve --run` with no id is a usage error. **Cross-repo cycle rejection (ADR-002, fail-closed):** before transitioning any epic to `approved`, loom validates the repo dependency graph for cycles. If two or more repos form a mutual dependency (e.g. repo-a→repo-b→repo-a), the approve exits non-zero with an operator-readable error naming the cyclic repos and edges, the epic stays in `planned` status, and no worker is dispatched. Resolve the cycle by removing or reversing the dependency edge in the epic YAML and re-submit. Bulk `loom approve` (no epic-id) skips cyclic epics with a per-epic error and exits non-zero when all epics were rejected. |
 | **Reject a plan** | `loom reject <epic-id\|story-id> --reason "..."` | Optional reason is audit-logged. For standalone stories routed via `intake_routing`, use `loom reject story-NNN` (the user-facing id); `epic-NNN` also works. Accepts epics in both `planned` and `planning` status — epics still in the planning phase can be rejected directly without waiting for planning to complete. |
-| **Self-propose next epic** | `loom propose [--top-lessons <n>] [--top-opps <n>] [--json]` / POST /api/propose (mission-control button) | Combines top-ranked lessons (recency + category frequency, ADR-006) with top open opportunities into a brief, runs it through the brief-quality gate and Planner, and lands a `planned`+`manual` epic stamped `proposed_by='loom'`. The epic stays `planned` until explicit operator approval — no auto-approve or auto-dispatch path exists. Surfaces as a `plan_approval` entry in `GET /api/inbox`. Exactly one batched BriefRefiner LLM call per invocation; explicit trigger only. `--top-lessons <n>` limits the number of lessons included in the proposal brief (default: all top-ranked). `--top-opps <n>` limits the number of opportunities included (default: all top-ranked open opportunities). `--json` emits `{ ok: true, epicId }` on success or `{ ok: false, critique }` on gate failure. |
 
 ## Execution
 
 | Capability | How to use | Notes |
 |---|---|---|
 | **Dispatch story workers** | `loom run [epic-ids...]` | Iterates dependency-ordered stories, opens a git worktree per story, spawns the worker (claude / cursor-agent), commits to a story branch. The EpicFinalizer merges story branches onto `epic/<id>` and opens one PR. **Recovery routing (FR-13):** if a `finalizing` or `publish_pending` epic is in the selection, `loom run` automatically calls `EpicFinalizer.resume()` to complete it within the same run (after the story-dispatch loop and worktree pruning). If auto-resume is not possible (no allowed remote, concurrent lease held, etc.), the epic is skipped and `loom run` prints `  Recover it: loom finalize --resume <epic-id>` — an operator-copy-paste command to manually re-enter the stranded finalize. |
-| **Resume a stranded finalize** | `loom finalize --resume <epic-id>` | Drives a `finalizing` or `publish_pending` epic to `done` without redoing merged work. Calls `EpicFinalizer.resume()`, which reads git and gh state to detect which finalization phases remain (push, open-PR, record-PR, or full-finalize), then completes only those — idempotent and lease-guarded against concurrent runs. **Use this command** when `loom run` prints `  Recover it: loom finalize --resume <epic-id>` (or whenever you need to explicitly restart a stranded finalize). The `--resume` flag is required; bare `loom finalize <epic-id>` is a usage error. Only `finalizing` and `publish_pending` epics are accepted; any other status exits non-zero. |
 | **Honest epic lifecycle** | Automatic | An epic moves `planning` → `planned` → `approved` → `in_progress` → `finalizing` → `done`, and the status loom reports never claims more than what shipped. While `planning`, the live `planning_phase` (analyst / pm / architect) is exposed; while `finalizing`, the live `finalize_phase` (`merging` → `gate` → `review` → `pushing` → `opening_pr`) is exposed. **`finalizing → done` is PR-URL-gated:** the EpicFinalizer never writes `done` itself — `done` is set only after the epic PR URL of record (`epic_pr_url`) is durably persisted, so the invariant `done ⇒ epic_pr_url != null` always holds. A successful merge that produces no PR (push-gate `confirm`, no remote, or a remote outside `allowed_remotes`) stays in a defined non-`done` terminal state rather than masquerading as complete. **`failed` vs `rejected` are distinct terminal states:** `failed` is an *infrastructure* failure — a planner crash, OOM, provider error, or a finalize error — and carries the failure `error` message; `rejected` is a *human* decision (`loom reject`). A crash is never recorded as a rejection. |
 | **Per-epic autonomy mode** | `loom autonomy <epic-id> [level]` / `POST /api/epics/:id/autonomy` (web) | Three levels. `manual` (default) — operator must approve before dispatch, same as today. `checkpoint` — supervisor self-approves and dispatches; pauses **after each story** so the operator can review before the next one dispatches; `resumeEpic` (web Resume button) continues. `full-auto` — supervisor self-approves and dispatches all stories without pausing. The level can be changed at any time; the change is audit-logged with an `autonomy_set` row. **Read mode (omit `level`):** prints `<id> — autonomy: <level>` followed by a `Values:` block listing each level with its meaning (`full-auto — run continuously without pausing`, `checkpoint — pause after each story for review`, `manual — require explicit approval at each step`). The block is generated from the machine-readable spec and is byte-identical to what `loom autonomy --help` shows. |
 | **Checkpoint after every story** | `loom run --checkpoint story` | Pauses between stories; review before the next dispatches. |
@@ -86,8 +84,6 @@ One interface over the engine:
 | **loom-home planning scratch migration** | Automatic on first run after upgrade. No operator action required. | The planning scratch (brief, PRD, architecture, and epic YAML files produced during `loom epic`) is now stored under `loom-home/repos/<slug>/planning/` (repo-namespaced, gitignored) rather than inside the target repo's `.loom/` directory. **Lossless first-run migration:** when loom detects existing in-repo planning scratch files, it automatically moves them to the loom-home path. On cross-filesystem moves a copy strategy is used. **Idempotent:** subsequent runs find the scratch already at the loom-home path and skip migration. The `loom-home/repos/<slug>/` namespace is shared with the state database, so both live under the same repo-scoped directory. |
 | **Tear down an epic** | `loom revert <epic-id>` | Deletes story branches + flips DB status to rejected. `--remote` also deletes the upstream epic branch and closes loom-opened PRs. |
 | **Recover a stranded epic (auto-detect state)** | `loom recover <epic-id> [--pr <url>]` | Single recovery entry point that auto-detects the epic's state and routes to the correct sub-operation: `finalizing` or `publish_pending` → delegates to `EpicFinalizer.resume()` to complete the finalize without redoing merged work; any other state → delegates to `loom reconcile` for merged-outside-loom recovery. The `--pr <url>` flag is forwarded to the reconcile path when routing there. |
-| **Reconcile a stranded `in_progress` or `finalizing` epic** | `loom reconcile <epic-id> [--pr <url>]` | Drives a stranded `in_progress` epic (stuck at `finalize_phase=gate` after a squash-merged PR) to `done`. **Also accepts `finalizing` status (FR-13):** for an epic currently in `finalizing`, `loom reconcile` delegates to `EpicFinalizer.resume()` which detects merge state itself (push / open-PR / record-PR / full-finalize) rather than requiring the branch to already be merged — distinct from the `in_progress` path, which uses the EpicReconciler ancestry/PR-URL verification. The `--pr <url>` flag selects the PR-URL verification path (required when the PR was squash-merged, since ancestry checks cannot confirm squash merges; also usable for any merge type). Omitting `--pr` falls back to the ancestry path via `git merge-base --is-ancestor`. On verified merge, writes `epic_pr_url`, clears `finalize_phase`, writes an `epic_reconciled` audit row, and flips status to `done` — in that order (inside a single SQLite transaction, so a mid-sequence crash leaves the DB in a clean pre-reconcile state). Returns `noop` if the epic is already `done` or if `epic_pr_url` is already set (regardless of status) — both are idempotency guards. **Caution:** if a prior reconcile wrote `epic_pr_url` but crashed before setting `status=done`, every subsequent `loom reconcile` returns `noop` and the epic stays non-`done`. To recover, clear `epic_pr_url` directly in `.loom/loom.db` (`UPDATE epics SET epic_pr_url=NULL WHERE id='<id>';`) then re-run. Returns `refused` (with a `reason` field) on verification failure; CLI exits non-zero on `refused` or `failed`. Possible `reason` values: `not_merged` (PR not yet merged, or the ancestry check found no ancestor — squash-merges always require `--pr` since `git merge-base` cannot see them), `unverifiable_offline` (gh or git returned unexpected output, or the local base branch is missing — run `git fetch first`), `tool_unavailable` (gh or git binary not found on PATH), `ref_mismatch` (PR head/base refs don't match the epic branch — branch was renamed; stop and handle manually per ADR-6), `no_epic_branch` (epic branch not found locally), `epic_not_found` (epic not in DB). **Cross-reference:** for `finalizing` epics, `loom finalize --resume` is the canonical recovery command (printed by `loom run`); `loom reconcile` also accepts `finalizing` as a convenience. |
-| **Publish a publish-pending epic** | `loom publish <epic-id>` | Drives a `publish_pending` or `finalizing` epic to `done`. For `publish_pending` epics (finalizer pushed the branch but the PR step failed), opens a PR from the already-pushed `finalize_ref` and atomically records the result. **Also accepts `finalizing` status (FR-13):** for a `finalizing` epic, delegates to `EpicFinalizer.resume()` so `detectResumePhase` determines exactly what remains (push-and-open, open-PR, or record-PR) and completes it — rather than refusing with a precondition error. **Distinct from `reconcile`**: publish drives epics the finalizer *pushed or is still pushing* (status=`publish_pending` or `finalizing`); reconcile drives epics that were *already merged* into main (opposite precondition — the two verbs never overlap). On success, writes `epic_pr_url`, clears `finalize_phase`, writes an `epic_published` audit row, and flips status to `done` — in that order, inside a single SQLite transaction. Returns `refused` (CLI exits 1) if the epic is not in `publish_pending` or `finalizing` state, or is not found. For `publish_pending`, also refused if `finalize_ref` is not recorded (push never completed). For `finalizing`, no `finalize_ref` precondition — `resume()` detects what remains. Returns `failed` (CLI exits 1) if `gh pr create` throws or prints no parseable URL — the epic stays `publish_pending` (or `finalizing` if that was the input status) with no partial write. **Idempotency:** there is no `noop` status — a `finalizing` epic whose PR already exists on the remote is completed to `done` by `resume()` (the `already-done` path, exit 0), while a `done` epic passed to `loom publish` is refused by the `publish_pending`/`finalizing` precondition (exit 1) because it is already landed — confirm with `loom status`. **Cross-reference:** for `finalizing` epics, `loom finalize --resume` is the canonical recovery command (printed by `loom run`); `loom publish` also accepts `finalizing` as a convenience. |
 
 ## Review
 
@@ -132,23 +128,11 @@ One interface over the engine:
 | **Skills library board** | Skills tab in `loom web` | Browser view of every bundled, project, global, generated, and shared skill — name, description, source, lifecycle badge, and track record (injected / succeeded / failed counts). Click a skill name to open a per-skill history timeline (`GET /api/skills/:name/history`) showing generated, lifecycle, and injection events in chronological order. Read-only in `--read-only` mode. |
 | **Diff for a story or epic** | `loom diff <story\|epic-id>` | The worker's diff vs. the epic base SHA. Supports `--max-bytes`, `--no-stat`, `--json`. |
 | **Project directory** | `loom projects` | Lists every loom-init'ed repo on the machine + their latest epic snapshot. |
-| **Single project detail** | `loom project <project-root>` | Shows one registered project: root, name, and latest epic id/status/title. `--json` emits `{ project, latest_epic? }`. Exits non-zero if the root is not registered. |
 | **"loom learned this run" CLI summary** | Automatic at end of `loom run` | When the self-learning loop generated, promoted, or demoted a skill during the run, the CLI prints a single block summarizing what changed. Silent when nothing changed. |
 | **Skill provenance on canary injections** | Automatic in `loom run` output | A candidate skill injected into a story prints `(from story-X)` — the story that originally produced it. Closes the loop visibly between "loom wrote a skill" and "loom used it." |
 | **Per-skill history timeline** | `loom skills history <name>` | Merges audit rows + injection records into one chronological timeline: `★` generated, `↻` lifecycle change, `·` injection with outcome. Track-record tail line. |
 | **Emit CLI manifest** | `loom describe` / `loom describe <command>` | Emits the full machine-readable CLI self-description manifest as JSON (`ManifestSchema`-valid: `loomVersion`, `source`, `commands[]`, `workflows[]`) or one command's `CommandDescription` by name (full path for subcommands: `"guard check"`, `"mcp add"`). Always JSON — no `--format` flag. Unknown command exits non-zero with a message to stderr. |
 | **Enriched `--help` output** | `loom <command> --help` | Commands whose spec defines enum-argument `valueMeanings` now display a `Values:` block below standard help, listing each value and its one-line meaning (2-space indent, `—` separator, column-aligned). Commands with defined exit codes display an `Exit codes:` block. Both blocks are generated from the machine-readable spec by `applySpec`, so `--help` and `loom describe` always agree. Currently `loom autonomy --help` shows all three autonomy levels with descriptions. |
-
-## Discovery
-
-Loom continuously scans the repo for engineering signals and surfaces ranked opportunities for the operator to act on.
-
-| Capability | How to use | Notes |
-|---|---|---|
-| **Run signal scanners** | `loom scan [--project <root>]` | Runs three scanners concurrently — audit-log work-failure clusters, code-debt TODOs (capped at 200 deterministic matches), and GitHub issues (degrades to empty + audit note when `gh` is unavailable) — then makes a single batched LLM clustering call over the capped open-signal set to produce a ranked opportunity list. Writes one `signal_scan` audit row. `--project <root>` scopes the scan to a specific registered project instead of the current working directory. |
-| **Opportunity board** | `GET /api/opportunities[?project=<root>]` / Opportunities tab in `loom web` | Lists ranked open opportunities across all registered projects. Each card shows title, rationale, score, rank, signal count, evidence links, and status (`open` / `scoped` / `dismissed`). Federated reads use `makeResolveProjectDb`; mutations are token-gated. |
-| **Scope an opportunity into an epic** | `POST /api/opportunities/:id/scope` (web) | Runs the brief-quality gate then Planner to create a `manual`-autonomy epic from the opportunity. Returns `{ ok: true, epicId }` on success, or `{ ok: false, critique }` when the brief gate fails. Writes an `opportunity_scoped` audit row. The resulting epic is scoped — if later rejected, the opportunity reopens automatically. |
-| **Dismiss an opportunity** | `POST /api/opportunities/:id/dismiss` (web) | Marks the opportunity `dismissed` so it is excluded from future scan-and-rank results. Writes an `opportunity_dismissed` audit row. Dismissed opportunities are not resurfaced by subsequent scans. |
 
 ## Skills (curated library)
 
@@ -324,6 +308,22 @@ Setting expectations honestly:
 
 ---
 
+## Deprecated aliases (hidden from `loom --help`)
+
+The following commands are registered but hidden from help output and omitted from `loom describe`. They emit a redirect message to stderr and delegate to the canonical command. Use the canonical form for new workflows.
+
+| Deprecated alias | Redirects to | Redirect message |
+|---|---|---|
+| `loom publish <epic-id>` | `loom recover <epic-id>` | `→ use loom recover <epic-id>` |
+| `loom finalize <epic-id>` | `loom recover <epic-id>` | `→ use loom recover <epic-id>` |
+| `loom reconcile <epic-id>` | `loom recover <epic-id>` | `→ use loom recover <epic-id>` |
+| `loom epic "<brief>"` | `loom weave "<brief>"` | `→ use loom weave <brief>` |
+| `loom project <root>` | `loom projects` | `→ use loom projects` |
+
+**Consolidation note:** `loom publish`, `loom finalize`, and `loom reconcile` have been consolidated into the single entry point `loom recover <epic-id>`, which auto-detects the epic state and routes to the correct sub-operation. Existing scripts using `loom publish`, `loom finalize`, or `loom reconcile` will continue to work but should be migrated to `loom recover`.
+
+---
+
 ## Maintenance rules
 
 This page must stay current. **Update it in the same PR that ships the
@@ -354,26 +354,18 @@ truth.
 `loom cost`
 `loom diff`
 `loom doctor`
-`loom epic`
 `loom guard check`
 `loom guide`
 `loom init`
 `loom mcp add`
 `loom mcp list`
-`loom migrate`
-`loom opportunities`
-`loom project`
 `loom projects`
-`loom propose`
-`loom pull-guidance`
-`loom reconcile`
 `loom recover`
 `loom reject`
 `loom retry`
 `loom revert`
 `loom review`
 `loom run`
-`loom scan`
 `loom sync`
 `loom st`
 `loom status`

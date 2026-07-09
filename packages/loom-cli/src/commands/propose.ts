@@ -174,6 +174,7 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
 
 export const spec: CommandDescription = {
   name: 'propose',
+  audience: 'internal',
   summary: 'Propose the next epic from top lessons and opportunities',
   whenToUse: 'Use when you want loom to suggest what to build next based on accumulated lessons and open opportunities. Exactly one LLM call; outputs a brief that feeds `loom epic`.',
   arguments: [],
