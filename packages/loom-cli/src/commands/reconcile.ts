@@ -145,6 +145,7 @@ export async function runReconcile(epicId: string, opts: ReconcileCommandOptions
 
 export const spec: CommandDescription = {
   name: 'reconcile',
+  audience: 'internal',
   summary: 'Reconcile a stranded-but-merged epic to done',
   whenToUse: 'Use when an epic was merged to main but loom DB still shows it as in-progress. Verifies the PR was merged via gh or git ancestry, then flips status to done.',
   arguments: [

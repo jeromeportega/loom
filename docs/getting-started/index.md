@@ -47,7 +47,7 @@ so an outer agent or script can drive loom by reading structured output — no
 persistent server required.
 
 ```bash
-loom epic "<brief>"               # plan an epic
+loom weave "<brief>"              # plan an epic
 loom approve <epic-id> --run      # approve and kick off loom run
 loom status --json                # poll progress + PR links
 loom diff <story|epic-id>         # inspect a story/epic diff
@@ -62,7 +62,7 @@ loom doctor                       # check prerequisites
 loom init                         # set up .loom/, the guard hook, IDE config
 
 # Plan
-loom epic "Add a /health endpoint that returns build info, with a test"
+loom weave "Add a /health endpoint that returns build info, with a test"
 #  → Analyst → PM → Architect personas plan it; a few minutes, headless.
 
 # Review
@@ -83,7 +83,7 @@ worker output with `loom run --verbose`.
 1. **`loom init`** wrote `.loom/policy.yaml`, the guard hook in
    `.claude/settings.json`, a managed `.gitignore` block, and registered this
    repo in the workspace manifest (`<loom-home>/workspace.yaml`).
-2. **`loom epic`** ran the planning pipeline (Analyst → PM → Architect)
+2. **`loom weave`** ran the planning pipeline (Analyst → PM → Architect)
    against your brief and stored the output (brief, PRD, architecture doc,
    epic YAML) in the loom-home control plane — not in your target repo.
 3. **`loom approve`** marked the epic as ready for execution.
@@ -114,9 +114,9 @@ Tighten or loosen as you learn to trust the system:
 
 | Mode | Command | When |
 |---|---|---|
-| Strictest | `loom epic … && loom approve … && loom run --checkpoint story` | First few epics; review every story PR before the next dispatches |
-| Default | `loom epic … && loom approve … && loom run --checkpoint epic` | Pause after each epic; review the bundled PR |
-| Loosest | `loom epic … && loom approve … && loom run` | Plan → approve → let the whole queue run. Best once you've calibrated. |
+| Strictest | `loom weave … && loom approve … && loom run --checkpoint story` | First few epics; review every story PR before the next dispatches |
+| Default | `loom weave … && loom approve … && loom run --checkpoint epic` | Pause after each epic; review the bundled PR |
+| Loosest | `loom weave … && loom approve … && loom run` | Plan → approve → let the whole queue run. Best once you've calibrated. |
 
 ## Where loom writes things
 
@@ -152,8 +152,8 @@ loom migrate           # ensures loom-home exists, migrates DB + planning scratc
 loom migrate --dry-run # preview what would be migrated without touching anything
 ```
 
-Re-running `loom migrate` is idempotent — an already-migrated repo reports
-"nothing to do". Net-new installs can ignore `loom migrate` entirely; their
+Re-running loom migrate is idempotent — an already-migrated repo reports
+"nothing to do". Net-new installs can ignore loom migrate entirely; their
 first `loom run` triggers the same migration automatically.
 
 ## Monitoring cost with `loom cost`

@@ -479,3 +479,102 @@ describe('checkCapabilitiesCoverage — [AC5] live capabilities page drift guard
     assert.ok(report.ok, report.messages.join('\n'));
   });
 });
+
+// ─── [AC5-static] doc content assertions for epic-087 pruning ────────────────
+
+describe('capabilities.md — epic-087 pruned surface (static assertions)', () => {
+  const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
+  const CAPABILITIES = path.join(REPO_ROOT, 'docs', 'capabilities.md');
+  const doc = fs.readFileSync(CAPABILITIES, 'utf8');
+
+  /**
+   * Returns true if any primary markdown table row (starts with |) has the
+   * given regex match in the HOW-TO cell (second cell) only.
+   * Row format: | **Label** | how-to | notes |
+   * We extract just the second cell (the "how to use" column) to identify
+   * primary command rows by their invocation, not by prose mentions elsewhere.
+   */
+  function hasHowToCell(content: string, pattern: RegExp): boolean {
+    return content.split('\n').some((line) => {
+      const t = line.trimStart();
+      if (!t.startsWith('|')) return false;
+      // Replace escaped pipes before splitting so \| inside a cell doesn't shift indices.
+      const cells = t.replace(/\\\|/g, '\x00').split('|').map((c) => c.replace(/\x00/g, '\\|'));
+      const howTo = cells.length >= 3 ? cells[2] : '';
+      return pattern.test(howTo);
+    });
+  }
+
+  /**
+   * Returns true if any primary markdown table row has the given regex match
+   * in the LABEL cell (first cell).
+   */
+  function hasLabelRow(content: string, labelPattern: RegExp): boolean {
+    return content.split('\n').some((line) => {
+      const t = line.trimStart();
+      if (!t.startsWith('|')) return false;
+      // Replace escaped pipes before splitting so \| inside a cell doesn't shift indices.
+      const cells = t.replace(/\\\|/g, '\x00').split('|').map((c) => c.replace(/\x00/g, '\\|'));
+      const label = cells.length >= 2 ? cells[1] : '';
+      return labelPattern.test(label);
+    });
+  }
+
+  it('recover appears with a description referencing state-detection', () => {
+    assert.ok(
+      doc.includes('auto-detect') || doc.includes('auto-detects') || doc.includes('state-detect'),
+      'capabilities.md must mention auto-detect state behavior for recover'
+    );
+    const hasRecoverRow = hasHowToCell(doc, /`loom recover/);
+    assert.ok(hasRecoverRow, 'capabilities.md must contain a primary row for `loom recover`');
+  });
+
+  it('publish does not appear as a primary command row', () => {
+    assert.ok(
+      !hasHowToCell(doc, /`loom publish\b/),
+      'capabilities.md must not list `loom publish` as a primary command row'
+    );
+  });
+
+  it('finalize does not appear as a primary command row', () => {
+    assert.ok(
+      !hasHowToCell(doc, /`loom finalize\b/),
+      'capabilities.md must not list `loom finalize` as a primary command row'
+    );
+  });
+
+  it('reconcile does not appear as a primary command row', () => {
+    assert.ok(
+      !hasHowToCell(doc, /`loom reconcile\b/),
+      'capabilities.md must not list `loom reconcile` as a primary command row'
+    );
+  });
+
+  it('scan does not appear as a primary command row', () => {
+    assert.ok(
+      !hasHowToCell(doc, /`loom scan\b/) && !hasLabelRow(doc, /\*\*Run signal scanners\*\*/),
+      'capabilities.md must not list `loom scan` as a primary command row'
+    );
+  });
+
+  it('opportunities does not appear as a primary command row', () => {
+    assert.ok(
+      !hasHowToCell(doc, /`loom opportunities\b/) && !hasLabelRow(doc, /\*\*Opportunity board\*\*/),
+      'capabilities.md must not list `loom opportunities` as a primary command row'
+    );
+  });
+
+  it('propose does not appear as a primary command row', () => {
+    assert.ok(
+      !hasHowToCell(doc, /`loom propose\b/) && !hasLabelRow(doc, /\*\*Self-propose/),
+      'capabilities.md must not list `loom propose` as a primary command row'
+    );
+  });
+
+  it('project does not appear as a primary command row', () => {
+    assert.ok(
+      !hasHowToCell(doc, /`loom project\b/) && !hasLabelRow(doc, /\*\*Single project detail\*\*/),
+      'capabilities.md must not list `loom project` as a primary command row'
+    );
+  });
+});

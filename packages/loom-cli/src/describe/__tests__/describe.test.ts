@@ -9,6 +9,7 @@ import { collectSpecs } from '../registry.js';
 import { WORKFLOWS } from '../workflows.js';
 import { buildManifest } from '../manifest.js';
 import { runDescribe, registerDescribe, spec as describeSpec } from '../../commands/describe.js';
+import { buildProgram } from '../../index.js';
 
 // ---------------------------------------------------------------------------
 // Capture helpers
@@ -161,15 +162,25 @@ describe('buildManifest', () => {
     }
   });
 
-  it('returned manifest includes commands from collectSpecs()', () => {
-    const program = new Command();
-    const manifest = buildManifest(program);
-    const specs = collectSpecs();
+  it('returned manifest includes only operator-audience commands from collectSpecs()', () => {
+    // Use the live buildProgram() (not new Command()) so the cross-check invariant
+    // sees all registered commands and the audience filter is exercised for real.
+    const manifest = buildManifest(buildProgram());
+    const operatorSpecs = collectSpecs().filter((s) => (s.audience ?? 'operator') === 'operator');
     assert.equal(
       manifest.commands.length,
-      specs.length,
-      'manifest.commands must equal collectSpecs() count'
+      operatorSpecs.length,
+      'manifest.commands must equal operator-audience collectSpecs() count'
     );
+    // Verify no internal command slipped through the filter.
+    const internalNames = ['publish', 'release', 'scan', 'opportunities', 'propose',
+      'pull-guidance', 'migrate', 'reconcile', 'finalize', 'epic', 'project', 'describe'];
+    const manifestNames = new Set(manifest.commands.map((c) => c.name));
+    for (const name of internalNames) {
+      assert.ok(!manifestNames.has(name), `internal command "${name}" must not appear in manifest.commands`);
+    }
+    // Verify at least one known operator command is present.
+    assert.ok(manifestNames.has('recover'), 'operator command "recover" must appear in manifest.commands');
   });
 
   it('returned manifest includes all WORKFLOWS', () => {
@@ -256,9 +267,12 @@ describe('--help smoke tests', () => {
     const program = new Command('loom');
     program.exitOverride(); // prevent process.exit() from crashing the test
     registerDescribe(program);
-    // helpInformation() returns a string — if it doesn't throw, help is intact
+    // helpInformation() returns a string — if it doesn't throw, help is intact.
+    // `describe` is hidden from help (story-087-001) but the command is still registered.
     const helpText = program.helpInformation();
-    assert.ok(helpText.includes('describe'), 'help output must include the describe command');
+    assert.ok(helpText.length > 0, 'help output must be non-empty');
+    const registered = program.commands.find((c) => c.name() === 'describe');
+    assert.ok(registered, 'describe command must be registered even though it is hidden from help');
   });
 });
 

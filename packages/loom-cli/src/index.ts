@@ -38,6 +38,7 @@ import { runWeave, spec as weaveSpec } from './commands/weave.js';
 import { runMigrate, spec as migrateSpec } from './commands/migrate.js';
 import { runRetrieveSearch, runRetrieveRead, specSearch as retrieveSearchSpec, specRead as retrieveReadSpec } from './commands/retrieve.js';
 import { runSync, syncSpec } from './commands/sync.js';
+import { runRecover, spec as recoverSpec } from './commands/recover.js';
 import { applySpec } from './describe/applySpec.js';
 import { registerDescribe } from './commands/describe.js';
 import { handleTopLevelError } from './errorHandling.js';
@@ -136,10 +137,14 @@ export function buildProgram(): Command {
       }
     );
 
-  // ─── loom epic ──────────────────────────────────────────────────────────────
-  applySpec(program.command('epic'), epicSpec)
+  // ─── loom epic (deprecated alias → loom weave) ───────────────────────────────
+  program.command('epic', { hidden: true })
+    .argument('<brief>', 'Brief for the epic')
+    .option('--force', 'Skip the brief-quality gate for this invocation')
+    .option('--verbose', 'Stream live persona output to the terminal')
     .action(async (brief: string, opts: { force?: boolean; verbose?: boolean }) => {
-      await runEpic(brief, { force: opts.force, verbose: opts.verbose });
+      process.stderr.write('→ use loom weave <brief>\n');
+      await runWeave(brief, { force: opts.force, verbose: opts.verbose });
     });
 
   // ─── loom weave ─────────────────────────────────────────────────────────────
@@ -240,9 +245,14 @@ export function buildProgram(): Command {
       runRevert(epicId, opts);
     });
 
-  // ─── loom reconcile ─────────────────────────────────────────────────────────
-  applySpec(program.command('reconcile'), reconcileSpec)
-    .action((epicId: string, opts: { pr?: string }) => runReconcile(epicId, { pr: opts.pr }));
+  // ─── loom reconcile (deprecated alias → loom recover) ────────────────────────
+  program.command('reconcile', { hidden: true })
+    .argument('<epic-id>', 'Epic to recover')
+    .option('--pr <url>', 'PR URL for squash-merge path')
+    .action(async (epicId: string, opts: { pr?: string }) => {
+      process.stderr.write(`→ use loom recover ${epicId}\n`);
+      await runRecover(epicId, { pr: opts.pr });
+    });
 
   // ─── loom sync ───────────────────────────────────────────────────────────────
   applySpec(program.command('sync'), syncSpec)
@@ -250,20 +260,26 @@ export function buildProgram(): Command {
       await runSync(epicId, { mainBranch: opts.mainBranch });
     });
 
-  // ─── loom publish ────────────────────────────────────────────────────────────
-  applySpec(program.command('publish'), publishSpec)
+  // ─── loom publish (deprecated alias → loom recover) ──────────────────────────
+  program.command('publish', { hidden: true })
+    .allowUnknownOption()
+    .argument('<epic-id>', 'Epic to recover')
     .action(async (epicId: string) => {
-      await runPublish(epicId);
+      process.stderr.write(`→ use loom recover ${epicId}\n`);
+      await runRecover(epicId);
     });
 
-  // ─── loom finalize ───────────────────────────────────────────────────────────
-  applySpec(program.command('finalize'), finalizeSpec)
-    .action(async (epicId: string, opts: { resume?: boolean }) => {
-      await runFinalize(epicId, { resume: opts.resume });
+  // ─── loom finalize (deprecated alias → loom recover) ─────────────────────────
+  program.command('finalize', { hidden: true })
+    .allowUnknownOption()
+    .argument('<epic-id>', 'Epic to recover')
+    .action(async (epicId: string) => {
+      process.stderr.write(`→ use loom recover ${epicId}\n`);
+      await runRecover(epicId);
     });
 
   // ─── loom release ────────────────────────────────────────────────────────────
-  applySpec(program.command('release'), releaseSpec)
+  applySpec(program.command('release', { hidden: true }), releaseSpec)
     .action((version: string) => {
       runRelease(version);
     });
@@ -327,24 +343,27 @@ export function buildProgram(): Command {
 
   // ─── loom projects ────────────────────────────────────────────────────────
   applySpec(program.command('projects'), projectsSpec)
-    .action((opts: { json?: boolean }) => {
-      runProjects({ json: opts.json });
+    .action((root: string | undefined, opts: { json?: boolean }) => {
+      runProjects(root, { json: opts.json });
     });
 
   // ─── loom pull-guidance ──────────────────────────────────────────────────────
-  applySpec(program.command('pull-guidance'), pullGuidanceSpec)
+  applySpec(program.command('pull-guidance', { hidden: true }), pullGuidanceSpec)
     .action((storyId: string, opts: { json?: boolean }) => {
       runPullGuidance(storyId, { json: opts.json });
     });
 
-  // ─── loom project ─────────────────────────────────────────────────────────────
-  applySpec(program.command('project'), projectSpec)
-    .action((projectRoot: string, opts: { json?: boolean }) => {
-      runProject(projectRoot, { json: opts.json });
+  // ─── loom project (deprecated alias → loom projects) ─────────────────────────
+  program.command('project', { hidden: true })
+    .argument('[project-root]', 'Project root to show')
+    .option('--json', 'Output as JSON')
+    .action((root: string | undefined, opts: { json?: boolean }) => {
+      process.stderr.write('→ use loom projects\n');
+      runProjects(root, { json: opts.json });
     });
 
   // ─── loom migrate ────────────────────────────────────────────────────────────
-  applySpec(program.command('migrate'), migrateSpec)
+  applySpec(program.command('migrate', { hidden: true }), migrateSpec)
     .action((opts: { dryRun?: boolean; relocateCommittedArtifacts?: boolean }) => {
       runMigrate({ dryRun: opts.dryRun, relocateCommittedArtifacts: opts.relocateCommittedArtifacts });
     });
@@ -376,6 +395,12 @@ export function buildProgram(): Command {
       await runRetrieveRead({ repo: opts.repo, filePath: opts.path, lines: opts.lines });
     });
 
+  // ─── loom recover ────────────────────────────────────────────────────────────
+  applySpec(program.command('recover'), recoverSpec)
+    .action(async (epicId: string, opts: { pr?: string }) => {
+      await runRecover(epicId, { pr: opts.pr });
+    });
+
   // <register additional commands>
   registerDescribe(program);
 
@@ -395,19 +420,19 @@ export function buildProgram(): Command {
     });
 
   // ─── loom scan ──────────────────────────────────────────────────────────────
-  applySpec(program.command('scan'), scanSpec)
+  applySpec(program.command('scan', { hidden: true }), scanSpec)
     .action(async (opts: { json?: boolean; project?: string }) => {
       await runScanCommand({ json: opts.json, project: opts.project });
     });
 
   // ─── loom opportunities ─────────────────────────────────────────────────────
-  applySpec(program.command('opportunities'), specOpportunities)
+  applySpec(program.command('opportunities', { hidden: true }), specOpportunities)
     .action((opts: { json?: boolean }) => {
       runOpportunitiesCommand({ json: opts.json });
     });
 
   // ─── loom propose ───────────────────────────────────────────────────────────
-  applySpec(program.command('propose'), proposeSpec)
+  applySpec(program.command('propose', { hidden: true }), proposeSpec)
     .action(async (opts: { topLessons?: string | number; topOpps?: string | number; json?: boolean }) => {
       let topLessons: number | undefined;
       if (opts.topLessons !== undefined) {

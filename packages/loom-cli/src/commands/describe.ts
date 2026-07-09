@@ -32,7 +32,7 @@ export function runDescribe(commandName?: string): void {
 
 export function registerDescribe(program: Command): void {
   _program = program;
-  applySpec(program.command('describe'), spec).action((commandName?: string) => {
+  applySpec(program.command('describe', { hidden: true }), spec).action((commandName?: string) => {
     runDescribe(commandName);
   });
 }
