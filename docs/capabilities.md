@@ -320,7 +320,7 @@ The following commands are registered but hidden from help output and omitted fr
 | `loom epic "<brief>"` | `loom weave "<brief>"` | `→ use loom weave <brief>` |
 | `loom project <root>` | `loom projects` | `→ use loom projects` |
 
-**Consolidation note:** `loom publish`, `loom finalize`, and `loom reconcile` have been consolidated into the single entry point `loom recover <epic-id>`, which auto-detects the epic state and routes to the correct sub-operation. Existing scripts using `loom publish`, `loom finalize`, or `loom reconcile` will continue to work but should be migrated to `loom recover`.
+**Consolidation note:** `loom publish`, `loom finalize`, and `loom reconcile` have been consolidated into the single entry point `loom recover <epic-id>`, which auto-detects the epic state and routes to the correct sub-operation. Existing scripts using `loom publish`, `loom finalize`, or `loom reconcile` will continue to work but should be migrated to `loom recover`. **Note:** bare `loom finalize <id>` (previously a usage error — the former interface required `--resume`) now silently redirects to `loom recover <id>` rather than erroring; scripts that relied on that error signal should be updated.
 
 ---
 

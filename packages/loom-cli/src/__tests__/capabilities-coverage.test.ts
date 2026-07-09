@@ -498,8 +498,8 @@ describe('capabilities.md — epic-087 pruned surface (static assertions)', () =
     return content.split('\n').some((line) => {
       const t = line.trimStart();
       if (!t.startsWith('|')) return false;
-      // Split on | to get cells; cells[2] is the second cell (how-to)
-      const cells = t.split('|');
+      // Replace escaped pipes before splitting so \| inside a cell doesn't shift indices.
+      const cells = t.replace(/\\\|/g, '\x00').split('|').map((c) => c.replace(/\x00/g, '\\|'));
       const howTo = cells.length >= 3 ? cells[2] : '';
       return pattern.test(howTo);
     });
