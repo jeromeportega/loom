@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderSkipLines } from '../commands/run.js';
 
-const RECOVERY_CMD_PREFIX = '  Recover it: loom finalize --resume ';
+const RECOVERY_CMD_PREFIX = '  Recover it: loom recover ';
 
 describe('renderSkipLines — FR-9 exact recovery command output', () => {
   it('finalizing epic: output contains the exact recovery command', () => {
@@ -23,7 +23,7 @@ describe('renderSkipLines — FR-9 exact recovery command output', () => {
     );
     assert.ok(
       !joined.includes(RECOVERY_CMD_PREFIX),
-      `loom finalize --resume must NOT appear for in_progress; got:\n${joined}`
+      `the recover hint must NOT appear for in_progress; got:\n${joined}`
     );
   });
 
@@ -95,7 +95,7 @@ describe('renderSkipLines — FR-9 exact recovery command output', () => {
     assert.ok(recoveryLine, 'recovery line must be present');
     assert.equal(
       recoveryLine,
-      '  Recover it: loom finalize --resume epic-001',
+      '  Recover it: loom recover epic-001',
       'recovery line must match verbatim (exact spacing)'
     );
   });

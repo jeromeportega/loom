@@ -202,7 +202,7 @@ export function renderSkipLines(
   for (const { id, status } of skipped) {
     if (status === 'finalizing' || status === 'publish_pending') {
       lines.push(`  Skipped: ${id}`);
-      lines.push(`  Recover it: loom finalize --resume ${id}`);
+      lines.push(`  Recover it: loom recover ${id}`);
     } else if (status === 'in_progress') {
       lines.push(`  Skipped: ${id}`);
       lines.push(`  (another run may be processing ${id} — check with \`loom status\`)`);

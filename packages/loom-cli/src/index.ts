@@ -139,11 +139,12 @@ export function buildProgram(): Command {
 
   // ─── loom epic (deprecated alias → loom weave) ───────────────────────────────
   program.command('epic', { hidden: true })
-    .allowUnknownOption()
     .argument('<brief>', 'Brief for the epic')
-    .action(async (brief: string) => {
+    .option('--force', 'Skip the brief-quality gate for this invocation')
+    .option('--verbose', 'Stream live persona output to the terminal')
+    .action(async (brief: string, opts: { force?: boolean; verbose?: boolean }) => {
       process.stderr.write('→ use loom weave <brief>\n');
-      await runWeave(brief);
+      await runWeave(brief, { force: opts.force, verbose: opts.verbose });
     });
 
   // ─── loom weave ─────────────────────────────────────────────────────────────
@@ -354,11 +355,11 @@ export function buildProgram(): Command {
 
   // ─── loom project (deprecated alias → loom projects) ─────────────────────────
   program.command('project', { hidden: true })
-    .allowUnknownOption()
     .argument('[project-root]', 'Project root to show')
-    .action((root: string | undefined) => {
+    .option('--json', 'Output as JSON')
+    .action((root: string | undefined, opts: { json?: boolean }) => {
       process.stderr.write('→ use loom projects\n');
-      runProjects(root);
+      runProjects(root, { json: opts.json });
     });
 
   // ─── loom migrate ────────────────────────────────────────────────────────────
