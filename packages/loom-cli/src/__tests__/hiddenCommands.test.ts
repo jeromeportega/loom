@@ -24,6 +24,12 @@ const HIDDEN_COMMANDS = [
   'describe',
   'release',
   'migrate',
+  // story-087-003: deprecated aliases redirecting to recover / weave / projects
+  'publish',
+  'finalize',
+  'reconcile',
+  'epic',
+  'project',
 ] as const;
 
 // Commands that must remain visible in --help output after this story.
@@ -138,7 +144,7 @@ describe('hidden commands — still registered and have help text', () => {
 // ─── Edge: exact count reduction ─────────────────────────────────────────────
 
 describe('visible command count — reduced by exactly the hidden set', () => {
-  it('exactly 7 top-level commands are hidden', () => {
+  it(`exactly ${HIDDEN_COMMANDS.length} top-level commands are hidden`, () => {
     const program = buildProgram();
     const hiddenCount = program.commands.filter(
       (c) => (c as unknown as { _hidden: boolean })._hidden
@@ -150,7 +156,7 @@ describe('visible command count — reduced by exactly the hidden set', () => {
     );
   });
 
-  it('visible command count has not dropped below (total - 7)', () => {
+  it(`visible command count has not dropped below (total - ${HIDDEN_COMMANDS.length})`, () => {
     const program = buildProgram();
     const total = program.commands.length;
     const visible = program.commands.filter(

@@ -137,10 +137,13 @@ export function buildProgram(): Command {
       }
     );
 
-  // ─── loom epic ──────────────────────────────────────────────────────────────
-  applySpec(program.command('epic'), epicSpec)
-    .action(async (brief: string, opts: { force?: boolean; verbose?: boolean }) => {
-      await runEpic(brief, { force: opts.force, verbose: opts.verbose });
+  // ─── loom epic (deprecated alias → loom weave) ───────────────────────────────
+  program.command('epic', { hidden: true })
+    .allowUnknownOption()
+    .argument('<brief>', 'Brief for the epic')
+    .action(async (brief: string) => {
+      process.stderr.write('→ use loom weave <brief>\n');
+      await runWeave(brief);
     });
 
   // ─── loom weave ─────────────────────────────────────────────────────────────
@@ -241,9 +244,14 @@ export function buildProgram(): Command {
       runRevert(epicId, opts);
     });
 
-  // ─── loom reconcile ─────────────────────────────────────────────────────────
-  applySpec(program.command('reconcile'), reconcileSpec)
-    .action((epicId: string, opts: { pr?: string }) => runReconcile(epicId, { pr: opts.pr }));
+  // ─── loom reconcile (deprecated alias → loom recover) ────────────────────────
+  program.command('reconcile', { hidden: true })
+    .allowUnknownOption()
+    .argument('<epic-id>', 'Epic to recover')
+    .action(async (epicId: string) => {
+      process.stderr.write(`→ use loom recover ${epicId}\n`);
+      await runRecover(epicId);
+    });
 
   // ─── loom sync ───────────────────────────────────────────────────────────────
   applySpec(program.command('sync'), syncSpec)
@@ -251,16 +259,22 @@ export function buildProgram(): Command {
       await runSync(epicId, { mainBranch: opts.mainBranch });
     });
 
-  // ─── loom publish ────────────────────────────────────────────────────────────
-  applySpec(program.command('publish'), publishSpec)
+  // ─── loom publish (deprecated alias → loom recover) ──────────────────────────
+  program.command('publish', { hidden: true })
+    .allowUnknownOption()
+    .argument('<epic-id>', 'Epic to recover')
     .action(async (epicId: string) => {
-      await runPublish(epicId);
+      process.stderr.write(`→ use loom recover ${epicId}\n`);
+      await runRecover(epicId);
     });
 
-  // ─── loom finalize ───────────────────────────────────────────────────────────
-  applySpec(program.command('finalize'), finalizeSpec)
-    .action(async (epicId: string, opts: { resume?: boolean }) => {
-      await runFinalize(epicId, { resume: opts.resume });
+  // ─── loom finalize (deprecated alias → loom recover) ─────────────────────────
+  program.command('finalize', { hidden: true })
+    .allowUnknownOption()
+    .argument('<epic-id>', 'Epic to recover')
+    .action(async (epicId: string) => {
+      process.stderr.write(`→ use loom recover ${epicId}\n`);
+      await runRecover(epicId);
     });
 
   // ─── loom release ────────────────────────────────────────────────────────────
@@ -328,8 +342,8 @@ export function buildProgram(): Command {
 
   // ─── loom projects ────────────────────────────────────────────────────────
   applySpec(program.command('projects'), projectsSpec)
-    .action((opts: { json?: boolean }) => {
-      runProjects({ json: opts.json });
+    .action((root: string | undefined, opts: { json?: boolean }) => {
+      runProjects(root, { json: opts.json });
     });
 
   // ─── loom pull-guidance ──────────────────────────────────────────────────────
@@ -338,10 +352,13 @@ export function buildProgram(): Command {
       runPullGuidance(storyId, { json: opts.json });
     });
 
-  // ─── loom project ─────────────────────────────────────────────────────────────
-  applySpec(program.command('project'), projectSpec)
-    .action((projectRoot: string, opts: { json?: boolean }) => {
-      runProject(projectRoot, { json: opts.json });
+  // ─── loom project (deprecated alias → loom projects) ─────────────────────────
+  program.command('project', { hidden: true })
+    .allowUnknownOption()
+    .argument('[project-root]', 'Project root to show')
+    .action((root: string | undefined) => {
+      process.stderr.write('→ use loom projects\n');
+      runProjects(root);
     });
 
   // ─── loom migrate ────────────────────────────────────────────────────────────
