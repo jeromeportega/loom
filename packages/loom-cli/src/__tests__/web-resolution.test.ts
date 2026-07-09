@@ -89,6 +89,26 @@ describe('resolveWebRoot — resolution order: CWD wins over registry', () => {
   });
 });
 
+describe('resolveWebRoot — CWD is a subdirectory of an initialized repo', () => {
+  it('walks up to the enclosing repo instead of falling through to the registry', () => {
+    const repoDir = makeInitializedDir();
+    const subdir = path.join(repoDir, 'packages', 'thing', 'src');
+    fs.mkdirSync(subdir, { recursive: true });
+
+    // Registry points at a DIFFERENT repo — the nearest enclosing project must
+    // win over it (this is the fail-closed guarantee for workers in worktrees).
+    const otherRepo = makeInitializedDir();
+    const registry = makeRegistry();
+    registry.register(otherRepo);
+
+    const result = resolveWebRoot(subdir, registry, emptyMachineConfigPath);
+
+    assert.ok(result !== null, 'must resolve the enclosing repo');
+    assert.equal(result!.projectRoot, repoDir, 'must walk up to the enclosing repo root');
+    assert.notEqual(result!.projectRoot, otherRepo, 'ancestor repo must win over the registry entry');
+  });
+});
+
 describe('resolveWebRoot — registry empty, CWD not a repo', () => {
   it('returns null (not a throw, not undefined) when all three resolution paths are exhausted', () => {
     const nonRepoDir = fs.mkdtempSync(path.join(tmpDir, 'empty-'));
