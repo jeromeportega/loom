@@ -256,9 +256,12 @@ describe('--help smoke tests', () => {
     const program = new Command('loom');
     program.exitOverride(); // prevent process.exit() from crashing the test
     registerDescribe(program);
-    // helpInformation() returns a string — if it doesn't throw, help is intact
+    // helpInformation() returns a string — if it doesn't throw, help is intact.
+    // `describe` is hidden from help (story-087-001) but the command is still registered.
     const helpText = program.helpInformation();
-    assert.ok(helpText.includes('describe'), 'help output must include the describe command');
+    assert.ok(helpText.length > 0, 'help output must be non-empty');
+    const registered = program.commands.find((c) => c.name() === 'describe');
+    assert.ok(registered, 'describe command must be registered even though it is hidden from help');
   });
 });
 
