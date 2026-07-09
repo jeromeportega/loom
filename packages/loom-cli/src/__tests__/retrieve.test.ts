@@ -10,9 +10,12 @@
  * packages/loom-core/test/retrieval/RetrievalService.test.ts for the
  * end-to-end integration tests. This file keeps the CLI surface thin.
  */
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
+import { ProjectRegistry, resetDatabaseForTest } from '@loom-ai/core';
 import { CommandDescriptionSchema } from '../describe/schema.js';
 import { specSearch, specRead, runRetrieveSearch, runRetrieveRead } from '../commands/retrieve.js';
 import { enumerateRegisteredCommands } from '../describe/registry.js';
@@ -91,30 +94,132 @@ async function capture(fn: () => Promise<void>): Promise<Captured> {
   return { errors, exitCode };
 }
 
-// A pristine temp dir is guaranteed to have no .loom/policy.yaml regardless of
-// where the test suite is run (avoids flakiness when run from a loom-initialized repo).
-const UNINITIALIZED_DIR = os.tmpdir();
+// ── Directory-independent project resolution ─────────────────────────────────
+//
+// retrieve is a CROSS-REPO command, so — like `loom web` — it resolves a project
+// from the machine registry rather than requiring the CWD to be initialized.
+// These tests inject an ISOLATED registry + machine-config path so they exercise
+// both resolution outcomes WITHOUT ever touching the developer's real ~/.loom.
 
-describe('retrieve CLI — non-zero exit on missing loom initialization', () => {
-  it('runRetrieveSearch exits non-zero when loom is not initialized', async () => {
-    const { exitCode } = await capture(async () => {
-      await runRetrieveSearch({ repo: 'some-repo', query: 'anything', cwd: UNINITIALIZED_DIR });
-    });
-    // Exit 1 = loom not initialized (or cross-repo refusal)
-    assert.ok(exitCode !== null && exitCode !== 0, 'should exit non-zero when loom is not initialized');
+describe('retrieve CLI — directory-independent project resolution', () => {
+  let tmpDir: string;
+  let registryFile: string;
+  let emptyMachineConfigPath: string;
+  let nonRepoCwd: string;
+
+  function makeRegistry(): ProjectRegistry {
+    return new ProjectRegistry({ path: registryFile });
+  }
+
+  function makeInitializedRepo(): string {
+    const dir = fs.mkdtempSync(path.join(tmpDir, 'loom-repo-'));
+    fs.mkdirSync(path.join(dir, '.loom'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.loom', 'policy.yaml'), 'version: 1\n');
+    return dir;
+  }
+
+  beforeEach(() => {
+    // openDatabase returns a process-wide singleton, and retrieve's finally
+    // closes it — harmless for a one-shot CLI process, but across tests in one
+    // process a prior close would hand the next test a closed handle. Reset the
+    // singleton so each test simulates a fresh CLI invocation.
+    resetDatabaseForTest();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-retrieve-res-'));
+    registryFile = path.join(tmpDir, 'registry.json');
+    // A machine config with no project_root so resolution can't fall through to it.
+    emptyMachineConfigPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(emptyMachineConfigPath, JSON.stringify({ max_global_workers: 4 }) + '\n');
+    // A directory that is NOT a loom project — the "run from anywhere" caller.
+    nonRepoCwd = fs.mkdtempSync(path.join(tmpDir, 'non-repo-'));
   });
 
-  it('runRetrieveRead exits non-zero when loom is not initialized', async () => {
-    const { exitCode } = await capture(async () => {
-      await runRetrieveRead({ repo: 'some-repo', filePath: 'any.ts', cwd: UNINITIALIZED_DIR });
-    });
-    assert.ok(exitCode !== null && exitCode !== 0, 'should exit non-zero when loom is not initialized');
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('runRetrieveRead exits non-zero when --lines is malformed', async () => {
-    // parseLines validation fires before the fs check, so no real loom env needed.
+  it('runRetrieveSearch: no project resolves anywhere → NO_PROJECT message, exit 1', async () => {
     const { exitCode, errors } = await capture(async () => {
-      await runRetrieveRead({ repo: 'some-repo', filePath: 'any.ts', lines: 'not-valid', cwd: UNINITIALIZED_DIR });
+      await runRetrieveSearch({
+        repo: 'some-repo', query: 'anything', cwd: nonRepoCwd,
+        registry: makeRegistry(), machineConfigPath: emptyMachineConfigPath,
+      });
+    });
+    assert.equal(exitCode, 1, 'should exit 1 when no project resolves');
+    assert.ok(
+      errors.join(' ').includes('No loom project found'),
+      `expected the no-project message; got: ${errors.join(' | ')}`,
+    );
+  });
+
+  it('runRetrieveRead: no project resolves anywhere → NO_PROJECT message, exit 1', async () => {
+    const { exitCode, errors } = await capture(async () => {
+      await runRetrieveRead({
+        repo: 'some-repo', filePath: 'any.ts', cwd: nonRepoCwd,
+        registry: makeRegistry(), machineConfigPath: emptyMachineConfigPath,
+      });
+    });
+    assert.equal(exitCode, 1, 'should exit 1 when no project resolves');
+    assert.ok(
+      errors.join(' ').includes('No loom project found'),
+      `expected the no-project message; got: ${errors.join(' | ')}`,
+    );
+  });
+
+  it('runRetrieveSearch: CWD not initialized but a project is registered → resolves it', async () => {
+    const registry = makeRegistry();
+    registry.register(makeInitializedRepo());
+
+    const { exitCode, errors } = await capture(async () => {
+      await runRetrieveSearch({
+        repo: 'some-repo', query: 'anything', cwd: nonRepoCwd,
+        registry, machineConfigPath: emptyMachineConfigPath,
+      });
+    });
+    // Resolution succeeded: retrieve reached the RetrievalService, which refuses
+    // because the fixture policy leaves cross_repo.enabled=false (the default).
+    // The point is that the NO_PROJECT gate did NOT fire — retrieve ran from a
+    // non-repo CWD by resolving the registered project.
+    const joined = errors.join(' ');
+    assert.equal(exitCode, 1, 'still exits 1 — but on a cross_repo refusal, not a missing project');
+    assert.ok(!joined.includes('No loom project found'), `must NOT hit the no-project gate; got: ${joined}`);
+    assert.ok(
+      joined.includes('cross_repo.disabled'),
+      `expected a cross_repo.disabled refusal proving resolution reached the service; got: ${joined}`,
+    );
+    // The registry fallback must be announced, not silent, so the operator can
+    // see which project's policy governed.
+    assert.ok(
+      joined.includes('governed by'),
+      `expected the governing-project notice on stderr; got: ${joined}`,
+    );
+  });
+
+  it('runRetrieveSearch: from a SUBDIR of an initialized repo → resolves the enclosing repo', async () => {
+    const repo = makeInitializedRepo();
+    const subdir = path.join(repo, 'packages', 'x', 'src');
+    fs.mkdirSync(subdir, { recursive: true });
+    // Registry points elsewhere — the enclosing repo must win over it.
+    const registry = makeRegistry();
+    registry.register(makeInitializedRepo());
+
+    const { exitCode, errors } = await capture(async () => {
+      await runRetrieveSearch({
+        repo: 'some-repo', query: 'anything', cwd: subdir,
+        registry, machineConfigPath: emptyMachineConfigPath,
+      });
+    });
+    const joined = errors.join(' ');
+    assert.equal(exitCode, 1, 'exits 1 on the cross_repo refusal, having resolved the enclosing repo');
+    assert.ok(joined.includes('cross_repo.disabled'), `expected refusal proving resolution reached the service; got: ${joined}`);
+    // The notice must NOT claim there is no project — we are inside one.
+    assert.ok(joined.includes('enclosing loom project'), `expected the enclosing-project notice; got: ${joined}`);
+    assert.ok(!joined.includes('no loom project'), `must not claim no project when enclosed; got: ${joined}`);
+  });
+
+  it('runRetrieveRead exits non-zero when --lines is malformed (before resolution)', async () => {
+    // parseLines validation fires before project resolution, so no registry needed.
+    const { exitCode, errors } = await capture(async () => {
+      await runRetrieveRead({ repo: 'some-repo', filePath: 'any.ts', lines: 'not-valid', cwd: nonRepoCwd });
     });
     assert.ok(exitCode !== null && exitCode !== 0, 'malformed --lines should exit non-zero');
     assert.ok(errors.some(e => e.includes('--lines')), `error message should mention --lines; got: ${errors.join(' | ')}`);

@@ -6,8 +6,9 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createApp, newToken, resolveActiveLoomHome, buildUnifiedRegistry } from '@loom-ai/web';
 import type { CreateAppOptions } from '@loom-ai/web';
-import { ProjectRegistry, defaultMachineConfigPath } from '@loom-ai/core';
+import { defaultMachineConfigPath } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
+import { resolveActiveProject } from '../projectResolution.js';
 
 export interface WebOptions {
   /** Port to bind. Default: 8765, with a small free-port search if taken. */
@@ -22,66 +23,13 @@ export interface WebOptions {
 }
 
 /**
- * Reads `project_root` from the machine-level config JSON, if present.
- * Returns null when the file is absent, unreadable, or has no valid entry.
+ * `resolveWebRoot` is `loom web`'s name for the shared, directory-independent
+ * project resolver (CWD → registry → machine config → null). Kept as a stable
+ * alias so `runWeb` and the web-resolution tests reference one symbol; the
+ * implementation now lives in `projectResolution.ts` and is shared with
+ * `loom retrieve`.
  */
-function readMachineConfigProjectRoot(configPath: string): string | null {
-  if (!fs.existsSync(configPath)) return null;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
-    const root = parsed.project_root;
-    if (typeof root === 'string' && root.length > 0) return root;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Resolves which loom project root to serve.
- *
- * Resolution order (first match wins):
- *   1. CWD has `.loom/policy.yaml` → serve CWD.
- *   2. ProjectRegistry has at least one entry → serve the first registered project.
- *   3. Machine config has `project_root` pointing to an initialized repo → serve it.
- *   4. Return null — the server starts with no current project.
- *
- * Never throws; never calls process.exit. Returns null when no project resolves.
- * Optional parameters are for dependency injection in tests.
- */
-export function resolveWebRoot(
-  cwd: string,
-  registry?: ProjectRegistry,
-  machineConfigPath?: string
-): { projectRoot: string; loomDir: string } | null {
-  const cwdLoomDir = path.join(cwd, '.loom');
-  if (fs.existsSync(path.join(cwdLoomDir, 'policy.yaml'))) {
-    return { projectRoot: cwd, loomDir: cwdLoomDir };
-  }
-
-  const reg = registry ?? new ProjectRegistry();
-  // Pick the first REGISTERED project that is still initialized. A registered
-  // root whose `.loom/` was removed (or whose directory was recreated) would
-  // otherwise be served with a freshly-minted empty DB — a silently blank
-  // dashboard. Skip such entries and fall through to machine config / null.
-  for (const project of reg.list()) {
-    const projLoomDir = path.join(project.root, '.loom');
-    if (fs.existsSync(path.join(projLoomDir, 'policy.yaml'))) {
-      return { projectRoot: project.root, loomDir: projLoomDir };
-    }
-  }
-
-  const cfgPath = machineConfigPath ?? defaultMachineConfigPath();
-  const machineRoot = readMachineConfigProjectRoot(cfgPath);
-  if (machineRoot) {
-    const machineRootLoomDir = path.join(machineRoot, '.loom');
-    if (fs.existsSync(path.join(machineRootLoomDir, 'policy.yaml'))) {
-      return { projectRoot: machineRoot, loomDir: machineRootLoomDir };
-    }
-  }
-
-  return null;
-}
+export const resolveWebRoot = resolveActiveProject;
 
 /** Dependency-injection seams used only in unit tests. */
 interface RunWebInternals {
