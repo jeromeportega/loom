@@ -157,9 +157,9 @@ describe('runRecover — routing (finalizing)', () => {
     assert.ok(errors.some((e) => /push failed/.test(e)), 'failure note must be printed');
   });
 
-  it('exits 0 when resume() returns partial (finalized with conflicts)', async () => {
+  it('exits 1 when resume() returns partial (stories had conflicts, needs manual intervention)', async () => {
     seedEpic('epic-001', 'finalizing');
-    const { exitCode } = await capture(() =>
+    const { exitCode, errors } = await capture(() =>
       runRecover('epic-001', {
         _resume: () => ({
           status: 'partial',
@@ -170,7 +170,66 @@ describe('runRecover — routing (finalizing)', () => {
         }),
       })
     );
-    assert.equal(exitCode, null, 'partial result must exit 0, not 1');
+    assert.equal(exitCode, 1, 'partial result must exit 1 — epic is not cleanly done');
+    assert.ok(errors.some((e) => /finalized with conflicts/.test(e)), 'partial note must be printed');
+  });
+
+  it('exits 1 when resume() returns skipped and epic is not done', async () => {
+    seedEpic('epic-001', 'finalizing');
+    const { exitCode, errors } = await capture(() =>
+      runRecover('epic-001', {
+        _resume: () => ({
+          status: 'skipped',
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: 'no usable remote',
+        }),
+      })
+    );
+    assert.equal(exitCode, 1, 'skipped must exit 1 when epic is not done');
+    assert.ok(errors.some((e) => /no usable remote/.test(e)), 'skipped note must be printed');
+    assert.ok(
+      errors.some((e) => /allowed_remotes/.test(e)),
+      'remediation guidance must mention allowed_remotes'
+    );
+  });
+
+  it('exits 1 when resume() returns gated', async () => {
+    seedEpic('epic-001', 'finalizing');
+    const { exitCode, errors } = await capture(() =>
+      runRecover('epic-001', {
+        _resume: () => ({
+          status: 'gated',
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: 'integration gate blocked merge',
+        }),
+      })
+    );
+    assert.equal(exitCode, 1, 'gated must exit 1');
+    assert.ok(errors.some((e) => /integration gate/.test(e)), 'gated note must be printed');
+  });
+
+  it('exits 1 when resume() returns publish_pending and prints next-step guidance', async () => {
+    seedEpic('epic-001', 'finalizing');
+    const { exitCode, errors } = await capture(() =>
+      runRecover('epic-001', {
+        _resume: () => ({
+          status: 'publish_pending',
+          conflicted: [],
+          merged: [],
+          cleaned: [],
+          note: 'PR created but publish step pending',
+        }),
+      })
+    );
+    assert.equal(exitCode, 1, 'publish_pending must exit 1 — epic still not done');
+    assert.ok(
+      errors.some((e) => /loom publish/.test(e)),
+      'publish_pending must print guidance to run loom publish'
+    );
   });
 });
 
@@ -233,8 +292,11 @@ describe('runRecover — routing (non-finalizing state routes to reconcile)', ()
     // but we only need to verify routing: _resume must not be invoked.
     seedEpic('epic-001', 'in_progress');
     let resumeCalled = false;
-    // reconcile will attempt git ancestry — it may exit 1, which is acceptable
-    // here since we only care that _resume was not called.
+    // Exit code is intentionally unchecked here: reconcile attempts git ancestry
+    // which always fails in this synthetic tmpDir (no real git commits), so it
+    // exits 1. That is correct behavior for an unmergeable in_progress epic —
+    // the contract we are testing is routing (no _resume call), not reconcile's
+    // own exit code.
     await capture(() =>
       runRecover('epic-001', {
         _resume: () => {

@@ -35,62 +35,86 @@ export async function runRecover(epicId: string, opts?: RecoverCommandOptions): 
     }
 
     let result: FinalizeResult;
-    if (opts?._resume) {
-      result = await opts._resume(epicId);
-    } else {
-      let policy: ReturnType<typeof PolicyEngine.load>['policyData'];
-      try {
-        policy = PolicyEngine.load(loomDir).policyData;
-      } catch (err) {
-        console.error(`  Failed to load policy: ${err instanceof Error ? err.message : String(err)}`);
-        process.exit(1);
+    try {
+      if (opts?._resume) {
+        result = await opts._resume(epicId);
+      } else {
+        let policy: ReturnType<typeof PolicyEngine.load>['policyData'];
+        try {
+          policy = PolicyEngine.load(loomDir).policyData;
+        } catch (err) {
+          console.error(`  Failed to load policy: ${err instanceof Error ? err.message : String(err)}`);
+          process.exit(1);
+        }
+        const finalizer = new EpicFinalizer({
+          projectRoot,
+          db,
+          allowedRemotes: policy.git.allowed_remotes,
+          prStrategy: policy.agents.pr_strategy,
+          pushGate: policy.agents.push_gate,
+          integrationGate: policy.agents.integration_gate,
+          prAttribution: policy.agents.pr_attribution,
+          testCommand: policy.agents.test_command,
+          testCommands: policy.agents.test_commands,
+          smokeCommand: policy.agents.smoke_command,
+          smokeTimeoutMinutes: policy.agents.smoke_timeout_minutes,
+          adversarialReviewModel: policy.agents.adversarial_review_model ?? undefined,
+          refreshPolicy: () => {
+            const live = PolicyEngine.load(loomDir).policyData;
+            return {
+              allowedRemotes: live.git.allowed_remotes,
+              testCommand: live.agents.test_command,
+              testCommands: live.agents.test_commands,
+              smokeCommand: live.agents.smoke_command,
+              smokeTimeoutMinutes: live.agents.smoke_timeout_minutes,
+              integrationGate: live.agents.integration_gate,
+              pushGate: live.agents.push_gate,
+              prAttribution: live.agents.pr_attribution,
+              adversarialReviewModel: live.agents.adversarial_review_model ?? undefined,
+            };
+          },
+        });
+        result = await finalizer.resume(epicId);
       }
-      const finalizer = new EpicFinalizer({
-        projectRoot,
-        db,
-        allowedRemotes: policy.git.allowed_remotes,
-        prStrategy: policy.agents.pr_strategy,
-        pushGate: policy.agents.push_gate,
-        integrationGate: policy.agents.integration_gate,
-        prAttribution: policy.agents.pr_attribution,
-        testCommand: policy.agents.test_command,
-        testCommands: policy.agents.test_commands,
-        smokeCommand: policy.agents.smoke_command,
-        smokeTimeoutMinutes: policy.agents.smoke_timeout_minutes,
-        adversarialReviewModel: policy.agents.adversarial_review_model || undefined,
-        refreshPolicy: () => {
-          const live = PolicyEngine.load(loomDir).policyData;
-          return {
-            allowedRemotes: live.git.allowed_remotes,
-            prStrategy: live.agents.pr_strategy,
-            testCommand: live.agents.test_command,
-            testCommands: live.agents.test_commands,
-            smokeCommand: live.agents.smoke_command,
-            smokeTimeoutMinutes: live.agents.smoke_timeout_minutes,
-            integrationGate: live.agents.integration_gate,
-            pushGate: live.agents.push_gate,
-            prAttribution: live.agents.pr_attribution,
-          };
-        },
-      });
-      result = await finalizer.resume(epicId);
+    } catch (err) {
+      console.error(`  Recover failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
     }
 
     console.log('');
-    if (result.status === 'merged' || result.status === 'partial') {
+    if (result.status === 'merged') {
       if (result.url) console.log(`  PR: ${result.url}`);
-      if (result.status === 'partial') console.log('  Note: finalization completed with conflicts in some stories.');
       console.log(`  ${result.note}`);
       console.log('');
       return;
     }
+    if (result.status === 'partial') {
+      // partial = epic not cleanly done; some story branches had conflicts needing manual intervention
+      if (result.url) console.error(`  PR: ${result.url}`);
+      console.error(`  ${result.note}`);
+      if (result.conflicted?.length) {
+        console.error(`  Conflicted: ${result.conflicted.join(', ')}`);
+      }
+      process.exit(1);
+    }
     if (result.status === 'skipped') {
       const currentEpic = epicStore.get(epicId);
       const currentStatus = currentEpic?.status ?? 'unknown';
-      console.log(`  Epic ${epicId} finalization skipped — current status: ${currentStatus}`);
-      console.log('');
-      return;
+      if (currentStatus === 'done') {
+        console.log(`  Epic ${epicId} already done — no action needed.`);
+        console.log('');
+        return;
+      }
+      console.error(`  ${result.note}`);
+      console.error(`  Ensure policy.git.allowed_remotes includes the push target and gh is available.`);
+      process.exit(1);
     }
+    if (result.status === 'publish_pending') {
+      console.error(`  ${result.note}`);
+      console.error(`  Run \`loom publish ${epicId}\` to complete the publish step.`);
+      process.exit(1);
+    }
+    // gated, failed, or any future status
     console.error(`  ${result.note}`);
     process.exit(1);
   }
