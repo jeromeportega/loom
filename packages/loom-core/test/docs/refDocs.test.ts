@@ -382,9 +382,9 @@ describe('story-064-003 — capabilities.md fences unchanged (ADR-006, NFR-1)', 
     );
   });
 
-  it('loom migrate is in the command fence (fence is live, not truncated)', () => {
+  it('loom recover is in the command fence (fence is live, not truncated)', () => {
     const commands = parseFenceTokens(caps, 'command');
-    assert.ok(commands.has('migrate'), '`loom migrate` must be in the command fence');
+    assert.ok(commands.has('recover'), '`loom recover` must be in the command fence');
   });
 
   it('loom cost is in the command fence', () => {

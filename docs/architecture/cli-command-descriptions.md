@@ -115,9 +115,9 @@ reconcile, migrate, cost) that represent common operator patterns. Each step's
 
 | Sequence | Commands | Notes |
 |---|---|---|
-| **Standard epic** | `loom epic` → `loom approve` → `loom run` → `loom status` | The canonical planning-to-execution loop |
+| **Standard epic** | `loom weave` → `loom approve` → `loom run` → `loom status` | The canonical planning-to-execution loop |
 | **Cross-repo epic** | same as standard, but stories carry `repo: <slug>` | `loom run` partitions per-repo stages in topological order; one PR per repo |
-| **Migrate to loom-home** | `loom migrate [--dry-run]` | Ensures loom-home exists, migrates DB + planning scratch, registers repo in workspace manifest (`<loom-home>/workspace.yaml`). Idempotent. |
+| **Migrate to loom-home** | `loom migrate [--dry-run]` | Ensures loom-home exists, migrates DB + planning scratch, registers repo in workspace manifest (`<loom-home>/workspace.yaml`). Idempotent. Internal command; new installs skip this — `loom init` handles it automatically. |
 | **Cost inspection** | `loom cost [--epic <id>] [--aggregate] [--json]` | Read-only: per-phase cost, token, and wall-time breakdown; cross-run statistics with `--aggregate`. Never mutates state. |
 | **Stall recovery** | `loom stop` / `loom retry <story-id>` | Loom auto-retries stalled workers up to `policy.agents.stall_recovery_budget` times (default 2); once exhausted, surfaces for manual `loom retry`. |
 | **Standalone story** | `loom weave "<brief>"` (with `policy.agents.intake_routing` set to `advisory`) | Lightweight path for story-sized briefs: no PM/PRD, no decomposition; produces one PR under a `story-NNN` id. |

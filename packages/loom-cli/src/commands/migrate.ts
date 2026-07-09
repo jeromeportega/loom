@@ -378,6 +378,7 @@ export function runMigrate(opts: {
 
 export const spec: CommandDescription = {
   name: 'migrate',
+  audience: 'internal',
   summary: 'Explicitly migrate this repo into the loom-home workspace (idempotent)',
   whenToUse:
     'Run inside a target repo to ensure loom-home exists, migrate legacy state and ' +

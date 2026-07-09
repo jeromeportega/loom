@@ -71,6 +71,7 @@ export function runProject(projectRoot: string, opts: ProjectOptions = {}): void
 
 export const spec: CommandDescription = {
   name: 'project',
+  audience: 'internal',
   summary: 'Show a registered project and its latest epic',
   whenToUse: 'Use to inspect a specific registered loom project by path. Mirrors loom_get_project from the MCP surface.',
   arguments: [
