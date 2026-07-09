@@ -13,7 +13,7 @@ control plane; cost is tracked and queryable via `loom cost`.
 ```bash
 npm install -g loom-ai          # see Install below
 loom init                       # in your git repo
-loom epic "Add a /health endpoint that returns build info, with a test"
+loom weave "Add a /health endpoint that returns build info, with a test"
 loom approve epic-001 && loom run --checkpoint epic
 ```
 
@@ -28,7 +28,7 @@ persistent server to watch (and nothing to silently run stale code after an
 upgrade).
 
 ```bash
-loom epic "<brief>"               # plan an epic
+loom weave "<brief>"              # plan an epic
 loom approve <epic-id> --run      # approve + dispatch
 loom status --json                # poll progress + PR links
 loom diff <story|epic-id>         # inspect a story/epic diff
@@ -84,7 +84,7 @@ every task and a structure you delegate to and supervise.
 
 AI-forward orgs still want to see deliberate cost control. Loom bakes it in:
 
-- **Always refine before you plan.** Every `loom epic` (and `loom_start_epic`)
+- **Always refine before you plan.** Every `loom weave` (and its `epic` alias)
   runs the `loom-brief-builder` rubric automatically before the planner — a
   single cheap Sonnet call. Briefs scoring below
   `policy.agents.min_brief_quality_score` (default 6/10) are refused with a
@@ -100,7 +100,7 @@ AI-forward orgs still want to see deliberate cost control. Loom bakes it in:
 - **Planner token tracking, per epic.** Every planning run records input / output /
   cached tokens and wall-clock time on the epic row. `loom status` displays it so
   cost is visible, not buried.
-- **Planning token budget.** Set `policy.agents.planning_token_budget`; `loom epic`
+- **Planning token budget.** Set `policy.agents.planning_token_budget`; `loom weave`
   warns at the end of the run if the planning step ran over. Catches a brief that
   blew up the pipeline.
 - **Session-based by default.** `claude-cli` and `cursor-cli` backends use the
@@ -115,11 +115,11 @@ if you need a roll-up today.
 
 | Capability | How |
 |---|---|
-| **Plan** | Analyst → PM → Architect personas turn a brief into a PRD, an architecture, and a story breakdown. Completion line shows `tech_notes N of M` — stories the Architect annotated with per-story implementation notes. |
+| **Plan** | Analyst → PM → Architect personas turn a brief into a PRD, an architecture, and a story breakdown. Completion line shows `tech_notes N of M` — stories the Architect annotated with per-story implementation notes. The enrichment step retries on a transient failure, and a plan whose enrichment fails outright is rejected (not offered for approval) rather than shipping without technical guidance. |
 | **Build** | Parallel story agents implement, test, and merge — each isolated in its own git worktree. A single-repo epic produces one pull request; a cross-repo epic produces one pull request per repository, landed in dependency order with all-ready-or-none staging. Before any PR opens, a toolchain-aware integration gate runs on the merged tree (unit tests + tsc typecheck + Next.js / Go / Cargo build as detected). |
 | **Learn** | A curated skill library auto-injects into worker agents; new skills are extracted from successful work and gated by an eval harness (the lifecycle runs internally — no user-facing CRUD surface today) |
 | **Supervise** | `loom status`, checkpoints, and `loom stop` keep you in control; `loom status --all` spans every repo on the machine |
-| **Observe** | Local web dashboard (`loom web`) for visibility into running agents, planning artifacts, and history — runs from any directory, auto-resolves the project; `loom cost` for per-epic cost and token breakdown |
+| **Observe** | Local web dashboard (`loom web`) for visibility into running agents, planning artifacts, and history — launches from any directory (even uninitialized) and federates across every loom repo on the machine; `loom cost` for per-epic cost and token breakdown |
 | **Integrate** | Provisions your org's approved MCP servers for worker agents via `loom mcp add` |
 
 ---
@@ -210,7 +210,7 @@ That is the whole loop. Everything below is reference.
 | Step | Command | What happens |
 |---|---|---|
 | Set up | `loom init` | Creates `.loom/`, the policy, the guard hook, IDE config |
-| Plan | `loom epic "<brief>"` | Planning personas produce a brief, PRD, architecture, and epic YAMLs |
+| Plan | `loom weave "<brief>"` | Planning personas produce a brief, PRD, architecture, and epic YAMLs |
 | Review | `loom status` | Inspect the planned epics under `.loom/planning/` |
 | Approve | `loom approve [epic-id]` | Release planned epic(s) for execution |
 | Execute | `loom run` | The supervisor dispatches story agents in isolated worktrees |
@@ -383,11 +383,16 @@ loom web                          # starts the local dashboard on a free port
 ```
 
 `loom web` serves a single-process dashboard at `http://127.0.0.1:<port>` over
-the same SQLite state the supervisor writes to. **Run it from any directory** —
-it resolves the project root automatically: (1) CWD has `.loom/policy.yaml` →
-serve CWD; (2) `ProjectRegistry` has entries → serve the first registered
-project; (3) machine config has `project_root` → serve it; (4) exits with a
-clear error. The resolved project root is printed at startup.
+the same SQLite state the supervisor writes to. **It launches from any directory
+— even an uninitialized one.** When the current directory is a loom project it
+is served as the "current" project; when none resolves, the server still starts
+(in a no-current-project mode) and serves the federated view rather than exiting.
+Either way the repo list **federates across every loom-init'd repo on the
+machine** — the union of the *active* `loom_home` (resolved from `LOOM_HOME`,
+else the served project's `policy.loom_home`, else the machine default `~/.loom`)
+and the machine-default registry — so a repo shows up regardless of `loom_home`
+redirection or which directory you launched from. The resolved project root (or
+`(none)`) is printed at startup.
 
 The dashboard is a **React single-page app** (Vite + React Router + TanStack
 Query + Tailwind/shadcn-ui) with a repository → epic → story **drill-down**: the
@@ -406,22 +411,21 @@ The React dashboard ships **live worker output streaming** (SSE-backed story log
 |---|---|
 | `loom doctor` | Check prerequisites, machine config, and verify the gate command's binaries resolve on the gate's PATH (`gate-runnable` check — fast, no execution); `loom doctor --dry-run-gate` actually runs the gate once in a throwaway worktree |
 | `loom init [--cursor]` | Initialize loom in a repo |
-| `loom weave "<brief>"` | Plan an epic from a brief via the weave intake path (always gated by the brief-quality refiner) |
-| `loom epic "<brief>"` | Alias for `loom weave` — plan an epic from a brief |
+| `loom weave "<brief>"` | Plan an epic from a brief (Analyst → PM → Architect; always gated by the brief-quality refiner). A plan whose Architect enrichment fails outright is rejected rather than offered for approval. |
 | `loom web` | Open the local dashboard (planning artifacts, live worker output, controls) |
 | `loom approve [epic-id]` / `loom reject <epic-id>` | The human gate |
 | `loom run [--checkpoint story\|epic] [--verbose]` | Dispatch story agents; automatically resumes any `finalizing`/`publish_pending` epic it encounters before dispatching new work; `--verbose` streams live worker stdout/stderr |
-| `loom finalize --resume <epic-id>` | Manually resume a stranded `finalizing` or `publish_pending` epic to `done` without redoing merged work (copy-paste from `loom run`'s skip message) |
+| `loom recover <epic-id> [--pr <url>]` | Drive a stranded epic to `done` — auto-detects state: a `finalizing`/`publish_pending` epic resumes its finalize; anything else (e.g. merged outside loom) reconciles. Copy-paste from `loom run`'s skip message. Consolidates the former `finalize`/`publish`/`reconcile` commands. |
 | `loom stop [<story-ids>] [--and-retry]` | Halt a run gracefully (no story args) or SIGTERM a specific worker (`<story-id>`); `--and-retry` stops a story then immediately re-queues it (requires a story ID; not compatible with `--epic`) |
 | `loom retry <story-id> [--clean] [--force]` | Re-dispatch a failed/blocked story; `--clean` tears down the worktree for a fresh start; `--force` bypasses the running-state guard |
 | `loom sync <epic-id> [--main-branch <name>]` | Merge latest main into an epic's rolling integration branch on demand |
 | `loom status [--watch] [--epic <id>] [--all]` | Epic and agent status; `--all` spans every repo |
-| `loom publish <epic-id>` | Drive a `publish_pending` or `finalizing` epic to `done`; opens a PR from the pushed ref (`publish_pending`) or resumes the full finalize sequence (`finalizing`) |
-| `loom reconcile <epic-id> [--pr <url>]` | Reconcile a stranded `in_progress` (already merged) or `finalizing` epic to `done` |
 | `loom revert <epic-id> [--remote]` | Tear down an epic; `--remote` also deletes the upstream branch and PR |
 | `loom guide <story-id> "<msg>"` | Append operator guidance to a running worker |
 | `loom mcp list / add <name>` | Provision approved MCP servers for worker agents |
 | `loom guard check / hook` | Guardrail enforcement (used by the hook) |
+
+> **Deprecated aliases** (still work, hidden from `--help`): `epic` → `weave`, `project` → `projects`, and `publish` / `finalize` / `reconcile` → `recover`. Each prints a one-line redirect notice. `loom --help` centers on the commands above; a handful of niche commands (`scan`, `opportunities`, `propose`, `describe`, `migrate`, `pull-guidance`) are hidden but remain invokable by name.
 
 Developer-tool binaries (separate from the main `loom` CLI):
 

@@ -7,7 +7,7 @@ directory.
 ## Quick start
 
 ```bash
-loom web              # from any directory — auto-resolves the project
+loom web              # from any directory (even uninitialized) — federates all repos
 loom web --port 9000  # bind a specific port
 loom web --read-only  # public GET routes; mutations require the write token
 ```
