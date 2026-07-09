@@ -38,6 +38,7 @@ import { runWeave, spec as weaveSpec } from './commands/weave.js';
 import { runMigrate, spec as migrateSpec } from './commands/migrate.js';
 import { runRetrieveSearch, runRetrieveRead, specSearch as retrieveSearchSpec, specRead as retrieveReadSpec } from './commands/retrieve.js';
 import { runSync, syncSpec } from './commands/sync.js';
+import { runRecover, spec as recoverSpec } from './commands/recover.js';
 import { applySpec } from './describe/applySpec.js';
 import { registerDescribe } from './commands/describe.js';
 import { handleTopLevelError } from './errorHandling.js';
@@ -374,6 +375,12 @@ export function buildProgram(): Command {
     .option('--lines <a:b>', 'Optional line range as <start>:<end> (e.g. "10:50")')
     .action(async (opts: { repo: string; path: string; lines?: string }) => {
       await runRetrieveRead({ repo: opts.repo, filePath: opts.path, lines: opts.lines });
+    });
+
+  // ─── loom recover ────────────────────────────────────────────────────────────
+  applySpec(program.command('recover'), recoverSpec)
+    .action(async (epicId: string, opts: { pr?: string }) => {
+      await runRecover(epicId, { pr: opts.pr });
     });
 
   // <register additional commands>
