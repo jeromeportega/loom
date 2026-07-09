@@ -57,19 +57,21 @@ loom CLI                           Browser
 Could swap to Fastify later; no lock-in. Single process, serves both
 the JSON API and the static frontend bundle.
 
-**Frontend: vanilla JS, no framework** — `packages/loom-web/public/index.html`
-is a single self-contained file: HTML + CSS + a few hundred lines of
-inline JavaScript. No React, no build step, no node_modules in the
-served bundle. The reasoning: the dashboard is a few views and a small
-amount of live data; a framework would be heavier than the thing it
-renders. If the UI grows past what plain JS handles cleanly, a
-React/Vite migration is straightforward — the JSON API is stable.
+**Frontend: a React single-page app** — `packages/loom-web/src/client/`
+is a Vite + React Router + TanStack Query + Tailwind/shadcn-ui SPA, built to
+`client-dist/` and served statically by the Express server. It has client-side
+routing with a repository → epic → story drill-down; every level is a real,
+deep-linkable URL (`/repo/:slug/epic/:epicId/story/:storyId`), so the browser
+back/forward buttons work. (The original self-contained vanilla-JS
+`public/index.html` was replaced by this SPA in the React re-platform; the JSON
+API stayed stable across the migration.)
 
-**Data fetching: `fetch` + polling for the list view; SSE for the
-detail view** — the list view polls `/api/status` every 2s (cheap,
-federated across every registered project); the detail view opens
-an `EventSource` to `/api/events` and patches DOM in place as
-`epic` / `agent` / `output` events stream in.
+**Data fetching: TanStack Query polling for the list views; SSE for the
+live story log** — the list/detail views poll their REST endpoints on a short
+interval (the repo list federates across every registered project); the story
+detail view opens an authenticated `EventSource` to `/api/events` (the token
+rides in a `?token=` query param, since EventSource can't set headers) and
+appends live worker output as `output` events stream in.
 
 **Live updates: Server-Sent Events (SSE)** — simpler than WebSockets,
 works through proxies, one-way (server → client) which is all we need
@@ -196,7 +198,7 @@ implementation behind each endpoint can evolve.
 
 ## What ships today
 
-- `packages/loom-web/` — Express server + vanilla-JS single-page UI
+- `packages/loom-web/` — Express server (JSON API) + a React SPA (Vite + React Router + TanStack Query + Tailwind/shadcn-ui)
 - The read endpoints in the API contract above
 - A federated list view (every loom-init'ed project on the machine,
   grouped by repo name, current project first)

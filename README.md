@@ -115,11 +115,11 @@ if you need a roll-up today.
 
 | Capability | How |
 |---|---|
-| **Plan** | Analyst → PM → Architect personas turn a brief into a PRD, an architecture, and a story breakdown. Completion line shows `tech_notes N of M` — stories the Architect annotated with per-story implementation notes. |
+| **Plan** | Analyst → PM → Architect personas turn a brief into a PRD, an architecture, and a story breakdown. Completion line shows `tech_notes N of M` — stories the Architect annotated with per-story implementation notes. The enrichment step retries on a transient failure, and a plan whose enrichment fails outright is rejected (not offered for approval) rather than shipping without technical guidance. |
 | **Build** | Parallel story agents implement, test, and merge — each isolated in its own git worktree. A single-repo epic produces one pull request; a cross-repo epic produces one pull request per repository, landed in dependency order with all-ready-or-none staging. Before any PR opens, a toolchain-aware integration gate runs on the merged tree (unit tests + tsc typecheck + Next.js / Go / Cargo build as detected). |
 | **Learn** | A curated skill library auto-injects into worker agents; new skills are extracted from successful work and gated by an eval harness (the lifecycle runs internally — no user-facing CRUD surface today) |
 | **Supervise** | `loom status`, checkpoints, and `loom stop` keep you in control; `loom status --all` spans every repo on the machine |
-| **Observe** | Local web dashboard (`loom web`) for visibility into running agents, planning artifacts, and history — runs from any directory, auto-resolves the project; `loom cost` for per-epic cost and token breakdown |
+| **Observe** | Local web dashboard (`loom web`) for visibility into running agents, planning artifacts, and history — launches from any directory (even uninitialized) and federates across every loom repo on the machine; `loom cost` for per-epic cost and token breakdown |
 | **Integrate** | Provisions your org's approved MCP servers for worker agents via `loom mcp add` |
 
 ---
@@ -383,11 +383,16 @@ loom web                          # starts the local dashboard on a free port
 ```
 
 `loom web` serves a single-process dashboard at `http://127.0.0.1:<port>` over
-the same SQLite state the supervisor writes to. **Run it from any directory** —
-it resolves the project root automatically: (1) CWD has `.loom/policy.yaml` →
-serve CWD; (2) `ProjectRegistry` has entries → serve the first registered
-project; (3) machine config has `project_root` → serve it; (4) exits with a
-clear error. The resolved project root is printed at startup.
+the same SQLite state the supervisor writes to. **It launches from any directory
+— even an uninitialized one.** When the current directory is a loom project it
+is served as the "current" project; when none resolves, the server still starts
+(in a no-current-project mode) and serves the federated view rather than exiting.
+Either way the repo list **federates across every loom-init'd repo on the
+machine** — the union of the *active* `loom_home` (resolved from `LOOM_HOME`,
+else the served project's `policy.loom_home`, else the machine default `~/.loom`)
+and the machine-default registry — so a repo shows up regardless of `loom_home`
+redirection or which directory you launched from. The resolved project root (or
+`(none)`) is printed at startup.
 
 The dashboard is a **React single-page app** (Vite + React Router + TanStack
 Query + Tailwind/shadcn-ui) with a repository → epic → story **drill-down**: the
