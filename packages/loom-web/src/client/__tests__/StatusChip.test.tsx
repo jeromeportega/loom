@@ -17,6 +17,8 @@ const ALL_STATUSES: CanonicalStatus[] = [
   'done',
   'pending',
   'queued',
+  'pr_open',
+  'rejected',
 ];
 
 function renderChip(status: string) {
@@ -153,6 +155,56 @@ describe('StatusChip — distinct visual treatments', () => {
     const { getByText: getQueued } = render(<StatusChip status="queued" />);
     expect(getPending('pending')).not.toBeNull();
     expect(getQueued('queued')).not.toBeNull();
+  });
+});
+
+describe('StatusChip — loom domain status mapping', () => {
+  // The API emits raw loom statuses (types.ts EpicStatus/AgentStatus), NOT the
+  // canonical bucket names. These map onto a treatment + preserve the real label.
+  it('maps in_progress to the running treatment WITH a spinner', () => {
+    const { container } = renderChip('in_progress');
+    const badge = container.firstChild as HTMLElement;
+    expect(badge.className).toContain('bg-blue-100');
+    expect(container.querySelector('svg.animate-spin')).not.toBeNull();
+    expect(screen.getByText('in_progress')).not.toBeNull(); // real label kept
+  });
+
+  it('the other in-flight states (finalizing / integrating / planning) also spin', () => {
+    for (const s of ['finalizing', 'integrating', 'planning']) {
+      const { container } = render(<StatusChip status={s} />);
+      expect(
+        container.querySelector('svg.animate-spin'),
+        `${s} should render as running with a spinner`
+      ).not.toBeNull();
+    }
+  });
+
+  it('pr_open gets a distinct (violet) treatment, not the gray fallback', () => {
+    const { container } = renderChip('pr_open');
+    const badge = container.firstChild as HTMLElement;
+    expect(badge.className).toContain('bg-violet-100');
+    expect(container.querySelector('svg.animate-spin')).toBeNull();
+  });
+
+  it('rejected gets a distinct (slate) treatment, visibly different from unknown gray', () => {
+    const { container } = renderChip('rejected');
+    const badge = container.firstChild as HTMLElement;
+    expect(badge.className).toContain('bg-slate-200');
+  });
+
+  it('waiting states (planned / approved / publish_pending) map to neutral pending', () => {
+    for (const s of ['planned', 'approved', 'publish_pending']) {
+      const { container } = render(<StatusChip status={s} />);
+      const badge = container.firstChild as HTMLElement;
+      expect(badge.className, `${s} should be neutral`).toContain('bg-gray-100');
+    }
+  });
+
+  it('a genuinely unmapped status still falls back to gray with no spinner', () => {
+    const { container } = renderChip('totally-made-up');
+    const badge = container.firstChild as HTMLElement;
+    expect(badge.className).toContain('text-gray-500');
+    expect(container.querySelector('svg.animate-spin')).toBeNull();
   });
 });
 
