@@ -57,7 +57,11 @@ describe('useFleet — fetches /api/fleet', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/fleet');
+    // Must go through apiFetch (path + an init object carrying the auth header),
+    // NOT a raw one-arg fetch — a bare fetch('/api/fleet') 401s in default token
+    // mode. The init arg is what distinguishes the two; end-to-end auth is
+    // covered by the browser check.
+    expect(fetchMock).toHaveBeenCalledWith('/api/fleet', expect.any(Object));
     expect(result.current.data).toHaveLength(1);
     expect((result.current.data as FleetCard[])[0].epic_id).toBe('epic-001');
   });

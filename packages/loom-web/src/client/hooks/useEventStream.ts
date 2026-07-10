@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../lib/queryKeys';
+import { eventSourceUrl } from '../lib/api';
 
 const DEBOUNCE_MS = 200;
 const BASE_RETRY_MS = 1_000;
@@ -116,7 +117,10 @@ export function useEventStream(): void {
 
     function connect(): void {
       if (destroyed) return;
-      es = new EventSource('/api/events');
+      // EventSource can't set headers, so the auth token must ride as ?token=
+      // (accessGuard accepts it). Without this every SSE connection 401s in the
+      // default token launch mode — the whole live-update path silently dies.
+      es = new EventSource(eventSourceUrl('/api/events'));
 
       es.addEventListener('open', () => {
         attempt = 0;
