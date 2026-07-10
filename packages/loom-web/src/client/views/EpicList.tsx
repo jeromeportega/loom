@@ -9,20 +9,8 @@ import {
   TableHeader,
   TableRow,
 } from '../components/ui/table';
-import { Badge } from '../components/ui/badge';
+import { StatusChip } from '../components';
 import { Skeleton } from '../components/ui/skeleton';
-import type { EpicStatus } from '../../shared/types';
-
-function statusVariant(status: EpicStatus['status']): 'default' | 'secondary' | 'destructive' | 'outline' {
-  switch (status) {
-    case 'failed':
-      return 'destructive';
-    case 'done':
-      return 'secondary';
-    default:
-      return 'default';
-  }
-}
 
 export function EpicList() {
   const { slug = '' } = useParams<{ slug: string }>();
@@ -76,7 +64,7 @@ export function EpicList() {
                 <TableCell>{epic.id}</TableCell>
                 <TableCell>{epic.title}</TableCell>
                 <TableCell>
-                  <Badge variant={statusVariant(epic.status)}>{epic.status}</Badge>
+                  <StatusChip status={epic.status} />
                 </TableCell>
                 <TableCell>{epic.updated_at}</TableCell>
               </TableRow>
