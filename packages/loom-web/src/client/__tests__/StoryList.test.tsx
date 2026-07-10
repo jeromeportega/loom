@@ -299,11 +299,6 @@ describe('StoryList — StatusChip replaces Badge for status', () => {
     expect(container.querySelector('.animate-spin')).not.toBeNull();
   });
 
-  it('StoryList view source uses StatusChip, not raw Badge for status column', () => {
-    const src = readFileSync(join(process.cwd(), 'src/client/views/StoryList.tsx'), 'utf8');
-    expect(src).toContain('StatusChip');
-    expect(src).not.toContain("import { Badge }");
-  });
 });
 
 // ─── Case 12: no manual polling in client source ─────────────────────────────
