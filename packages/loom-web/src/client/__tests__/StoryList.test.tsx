@@ -235,8 +235,8 @@ describe('Parity audit — old dashboard features present in React views', () =>
    * least one of the four React views.
    *
    * Field → view mapping:
-   *   status indicators     → StoryList (status Badge per row)         [case 1]
-   *   running-agent display → StoryList (status=running Badge)          [case 1]
+   *   status indicators     → StoryList (StatusChip per row)           [case 1]
+   *   running-agent display → StoryList (status=running StatusChip)    [case 1]
    *   epics overview        → EpicList  (story-081-004)
    *   history / log         → StoryDetail log tab                      [case 6]
    *   story_id              → StoryList & StoryDetail                  [cases 1, 5]
@@ -245,7 +245,7 @@ describe('Parity audit — old dashboard features present in React views', () =>
    *   PR URL                → StoryDetail summary tab
    */
 
-  it('status badges rendered in StoryList (status indicators)', () => {
+  it('status chips rendered in StoryList (status indicators)', () => {
     vi.mocked(useStoriesModule.useStories).mockReturnValue({
       data: { epic_id: 'epic-001', stories: mockStories },
       isLoading: false,
@@ -279,6 +279,30 @@ describe('copy:public removed', () => {
   it('package.json scripts do not contain copy:public', () => {
     const pkg = readFileSync(join(process.cwd(), 'package.json'), 'utf8');
     expect(pkg).not.toContain('copy:public');
+  });
+});
+
+// ─── StatusChip usage verification ───────────────────────────────────────────
+
+describe('StoryList — StatusChip replaces Badge for status', () => {
+  it('running story renders the animate-spin spinner (StatusChip-specific)', () => {
+    vi.mocked(useStoriesModule.useStories).mockReturnValue({
+      data: { epic_id: 'epic-001', stories: mockStories },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as any);
+
+    const { container } = renderStoryList();
+
+    // animate-spin is only added by StatusChip for the 'running' state
+    expect(container.querySelector('.animate-spin')).not.toBeNull();
+  });
+
+  it('StoryList view source uses StatusChip, not raw Badge for status column', () => {
+    const src = readFileSync(join(process.cwd(), 'src/client/views/StoryList.tsx'), 'utf8');
+    expect(src).toContain('StatusChip');
+    expect(src).not.toContain("import { Badge }");
   });
 });
 

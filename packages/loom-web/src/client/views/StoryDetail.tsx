@@ -2,8 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useStory } from '../hooks/useStory';
-import { statusVariant } from '../lib/statusVariant';
-import { Badge } from '../components/ui/badge';
+import { StatusChip } from '../components';
 import { Button } from '../components/ui/button';
 import { Skeleton } from '../components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
@@ -188,7 +187,7 @@ export function StoryDetail() {
     <div className="p-4">
       <div className="flex items-center gap-3 mb-4">
         <h2 className="text-lg font-semibold">{data.story_id}</h2>
-        <Badge variant={statusVariant(data.status)}>{data.status}</Badge>
+        <StatusChip status={data.status} />
       </div>
 
       {(isRunning || isRetryable) && (

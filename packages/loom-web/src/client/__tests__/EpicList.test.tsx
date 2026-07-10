@@ -47,7 +47,7 @@ afterEach(() => {
 });
 
 describe('EpicList — data loaded', () => {
-  it('renders a table row and Badge for each epic', () => {
+  it('renders a table row and StatusChip for each epic', () => {
     vi.mocked(useEpicsModule.useEpics).mockReturnValue(
       makeQueryResult<EpicsResponse>({
         data: { epics: [makeEpic({ status: 'in_progress' })] },
@@ -132,7 +132,7 @@ describe('Polling interval', () => {
   });
 });
 
-describe('Badge status variants', () => {
+describe('StatusChip status variants', () => {
   const statuses: Array<EpicStatus['status']> = [
     'planning',
     'planned',
@@ -146,7 +146,7 @@ describe('Badge status variants', () => {
   ];
 
   for (const status of statuses) {
-    it(`renders Badge with text "${status}" for status ${status}`, () => {
+    it(`renders StatusChip with text "${status}" for status ${status}`, () => {
       vi.mocked(useEpicsModule.useEpics).mockReturnValue(
         makeQueryResult<EpicsResponse>({
           data: { epics: [makeEpic({ id: `epic-${status}`, status })] },
@@ -160,4 +160,38 @@ describe('Badge status variants', () => {
       expect(screen.getByText(status)).not.toBeNull();
     });
   }
+});
+
+// ─── StatusChip semantic coloring ─────────────────────────────────────────────
+
+describe('EpicList — StatusChip replaces Badge for status', () => {
+  it('failed status renders with red semantic color classes (StatusChip-specific)', () => {
+    vi.mocked(useEpicsModule.useEpics).mockReturnValue(
+      makeQueryResult<EpicsResponse>({
+        data: { epics: [makeEpic({ status: 'failed' })] },
+        isLoading: false,
+        isSuccess: true,
+        status: 'success',
+      })
+    );
+
+    const { container } = renderEpicList();
+    // StatusChip applies bg-red-100 for 'failed'; the old Badge used variant="destructive"
+    expect(container.querySelector('.bg-red-100')).not.toBeNull();
+  });
+
+  it('done status renders with green semantic color classes (StatusChip-specific)', () => {
+    vi.mocked(useEpicsModule.useEpics).mockReturnValue(
+      makeQueryResult<EpicsResponse>({
+        data: { epics: [makeEpic({ status: 'done' })] },
+        isLoading: false,
+        isSuccess: true,
+        status: 'success',
+      })
+    );
+
+    const { container } = renderEpicList();
+    // StatusChip applies bg-green-100 for 'done'; the old Badge used variant="secondary"
+    expect(container.querySelector('.bg-green-100')).not.toBeNull();
+  });
 });
