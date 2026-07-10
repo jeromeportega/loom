@@ -378,4 +378,39 @@ describe('FleetBoard — multi-repo board', () => {
     expect(screen.getAllByTestId('epic-card')).toHaveLength(10);
     expect(screen.getAllByTestId('repo-column')).toHaveLength(2);
   });
+
+  it('renders columns in stable alphabetical order regardless of API return order', () => {
+    // API returns beta before alpha — columns must appear alpha, beta
+    vi.mocked(useFleetModule.useFleet).mockReturnValue(
+      makeQueryResult<FleetCard[]>({
+        data: [
+          makeCard({ project_root: '/projects/zebra', epic_id: 'epic-z' }),
+          makeCard({ project_root: '/projects/alpha', epic_id: 'epic-a' }),
+          makeCard({ project_root: '/projects/mango', epic_id: 'epic-m' }),
+        ],
+        isSuccess: true,
+        status: 'success',
+      })
+    );
+    renderFleetBoard();
+    const names = screen.getAllByTestId('repo-name').map((el) => el.textContent);
+    expect(names).toEqual(['alpha', 'mango', 'zebra']);
+  });
+});
+
+// ─── Empty story status counts ────────────────────────────────────────────────
+
+describe('FleetBoard — story-status-counts empty state', () => {
+  it('renders story-status-counts testid on the empty-stories span', () => {
+    vi.mocked(useFleetModule.useFleet).mockReturnValue(
+      makeQueryResult<FleetCard[]>({
+        data: [makeCard({ stories: [] })],
+        isSuccess: true,
+        status: 'success',
+      })
+    );
+    renderFleetBoard();
+    const el = screen.getByTestId('story-status-counts');
+    expect(el.textContent).toMatch(/no stories/i);
+  });
 });

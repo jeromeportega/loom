@@ -17,7 +17,7 @@ function StoryStatusCounts({ stories }: { stories: FleetCard['stories'] }) {
   const entries = Object.entries(counts).sort(([a], [b]) => a.localeCompare(b));
 
   if (entries.length === 0) {
-    return <span className="text-xs text-muted-foreground">No stories</span>;
+    return <span data-testid="story-status-counts" className="text-xs text-muted-foreground">No stories</span>;
   }
 
   return (
@@ -56,8 +56,8 @@ function EpicCard({ card }: { card: FleetCard }) {
             {card.autonomy_level}
           </span>
           {card.paused && (
-            <span className="text-amber-600 font-medium" data-testid="paused-indicator">
-              paused
+            <span data-testid="paused-indicator">
+              <StatusChip status="paused" />
             </span>
           )}
         </div>
@@ -121,9 +121,12 @@ export function FleetBoard() {
 
   const grouped = new Map<string, FleetCard[]>();
   for (const card of cards) {
-    const group = grouped.get(card.project_root) ?? [];
-    group.push(card);
-    grouped.set(card.project_root, group);
+    const group = grouped.get(card.project_root);
+    if (group) {
+      group.push(card);
+    } else {
+      grouped.set(card.project_root, [card]);
+    }
   }
 
   return (
@@ -131,7 +134,7 @@ export function FleetBoard() {
       data-testid="fleet-board"
       className="flex gap-6 p-4 overflow-x-auto min-h-screen"
     >
-      {[...grouped.entries()].map(([root, repoCards]) => (
+      {[...grouped.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([root, repoCards]) => (
         <RepoColumn key={root} name={repoName(root)} cards={repoCards} />
       ))}
     </div>
