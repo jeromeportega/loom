@@ -4,6 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>loom — dashboard</title>
+    <script>
+      // Sync the shadcn `.dark` token class to the OS color scheme BEFORE paint,
+      // so component `dark:` variants and the theme tokens flip together (no
+      // FOUC, and no more dark chips on a light shell). A manual toggle can
+      // later drive the same class.
+      (function () {
+        var m = window.matchMedia('(prefers-color-scheme: dark)');
+        var apply = function () {
+          document.documentElement.classList.toggle('dark', m.matches);
+        };
+        apply();
+        m.addEventListener('change', apply);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

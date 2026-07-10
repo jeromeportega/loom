@@ -86,8 +86,10 @@ function buildProjectCards(
   agentStore: AgentStore,
   projectRoot: string
 ): FleetCard[] {
-  // Archived epics are hidden from the fleet view, same as /api/status.
-  const epics = epicStore.list();
+  // Archived epics are hidden; standalone stories ARE included — they're
+  // approvable work items and belong on the board as cards (unlike /api/status,
+  // which presents them separately as stories).
+  const epics = epicStore.list({ includeStandalone: true });
   return epics.map((epic) => {
     // Per-story dedup: one row per story_id, most-recent attempt.
     const latestAgents = agentStore.listLatestByEpic(epic.id);
@@ -108,6 +110,11 @@ function buildProjectCards(
     const epicRow = epic as typeof epic & {
       autonomy_level?: string | null;
       paused_at?: string | null;
+      updated_at?: string | null;
+      planning_phase?: string | null;
+      finalize_phase?: string | null;
+      epic_pr_url?: string | null;
+      kind?: string | null;
     };
     const autonomy_level = (epicRow.autonomy_level ?? 'manual') as AutonomyLevel;
     const paused = epicRow.paused_at != null;
@@ -122,6 +129,11 @@ function buildProjectCards(
       stories,
       cost,
       blockers,
+      updated_at: epicRow.updated_at ?? null,
+      planning_phase: epicRow.planning_phase ?? null,
+      finalize_phase: epicRow.finalize_phase ?? null,
+      epic_pr_url: epicRow.epic_pr_url ?? null,
+      ...(epicRow.kind != null ? { kind: epicRow.kind } : {}),
       ...(deriveBlocked(epic) ?? {}),
     };
   });

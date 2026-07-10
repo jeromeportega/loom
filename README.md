@@ -395,13 +395,15 @@ redirection or which directory you launched from. The resolved project root (or
 `(none)`) is printed at startup.
 
 The dashboard is a **React single-page app** (Vite + React Router + TanStack
-Query + Tailwind/shadcn-ui) with a repository → epic → story **drill-down**: the
-homepage lists every registered repo as a card; clicking one shows its epics,
-then an epic's stories, then a story's detail. Each level is a real URL
+Query + Tailwind/shadcn-ui) with a multi-project **Fleet board** homepage — epic
+cards grouped by repository, each with a semantic status chip, updated live —
+plus a repository → epic → story **drill-down** beneath it: `/repos` lists every
+registered repo as a card; clicking one shows its epics, then an epic's stories,
+then a story's detail. Each level is a real URL
 (`/repo/:slug/epic/:epicId/story/:storyId`), so the **browser back/forward
 buttons work** and any view is deep-linkable. No external services — local only.
 
-The React dashboard ships **live worker output streaming** (SSE-backed story log panel), **inline mutation controls** (approve, reject, stop, kill, and retry — including clean-retry — directly from the story detail view), and **planning-artifact review** (brief, PRD, architecture, and epic YAML rendered inline above the Approve button for `planned` epics).
+The React dashboard ships **real-time updates** (an app-level SSE subscription to `/api/events` invalidates the relevant query caches on every `epic`/`agent` event — with automatic reconnect + backoff — so the board and lists refresh live instead of on a fixed poll), **semantic status colors** (a shared `StatusChip` maps loom's status vocabulary to distinct treatments — running spins, blocked/failed high-contrast, done green), **live worker output streaming** (SSE-backed story log panel), **inline mutation controls** (approve, reject, stop, kill, and retry — including clean-retry — directly from the story detail view), and **planning-artifact review** (brief, PRD, architecture, and epic YAML rendered inline above the Approve button for `planned` epics).
 
 ---
 

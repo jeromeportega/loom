@@ -5,36 +5,42 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import React from 'react';
 import { AppContent } from '../App';
 
+// useEventStream opens EventSource — mock it out so App tests don't need SSE.
+vi.mock('../hooks/useEventStream', () => ({ useEventStream: vi.fn() }));
+
 // Provide minimal API responses so real view components can render.
-// Stories list returns an empty list; story detail returns a stub row.
 beforeEach(() => {
   vi.stubGlobal(
     'fetch',
     vi.fn().mockImplementation((url: string) => {
-      const data =
-        typeof url === 'string' && /\/stories\/[^/]+$/.test(url)
-          ? {
-              id: 'a1',
-              story_id: 'story-001-001',
-              epic_id: 'epic-001',
-              story_title: null,
-              status: 'done',
-              pr_url: null,
-              started_at: null,
-              updated_at: '2024-01-01T00:00:00Z',
-              review_status: null,
-              review_summary: null,
-              tokens_total: null,
-              cost_usd: null,
-              request_count: null,
-              worktree_path: null,
-              branch_name: null,
-              stall_reason: null,
-              model: null,
-              log_tail: null,
-              worker_pid: null,
-            }
-          : { epic_id: 'epic-001', stories: [] };
+      let data: unknown;
+      if (typeof url === 'string' && /\/stories\/[^/]+$/.test(url)) {
+        data = {
+          id: 'a1',
+          story_id: 'story-001-001',
+          epic_id: 'epic-001',
+          story_title: null,
+          status: 'done',
+          pr_url: null,
+          started_at: null,
+          updated_at: '2024-01-01T00:00:00Z',
+          review_status: null,
+          review_summary: null,
+          tokens_total: null,
+          cost_usd: null,
+          request_count: null,
+          worktree_path: null,
+          branch_name: null,
+          stall_reason: null,
+          model: null,
+          log_tail: null,
+          worker_pid: null,
+        };
+      } else if (typeof url === 'string' && url.includes('/api/fleet')) {
+        data = [];
+      } else {
+        data = { epic_id: 'epic-001', stories: [] };
+      }
       return Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
     }),
   );
@@ -62,15 +68,20 @@ function renderApp(entries: string[] = ['/']) {
 }
 
 describe('App routing', () => {
-  it('/ renders RepositoryList', async () => {
+  it('/ renders KanbanBoard', async () => {
     renderApp(['/']);
+    expect(await screen.findByTestId('kanban-board')).not.toBeNull();
+  });
+
+  it('/repos renders RepositoryList', async () => {
+    renderApp(['/repos']);
     expect(await screen.findByTestId('repository-list')).not.toBeNull();
   });
 
-  it('/repo/:slug renders EpicList without RepositoryList', async () => {
+  it('/repo/:slug renders EpicList without FleetBoard', async () => {
     renderApp(['/repo/test-slug']);
     expect(await screen.findByTestId('epic-list')).not.toBeNull();
-    expect(screen.queryByTestId('repository-list')).toBeNull();
+    expect(screen.queryByTestId('kanban-board')).toBeNull();
   });
 
   it('/repo/:slug/epic/:epicId renders StoryList', async () => {
@@ -79,17 +90,18 @@ describe('App routing', () => {
     expect(await screen.findByText(/Stories —/i)).not.toBeNull();
   });
 
-  it('/repo/:slug/epic/:epicId/story/:storyId renders StoryDetail without RepositoryList', async () => {
+  it('/repo/:slug/epic/:epicId/story/:storyId renders StoryDetail without FleetBoard', async () => {
     renderApp(['/repo/test-slug/epic/epic-001/story/story-001-001']);
     // Real StoryDetail renders the story_id in an h2 once data loads.
     expect(await screen.findByText('story-001-001')).not.toBeNull();
-    expect(screen.queryByText(/RepositoryList/i)).toBeNull();
+    expect(screen.queryByTestId('kanban-board')).toBeNull();
   });
 });
 
 describe('Persistent header', () => {
   const paths = [
     '/',
+    '/repos',
     '/repo/test-slug',
     '/repo/test-slug/epic/epic-001',
     '/repo/test-slug/epic/epic-001/story/story-001-001',
@@ -136,8 +148,8 @@ describe('Unknown route', () => {
     expect(() => renderApp(['/not-a-route'])).not.toThrow();
     // AppShell header is always present; Routes renders nothing for unmatched paths
     expect(screen.queryByRole('banner')).not.toBeNull();
-    // No route stub text should appear
-    expect(screen.queryByText(/RepositoryList|EpicList|StoryList|StoryDetail/i)).toBeNull();
+    // No route component text should appear
+    expect(screen.queryByText(/FleetBoard|RepositoryList|EpicList|StoryList|StoryDetail/i)).toBeNull();
   });
 });
 
@@ -166,17 +178,17 @@ describe('History traversal', () => {
       </QueryClientProvider>
     );
 
-    // Initially at /
-    expect(await screen.findByTestId('repository-list')).not.toBeNull();
+    // Initially at / — FleetBoard
+    expect(await screen.findByTestId('kanban-board')).not.toBeNull();
 
     // Navigate forward to /repo/test-slug
     fireEvent.click(screen.getByTestId('go-forward'));
     expect(await screen.findByTestId('epic-list')).not.toBeNull();
-    expect(screen.queryByTestId('repository-list')).toBeNull();
+    expect(screen.queryByTestId('kanban-board')).toBeNull();
 
     // Navigate back to /
     fireEvent.click(screen.getByTestId('go-back'));
-    expect(await screen.findByTestId('repository-list')).not.toBeNull();
+    expect(await screen.findByTestId('kanban-board')).not.toBeNull();
     expect(screen.queryByTestId('epic-list')).toBeNull();
   });
 });

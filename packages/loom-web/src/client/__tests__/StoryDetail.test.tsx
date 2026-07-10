@@ -153,7 +153,7 @@ function mockStory(data: AgentDetail) {
 // ─── Existing: summary tab ────────────────────────────────────────────────────
 
 describe('StoryDetail — summary tab', () => {
-  it('renders status Badge, created_at (started_at), and updated_at timestamps', () => {
+  it('renders status StatusChip, created_at (started_at), and updated_at timestamps', () => {
     mockStory(baseAgent);
     renderStoryDetail();
 
@@ -779,5 +779,31 @@ describe('StoryDetail — mutation error state', () => {
     });
 
     expect((screen.getByTestId('retry-btn') as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+// ─── StatusChip usage verification ───────────────────────────────────────────
+
+describe('StoryDetail — StatusChip replaces Badge for status', () => {
+  it('running story header renders the animate-spin spinner (StatusChip-specific)', () => {
+    mockStory(runningWithPid);
+    const { container } = renderStoryDetail();
+
+    // animate-spin is only added by StatusChip for the 'running' state
+    // The header section contains the status chip; the buttons also have spinners
+    // but they are only shown when pending. At initial render, the header spinner
+    // is the only one from StatusChip.
+    const spinners = container.querySelectorAll('.animate-spin');
+    // At least one from the StatusChip header
+    expect(spinners.length).toBeGreaterThan(0);
+  });
+
+  it('done story renders status text without spinner', () => {
+    mockStory(doneAgent);
+    const { container } = renderStoryDetail();
+
+    expect(screen.getByText('done')).not.toBeNull();
+    // No spinner for terminal states
+    expect(container.querySelector('.animate-spin')).toBeNull();
   });
 });

@@ -1,8 +1,7 @@
 import { useNavigate, useParams } from 'react-router-dom';
 import { useStories } from '../hooks/useStories';
 import { routes } from '../lib/routes';
-import { statusVariant } from '../lib/statusVariant';
-import { Badge } from '../components/ui/badge';
+import { StatusChip } from '../components';
 import { Skeleton } from '../components/ui/skeleton';
 import {
   Table,
@@ -59,7 +58,7 @@ export function StoryList() {
               <TableCell>{story.story_id}</TableCell>
               <TableCell>{story.story_title ?? '—'}</TableCell>
               <TableCell>
-                <Badge variant={statusVariant(story.status)}>{story.status}</Badge>
+                <StatusChip status={story.status} />
               </TableCell>
               <TableCell>{story.updated_at}</TableCell>
             </TableRow>

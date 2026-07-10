@@ -4,7 +4,10 @@
   "description": "Loom web dashboard — local Express + React SPA over the SQLite state",
   "license": "UNLICENSED",
   "homepage": "https://github.com/jeromeportega/loom",
-  "repository": { "type": "git", "url": "git+https://github.com/jeromeportega/loom.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jeromeportega/loom.git"
+  },
   "main": "dist/server/index.js",
   "types": "dist/server/index.d.ts",
   "type": "commonjs",
@@ -15,8 +18,12 @@
     "test:client": "vitest run",
     "test": "npm run test:server && npm run test:client"
   },
-  "files": ["dist", "client-dist"],
+  "files": [
+    "dist",
+    "client-dist"
+  ],
   "dependencies": {
+    "@atlaskit/pragmatic-drag-and-drop": "^2.0.1",
     "@loom-ai/core": "^6.15.0",
     "express": "^4.19.2"
   },

@@ -60,18 +60,25 @@ the JSON API and the static frontend bundle.
 **Frontend: a React single-page app** — `packages/loom-web/src/client/`
 is a Vite + React Router + TanStack Query + Tailwind/shadcn-ui SPA, built to
 `client-dist/` and served statically by the Express server. It has client-side
-routing with a repository → epic → story drill-down; every level is a real,
-deep-linkable URL (`/repo/:slug/epic/:epicId/story/:storyId`), so the browser
-back/forward buttons work. (The original self-contained vanilla-JS
+routing with a multi-project **Fleet board** homepage (epic cards grouped by
+repository) plus a repository → epic → story drill-down beneath it (`/repos` →
+`/repo/:slug` → epic → story); every level is a real, deep-linkable URL
+(`/repo/:slug/epic/:epicId/story/:storyId`), so the browser back/forward buttons
+work. (The original self-contained vanilla-JS
 `public/index.html` was replaced by this SPA in the React re-platform; the JSON
 API stayed stable across the migration.)
 
-**Data fetching: TanStack Query polling for the list views; SSE for the
-live story log** — the list/detail views poll their REST endpoints on a short
-interval (the repo list federates across every registered project); the story
-detail view opens an authenticated `EventSource` to `/api/events` (the token
-rides in a `?token=` query param, since EventSource can't set headers) and
-appends live worker output as `output` events stream in.
+**Data fetching: TanStack Query, invalidated live by SSE** — the board, list,
+and detail views read their REST endpoints through TanStack Query (the repo list
+and Fleet board federate across every registered project). An app-level
+`useEventStream` hook opens one authenticated `EventSource` to `/api/events` (the
+token rides in a `?token=` query param, since EventSource can't set headers) and
+**debounce-invalidates the relevant query caches on every `epic`/`agent` event**,
+so the board and lists refresh in real time rather than on a fixed poll — with
+automatic reconnect + exponential backoff. The story detail view consumes the
+same stream's `output` events to append live worker stdout. A shared `StatusChip`
+maps loom's status vocabulary (`in_progress`/`pr_open`/`rejected`/`finalizing`/…)
+onto distinct color treatments used across the board and drill-down.
 
 **Live updates: Server-Sent Events (SSE)** — simpler than WebSockets,
 works through proxies, one-way (server → client) which is all we need
