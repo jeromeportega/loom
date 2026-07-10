@@ -2,7 +2,11 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from './components/AppShell';
+import { useEventStream } from './hooks/useEventStream';
 
+const FleetBoard = lazy(() =>
+  import('./views/FleetBoard').then((m) => ({ default: m.FleetBoard }))
+);
 const RepositoryList = lazy(() =>
   import('./views/RepositoryList').then((m) => ({ default: m.RepositoryList }))
 );
@@ -18,6 +22,11 @@ const StoryDetail = lazy(() =>
 
 const queryClient = new QueryClient();
 
+function SSEConnector() {
+  useEventStream();
+  return null;
+}
+
 /**
  * AppContent contains the shell layout and route definitions.
  * Exported so tests can wrap it with MemoryRouter + a test QueryClient
@@ -26,9 +35,11 @@ const queryClient = new QueryClient();
 export function AppContent() {
   return (
     <AppShell>
+      <SSEConnector />
       <Suspense fallback={null}>
         <Routes>
-          <Route path="/" element={<RepositoryList />} />
+          <Route path="/" element={<FleetBoard />} />
+          <Route path="/repos" element={<RepositoryList />} />
           <Route path="/repo/:slug" element={<EpicList />} />
           <Route path="/repo/:slug/epic/:epicId" element={<EpicDetail />} />
           <Route path="/repo/:slug/epic/:epicId/story/:storyId" element={<StoryDetail />} />
