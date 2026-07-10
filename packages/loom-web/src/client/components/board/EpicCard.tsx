@@ -164,17 +164,30 @@ function CardActions({
           </Button>
         </div>
       );
-    case 'failed':
+    case 'failed': {
+      // Retry re-dispatches a failed/blocked STORY. An epic that failed in
+      // finalize with every story done has nothing to retry — offer Archive
+      // instead of a button that silently no-ops.
+      const retryable = card.stories.some((s) => s.status === 'failed' || s.status === 'blocked');
       return (
         <div className="mt-2 flex gap-1.5">
-          <Button variant="secondary" className={btn} onClick={(e) => { stop(e); mutations.retry(card); }}>
-            Retry
-          </Button>
-          <Button variant="ghost" className={btn} onClick={(e) => { stop(e); mutations.retry(card, { clean: true }); }}>
-            Clean retry
-          </Button>
+          {retryable ? (
+            <>
+              <Button variant="secondary" className={btn} onClick={(e) => { stop(e); mutations.retry(card); }}>
+                Retry
+              </Button>
+              <Button variant="ghost" className={btn} onClick={(e) => { stop(e); mutations.retry(card, { clean: true }); }}>
+                Clean retry
+              </Button>
+            </>
+          ) : (
+            <Button variant="ghost" className={btn} onClick={(e) => { stop(e); mutations.archive(card); }}>
+              Archive
+            </Button>
+          )}
         </div>
       );
+    }
     case 'rejected':
       return (
         <div className="mt-2 flex gap-1.5">

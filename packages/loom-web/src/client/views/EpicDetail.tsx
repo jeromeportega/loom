@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEpics } from '../hooks/useEpics';
 import { useEpicArtifacts } from '../hooks/useEpicArtifacts';
+import { useRepos } from '../hooks/useRepos';
 import { apiPost } from '../lib/api';
 import { queryKeys } from '../lib/queryKeys';
 import { Button } from '../components/ui/button';
@@ -71,14 +72,25 @@ export function EpicDetail() {
     isError: artifactsError,
   } = useEpicArtifacts(slug, epicId, isPlanned ?? false);
 
+  // Resolve this repo's project ROOT so approve/reject target the RIGHT DB in the
+  // federated view. Epic ids collide across repos, and without ?project= the
+  // server falls back to the host project — mutating the wrong repo's epic.
+  const { data: reposData } = useRepos();
+  const projectRoot = reposData?.repos?.find((r) => r.slug === slug)?.root;
+  const projectQuery = projectRoot ? `?project=${encodeURIComponent(projectRoot)}` : '';
+
   const [approveState, setApproveState] = useState<MutationState>({ pending: false, error: null });
   const [rejectState, setRejectState] = useState<MutationState>({ pending: false, error: null });
   const [rejectReason, setRejectReason] = useState('');
 
   async function handleApprove() {
+    if (!projectRoot) {
+      setApproveState({ pending: false, error: 'Resolving project — try again' });
+      return;
+    }
     setApproveState({ pending: true, error: null });
     try {
-      const res = await apiPost(`/api/epics/${encodeURIComponent(epicId)}/approve`);
+      const res = await apiPost(`/api/epics/${encodeURIComponent(epicId)}/approve${projectQuery}`);
       if (res.ok) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.epics(slug) });
         setApproveState({ pending: false, error: null });
@@ -91,13 +103,17 @@ export function EpicDetail() {
   }
 
   async function handleReject() {
+    if (!projectRoot) {
+      setRejectState({ pending: false, error: 'Resolving project — try again' });
+      return;
+    }
     setRejectState({ pending: true, error: null });
     try {
       // Thread the optional reason (matching `loom reject --reason`) so a plan
       // rejected from the dashboard records WHY in the audit trail. Omit the body
       // entirely when blank so the no-reason call stays a bare POST.
       const trimmed = rejectReason.trim();
-      const path = `/api/epics/${encodeURIComponent(epicId)}/reject`;
+      const path = `/api/epics/${encodeURIComponent(epicId)}/reject${projectQuery}`;
       const res = trimmed ? await apiPost(path, { reason: trimmed }) : await apiPost(path);
       if (res.ok) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.epics(slug) });

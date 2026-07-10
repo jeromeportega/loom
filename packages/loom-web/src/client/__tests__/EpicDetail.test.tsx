@@ -3,17 +3,23 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React from 'react';
-import type { EpicsResponse, EpicStatus, PlanningArtifacts, StoriesResponse } from '../../shared/types';
+import type { EpicsResponse, EpicStatus, PlanningArtifacts, ReposResponse, StoriesResponse } from '../../shared/types';
 import { makeQueryResult } from '../testUtils';
 import { EpicDetail } from '../views/EpicDetail';
 import { queryKeys } from '../lib/queryKeys';
 import * as useEpicsModule from '../hooks/useEpics';
 import * as useStoriesModule from '../hooks/useStories';
+import * as useReposModule from '../hooks/useRepos';
 import * as apiModule from '../lib/api';
 
 vi.mock('../hooks/useEpics');
 vi.mock('../hooks/useStories');
+vi.mock('../hooks/useRepos');
 vi.mock('../lib/api');
+
+// The federated approve/reject path is `?project=<root>` — encodeURIComponent of
+// the fixture repo root, so mutations target the right DB when ids collide.
+const PROJECT_QUERY = `?project=${encodeURIComponent('/projects/my-repo')}`;
 vi.mock('../views/StoryList', () => ({
   StoryList: () => <div data-testid="story-list-mock" />,
 }));
@@ -86,6 +92,26 @@ beforeEach(() => {
   vi.mocked(useStoriesModule.useStories).mockReturnValue(
     makeQueryResult<StoriesResponse>({
       data: { epic_id: 'epic-001', stories: [] },
+      isLoading: false,
+      isSuccess: true,
+      status: 'success',
+    })
+  );
+
+  // Resolve the repo so approve/reject can build `?project=<root>`.
+  vi.mocked(useReposModule.useRepos).mockReturnValue(
+    makeQueryResult<ReposResponse>({
+      data: {
+        repos: [
+          {
+            slug: 'my-repo',
+            root: '/projects/my-repo',
+            is_current: true,
+            epic_count: 1,
+            registered_at: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      },
       isLoading: false,
       isSuccess: true,
       status: 'success',
@@ -284,7 +310,7 @@ describe('EpicDetail — Approve mutation', () => {
 
     await waitFor(() => {
       expect(vi.mocked(apiModule.apiPost)).toHaveBeenCalledWith(
-        '/api/epics/epic-001/approve'
+        `/api/epics/epic-001/approve${PROJECT_QUERY}`
       );
     });
   });
@@ -359,7 +385,7 @@ describe('EpicDetail — Reject mutation', () => {
 
     await waitFor(() => {
       expect(vi.mocked(apiModule.apiPost)).toHaveBeenCalledWith(
-        '/api/epics/epic-001/reject'
+        `/api/epics/epic-001/reject${PROJECT_QUERY}`
       );
     });
   });
@@ -374,7 +400,7 @@ describe('EpicDetail — Reject mutation', () => {
 
     await waitFor(() => {
       expect(vi.mocked(apiModule.apiPost)).toHaveBeenCalledWith(
-        '/api/epics/epic-001/reject',
+        `/api/epics/epic-001/reject${PROJECT_QUERY}`,
         { reason: 'scope too broad' }
       );
     });
