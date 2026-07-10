@@ -46,4 +46,14 @@ export interface FleetCard {
   /** Set only when status='in_progress' and finalize_phase='gate'. */
   blocked?: true;
   blocked_reason?: 'integration_gate';
+  /** ISO timestamp of the epic's last update — drives lane sort order. */
+  updated_at: string | null;
+  /** Live planning sub-phase while status='planning' (analyst/pm/architect). */
+  planning_phase: string | null;
+  /** Live finalize sub-phase while status='finalizing' (merging/gate/…). */
+  finalize_phase: string | null;
+  /** Epic PR URL of record once opened. */
+  epic_pr_url: string | null;
+  /** 'standalone' for single-story containers; undefined for normal epics. */
+  kind?: string;
 }

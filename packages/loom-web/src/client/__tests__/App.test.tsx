@@ -68,9 +68,9 @@ function renderApp(entries: string[] = ['/']) {
 }
 
 describe('App routing', () => {
-  it('/ renders FleetBoard', async () => {
+  it('/ renders KanbanBoard', async () => {
     renderApp(['/']);
-    expect(await screen.findByTestId('fleet-board')).not.toBeNull();
+    expect(await screen.findByTestId('kanban-board')).not.toBeNull();
   });
 
   it('/repos renders RepositoryList', async () => {
@@ -81,7 +81,7 @@ describe('App routing', () => {
   it('/repo/:slug renders EpicList without FleetBoard', async () => {
     renderApp(['/repo/test-slug']);
     expect(await screen.findByTestId('epic-list')).not.toBeNull();
-    expect(screen.queryByTestId('fleet-board')).toBeNull();
+    expect(screen.queryByTestId('kanban-board')).toBeNull();
   });
 
   it('/repo/:slug/epic/:epicId renders StoryList', async () => {
@@ -94,7 +94,7 @@ describe('App routing', () => {
     renderApp(['/repo/test-slug/epic/epic-001/story/story-001-001']);
     // Real StoryDetail renders the story_id in an h2 once data loads.
     expect(await screen.findByText('story-001-001')).not.toBeNull();
-    expect(screen.queryByTestId('fleet-board')).toBeNull();
+    expect(screen.queryByTestId('kanban-board')).toBeNull();
   });
 });
 
@@ -179,16 +179,16 @@ describe('History traversal', () => {
     );
 
     // Initially at / — FleetBoard
-    expect(await screen.findByTestId('fleet-board')).not.toBeNull();
+    expect(await screen.findByTestId('kanban-board')).not.toBeNull();
 
     // Navigate forward to /repo/test-slug
     fireEvent.click(screen.getByTestId('go-forward'));
     expect(await screen.findByTestId('epic-list')).not.toBeNull();
-    expect(screen.queryByTestId('fleet-board')).toBeNull();
+    expect(screen.queryByTestId('kanban-board')).toBeNull();
 
     // Navigate back to /
     fireEvent.click(screen.getByTestId('go-back'));
-    expect(await screen.findByTestId('fleet-board')).not.toBeNull();
+    expect(await screen.findByTestId('kanban-board')).not.toBeNull();
     expect(screen.queryByTestId('epic-list')).toBeNull();
   });
 });
