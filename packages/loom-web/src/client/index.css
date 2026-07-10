@@ -57,3 +57,35 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer base {
+  /* Theme-aware scrollbars. The default is the gray-on-white system chrome,
+     which clashes with the dark UI and looks unfinished in light mode. Use a
+     muted, rounded thumb on a transparent track built from the shadcn tokens
+     so it reads as part of the surface and flips with `.dark` automatically. */
+  * {
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    /* The transparent border + content-box clip insets the thumb so it has
+       breathing room from the track edge instead of filling the full gutter. */
+    background-color: hsl(var(--muted-foreground) / 0.3);
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.55);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
