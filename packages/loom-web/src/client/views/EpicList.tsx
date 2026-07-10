@@ -11,7 +11,6 @@ import {
 } from '../components/ui/table';
 import { StatusChip } from '../components';
 import { Skeleton } from '../components/ui/skeleton';
-import type { EpicStatus } from '../../shared/types';
 
 export function EpicList() {
   const { slug = '' } = useParams<{ slug: string }>();
