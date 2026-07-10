@@ -64,30 +64,37 @@ describe('useFleet — fetches /api/fleet', () => {
 });
 
 describe('useFleet — staleTime: 0', () => {
-  it('has staleTime of 0 (always treats data as stale on focus)', async () => {
+  it('has staleTime of 0 (data is stale immediately after fetching)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({ ok: true, json: async () => [] }),
     );
     const { qc, Wrapper } = makeWrapper();
-    renderHook(() => useFleet(), { wrapper: Wrapper });
+    const { result } = renderHook(() => useFleet(), { wrapper: Wrapper });
 
-    await waitFor(() => {
-      const queries = qc.getQueryCache().findAll({ queryKey: queryKeys.fleet() });
-      expect(queries.length).toBeGreaterThan(0);
-    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    // With staleTime: 0, data is immediately stale after fetching
     const query = qc.getQueryCache().find({ queryKey: queryKeys.fleet() });
     expect(query?.isStale()).toBe(true);
   });
 });
 
 describe('useFleet — error handling', () => {
-  it('returns isError when fetch rejects', async () => {
+  it('returns isError when fetch rejects (network failure)', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockRejectedValue(new Error('Network failure')),
+    );
+    const { Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useFleet(), { wrapper: Wrapper });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+  });
+
+  it('returns isError when the server responds with a non-ok status', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, statusText: 'Internal Server Error' }),
     );
     const { Wrapper } = makeWrapper();
     const { result } = renderHook(() => useFleet(), { wrapper: Wrapper });
