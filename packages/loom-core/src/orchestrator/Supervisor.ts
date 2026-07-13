@@ -112,7 +112,7 @@ export interface SupervisorOptions {
    *   'on'      — every successful story
    *   'off'     — never
    *   'sampled' — every Nth successful story (see skillGenerationSampleN)
-   * Sourced from policy.agents.skill_generation; defaults to 'on'.
+   * Sourced from SKILL_GENERATION; defaults to 'on'.
    */
   skillGenerationMode?: 'on' | 'off' | 'sampled';
   /** N for skill_generation: 'sampled' — generate on every Nth success. */
@@ -124,7 +124,7 @@ export interface SupervisorOptions {
    */
   epicFinalizer?: EpicFinalizer;
   /**
-   * policy.agents.integration_branch. When 'rolling', the supervisor creates a
+   * INTEGRATION_BRANCH. When 'rolling', the supervisor creates a
    * live `epic/<id>` branch up front, branches every worker from its tip, and
    * merges each story back as it completes (rolling integration). 'off'
    * (default) keeps the legacy topology: workers branch from their first
@@ -133,7 +133,7 @@ export interface SupervisorOptions {
    */
   integrationBranch?: 'off' | 'rolling';
   /**
-   * policy.agents.integrator. When 'on' (and integration_branch='rolling'), a
+   * INTEGRATOR. When 'on' (and INTEGRATION_BRANCH='rolling'), a
    * story whose merge-back conflicts is handed to a bounded integrator agent
    * that resolves the conflict in the integration worktree; loom commits the
    * merge and re-runs the gate. Only on a green result is the story integrated.
@@ -142,11 +142,11 @@ export interface SupervisorOptions {
    * behavior: a merge conflict blocks the story immediately.
    */
   integrator?: 'off' | 'on';
-  /** policy.agents.integrator_max_attempts — resolve+gate rounds before giving up (default 1). */
+  /** Resolve+gate rounds before giving up (default 1). */
   integratorMaxAttempts?: number;
   /** policy.agents.test_command — the gate command the integrator re-runs after a resolution. */
   testCommand?: string;
-  /** policy.agents.integration_gate_timeout_minutes (ms) — bound for the integrator's gate run. */
+  /** Integration gate timeout (ms) — bound for the integrator's gate run. */
   integrationGateTimeoutMs?: number;
   /** Injectable gate for the integrator (tests). Defaults to one built from the fields above. */
   integratorGate?: IntegrationGate;
@@ -161,7 +161,7 @@ export interface SupervisorOptions {
    */
   refreshIntegratorPolicy?: () => { testCommand?: string };
   /**
-   * policy.agents.context_notes. When 'on', a "what I built" note is written to
+   * CONTEXT_NOTES. When 'on', a "what I built" note is written to
    * .loom/context/<story-id>.md when a story succeeds (and, in rolling mode,
    * integrates) so dependent workers can be primed with its decisions + surface
    * area. 'off' (default) writes nothing and keeps the worker prompt
@@ -169,7 +169,7 @@ export interface SupervisorOptions {
    */
   contextNotes?: 'off' | 'on';
   /**
-   * policy.agents.epic_buildup. When 'on', a concise entry (summary, files
+   * EPIC_BUILDUP. When 'on', a concise entry (summary, files
    * touched, key decisions) is appended to the epic-cumulative build-up doc at
    * <projectRoot>/.loom/buildup/<epic-id>.json on each successful story. No
    * extra model calls — all written from the supervisor's single process.
@@ -194,7 +194,7 @@ export interface SupervisorOptions {
    */
   checkpoint?: 'story' | 'epic';
   /**
-   * Per-story worker watchdog config (policy.agents.analysis_only_watchdog).
+   * Per-story worker watchdog config (ANALYSIS_ONLY_WATCHDOG).
    * When `enabled` is true, the supervisor instantiates a WorkerWatchdog
    * for each dispatched story and feeds it the trace stream. After
    * `warnSec` with zero edit-class calls the watchdog emits a warning
@@ -273,7 +273,7 @@ export interface SupervisorOptions {
   loomScriptPath?: string;
   /**
    * @deprecated No longer consumed. The stall-recovery path was replaced by the
-   * durable clean-retry budget (`stallRecoveryBudget` / `policy.agents.stall_recovery_budget`).
+   * durable clean-retry budget (`stallRecoveryBudget` / `STALL_RECOVERY_BUDGET`).
    * Setting this value has no effect — use `stallRecoveryBudget: 0` to disable
    * auto-recovery entirely. Kept for API compatibility; will be removed in a future release.
    */
@@ -285,7 +285,7 @@ export interface SupervisorOptions {
    */
   retryService?: StoryRetryService;
   /**
-   * Per-story clean-retry budget on stall (policy.agents.stall_recovery_budget).
+   * Per-story clean-retry budget on stall (STALL_RECOVERY_BUDGET).
    * When a worker stalls, the supervisor auto-retries with a fresh worktree +
    * branch up to this many times (durable, survives restarts). 0 disables.
    * Default 2 when unset.
@@ -2124,7 +2124,7 @@ export class Supervisor {
   }
 
   /**
-   * Mid-run handoff refresh fired at a phase boundary (policy.agents.phases=
+   * Mid-run handoff refresh fired at a phase boundary (PHASES=
    * 'on'). The worker has just checkpoint-committed one phase's work; persisting
    * the handoff now means a crash before the next phase finishes still resumes
    * from the committed work. Status is 'running' (the story is in flight) which
@@ -2581,25 +2581,16 @@ export class Supervisor {
     }
     // Story signal ledger — record heuristics + tier to both sinks (story-010-002).
     // Best-effort: SignalLedger.record never throws. Runs regardless of
-    // policy.agents.adaptive_cost (FR-5); audit row lands before return (NFR-2).
+    // ADAPTIVE_COST (FR-5); audit row lands before return (NFR-2).
     {
       const agent = this.agents.get(task.agentId);
       const worktreePath = agent?.worktree_path;
       const baseSha = this.storyBaseSha.get(task.story.id);
       if (worktreePath && baseSha) {
-        let riskyPaths: string[] = [];
-        try {
-          const policy = PolicyEngine.load(
-            path.join(this.opts.projectRoot, '.loom')
-          ).policyData;
-          riskyPaths = policy.agents.risky_paths;
-        } catch {
-          // Best-effort: missing or unreadable policy → default to empty list.
-        }
         const heuristics = computeHeuristics({
           worktreePath,
           baseSha,
-          riskyPaths,
+          riskyPaths: [],
           testsGreenFirstTry: null,
         });
         // Feed the worker's self-assessment (B1) into the tier resolution when
@@ -2699,7 +2690,7 @@ export class Supervisor {
     }
 
     // Self-learning: extract a reusable skill from a successful story.
-    // Respects `policy.agents.skill_generation`: 'off' suppresses entirely,
+    // Respects SKILL_GENERATION: 'off' suppresses entirely,
     // 'sampled' runs every Nth success — a cost-conscious knob for teams
     // who want the loop but not on every story.
     if (this.opts.skillGenerator && SUCCESS.has(status) && this.shouldGenerateNow()) {

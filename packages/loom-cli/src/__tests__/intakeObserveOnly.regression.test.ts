@@ -182,7 +182,7 @@ describe('FR-4 observe-only invariant — planner output identical with vs witho
     try {
       process.chdir(dirA);
       resetDatabaseForTest();
-      const llmA = new MockLLMClient(makeVerdictResponder('feature', 'story', 'high', EPIC_TITLE));
+      const llmA = new MockLLMClient(makeVerdictResponder('feature', 'epic', 'high', EPIC_TITLE));
       const { exitCode: exitA } = await runInProcess(() => runEpic(BRIEF, { llm: llmA, force: true }));
       assert.ok(exitA === null || exitA === 0, 'scenario A (verdict present) must exit cleanly');
       artifactA = readEpicArtifact(dirA);
@@ -226,9 +226,9 @@ describe('FR-4 observe-only invariant — planner output identical with vs witho
     // sizes, and both confidence extremes — enough to confirm no verdict value
     // influences planning output.
     const variants: Array<{ type: string; size: string; confidence: string }> = [
-      { type: 'feature', size: 'story', confidence: 'high' },
-      { type: 'bug',     size: 'epic',  confidence: 'low'  },
-      { type: 'chore',   size: 'story', confidence: 'medium' },
+      { type: 'feature', size: 'epic', confidence: 'high' },
+      { type: 'bug',     size: 'epic', confidence: 'low'  },
+      { type: 'chore',   size: 'epic', confidence: 'medium' },
     ];
 
     // Capture baseline from a classifier-failure run.

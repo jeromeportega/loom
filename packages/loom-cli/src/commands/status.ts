@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync as nodeSpawnSync } from 'node:child_process';
 import {
+  INTEGRATION_BRANCH,
+  INTEGRATION_BRANCH_LAG_THRESHOLD,
+  STALE_PLANNING_MINUTES,
+} from '@loom-ai/core';
+import {
   createDatabase,
   EpicStore,
   AgentStore,
@@ -20,7 +25,6 @@ import {
   type IntakeVerdict,
   type EpicRecord,
   type LandingReport,
-  type Policy,
 } from '@loom-ai/core';
 
 type SpawnSyncFn = (
@@ -310,13 +314,6 @@ function computeStalePlanning(
   };
 }
 
-function loadPolicy(loomDir: string): Policy {
-  try {
-    return PolicyEngine.load(loomDir).policyData;
-  } catch {
-    return PolicyEngine.defaultPolicy();
-  }
-}
 
 function collectJsonEpics(
   loomDir: string,
@@ -327,11 +324,10 @@ function collectJsonEpics(
   const dbPath = resolveDbPath(loomDir);
   if (!fs.existsSync(dbPath)) return [];
   const db = createDatabase(dbPath);
-  const policy = loadPolicy(loomDir);
   const repoRoot = path.dirname(loomDir);
-  const integrationBranch = policy.agents.integration_branch;
-  const lagThreshold = policy.agents.integration_branch_lag_threshold;
-  const stalePlanningMinutes = policy.agents.stale_planning_minutes;
+  const integrationBranch = INTEGRATION_BRANCH;
+  const lagThreshold = INTEGRATION_BRANCH_LAG_THRESHOLD;
+  const stalePlanningMinutes = STALE_PLANNING_MINUTES;
   try {
     const epicStore = new EpicStore(db);
     const agentStore = new AgentStore(db);
@@ -497,11 +493,10 @@ function renderLoomDir(
     return;
   }
   const db = createDatabase(dbPath);
-  const policy = loadPolicy(loomDir);
   const repoRoot = path.dirname(loomDir);
-  const integrationBranch = policy.agents.integration_branch;
-  const lagThreshold = policy.agents.integration_branch_lag_threshold;
-  const stalePlanningMinutes = policy.agents.stale_planning_minutes;
+  const integrationBranch = INTEGRATION_BRANCH;
+  const lagThreshold = INTEGRATION_BRANCH_LAG_THRESHOLD;
+  const stalePlanningMinutes = STALE_PLANNING_MINUTES;
   try {
     const epicStore = new EpicStore(db);
     const agentStore = new AgentStore(db);

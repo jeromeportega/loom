@@ -37,7 +37,7 @@ export interface BenchOptions {
    */
   reviewModel?: 'same' | 'cross';
   reviewModelId?: string;
-  /** Override policy.agents.review_revise_trigger per task. */
+  /** Override review revise trigger per task. */
   reviewReviseTrigger?: 'blockers' | 'any';
   /**
    * Keep the tempdir of any task that failed (errored or empty patch)

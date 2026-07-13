@@ -13,6 +13,7 @@ import {
   BriefRefiner,
   Planner,
   proposeNextEpic,
+  MIN_BRIEF_QUALITY_SCORE,
 } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 import type { LLMClient, BriefRefinement } from '@loom-ai/core';
@@ -69,7 +70,7 @@ export async function runPropose(opts: ProposeOptions = {}): Promise<void> {
     }
     // Single policy load — reused for both DB setup and LLM creation.
     const policy = PolicyEngine.load(loomDir).policyData;
-    minBriefQualityScore = policy.agents.min_brief_quality_score;
+    minBriefQualityScore = MIN_BRIEF_QUALITY_SCORE;
     model = modelFor(policy, 'planning');
     db = openProjectDatabase(projectRoot);
 

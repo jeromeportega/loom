@@ -162,28 +162,6 @@ describe('loom status — integration_lag JSON (AC2)', () => {
     assert.equal(calls.length, 1, 'spawnSync was called');
   });
 
-  it('[AC6] integration_branch !== rolling → no field, no git subprocess call', () => {
-    seedEpicWithAgent('epic-075', 'Non-rolling epic');
-    writePolicyYaml('version: 1\nagents:\n  integration_branch: off\n');
-
-    const { fn, calls } = makeStub('99\n');
-    const payload = captureJson({ _spawnSync: fn });
-    const epic = payload.epics.find((e) => e.id === 'epic-075');
-    assert.ok(epic, 'epic-075 must appear in JSON');
-    assert.ok(!epic.integration_lag, 'integration_lag must be absent when not rolling');
-    assert.equal(calls.length, 0, 'spawnSync must NOT be called when integration_branch is off');
-  });
-
-  it('[AC6] no policy → defaults to off → no field, no subprocess call', () => {
-    seedEpicWithAgent('epic-075', 'Default-policy epic');
-    // policy.yaml has version: 1 only, no agents section → defaults apply
-
-    const { fn, calls } = makeStub('99\n');
-    const payload = captureJson({ _spawnSync: fn });
-    const epic = payload.epics.find((e) => e.id === 'epic-075');
-    assert.ok(!epic?.integration_lag, 'integration_lag absent with default (off) policy');
-    assert.equal(calls.length, 0, 'no subprocess with default policy');
-  });
 });
 
 // ─── Lag warning: human-readable output ──────────────────────────────────────
@@ -191,12 +169,12 @@ describe('loom status — integration_lag JSON (AC2)', () => {
 describe('loom status — integration_lag text (AC1)', () => {
   it('[AC1] warn=true → ⚠ line in human-readable output', () => {
     seedEpicWithAgent('epic-075', 'Lag epic');
-    writePolicyYaml('version: 1\nagents:\n  integration_branch: rolling\n  integration_branch_lag_threshold: 5\n');
+    writePolicyYaml('version: 1\nagents:\n  integration_branch: rolling\n');
 
-    const { fn } = makeStub('8\n');
+    const { fn } = makeStub('15\n');
     const out = captureText({ _spawnSync: fn });
     assert.ok(out.includes('⚠'), `Expected ⚠ in text output:\n${out}`);
-    assert.ok(out.includes('8 commits behind main'), `Expected commit count in output:\n${out}`);
+    assert.ok(out.includes('15 commits behind main'), `Expected commit count in output:\n${out}`);
   });
 
   it('[AC5] warn=false → no ⚠ line', () => {

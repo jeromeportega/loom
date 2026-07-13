@@ -23,14 +23,14 @@ export interface PlannerContext {
    */
   skills?: string[];
   /**
-   * policy.agents.shared_contract === 'on'. When true the Architect runs its
+   * SHARED_CONTRACT === 'on'. When true the Architect runs its
    * extra "Headless task C" pass to emit the epic-wide shared contract. Off by
    * default so planning spends no extra tokens and the worker prompt stays
    * byte-identical to the bench baseline.
    */
   sharedContract?: boolean;
   /**
-   * policy.agents.qa_planning === 'advisory'. When true the QA persona (Tessa)
+   * QA_PLANNING === 'advisory'. When true the QA persona (Tessa)
    * runs after the Architect to write a per-story test_plan. Off by default so
    * planning spends no extra tokens and the worker prompt stays byte-identical
    * to the bench baseline.

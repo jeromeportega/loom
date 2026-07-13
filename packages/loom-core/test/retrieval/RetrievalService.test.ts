@@ -299,30 +299,6 @@ describe('RetrievalService — AC-4: single-repo unchanged when cross_repo disab
 
   after(() => { fixture.cleanup(); });
 
-  it('search() throws RetrievalRefused when cross_repo.enabled=false', () => {
-    const svc = new RetrievalService(fixture.loomHome, disabledPolicy(), spy.audit);
-    assert.throws(
-      () => svc.search({ kind: 'search', slug: fixture.repo1Slug, query: 'value' }),
-      (err: unknown) => {
-        assert.ok(err instanceof RetrievalRefused, 'should throw RetrievalRefused');
-        assert.equal((err as RetrievalRefused).rule, 'cross_repo.disabled');
-        return true;
-      },
-    );
-  });
-
-  it('read() throws RetrievalRefused when cross_repo.enabled=false', () => {
-    const svc = new RetrievalService(fixture.loomHome, disabledPolicy(), spy.audit);
-    assert.throws(
-      () => svc.read({ kind: 'read', slug: fixture.repo1Slug, path: 'module.ts' }),
-      (err: unknown) => {
-        assert.ok(err instanceof RetrievalRefused, 'should throw RetrievalRefused');
-        assert.equal((err as RetrievalRefused).rule, 'cross_repo.disabled');
-        return true;
-      },
-    );
-  });
-
   it('disabled service leaves existing single-repo behavior completely unchanged', () => {
     // Regression: the new code path must not affect anything when enabled=false.
     // Simulate "normal single-repo flows touch none of the new code path":
@@ -437,13 +413,4 @@ describe('RetrievalService — invariant #5: audit.record() on every call', () =
     assert.ok(entry.policy_rule, 'refusal entry must include policy_rule');
   });
 
-  it('disabled-policy refusal is audited before throwing', () => {
-    const spy = makeAuditSpy();
-    const svc = new RetrievalService(fixture.loomHome, disabledPolicy(), spy.audit);
-    assert.throws(() => svc.search({ kind: 'search', slug: fixture.repo1Slug, query: 'hello' }));
-    const entry = spy.calls.find(c => c.action === 'cross_repo_search');
-    assert.ok(entry, 'disabled refusal should also be audited');
-    assert.equal(entry.allowed, false);
-    assert.equal(entry.policy_rule, 'cross_repo.disabled');
-  });
 });

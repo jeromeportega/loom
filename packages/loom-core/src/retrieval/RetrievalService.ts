@@ -6,6 +6,7 @@ import { resolveRegisteredRepo } from './ManifestResolver.js';
 import { loadSliceBounds } from './SliceBounds.js';
 import { readBounded } from './RepoReader.js';
 import { searchBounded } from './RepoSearcher.js';
+import { CROSS_REPO_ENABLED } from '@loom-ai/core';
 
 export class RetrievalService {
   constructor(
@@ -22,7 +23,7 @@ export class RetrievalService {
     };
     if (req.pathGlob !== undefined) auditDetail.pathGlob = req.pathGlob;
 
-    if (!this.policy.cross_repo.enabled) {
+    if (!CROSS_REPO_ENABLED) {
       const refused = new RetrievalRefused(
         'cross_repo.disabled',
         'cross-repo retrieval is disabled; set cross_repo.enabled=true in policy.yaml to enable',
@@ -60,7 +61,7 @@ export class RetrievalService {
     // so the caller sees the real error rather than a misleading UNREGISTERED label.
     let result: SearchResult;
     try {
-      const bounds = loadSliceBounds(this.policy);
+      const bounds = loadSliceBounds();
       result = searchBounded(repo, req.query, req.pathGlob, bounds, this.policy.cross_repo.secret_globs);
     } catch (err) {
       if (err instanceof RetrievalRefused) {
@@ -100,7 +101,7 @@ export class RetrievalService {
     };
     if (req.lines !== undefined) auditDetail.lines = req.lines;
 
-    if (!this.policy.cross_repo.enabled) {
+    if (!CROSS_REPO_ENABLED) {
       const refused = new RetrievalRefused(
         'cross_repo.disabled',
         'cross-repo retrieval is disabled; set cross_repo.enabled=true in policy.yaml to enable',
@@ -137,7 +138,7 @@ export class RetrievalService {
     // unexpected errors are audited separately and re-thrown as-is.
     let result: ReadResult;
     try {
-      const bounds = loadSliceBounds(this.policy);
+      const bounds = loadSliceBounds();
       result = readBounded(repo, req.path, req.lines, bounds, this.policy.cross_repo.secret_globs);
     } catch (err) {
       if (err instanceof RetrievalRefused) {

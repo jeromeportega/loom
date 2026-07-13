@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import jsYaml from 'js-yaml';
-import { PolicyEngine, preflightGateCommand, resolveGatePlan } from '@loom-ai/core';
+import { PolicyEngine, preflightGateCommand, resolveGatePlan, INTEGRATION_GATE } from '@loom-ai/core';
 
 /** Matches TestCommandEntry from @loom-ai/core (story-078-001). */
 interface TestCommandEntry {
@@ -63,8 +63,7 @@ export function gateCommandCheck(
   try {
     const policy = PolicyEngine.load(path.join(projectRoot, '.loom')).policyData;
     const result = preflight(projectRoot, { testCommand: policy.agents.test_command });
-    const offSuffix =
-      policy.agents.integration_gate === 'off' ? ' (integration_gate is off — informational)' : '';
+    const offSuffix = '';
 
     if (!result.viable) {
       const cmd = result.resolved.command ?? '(none)';

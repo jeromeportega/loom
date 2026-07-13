@@ -83,24 +83,6 @@ describe('PolicyEngine — checkCrossRepoAccess (story-057-004)', () => {
     fs.rmSync(outsideDir, { recursive: true, force: true });
   });
 
-  // ── disabled guard ─────────────────────────────────────────────────────────
-
-  describe('disabled guard (cross_repo.enabled = false)', () => {
-    it('returns allowed when enabled=false, even for a raw read into a sibling', () => {
-      const disabledEngine = makeEngine(false);
-      const r = disabledEngine.check(`cat ${innerFile}`, ctx);
-      assert.equal(r.allowed, true, 'disabled guard must not block any command');
-    });
-
-    it('returns allowed for out-of-workspace path when disabled', () => {
-      const disabledEngine = makeEngine(false);
-      // Use an unregistered temp path — not in protected_paths — so the existing
-      // filesystem guard doesn't fire and we verify cross-repo guard is skipped.
-      const r = disabledEngine.check(`cat ${outsideFile}`, ctx);
-      assert.equal(r.allowed, true);
-    });
-  });
-
   // ── Rule 1: USE_RETRIEVAL — raw read into sibling ─────────────────────────
 
   describe('Rule 1 — USE_RETRIEVAL: raw read into sibling root', () => {

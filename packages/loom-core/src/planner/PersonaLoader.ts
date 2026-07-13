@@ -41,7 +41,7 @@ export class PersonaLoader {
 
   /** The planning-pipeline personas, in sequence. ('researcher' and 'qa' are
    *  loadable via load() but are not part of the Analyst→PM→Architect plan flow;
-   *  'qa' runs only when policy.agents.qa_planning is enabled.) */
+   *  'qa' runs only when QA_PLANNING is enabled.) */
   static available(): PersonaId[] {
     return ['analyst', 'pm', 'architect'];
   }

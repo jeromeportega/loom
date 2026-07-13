@@ -14,7 +14,7 @@ export interface SmokeResult {
 export interface SmokeRunOptions {
   command:        string;
   worktreeCwd:    string;          // merged worktree path — NOT process.cwd()
-  timeoutMinutes: number;          // from policy.agents.smoke_timeout_minutes
+  timeoutMinutes: number;          // from SMOKE_TIMEOUT_MINUTES
   runner?:        CommandRunner;   // injectable for tests; production default below
 }
 

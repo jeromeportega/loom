@@ -22,44 +22,44 @@ export interface WorkerFactoryOptions {
   cursorModel?: string;
   /** policy.agents.model — Claude model id for the claude-code worker (`--model`). */
   model?: string;
-  /** policy.agents.pr_strategy — workers suppress per-story PRs in 'per-epic' mode. */
+  /** PR_STRATEGY — workers suppress per-story PRs in 'per-epic' mode. */
   prStrategy?: PrStrategy;
   /** Optional CodeReviewAgent for the post-commit review pass (Epic 18). */
   reviewAgent?: CodeReviewAgent;
-  /** policy.agents.review_strategy — applied after the worker commits. */
+  /** REVIEW_STRATEGY — applied after the worker commits. */
   reviewStrategy?: 'off' | 'comment' | 'block-and-revise';
   /** Max revisions for 'block-and-revise'. */
   maxReviewRevisions?: number;
-  /** policy.agents.review_revise_trigger — severity threshold for re-prompts. */
+  /** REVIEW_REVISE_TRIGGER — severity threshold for re-prompts. */
   reviewReviseTrigger?: 'blockers' | 'any';
-  /** policy.agents.budget_tokens_per_story — halts the worker on exceed. */
+  /** Per-story token budget — halts the worker on exceed. */
   budgetTokensPerStory?: number;
-  /** policy.agents.operator_guidance — when 'on', worker reads .loom/guidance/<story-id>.md */
+  /** OPERATOR_GUIDANCE — when 'on', worker reads .loom/guidance/<story-id>.md */
   operatorGuidance?: 'off' | 'on';
-  /** policy.agents.shared_contract — when 'on', worker prompt prepends .loom/contract/<epic-id>.md */
+  /** SHARED_CONTRACT — when 'on', worker prompt prepends .loom/contract/<epic-id>.md */
   sharedContract?: 'off' | 'on';
-  /** policy.agents.context_notes — when 'on', worker prompt appends deps' .loom/context/<dep-id>.md */
+  /** CONTEXT_NOTES — when 'on', worker prompt appends deps' .loom/context/<dep-id>.md */
   contextNotes?: 'off' | 'on';
-  /** policy.agents.story_stall_minutes — silence window before the stall kill (ms). */
+  /** STORY_STALL_MINUTES — silence window before the stall kill (ms). */
   stallMs?: number;
-  /** policy.agents.story_absolute_cap_minutes — absolute wall-clock ceiling (ms). */
+  /** STORY_ABSOLUTE_CAP_MINUTES — absolute wall-clock ceiling (ms). */
   absoluteCapMs?: number;
   /** policy.agents.story_timeout_multipliers — per-complexity scaling of the budgets. */
   complexityMultipliers?: Record<string, number>;
   /** policy.agents.handoff — resume-handoff mode for the worker prompt. */
   handoff?: 'off' | 'telemetry' | 'summarized';
-  /** policy.agents.phases — when 'on', run stories as implement+verify spawns. */
+  /** PHASES — when 'on', run stories as implement+verify spawns. */
   phases?: 'off' | 'on';
   /** policy.agents.worker_auth — 'session' strips inherited ANTHROPIC_API_KEY from workers. */
   workerAuth?: 'inherit' | 'session';
-  /** policy.agents.adaptive_cost — 'on' requests the worker self-assessment marker (B1). */
+  /** ADAPTIVE_COST — 'on' requests the worker self-assessment marker (B1). */
   adaptiveCost?: 'on' | 'off';
   /** loom state database — required for the Review Forge orchestrated path (FR-6). */
   db?: Database.Database;
   /** LLM client — presence gates the Review Forge orchestrated path (FR-7). */
   llm?: LLMClient;
   /**
-   * policy.agents.hung_request_seconds × 1000 — tighter kill bound after the
+   * HUNG_REQUEST_SECONDS × 1000 — tighter kill bound after the
    * subprocess enters `requesting` state with no stream response. 0 or undefined
    * disables the third budget. Forwarded to WorkerTimeoutGuardOptions.hungRequestMs.
    */
