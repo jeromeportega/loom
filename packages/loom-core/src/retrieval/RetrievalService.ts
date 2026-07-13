@@ -6,7 +6,6 @@ import { resolveRegisteredRepo } from './ManifestResolver.js';
 import { loadSliceBounds } from './SliceBounds.js';
 import { readBounded } from './RepoReader.js';
 import { searchBounded } from './RepoSearcher.js';
-import { CROSS_REPO_ENABLED } from '@loom-ai/core';
 
 export class RetrievalService {
   constructor(
@@ -22,21 +21,6 @@ export class RetrievalService {
       query: req.query,
     };
     if (req.pathGlob !== undefined) auditDetail.pathGlob = req.pathGlob;
-
-    if (!CROSS_REPO_ENABLED) {
-      const refused = new RetrievalRefused(
-        'cross_repo.disabled',
-        'cross-repo retrieval is disabled; set cross_repo.enabled=true in policy.yaml to enable',
-      );
-      this.audit.record({
-        action: 'cross_repo_search',
-        command: req.slug,
-        allowed: false,
-        policy_rule: refused.rule,
-        detail: auditDetail,
-      });
-      throw refused;
-    }
 
     // Step 1: resolve slug — throws RetrievalRefused(UNREGISTERED) when not found.
     let repo: ResolvedRepo;
@@ -100,21 +84,6 @@ export class RetrievalService {
       path: req.path,
     };
     if (req.lines !== undefined) auditDetail.lines = req.lines;
-
-    if (!CROSS_REPO_ENABLED) {
-      const refused = new RetrievalRefused(
-        'cross_repo.disabled',
-        'cross-repo retrieval is disabled; set cross_repo.enabled=true in policy.yaml to enable',
-      );
-      this.audit.record({
-        action: 'cross_repo_read',
-        command: req.slug,
-        allowed: false,
-        policy_rule: refused.rule,
-        detail: auditDetail,
-      });
-      throw refused;
-    }
 
     // Step 1: resolve slug — throws RetrievalRefused(UNREGISTERED) when not found.
     let repo: ResolvedRepo;

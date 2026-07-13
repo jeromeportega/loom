@@ -2587,6 +2587,8 @@ export class Supervisor {
       const worktreePath = agent?.worktree_path;
       const baseSha = this.storyBaseSha.get(task.story.id);
       if (worktreePath && baseSha) {
+        // riskyPaths: agents.risky_paths was deleted (no replacement constant);
+        // risky_paths_touched will always be empty until the field is removed in full.
         const heuristics = computeHeuristics({
           worktreePath,
           baseSha,

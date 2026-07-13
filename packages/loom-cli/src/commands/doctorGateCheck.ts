@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import jsYaml from 'js-yaml';
-import { PolicyEngine, preflightGateCommand, resolveGatePlan, INTEGRATION_GATE } from '@loom-ai/core';
+import { PolicyEngine, preflightGateCommand, resolveGatePlan } from '@loom-ai/core';
 
 /** Matches TestCommandEntry from @loom-ai/core (story-078-001). */
 interface TestCommandEntry {
@@ -63,7 +63,6 @@ export function gateCommandCheck(
   try {
     const policy = PolicyEngine.load(path.join(projectRoot, '.loom')).policyData;
     const result = preflight(projectRoot, { testCommand: policy.agents.test_command });
-    const offSuffix = '';
 
     if (!result.viable) {
       const cmd = result.resolved.command ?? '(none)';
@@ -72,8 +71,7 @@ export function gateCommandCheck(
         ok: false,
         detail:
           `"${cmd}" (${result.resolved.source}) won't run in a bare integration worktree — ` +
-          `set policy.agents.test_command, e.g. test_command: "${result.recommendation}"` +
-          offSuffix,
+          `set policy.agents.test_command, e.g. test_command: "${result.recommendation}"`,
         required: false,
       };
     }
@@ -84,8 +82,7 @@ export function gateCommandCheck(
         ok: true,
         detail:
           'no test command detected — the gate runs its amputation check only; ' +
-          'set policy.agents.test_command if this repo has a test suite' +
-          offSuffix,
+          'set policy.agents.test_command if this repo has a test suite',
         required: false,
       };
     }
@@ -95,8 +92,7 @@ export function gateCommandCheck(
       ok: true,
       detail:
         `"${result.resolved.command}" (${result.resolved.source}) looks runnable ` +
-        'in a bare integration worktree' +
-        offSuffix,
+        'in a bare integration worktree',
       required: false,
     };
   } catch (err) {

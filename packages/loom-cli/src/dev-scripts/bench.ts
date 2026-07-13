@@ -31,9 +31,8 @@ export interface BenchOptions {
   reviewStrategy?: 'off' | 'comment' | 'block-and-revise';
   skillGeneration?: 'on' | 'off' | 'sampled';
   /**
-   * Override policy.agents.review_model per task — 'cross' routes the
-   * reviewer through a different model than the worker via Cursor-CLI
-   * (#20). Pair with reviewModelId.
+   * Override the review model per task — 'cross' routes the reviewer through
+   * a different model than the worker via Cursor-CLI (#20). Pair with reviewModelId.
    */
   reviewModel?: 'same' | 'cross';
   reviewModelId?: string;

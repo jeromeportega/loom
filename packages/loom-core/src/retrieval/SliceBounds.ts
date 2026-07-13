@@ -4,7 +4,7 @@ import {
   CROSS_REPO_MAX_FILE_BYTES,
   CROSS_REPO_MAX_FILES,
   CROSS_REPO_MAX_MATCHES_PER_FILE,
-} from '@loom-ai/core';
+} from '../orchestrator/constants.js';
 
 /**
  * Returns the baked SliceBounds constants.

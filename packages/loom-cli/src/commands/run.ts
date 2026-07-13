@@ -35,7 +35,6 @@ import {
   INTEGRATION_GATE,
   SMOKE_TIMEOUT_MINUTES,
   REVIEW_STRATEGY,
-  REVIEW_MODEL,
   REVIEW_TIMEOUT_MINUTES,
   REVIEW_REVISE_TRIGGER,
   REVIEW_MAX_PASSES,
@@ -363,9 +362,17 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   } catch {
     finalizerLlm = undefined;
   }
-  // Rolling integration is only coherent with one PR per epic — under
-  // pr_strategy='per-story' each story opens its own PR, so there is no single
-  // epic branch to roll into. Fall back to 'off' (with a warning) in that case.
+  // Rolling integration is only coherent with one PR per epic. The baked
+  // constants must be self-consistent: INTEGRATION_BRANCH='rolling' requires
+  // PR_STRATEGY='per-epic'. Assert at startup so a future constants edit
+  // that breaks this invariant is caught immediately rather than silently
+  // rolling into per-story PRs.
+  if (INTEGRATION_BRANCH === 'rolling' && PR_STRATEGY !== 'per-epic') {
+    throw new Error(
+      `Invariant violation: INTEGRATION_BRANCH='rolling' requires PR_STRATEGY='per-epic', ` +
+      `but PR_STRATEGY='${PR_STRATEGY}'`
+    );
+  }
   const integrationBranch = INTEGRATION_BRANCH;
   const integrator = INTEGRATOR;
 

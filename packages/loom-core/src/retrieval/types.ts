@@ -7,7 +7,7 @@ export interface ResolvedRepo {
   root: string;               // fs.realpathSync(entry.path), confirmed dir, slug re-derives
 }
 
-/** Conservative defaults; every field overridable via policy.cross_repo.bounds. */
+/** Retrieval bounds — values are baked constants from orchestrator/constants.ts. */
 export interface SliceBounds {
   maxLineWindow: number;      // default 200
   maxFileBytes: number;       // default 262144 (256 KiB)
