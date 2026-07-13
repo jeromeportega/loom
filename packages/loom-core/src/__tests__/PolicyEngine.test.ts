@@ -393,30 +393,22 @@ describe('PolicyEngine — edge cases', () => {
 
 // ─── PolicySchema — smoke gate fields ─────────────────────────────────────
 
-describe('PolicySchema — smoke_command and smoke_timeout_minutes', () => {
-  it('happy path: parses a policy with both smoke fields set', () => {
+describe('PolicySchema — smoke_command (smoke_timeout_minutes baked)', () => {
+  it('happy path: parses a policy with smoke_command set', () => {
     const result = PolicySchema.parse({
-      agents: { smoke_command: 'npm run smoke', smoke_timeout_minutes: 5 },
+      agents: { smoke_command: 'npm run smoke' },
     });
     assert.equal(result.agents.smoke_command, 'npm run smoke');
-    assert.equal(result.agents.smoke_timeout_minutes, 5);
   });
 
-  it('happy path: smoke_timeout_minutes defaults to 15 when omitted', () => {
-    const result = PolicySchema.parse({ agents: {} });
-    assert.equal(result.agents.smoke_timeout_minutes, 15);
-  });
-
-  it('happy path: smoke_command is omitted (undefined) when not set', () => {
+  it('happy path: smoke_command is undefined when not set', () => {
     const result = PolicySchema.parse({ agents: {} });
     assert.equal(result.agents.smoke_command, undefined);
   });
 
-  it('happy path: smoke_timeout_minutes accepts a small positive float (0.001)', () => {
-    const result = PolicySchema.parse({
-      agents: { smoke_timeout_minutes: 0.001 },
-    });
-    assert.equal(result.agents.smoke_timeout_minutes, 0.001);
+  it('smoke_timeout_minutes is stripped (baked to SMOKE_TIMEOUT_MINUTES constant)', () => {
+    const result = PolicySchema.parse({ agents: { smoke_timeout_minutes: 5 } });
+    assert.ok(!('smoke_timeout_minutes' in result.agents), 'smoke_timeout_minutes must be stripped');
   });
 
   it('error: smoke_command set to a number throws ZodError', () => {
@@ -430,35 +422,12 @@ describe('PolicySchema — smoke_command and smoke_timeout_minutes', () => {
     );
   });
 
-  it('error: smoke_timeout_minutes: 0 throws ZodError', () => {
-    assert.throws(
-      () => PolicySchema.parse({ agents: { smoke_timeout_minutes: 0 } }),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.ok(err.constructor.name === 'ZodError', `expected ZodError, got ${err.constructor.name}`);
-        return true;
-      },
-    );
-  });
-
-  it('error: smoke_timeout_minutes: -1 throws ZodError', () => {
-    assert.throws(
-      () => PolicySchema.parse({ agents: { smoke_timeout_minutes: -1 } }),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.ok(err.constructor.name === 'ZodError', `expected ZodError, got ${err.constructor.name}`);
-        return true;
-      },
-    );
-  });
-
-  it('[regression] existing valid policy without the new fields still parses', () => {
+  it('[regression] existing valid policy without smoke fields still parses', () => {
     const result = PolicySchema.parse({
       git: { protected_branches: ['main'] },
       agents: { max_concurrent: 3 },
     });
     assert.equal(result.agents.max_concurrent, 3);
-    assert.equal(result.agents.smoke_timeout_minutes, 15);
     assert.equal(result.agents.smoke_command, undefined);
   });
 });

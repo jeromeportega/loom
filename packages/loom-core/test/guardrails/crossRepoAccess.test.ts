@@ -402,26 +402,22 @@ describe('PolicyEngine — checkCrossRepoAccess (story-057-004)', () => {
 
   // ── Schema validation ─────────────────────────────────────────────────────
 
-  describe('cross_repo schema validation', () => {
-    it('cross_repo.enabled defaults to false when section is omitted', () => {
+  describe('cross_repo schema validation (story-094-003: enabled and bounds stripped)', () => {
+    it('cross_repo.enabled is stripped (baked to CROSS_REPO_ENABLED=true)', () => {
       const policy = PolicySchema.parse({});
-      assert.equal(policy.cross_repo.enabled, false);
+      assert.ok(!('enabled' in policy.cross_repo), 'cross_repo.enabled must be stripped');
     });
 
-    it('cross_repo section with enabled: true is accepted', () => {
-      const policy = PolicySchema.parse({ cross_repo: { enabled: true } });
-      assert.equal(policy.cross_repo.enabled, true);
+    it('passing cross_repo.enabled: true does not cause a parse error (stripped)', () => {
+      assert.doesNotThrow(() => PolicySchema.parse({ cross_repo: { enabled: true } }));
     });
 
-    it('cross_repo bounds default to conservative values', () => {
+    it('cross_repo.bounds is stripped (baked to constants)', () => {
       const policy = PolicySchema.parse({});
-      assert.equal(policy.cross_repo.bounds.max_line_window, 200);
-      assert.equal(policy.cross_repo.bounds.max_file_bytes, 262144);
-      assert.equal(policy.cross_repo.bounds.max_files, 20);
-      assert.equal(policy.cross_repo.bounds.max_matches_per_file, 10);
+      assert.ok(!('bounds' in policy.cross_repo), 'cross_repo.bounds must be stripped');
     });
 
-    it('cross_repo.secret_globs default includes expected patterns', () => {
+    it('cross_repo.secret_globs default includes expected patterns (KEEP field)', () => {
       const policy = PolicySchema.parse({});
       const globs = policy.cross_repo.secret_globs;
       assert.ok(globs.includes('**/.env'), 'secret_globs must include **/.env');
@@ -429,16 +425,14 @@ describe('PolicyEngine — checkCrossRepoAccess (story-057-004)', () => {
       assert.ok(globs.includes('**/*.tfstate'), 'secret_globs must include **/*.tfstate');
     });
 
-    it('invalid type for cross_repo.enabled is rejected by PolicySchema', () => {
-      const result = PolicySchema.safeParse({ cross_repo: { enabled: 'yes' } });
-      assert.equal(result.success, false, 'string for enabled must be rejected');
+    it('passing cross_repo.enabled: "yes" does not cause a parse error (stripped, not validated)', () => {
+      assert.doesNotThrow(() => PolicySchema.safeParse({ cross_repo: { enabled: 'yes' } }));
     });
 
-    it('invalid bounds type is rejected by PolicySchema', () => {
-      const result = PolicySchema.safeParse({
-        cross_repo: { enabled: true, bounds: { max_line_window: 'many' } },
-      });
-      assert.equal(result.success, false, 'string for max_line_window must be rejected');
+    it('passing cross_repo.bounds with invalid type does not cause a parse error (stripped, not validated)', () => {
+      assert.doesNotThrow(() =>
+        PolicySchema.safeParse({ cross_repo: { enabled: true, bounds: { max_line_window: 'many' } } })
+      );
     });
   });
 

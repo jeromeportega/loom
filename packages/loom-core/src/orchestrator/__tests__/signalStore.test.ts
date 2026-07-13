@@ -322,8 +322,8 @@ describe('SignalLedger.readEpic', () => {
     try {
       const db = createDatabase(':memory:');
       const ledger = new SignalLedger({ db, projectRoot: dir });
-      const s1 = buildStorySignals({ diff_lines: 10, diff_files: 1, tests_green_first_try: null, risky_paths_touched: [] });
-      const s2 = buildStorySignals({ diff_lines: 200, diff_files: 10, tests_green_first_try: false, risky_paths_touched: [] });
+      const s1 = buildStorySignals({ diff_lines: 10, diff_files: 1, tests_green_first_try: null });
+      const s2 = buildStorySignals({ diff_lines: 200, diff_files: 10, tests_green_first_try: false });
 
       ledger.record('story-001-001', s1);
       ledger.record('story-001-002', s2);
@@ -346,8 +346,8 @@ describe('SignalLedger.readEpic', () => {
     try {
       const db = createDatabase(':memory:');
       const ledger = new SignalLedger({ db, projectRoot: dir });
-      const s1 = buildStorySignals({ diff_lines: 10, diff_files: 1, tests_green_first_try: null, risky_paths_touched: [] });
-      const s2 = buildStorySignals({ diff_lines: 500, diff_files: 20, tests_green_first_try: null, risky_paths_touched: [] });
+      const s1 = buildStorySignals({ diff_lines: 10, diff_files: 1, tests_green_first_try: null });
+      const s2 = buildStorySignals({ diff_lines: 500, diff_files: 20, tests_green_first_try: null });
 
       ledger.record('story-001-001', s1);
       ledger.record('story-001-001', s2); // Two rows for the same storyId.

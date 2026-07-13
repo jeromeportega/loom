@@ -160,10 +160,12 @@ describe('PolicyEngine.load — valid policy (regression)', () => {
     assert.ok(engine instanceof PolicyEngine);
   });
 
-  it('valid policy review_strategy is accessible', () => {
+  it('valid policy max_concurrent is accessible (review_strategy baked-removed)', () => {
+    // review_strategy was a baked field removed in story-094-003; verify the policy
+    // still loads and a surviving field is readable.
     const loomDir = path.join(tmpDir, '.loom');
     const engine = PolicyEngine.load(loomDir);
-    assert.equal(engine.policyData.agents.review_strategy, 'comment');
+    assert.equal(engine.policyData.agents.max_concurrent, 5);
   });
 });
 

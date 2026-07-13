@@ -21,6 +21,7 @@ import {
   createLLMClient,
   modelFor,
   proposeNextEpic,
+  MIN_BRIEF_QUALITY_SCORE,
 } from '@loom-ai/core';
 import type { BriefRefinement } from '@loom-ai/core';
 
@@ -70,7 +71,7 @@ export function registerProposeRoutes(app: Express, deps: ProposeDeps): void {
         res.status(503).json({ error: (err as Error).message });
         return;
       }
-      minBriefQualityScore = policy.agents.min_brief_quality_score;
+      minBriefQualityScore = MIN_BRIEF_QUALITY_SCORE;
       const model = modelFor(policy, 'planning');
       refiner = new BriefRefiner({ projectRoot: currentProjectRoot, llm, model });
       planner = new Planner({ projectRoot: currentProjectRoot, llm, model, db: deps.db });

@@ -7,53 +7,25 @@ function policy(agents: Record<string, unknown>) {
   return PolicySchema.parse({ agents });
 }
 
-// ── on-alias: qa_planning ─────────────────────────────────────────────────────
+// ── on-alias: baked fields stripped (story-094-003) ──────────────────────────
 
-describe('on-alias: qa_planning', () => {
-  it("'on' resolves to 'advisory'", () => {
-    const p = policy({ qa_planning: 'on' });
-    assert.equal(p.agents.qa_planning, 'advisory');
-  });
-
-  it("'advisory' still validates", () => {
+describe('on-alias fields removed: qa_planning and integration_branch are silently stripped', () => {
+  it('qa_planning is absent from the parsed result (field removed)', () => {
     const p = policy({ qa_planning: 'advisory' });
-    assert.equal(p.agents.qa_planning, 'advisory');
+    assert.ok(!('qa_planning' in p.agents), 'qa_planning must be stripped');
   });
 
-  it("'off' still validates", () => {
-    const p = policy({ qa_planning: 'off' });
-    assert.equal(p.agents.qa_planning, 'off');
-  });
-
-  it("an unrelated invalid value 'bogus' still fails", () => {
-    const result = PolicySchema.safeParse({ agents: { qa_planning: 'bogus' } });
-    assert.equal(result.success, false);
-    const issue = result.error.issues.find((i) => i.path.join('.') === 'agents.qa_planning');
-    assert.ok(issue, 'expected an issue for agents.qa_planning');
-  });
-});
-
-// ── on-alias: integration_branch ─────────────────────────────────────────────
-
-describe('on-alias: integration_branch', () => {
-  it("'on' resolves to 'rolling'", () => {
-    const p = policy({ integration_branch: 'on' });
-    assert.equal(p.agents.integration_branch, 'rolling');
-  });
-
-  it("'rolling' still validates", () => {
+  it('integration_branch is absent from the parsed result (field removed)', () => {
     const p = policy({ integration_branch: 'rolling' });
-    assert.equal(p.agents.integration_branch, 'rolling');
+    assert.ok(!('integration_branch' in p.agents), 'integration_branch must be stripped');
   });
 
-  it("'off' still validates", () => {
-    const p = policy({ integration_branch: 'off' });
-    assert.equal(p.agents.integration_branch, 'off');
+  it('qa_planning with any value does not cause a parse error', () => {
+    assert.doesNotThrow(() => policy({ qa_planning: 'bogus' }));
   });
 
-  it("an unrelated invalid value 'yes' still fails", () => {
-    const result = PolicySchema.safeParse({ agents: { integration_branch: 'yes' } });
-    assert.equal(result.success, false);
+  it('integration_branch with any value does not cause a parse error', () => {
+    assert.doesNotThrow(() => policy({ integration_branch: 'yes' }));
   });
 });
 

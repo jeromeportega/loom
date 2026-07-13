@@ -47,7 +47,7 @@ describe('computeHeuristics – diff counts', () => {
     const { dir, baseSha, cleanup } = makeTempRepo();
     try {
       addCommit(dir, { 'a.ts': 'line1\nline2\nline3\n', 'b.ts': 'hello\n' });
-      const result = computeHeuristics({ worktreePath: dir, baseSha, riskyPaths: [], testsGreenFirstTry: null });
+      const result = computeHeuristics({ worktreePath: dir, baseSha,  testsGreenFirstTry: null });
       assert.equal(result.diff_files, 2);
       assert.equal(result.diff_lines, 4); // 3 added in a.ts, 1 added in b.ts
     } finally {
@@ -60,7 +60,7 @@ describe('computeHeuristics – diff counts', () => {
     try {
       // README.md exists at baseSha with 1 line; replace with 3 lines → 3 added, 1 deleted
       addCommit(dir, { 'README.md': 'line1\nline2\nline3\n' });
-      const result = computeHeuristics({ worktreePath: dir, baseSha, riskyPaths: [], testsGreenFirstTry: null });
+      const result = computeHeuristics({ worktreePath: dir, baseSha,  testsGreenFirstTry: null });
       assert.equal(result.diff_files, 1);
       assert.equal(result.diff_lines, 4); // 3 added + 1 deleted
     } finally {
@@ -71,7 +71,7 @@ describe('computeHeuristics – diff counts', () => {
   it('empty diff → diff_lines=0, diff_files=0, no crash', () => {
     const { dir, baseSha, cleanup } = makeTempRepo();
     try {
-      const result = computeHeuristics({ worktreePath: dir, baseSha, riskyPaths: [], testsGreenFirstTry: null });
+      const result = computeHeuristics({ worktreePath: dir, baseSha,  testsGreenFirstTry: null });
       assert.equal(result.diff_lines, 0);
       assert.equal(result.diff_files, 0);
     } finally {
@@ -85,93 +85,9 @@ describe('computeHeuristics – diff counts', () => {
       // Null bytes in content force git to treat the file as binary
       const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
       addCommit(dir, { 'image.png': binary });
-      const result = computeHeuristics({ worktreePath: dir, baseSha, riskyPaths: [], testsGreenFirstTry: null });
+      const result = computeHeuristics({ worktreePath: dir, baseSha,  testsGreenFirstTry: null });
       assert.equal(result.diff_files, 1);
       assert.equal(result.diff_lines, 0); // binary rows show as "-\t-\t" — not NaN-summed
-    } finally {
-      cleanup();
-    }
-  });
-});
-
-// ------------------------------------------------------------------
-// computeHeuristics — risky_paths_touched
-// ------------------------------------------------------------------
-
-describe('computeHeuristics – risky_paths_touched', () => {
-  it('happy path: changed files matching risky path patterns are listed', () => {
-    const { dir, baseSha, cleanup } = makeTempRepo();
-    try {
-      addCommit(dir, {
-        'src/auth/login.ts': 'auth code\n',
-        'src/util.ts': 'util code\n',
-      });
-      const result = computeHeuristics({
-        worktreePath: dir,
-        baseSha,
-        riskyPaths: ['src/auth/**'],
-        testsGreenFirstTry: null,
-      });
-      assert.deepEqual(result.risky_paths_touched, ['src/auth/login.ts']);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('none-match → risky_paths_touched is []', () => {
-    const { dir, baseSha, cleanup } = makeTempRepo();
-    try {
-      addCommit(dir, { 'src/util.ts': 'util\n' });
-      const result = computeHeuristics({
-        worktreePath: dir,
-        baseSha,
-        riskyPaths: ['src/auth/**'],
-        testsGreenFirstTry: null,
-      });
-      assert.deepEqual(result.risky_paths_touched, []);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('all-match → full list of changed files', () => {
-    const { dir, baseSha, cleanup } = makeTempRepo();
-    try {
-      addCommit(dir, {
-        'src/auth/login.ts': 'login\n',
-        'src/auth/logout.ts': 'logout\n',
-      });
-      const result = computeHeuristics({
-        worktreePath: dir,
-        baseSha,
-        riskyPaths: ['src/auth/**'],
-        testsGreenFirstTry: null,
-      });
-      assert.equal(result.risky_paths_touched.length, 2);
-      assert.ok(result.risky_paths_touched.includes('src/auth/login.ts'));
-      assert.ok(result.risky_paths_touched.includes('src/auth/logout.ts'));
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('multiple risky path patterns all evaluated', () => {
-    const { dir, baseSha, cleanup } = makeTempRepo();
-    try {
-      addCommit(dir, {
-        'src/auth/login.ts': 'auth\n',
-        'config/prod.ts': 'config\n',
-        'src/util.ts': 'util\n',
-      });
-      const result = computeHeuristics({
-        worktreePath: dir,
-        baseSha,
-        riskyPaths: ['src/auth/**', 'config/**'],
-        testsGreenFirstTry: null,
-      });
-      assert.equal(result.risky_paths_touched.length, 2);
-      assert.ok(result.risky_paths_touched.includes('src/auth/login.ts'));
-      assert.ok(result.risky_paths_touched.includes('config/prod.ts'));
     } finally {
       cleanup();
     }
@@ -186,7 +102,7 @@ describe('computeHeuristics – tests_green_first_try', () => {
   it('null is passed through — the release behavior (ADR-3, no first-try source)', () => {
     const { dir, baseSha, cleanup } = makeTempRepo();
     try {
-      const result = computeHeuristics({ worktreePath: dir, baseSha, riskyPaths: [], testsGreenFirstTry: null });
+      const result = computeHeuristics({ worktreePath: dir, baseSha,  testsGreenFirstTry: null });
       assert.equal(result.tests_green_first_try, null);
     } finally {
       cleanup();
@@ -196,7 +112,7 @@ describe('computeHeuristics – tests_green_first_try', () => {
   it('true passes through HeuristicInput to the field', () => {
     const { dir, baseSha, cleanup } = makeTempRepo();
     try {
-      const result = computeHeuristics({ worktreePath: dir, baseSha, riskyPaths: [], testsGreenFirstTry: true });
+      const result = computeHeuristics({ worktreePath: dir, baseSha,  testsGreenFirstTry: true });
       assert.equal(result.tests_green_first_try, true);
     } finally {
       cleanup();
@@ -206,7 +122,7 @@ describe('computeHeuristics – tests_green_first_try', () => {
   it('false passes through HeuristicInput to the field', () => {
     const { dir, baseSha, cleanup } = makeTempRepo();
     try {
-      const result = computeHeuristics({ worktreePath: dir, baseSha, riskyPaths: [], testsGreenFirstTry: false });
+      const result = computeHeuristics({ worktreePath: dir, baseSha,  testsGreenFirstTry: false });
       assert.equal(result.tests_green_first_try, false);
     } finally {
       cleanup();
@@ -222,7 +138,6 @@ const CLEAN_HEURISTICS: HeuristicSignals = {
   diff_lines: 50,
   diff_files: 2,
   tests_green_first_try: null,
-  risky_paths_touched: [],
 };
 
 const TIER_CASES: Array<{
@@ -231,10 +146,6 @@ const TIER_CASES: Array<{
   opts?: Parameters<typeof buildStorySignals>[1];
 }> = [
   { label: 'no self-assessment → heavy (fail-safe)', heuristics: CLEAN_HEURISTICS },
-  {
-    label: 'risky path touched → heavy',
-    heuristics: { ...CLEAN_HEURISTICS, risky_paths_touched: ['src/auth/login.ts'] },
-  },
   {
     label: 'first-try test failure → heavy',
     heuristics: { ...CLEAN_HEURISTICS, tests_green_first_try: false },
@@ -245,7 +156,7 @@ const TIER_CASES: Array<{
   },
   {
     label: 'all-positive signals → light',
-    heuristics: { diff_lines: 20, diff_files: 2, tests_green_first_try: true, risky_paths_touched: [] },
+    heuristics: { diff_lines: 20, diff_files: 2, tests_green_first_try: true },
     opts: {
       triage: { risk: 'low', predicted_complexity: 'low', rationale: 'trivial' },
       selfAssessment: { confidence: 'high', complexity: 'low' },
@@ -253,7 +164,7 @@ const TIER_CASES: Array<{
   },
   {
     label: 'medium confidence → standard',
-    heuristics: { diff_lines: 100, diff_files: 5, tests_green_first_try: null, risky_paths_touched: [] },
+    heuristics: { diff_lines: 100, diff_files: 5, tests_green_first_try: null },
     opts: { selfAssessment: { confidence: 'medium', complexity: 'medium' } },
   },
 ];
@@ -304,7 +215,6 @@ describe('buildStorySignals – snake_case steps mapping (ADR-5)', () => {
       diff_lines: 100,
       diff_files: 5,
       tests_green_first_try: null,
-      risky_paths_touched: [],
     };
     const signals = buildStorySignals(heuristics, {
       selfAssessment: { confidence: 'medium', complexity: 'medium' },
@@ -319,7 +229,6 @@ describe('buildStorySignals – snake_case steps mapping (ADR-5)', () => {
       diff_lines: 20,
       diff_files: 2,
       tests_green_first_try: true,
-      risky_paths_touched: [],
     };
     const signals = buildStorySignals(heuristics, {
       triage: { risk: 'low', predicted_complexity: 'low', rationale: 'trivial' },
@@ -354,7 +263,6 @@ describe('buildStorySignals – heavy bias (expected measurement, not a bug)', (
       diff_lines: 5,
       diff_files: 1,
       tests_green_first_try: null,
-      risky_paths_touched: [],
     };
     assert.equal(buildStorySignals(heuristics).tier, 'heavy');
   });
@@ -364,7 +272,6 @@ describe('buildStorySignals – heavy bias (expected measurement, not a bug)', (
       diff_lines: 20,
       diff_files: 2,
       tests_green_first_try: null, // unknown → not light
-      risky_paths_touched: [],
     };
     const signals = buildStorySignals(heuristics, {
       triage: { risk: 'low', predicted_complexity: 'low', rationale: 'x' },
@@ -391,8 +298,8 @@ describe('computeHeuristics and buildStorySignals – adaptive_cost independence
     const { dir, baseSha, cleanup } = makeTempRepo();
     try {
       addCommit(dir, { 'src/a.ts': 'x\n' });
-      const r1 = computeHeuristics({ worktreePath: dir, baseSha, riskyPaths: [], testsGreenFirstTry: null });
-      const r2 = computeHeuristics({ worktreePath: dir, baseSha, riskyPaths: [], testsGreenFirstTry: null });
+      const r1 = computeHeuristics({ worktreePath: dir, baseSha,  testsGreenFirstTry: null });
+      const r2 = computeHeuristics({ worktreePath: dir, baseSha,  testsGreenFirstTry: null });
       assert.deepEqual(r1, r2);
     } finally {
       cleanup();

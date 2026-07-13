@@ -6,9 +6,10 @@ import { maybeWarnGatePreflight } from '../commands/gatePreflightWarning.js';
 
 type Preflight = typeof preflightGateCommand;
 
-function policyWith(gate: 'off' | 'warn' | 'block', testCommand?: string): Policy {
+function policyWith(_gate: 'off' | 'warn' | 'block', testCommand?: string): Policy {
+  // integration_gate is now baked to INTEGRATION_GATE='block'; the gate arg is kept
+  // for call-site readability but is no longer set on the policy object.
   const policy = PolicyEngine.defaultPolicy();
-  policy.agents.integration_gate = gate;
   policy.agents.test_command = testCommand;
   return policy;
 }
