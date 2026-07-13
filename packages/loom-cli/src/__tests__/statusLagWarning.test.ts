@@ -261,14 +261,14 @@ describe('loom status — stale_planning text (AC3)', () => {
 // ─── Policy defaults (AC4) ────────────────────────────────────────────────────
 
 describe('loom status — policy defaults (AC4)', () => {
-  it('[AC4] integration_branch_lag_threshold absent → defaults to 10', () => {
+  it('[AC4] integration_branch_lag_threshold is stripped (baked to INTEGRATION_BRANCH_LAG_THRESHOLD=10)', () => {
     const policy = PolicySchema.parse({ version: 1, agents: { integration_branch: 'rolling' } });
-    assert.equal(policy.agents.integration_branch_lag_threshold, 10);
+    assert.ok(!('integration_branch_lag_threshold' in policy.agents), 'must be stripped (baked field removed)');
   });
 
-  it('[AC4] stale_planning_minutes absent → defaults to 30', () => {
+  it('[AC4] stale_planning_minutes is stripped (baked to STALE_PLANNING_MINUTES=30)', () => {
     const policy = PolicySchema.parse({ version: 1 });
-    assert.equal(policy.agents.stale_planning_minutes, 30);
+    assert.ok(!('stale_planning_minutes' in policy.agents), 'must be stripped (baked field removed)');
   });
 
   it('[AC4] lag threshold default (10) used when only integration_branch: rolling set', () => {
@@ -296,19 +296,16 @@ describe('loom status — policy defaults (AC4)', () => {
     assert.equal(epic.stale_planning.warn, true, '35m > 30m default → warn');
   });
 
-  it('[AC4] Zod schema accepts both knobs as optional', () => {
+  it('[AC4] Zod schema strips both knobs without error (baked fields removed, story-094-003)', () => {
     assert.doesNotThrow(() => {
       PolicySchema.parse({ version: 1, agents: { integration_branch_lag_threshold: 5, stale_planning_minutes: 15 } });
     });
-  });
-
-  it('[AC4] Zod schema enforces minimum 1 for both knobs', () => {
-    assert.throws(() => {
+    assert.doesNotThrow(() => {
       PolicySchema.parse({ version: 1, agents: { integration_branch_lag_threshold: 0 } });
-    }, 'lag threshold must be >= 1');
-    assert.throws(() => {
+    });
+    assert.doesNotThrow(() => {
       PolicySchema.parse({ version: 1, agents: { stale_planning_minutes: 0 } });
-    }, 'stale_planning_minutes must be >= 1');
+    });
   });
 });
 

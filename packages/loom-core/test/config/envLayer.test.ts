@@ -76,10 +76,10 @@ describe('loadEnvLayer — mapping happy path', () => {
     assert.equal(typeof get(tree, 'agents.max_concurrent'), 'number');
   });
 
-  it('LOOM_CROSS_REPO_ENABLED (boolean) → cross_repo.enabled', () => {
-    const { tree } = loadEnvLayer({ LOOM_CROSS_REPO_ENABLED: 'false' });
-    assert.equal(get(tree, 'cross_repo.enabled'), false);
-    assert.equal(typeof get(tree, 'cross_repo.enabled'), 'boolean');
+  it('LOOM_GIT_AGENTS_MUST_USE_PR (boolean) → git.agents_must_use_pr (cross_repo.enabled removed, story-094-003)', () => {
+    const { tree } = loadEnvLayer({ LOOM_GIT_AGENTS_MUST_USE_PR: 'false' });
+    assert.equal(get(tree, 'git.agents_must_use_pr'), false);
+    assert.equal(typeof get(tree, 'git.agents_must_use_pr'), 'boolean');
   });
 
   it('LOOM_MCP_REGISTRY → mcp.registry', () => {
@@ -102,14 +102,14 @@ describe('loadEnvLayer — mapping happy path', () => {
 // ── Coercion ──────────────────────────────────────────────────────────────────
 
 describe('loadEnvLayer — coercion against target zod field', () => {
-  it('boolean field: "true" → true', () => {
-    const { tree } = loadEnvLayer({ LOOM_CROSS_REPO_ENABLED: 'true' });
-    assert.strictEqual(get(tree, 'cross_repo.enabled'), true);
+  it('boolean field: "true" → true (using git.agents_must_use_pr, cross_repo.enabled removed story-094-003)', () => {
+    const { tree } = loadEnvLayer({ LOOM_GIT_AGENTS_MUST_USE_PR: 'true' });
+    assert.strictEqual(get(tree, 'git.agents_must_use_pr'), true);
   });
 
-  it('boolean field: "false" → false', () => {
-    const { tree } = loadEnvLayer({ LOOM_CROSS_REPO_ENABLED: 'false' });
-    assert.strictEqual(get(tree, 'cross_repo.enabled'), false);
+  it('boolean field: "false" → false (using git.agents_must_use_pr, cross_repo.enabled removed story-094-003)', () => {
+    const { tree } = loadEnvLayer({ LOOM_GIT_AGENTS_MUST_USE_PR: 'false' });
+    assert.strictEqual(get(tree, 'git.agents_must_use_pr'), false);
   });
 
   it('boolean field: bad value → ignored with warning, key absent', () => {
@@ -117,8 +117,8 @@ describe('loadEnvLayer — coercion against target zod field', () => {
     const orig = console.warn;
     console.warn = () => { warned = true; };
     try {
-      const { tree } = loadEnvLayer({ LOOM_CROSS_REPO_ENABLED: 'yes' });
-      assert.ok(!hasKey(tree, 'cross_repo.enabled'), 'bad boolean must be absent');
+      const { tree } = loadEnvLayer({ LOOM_GIT_AGENTS_MUST_USE_PR: 'yes' });
+      assert.ok(!hasKey(tree, 'git.agents_must_use_pr'), 'bad boolean must be absent');
     } finally { console.warn = orig; }
     assert.ok(warned, 'must emit a warning for bad boolean');
   });
@@ -129,10 +129,10 @@ describe('loadEnvLayer — coercion against target zod field', () => {
     assert.equal(typeof get(tree, 'agents.max_concurrent'), 'number');
   });
 
-  it('number field: "1.5" → 1.5 (float, using a non-int field)', () => {
-    // budget_tokens_per_story is z.number().optional() — accepts floats.
+  it('LOOM_AGENTS_BUDGET_TOKENS_PER_STORY ignored — field baked-removed (story-094-003)', () => {
+    // budget_tokens_per_story was removed from PolicySchema; loadEnvLayer skips unknown fields.
     const { tree } = loadEnvLayer({ LOOM_AGENTS_BUDGET_TOKENS_PER_STORY: '1.5' });
-    assert.equal(get(tree, 'agents.budget_tokens_per_story'), 1.5);
+    assert.ok(!hasKey(tree, 'agents.budget_tokens_per_story'), 'unknown field must not appear in tree');
   });
 
   it('number field: non-numeric → ignored with warning, key absent', () => {
@@ -167,8 +167,9 @@ describe('loadEnvLayer — coercion against target zod field', () => {
   });
 
   it('enum field: returned as-is (validation deferred to PolicySchema.parse)', () => {
-    const { tree } = loadEnvLayer({ LOOM_AGENTS_REVIEW_STRATEGY: 'comment' });
-    assert.equal(get(tree, 'agents.review_strategy'), 'comment');
+    // review_strategy baked-removed; use llm_backend which is still an enum field.
+    const { tree } = loadEnvLayer({ LOOM_AGENTS_LLM_BACKEND: 'cursor-cli' });
+    assert.equal(get(tree, 'agents.llm_backend'), 'cursor-cli');
   });
 });
 

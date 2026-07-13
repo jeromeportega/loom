@@ -308,7 +308,7 @@ describe('PolicyEngine.load — no downstream drift (call sites unchanged)', () 
   it('invalid policy.yaml still throws PolicyValidationError through the resolver', () => {
     const { loomdir, projectRoot, cleanup } = makeDirs();
     try {
-      writePolicy(loomdir, { agents: { review_strategy: 'invalid-value' } });
+      writePolicy(loomdir, { agents: { llm_backend: 'invalid-value' } });
       assert.throws(
         () => PolicyEngine.load(loomdir, { projectRoot, env: {} }),
         (err: unknown) => {

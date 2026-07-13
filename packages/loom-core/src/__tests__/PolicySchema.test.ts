@@ -69,69 +69,68 @@ describe('adversarial_review_model — non-string rejected', () => {
   });
 });
 
-// ─── skill_judge_min_score ────────────────────────────────────────────────────
+// ─── Baked/dead fields silently stripped (story-094-003) ─────────────────────
 
-describe('skill_judge_min_score — optional number field, bounded 0-10', () => {
-  it('accepts an in-range value and round-trips it', () => {
-    const result = PolicySchema.parse({ agents: { skill_judge_min_score: 7 } });
-    assert.strictEqual(result.agents.skill_judge_min_score, 7);
-  });
+describe('PolicySchema — baked and dead fields are silently stripped (story-094-003)', () => {
+  const REMOVED_AGENTS_FIELDS = [
+    'review_strategy', 'integration_gate', 'budget_tokens_per_story',
+    'risky_paths', 'epic_buildup', 'planning_token_budget', 'triage_model',
+    'skill_judge_min_score', 'prune_orphan_worktrees', 'hung_request_seconds',
+    'auto_resume_attempts', 'stall_recovery_budget', 'story_stall_minutes',
+    'story_absolute_cap_minutes', 'smoke_timeout_minutes', 'qa_planning',
+    'integration_branch', 'shared_contract', 'context_notes', 'phases',
+  ] as const;
 
-  it('accepts the boundary values 0 and 10', () => {
-    assert.strictEqual(PolicySchema.parse({ agents: { skill_judge_min_score: 0 } }).agents.skill_judge_min_score, 0);
-    assert.strictEqual(PolicySchema.parse({ agents: { skill_judge_min_score: 10 } }).agents.skill_judge_min_score, 10);
-  });
-
-  it('is undefined when absent (no default)', () => {
-    const result = PolicySchema.parse({ agents: {} });
-    assert.strictEqual(result.agents.skill_judge_min_score, undefined);
-  });
-
-  it('rejects a value above 10 (would reject every candidate forever)', () => {
-    assert.throws(
-      () => PolicySchema.parse({ agents: { skill_judge_min_score: 11 } }),
-      (err: unknown) => err instanceof ZodError
+  it('parses without throwing when all removed fields are present', () => {
+    const agents: Record<string, unknown> = {};
+    for (const f of REMOVED_AGENTS_FIELDS) { agents[f] = 'some-value'; }
+    assert.doesNotThrow(
+      () => PolicySchema.parse({ agents }),
+      'PolicySchema.parse must not throw when removed fields are set',
     );
   });
 
-  it('rejects a negative value', () => {
-    assert.throws(
-      () => PolicySchema.parse({ agents: { skill_judge_min_score: -1 } }),
-      (err: unknown) => err instanceof ZodError
-    );
-  });
+  for (const field of REMOVED_AGENTS_FIELDS) {
+    it(`removed field "${field}" is absent from the parsed result`, () => {
+      const result = PolicySchema.parse({ agents: { [field]: 'some-value' } });
+      assert.ok(
+        !(field in result.agents),
+        `"${field}" must not appear on the parsed agents object (Zod strips unknown keys)`,
+      );
+    });
+  }
 
-  it('rejects a string value with a ZodError', () => {
-    assert.throws(
-      () => PolicySchema.parse({ agents: { skill_judge_min_score: 'high' } }),
-      (err: unknown) => err instanceof ZodError
-    );
+  it('agents.max_concurrent equals its declared default (5) after stripping removed fields', () => {
+    const agents: Record<string, unknown> = {};
+    for (const f of REMOVED_AGENTS_FIELDS) { agents[f] = 'some-value'; }
+    const result = PolicySchema.parse({ agents });
+    assert.strictEqual(result.agents.max_concurrent, 5);
   });
 });
 
-// ─── prune_orphan_worktrees ───────────────────────────────────────────────────
+// ─── top-level .strip() (story-094-003) ──────────────────────────────────────
 
-describe('prune_orphan_worktrees — enum field with default', () => {
-  it('accepts "off" and round-trips it', () => {
-    const result = PolicySchema.parse({ agents: { prune_orphan_worktrees: 'off' } });
-    assert.strictEqual(result.agents.prune_orphan_worktrees, 'off');
-  });
-
-  it('accepts "on" and round-trips it', () => {
-    const result = PolicySchema.parse({ agents: { prune_orphan_worktrees: 'on' } });
-    assert.strictEqual(result.agents.prune_orphan_worktrees, 'on');
-  });
-
-  it('defaults to "on" when absent', () => {
-    const result = PolicySchema.parse({ agents: {} });
-    assert.strictEqual(result.agents.prune_orphan_worktrees, 'on');
-  });
-
-  it('rejects an invalid enum value "maybe" with a ZodError', () => {
-    assert.throws(
-      () => PolicySchema.parse({ agents: { prune_orphan_worktrees: 'maybe' } }),
-      (err: unknown) => err instanceof ZodError
+describe('PolicySchema — top-level .strip() silently drops unknown top-level keys', () => {
+  it('unknown top-level key is stripped without error', () => {
+    assert.doesNotThrow(
+      () => PolicySchema.parse({ unknownKey: 'x', agents: { max_concurrent: 2 } }),
     );
+  });
+
+  it('max_concurrent survives stripping of an unknown top-level key', () => {
+    const result = PolicySchema.parse({ unknownKey: 'x', agents: { max_concurrent: 2 } });
+    assert.strictEqual(result.agents.max_concurrent, 2);
+  });
+
+  it('unknown top-level key is absent from the parsed result', () => {
+    const result = PolicySchema.parse({ unknownKey: 'x', agents: { max_concurrent: 2 } });
+    assert.ok(!('unknownKey' in result), 'unknownKey must not appear on the parsed result');
+  });
+
+  it('unknown agents key is absent from the parsed result (nested stripping)', () => {
+    const result = PolicySchema.parse({ agents: { unknownAgentsKey: 'x', max_concurrent: 2 } });
+    assert.strictEqual(result.agents.max_concurrent, 2);
+    assert.ok(!('unknownAgentsKey' in result.agents), 'unknownAgentsKey must not appear');
   });
 });
 
@@ -242,12 +241,12 @@ describe('PolicySchema — five removed fields are silently stripped (story-084-
     );
   });
 
-  it('agents.prune_orphan_worktrees equals its declared default ("on") — strip does not corrupt new fields', () => {
+  it('agents.llm_backend equals its declared default ("claude-cli") — strip does not corrupt other fields', () => {
     const result = PolicySchema.parse(INPUT_WITH_REMOVED_FIELDS);
     assert.strictEqual(
-      result.agents.prune_orphan_worktrees,
-      'on',
-      'prune_orphan_worktrees must equal "on" (its schema default) after stripping the removed fields',
+      result.agents.llm_backend,
+      'claude-cli',
+      'llm_backend must equal "claude-cli" (its schema default) after stripping the removed fields',
     );
   });
 });

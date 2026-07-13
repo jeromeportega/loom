@@ -43,13 +43,10 @@ describe('stallConfigWarning', () => {
   });
 
   it('never mutates the policy (ADR-5: warn, never rewrite)', () => {
-    const p = policy({
-      worker_backend: 'cursor-cli',
-      story_stall_minutes: 12,
-      story_absolute_cap_minutes: 60,
-    });
+    const p = policy({ worker_backend: 'cursor-cli' });
+    const concurrentBefore = p.agents.max_concurrent;
     stallConfigWarning(p);
-    assert.equal(p.agents.story_stall_minutes, 12);
-    assert.equal(p.agents.story_absolute_cap_minutes, 60);
+    assert.equal(p.agents.max_concurrent, concurrentBefore);
+    assert.equal(p.agents.worker_backend, 'cursor-cli');
   });
 });

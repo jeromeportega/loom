@@ -68,9 +68,9 @@ describe('loadSliceBounds — AC-2: baked constants', () => {
     assert.equal(bounds.maxMatchesPerFile, 10);
   });
 
-  it('cross_repo.enabled defaults to false', () => {
+  it('cross_repo.enabled is stripped (baked to CROSS_REPO_ENABLED=true, story-094-003)', () => {
     const policy = PolicySchema.parse({});
-    assert.equal(policy.cross_repo.enabled, false);
+    assert.ok(!('enabled' in policy.cross_repo), 'cross_repo.enabled must be stripped');
   });
 
   it('cross_repo.secret_globs has the expected defaults', () => {

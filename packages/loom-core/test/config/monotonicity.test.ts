@@ -98,17 +98,6 @@ describe('T1 — denylist union: no layer can shrink the protected set', () => {
     assert.ok(paths.includes('/etc'), '/etc must remain');
   });
 
-  it('agents.risky_paths: union, lower layer entry survives higher layer omission', () => {
-    const layers = [
-      layer('team', { agents: { risky_paths: ['**/auth/**'] } }),
-      layer('repo', { agents: { risky_paths: ['**/payments/**'] } }),
-      layer('env',  {}),
-    ];
-    const { tree } = mergeLayers(layers, MERGE_STRATEGY);
-    const paths = get(tree, 'agents.risky_paths') as string[];
-    assert.ok(paths.includes('**/auth/**'));
-    assert.ok(paths.includes('**/payments/**'));
-  });
 });
 
 // ── T3 — Allowlist intersect monotonicity ─────────────────────────────────────
@@ -329,7 +318,6 @@ describe('ADR-003 — registry coverage: every guard-shaped field in PolicySchem
       'git.agents_must_use_pr',
       'filesystem.protected_paths',
       'filesystem.allowed_write_root',
-      'agents.risky_paths',
     ];
     for (const key of required) {
       assert.ok(

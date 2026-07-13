@@ -291,8 +291,6 @@ export interface HeuristicSignals {
   diff_files: number;
   /** null = unknown (no first-try test signal available). */
   tests_green_first_try: boolean | null;
-  /** Changed files matching risky paths. */
-  risky_paths_touched: string[];
 }
 
 /** Per-story signal record persisted to the ledger and read back by the EpicFinalizer. */
@@ -318,11 +316,6 @@ const TestCommandEntrySchema = z.object({
   command: z.string().min(1),
   paths:   z.array(z.string().min(1)).min(1),
 });
-
-/** Accept the literal string 'on' as a convenience alias for `canonical`, then validate as enum. */
-function onAlias<T extends readonly [string, ...string[]]>(values: T, canonical: T[number]) {
-  return z.preprocess((v) => (v === 'on' ? canonical : v), z.enum(values));
-}
 
 export const PolicySchema = z.object({
   git: z
@@ -361,95 +354,11 @@ export const PolicySchema = z.object({
       llm_backend: z.enum(['claude-cli', 'cursor-cli']).default('claude-cli'),
       // Worker backend: which agent runs story implementation.
       worker_backend: z.enum(['claude-code', 'cursor-cli']).default('claude-code'),
-      // PR strategy: one PR per epic. The EpicFinalizer merges story
-      // branches in dependency order onto epic/<id> and opens a single PR.
-      // (Legacy per-story / both modes were removed from the user-facing
-      // surface; only per-epic is accepted.)
-      pr_strategy: z.enum(['per-epic']).default('per-epic'),
       model: z.string().default('claude-sonnet-4-6'),
       planning_model: z.string().default('claude-opus-4-7'),
       // Model id for the Cursor backend (Cursor uses its own ids, e.g. sonnet-4).
       cursor_model: z.string().default('sonnet-4'),
       skill_gen_model: z.string().default('claude-haiku-4-5-20251001'),
-      budget_tokens_per_story: z.number().optional(),
-      // Cost guard for the planning step (Analyst + PM + Architect). When set,
-      // `loom epic` warns at the end of a planning run if total tokens
-      // (input + output) exceeded this number.
-      planning_token_budget: z.number().int().min(1).optional(),
-      // Review strategy applied to every worker before it opens a PR
-      // (Epic 18 story-018-002):
-      //   'off'              — no review pass; the worker opens the PR immediately
-      //   'comment'          — review runs and findings attach as a PR comment
-      //   'block-and-revise' — blockers re-prompt the worker up to N times
-      review_strategy: z
-        .enum(['off', 'comment', 'block-and-revise'])
-        .default('comment'),
-      // Max worker revision passes under 'block-and-revise' before loom stops
-      // re-prompting and marks the story blocked. Replaces the former hardcoded
-      // cap of 2 — lower it to forcefully limit review cost, raise it to let a
-      // worker keep self-correcting. 0 disables revision (review once, no
-      // re-prompt). Ignored unless review_strategy='block-and-revise'.
-      review_max_passes: z.number().int().min(0).default(2),
-      // Adaptive cost control (epic: adaptive review). When 'on' (default), loom
-      // sizes the expensive steps (reviewer count, verify-phase spawn, skill-gen)
-      // per story from cheap signals — triage, the worker's self-assessment, and
-      // heuristics — never EXCEEDING what the static flags above already allow
-      // (the ceiling rule). 'off' = every enabled step runs on every story.
-      adaptive_cost: z.enum(['on', 'off']).default('on'),
-      // Cheap model for the per-story triage call (one call/story: risk +
-      // complexity rating). Defaults to Haiku — triage is meta-work.
-      triage_model: z.string().default('claude-haiku-4-5-20251001'),
-      // Globs that force the heavy review tier when a story touches them,
-      // regardless of confidence — a safety floor for sensitive surface area.
-      risky_paths: z
-        .array(z.string())
-        .default([
-          '**/auth/**',
-          '**/migrations/**',
-          '**/payment/**',
-          '**/payments/**',
-          '**/.github/workflows/**',
-        ]),
-      // Controls when SkillGenerator runs after a successful story:
-      //   'on'      — every successful story (default)
-      //   'off'     — never (cost-conscious teams)
-      //   'sampled' — every Nth successful story (engine-tuned sample)
-      skill_generation: z.enum(['on', 'off', 'sampled']).default('on'),
-      // Auto-propose generated candidates to their target source repo via a
-      // PR (#18 story-cloud-004). Default OFF — operator runs
-      // `loom skills propose <name>` by hand.
-      //   'off'     — never auto-propose. Operator-initiated only.
-      //   'sampled' — auto-propose when a candidate clears the engine-tuned
-      //               judge threshold AND we're under the per-epic cap.
-      //   'always'  — every passing candidate gets a PR. No cap.
-      skill_auto_propose: z.enum(['off', 'sampled', 'always']).default('off'),
-      // PR attribution — prepend a "Loom built this" block to every epic
-      // PR body so reviewers can tell loom generated it and inspect the
-      // brief / planning chain. Default OFF — operators opt in per repo.
-      // Honors the user's 2026-05-26 product-direction call (opt-in for now).
-      pr_attribution: z.enum(['off', 'on']).default('off'),
-      // Diff-preview gate. When 'confirm', EpicFinalizer stops at the local
-      // merge — doesn't push, doesn't open the PR. Operator eyeballs the
-      // diff (`git diff main..epic/<id>`) and runs the printed push +
-      // gh pr create commands themselves. Default OFF (push immediately
-      // after merge, the existing behavior).
-      //
-      // Use when you don't yet trust loom enough to land a PR unattended,
-      // or when the diff is unusually large (django-11019-class — 458-line
-      // patch with nobody between the worker and a public PR).
-      push_gate: z.enum(['off', 'confirm']).default('off'),
-      // Integration gate (PR 1 of the epic-quality plan). After the
-      // EpicFinalizer merges every story branch onto epic/<id>, run the repo's
-      // build/test suite on the INTEGRATED tree before opening the PR — the
-      // objective check that a feature isn't broken once all its stories live
-      // together. Also fails when a story was dropped by a merge conflict
-      // (amputation), regardless of tests.
-      //   off   — never run the gate (legacy behavior)
-      //   warn  — run it; annotate the PR + audit on failure but still open the
-      //           PR (default — non-blocking until an operator trusts it)
-      //   block — run it; on failure leave epic/<id> local, skip the PR, and
-      //           flip the epic back to in_progress for a fix-up run
-      integration_gate: z.enum(['off', 'warn', 'block']).default('warn'),
       // Explicit gate command. When unset, the gate auto-detects (npm test /
       // make test / pytest). loom never auto-installs deps, so if the suite
       // needs a fresh install encode it here, e.g. "npm ci && npm test".
@@ -458,177 +367,6 @@ export const PolicySchema = z.object({
       // minimatch globs over changed file paths; only matching entries run.
       // Ignored when test_command is set (test_command takes precedence).
       test_commands: z.array(TestCommandEntrySchema).optional(),
-      // Rolling integration branch (PR 3a of the epic-quality plan). 'off'
-      // (default) keeps today's topology: workers branch from their first
-      // dependency and the EpicFinalizer big-bang-merges every story branch at
-      // the end. 'rolling' creates epic/<id> up front, branches every worker
-      // from its live tip, and merges each story back the moment it completes —
-      // so parallel agents build on real prior code instead of colliding at
-      // finalize. Only meaningful with pr_strategy='per-epic'; ignored (with a
-      // warning) under 'per-story'. Off is byte-identical to the bench baseline.
-      integration_branch: onAlias(['off', 'rolling'] as const, 'rolling').default('off'),
-      // Bounded integrator (PR 3b). When 'on' (and integration_branch='rolling'),
-      // a story whose merge-back conflicts is handed to a bounded agent that
-      // resolves the conflict markers in the integration worktree; loom then
-      // commits the merge and re-runs the integration gate. The story is only
-      // integrated on a green gate — otherwise the merge is rolled back and the
-      // story falls through to the loud-block path (never a silent drop). 'off'
-      // (default) keeps 3a behavior: a conflict blocks the story immediately.
-      integrator: z.enum(['off', 'on']).default('off'),
-      // Operator guidance side-channel. When 'on', the worker prompt
-      // includes the contents of .loom/guidance/<story-id>.md when the
-      // file exists, treating it as priority instructions from the
-      // operator. Default OFF so the bench baseline is uncontaminated;
-      // bench runs don't inject guidance anyway, but the flag keeps the
-      // worker prompt template identical when off.
-      //
-      // The operator writes guidance via `loom guide <story-id> "..."`
-      // (CLI) or loom_guide_agent (MCP). Both append to the same file
-      // so the worker sees the layered history on the next revision /
-      // dispatch.
-      operator_guidance: z.enum(['off', 'on']).default('off'),
-      // Architect shared-contract injection (PR 2 of the epic-quality plan).
-      // When 'on', Winston emits an epic-wide implementation contract at plan
-      // time — the shared interfaces/types parallel stories must agree on plus
-      // a per-story file-ownership map — and every worker prompt for the epic
-      // is prefixed with it so isolated agents stop inventing conflicting seams
-      // and editing each other's files. Default flipped to 'on' in v0.5.0
-      // after the multi-epic shared-client run, where sibling stories appending
-      // to the same client.py file caused rolling-merge conflicts on every
-      // epic with >2 stories. The contract's file-ownership map removes those
-      // conflicts at the source; cost is one extra planning LLM call per run.
-      shared_contract: z.enum(['off', 'on']).default('on'),
-      // Cross-story context notes (PR 5 of the epic-quality plan). When 'on',
-      // a "what I built" note is written to .loom/context/<story-id>.md when a
-      // story succeeds (and integrates, under the rolling branch), and each
-      // dependent worker's prompt is appended with its dependencies' notes — the
-      // upstream decisions + files touched, in narrative form. Complements the
-      // rolling branch (which carries the code) and the shared contract (the
-      // plan-time interfaces). 'off' (default) writes nothing and keeps the
-      // worker prompt byte-identical to the bench baseline.
-      context_notes: z.enum(['off', 'on']).default('off'),
-      // Epic-cumulative build-up context (epic-029). When 'on', completed-story
-      // summaries and discovered conventions are injected into subsequent worker
-      // prompts at dispatch time. 'off' (default) writes nothing and keeps the
-      // worker prompt byte-identical to the bench baseline.
-      epic_buildup: z.enum(['off', 'on']).default('off'),
-      // QA test planning (PR 4 of the epic-quality plan). When 'advisory',
-      // a QA persona (Tessa) runs after the Architect at plan time and writes
-      // a concrete, risk-based test_plan onto every story — the test levels,
-      // the happy/error/edge cases to cover, and the verification bar. Each
-      // worker prompt then carries its story's plan so agents build tests-first
-      // against an explicit definition of "verified" instead of guessing.
-      // 'off' (default) skips the extra planning call AND the injection,
-      // keeping the worker prompt byte-identical to the bench baseline.
-      qa_planning: onAlias(['off', 'advisory'] as const, 'advisory').default('off'),
-      // Cross-model review (#20). When 'cross', the reviewer
-      // (block-and-revise / comment) runs through a DIFFERENT model than
-      // the worker — same-session via Cursor CLI's multi-model targeting,
-      // so the session-only constraint stays intact. 'same' (default)
-      // keeps today's behavior of reviewer == worker LLM.
-      //
-      // Methodology: this is a real intervention hypothesis. Its impact
-      // on resolution rate has to clear the Gate 3 promote rule (tuning
-      // improves, ≤1 regression, holdout doesn't drop) before going on
-      // by default. Until then operators opt in.
-      review_model: z.enum(['same', 'cross']).default('same'),
-      // Model id for cross-model review. Required when review_model='cross'.
-      // No MAX mode — pass a specific model id per
-      // [[feedback-cross-model-review-cursor-only]].
-      review_model_id: z.string().optional(),
-      // Wall-clock bound for the CodeReviewAgent's claude/cursor-cli call.
-      // The default 10 min was a hardcoded ClaudeCliClient timeout that
-      // silently dropped large-story reviews (story-007-003 in the multi-
-      // epic shared-client run shipped unreviewed because of this). Default
-      // 10 keeps prior behavior; raise it for repos with sizable diffs.
-      review_timeout_minutes: z.number().int().min(1).max(60).default(10),
-      // Wall-clock budget for the intake classifier call (`classifyIntake`).
-      // Raised from the old 20s cap to accommodate the session-subprocess
-      // backend's real ~100s latency. The call is best-effort and off the
-      // critical path — a hung call burns up to this budget before failing.
-      intake_timeout_ms: z.number().int().min(1000).default(120_000),
-      // Intake-routing mode. Controls whether the classifier verdict influences
-      // how the PM agent sizes the work:
-      //   'off'     — classifier runs observe-only; verdict recorded but never
-      //               reaches PlannerOptions. Planning path byte-identical to
-      //               today. (default)
-      //   'advisory' — verdict surfaced and injected as a sizing constraint
-      //               into the PM prompt; operator not asked to confirm.
-      //   'confirm'  — operator prompted to accept/override the verdict before
-      //               the PM prompt is built; degrades to advisory on non-TTY.
-      intake_routing: z.enum(['off', 'advisory', 'confirm']).default('off'),
-      // Brief-quality gate. Every `loom epic` and `loom_start_epic` runs
-      // the BriefRefiner before the planner and refuses briefs whose
-      // quality_score is below this threshold, returning the critique so
-      // the operator can tighten the prompt before paying the planner.
-      // Threshold is tunable per repo (0–10). Setting 0 effectively
-      // disables the gate (since BriefRefiner saturates at 0 on its
-      // floor), which is what the SWE-bench harness wants — the
-      // refiner over-critiques GitHub-issue-shaped briefs and the bench
-      // is meant to measure planner+worker quality, not refiner
-      // judgement. Default 6 keeps real-user behaviour unchanged.
-      min_brief_quality_score: z.number().int().min(0).max(10).default(6),
-      // Severity threshold that triggers a block-and-revise revision.
-      // - 'blockers' (default, baseline): only blocker-severity findings
-      //   re-prompt the worker. Non-blocker findings attach as comments.
-      // - 'any': any non-empty review finding re-prompts. Use when a
-      //   cross-model reviewer (or generally a smarter reviewer) is
-      //   surfacing correctness concerns at comment severity that the
-      //   pipeline ought to act on. Bounded by review_max_revisions so
-      //   "any" can't soft-lock.
-      //
-      // Run 10b finding: cross-model review identified a read-path
-      // near-miss but logged it as a comment, so block-and-revise didn't
-      // trigger. 'any' is the lever that lets the pipeline act on those.
-      review_revise_trigger: z.enum(['blockers', 'any']).default('blockers'),
-      // Worker-watchdog — kills a worker that goes too long with zero
-      // Edit/Write/MultiEdit calls (the analysis-only failure mode that
-      // produces empty patches in bench runs and "handoff died" reports
-      // in real use). Default OFF — bench baseline preserved.
-      //
-      // When 'on', the supervisor monitors decision_traces live for
-      // edit-class calls. After analysis_only_watchdog_warn_sec with
-      // zero edits, emits a worker_watchdog_warn audit row. After
-      // analysis_only_watchdog_kill_sec with zero edits, SIGTERMs the
-      // worker and marks the story failed with reason
-      // 'analysis-only-watchdog' (audit-logged).
-      //
-      // Suggested timings: warn at 600s (10 min), kill at 1200s
-      // (20 min). The thresholds are wallclock from worker start, not
-      // tool-call count.
-      analysis_only_watchdog: z.enum(['off', 'on']).default('off'),
-      // Story timeout budget (progress-aware). The worker is killed after
-      // `story_stall_minutes` of ZERO output activity (genuinely stuck — resets
-      // on any stdout/stderr) OR after `story_absolute_cap_minutes` total
-      // regardless. Per-complexity scaling lives in the source (engineer-tuned).
-      story_stall_minutes: z.number().int().min(1).default(12),
-      story_absolute_cap_minutes: z.number().int().min(1).default(60),
-      // Tighter liveness bound (epic-030). After a worker emits
-      // `system/status status=requesting` with no subsequent stream activity for
-      // this many SECONDS, the guard concludes the LLM call has hung and kills
-      // the worker. 0 disables the check (today's behavior). Distinct unit from
-      // the minute-based stall/cap knobs above — intentionally kept in seconds
-      // for a finer-grained, sub-minute threshold.
-      hung_request_seconds: z.number().int().min(0).default(45),
-      // @deprecated — no longer consumed. The stall-recovery path was replaced by
-      // the durable clean-retry budget (`stall_recovery_budget`). Setting this
-      // value has no effect. Use `stall_recovery_budget: 0` to disable auto-recovery.
-      // Kept in the schema for operator backwards-compatibility; will be removed
-      // in a future release.
-      auto_resume_attempts: z.number().int().min(0).default(2),
-      // Per-story budget of automatic clean-retries on a no-output stall
-      // (epic-061). When a worker stalls, the supervisor spawns a fresh
-      // worktree + branch and re-runs up to this many times. 0 disables.
-      // Durable: persisted in the DB, survives process restarts.
-      stall_recovery_budget: z.number().int().min(0).default(2),
-      // Phased worker pipeline. When 'on', a story runs as discrete agent
-      // spawns — implement, then verify (full build/test suite) — each with
-      // its OWN fresh stall/cap timer and a checkpoint commit + handoff
-      // refresh at the boundary. This lets a long-but-productive story survive
-      // by giving each phase a clean budget instead of one shared wall-clock,
-      // and makes a crash mid-verify resumable from the committed implement
-      // work. Default 'off' keeps the single-spawn bench baseline.
-      phases: z.enum(['off', 'on']).default('off'),
       // Worker subprocess auth. 'inherit' (default) passes the parent env
       // through unchanged. 'session' strips ANTHROPIC_API_KEY /
       // ANTHROPIC_AUTH_TOKEN from the worker spawn so the CLI falls back to
@@ -636,28 +374,11 @@ export const PolicySchema = z.object({
       // API credits while workers stay on the session (NEVER put the key
       // here; it lives in the outer agent's environment).
       worker_auth: z.enum(['inherit', 'session']).default('inherit'),
-      integration_branch_lag_threshold: z.number().int().min(1).default(10),
-      stale_planning_minutes:           z.number().int().min(1).default(30),
       // Smoke command for the post-finalize smoke gate (epic-079). When set,
       // EpicFinalizer runs this command on the integrated tree before opening
       // the PR. Unset = resolver auto-detects from package.json scripts.
       smoke_command: z.string().optional(),
-      // Wall-clock budget for the smoke command in minutes. Must be positive.
-      // Default 15 — chosen to cover a typical integration smoke suite without
-      // blocking the finalize path for an unreasonable time.
-      smoke_timeout_minutes: z.number().positive().default(15),
       adversarial_review_model: z.string().optional(),
-      // Model ID for the independent adversarial review pass run by loom finalize.
-      // When absent or empty, no second pass runs and behavior is identical to baseline.
-      // Minimum judge score for SkillGenerator to accept a candidate (0-10). When
-      // absent, SkillGenerator falls back to its hardcoded default of 6. Bounded to
-      // the judge's 0-10 rubric so an out-of-range value can't silently accept every
-      // candidate (< 1) or reject every candidate forever (> 10).
-      skill_judge_min_score: z.number().min(0).max(10).optional(),
-      // Controls whether the Supervisor prunes orphaned worktrees at run end.
-      // 'on' (default) — prune done/merged worktrees after finalizers run.
-      // 'off'          — skip pruning (e.g. when debugging a completed worktree).
-      prune_orphan_worktrees: z.enum(['off', 'on']).default('on'),
     })
     .default({}),
   mcp: z
@@ -670,19 +391,8 @@ export const PolicySchema = z.object({
   // Absolute or ~-expandable path to the loom-home repository. Omit to use
   // the default sibling directory (parent of projectRoot + '/loom-home').
   loom_home: z.string().optional(),
-  // Cross-repo read-only retrieval (epic-057). opt-in; single-repo workspaces
-  // never enter this path when enabled=false (the default).
   cross_repo: z
     .object({
-      enabled: z.boolean().default(false),
-      bounds: z
-        .object({
-          max_line_window: z.number().int().default(200),
-          max_file_bytes: z.number().int().default(262144),
-          max_files: z.number().int().default(20),
-          max_matches_per_file: z.number().int().default(10),
-        })
-        .default({}),
       // Paths excluded from BOTH search results and reads (FR-7).
       // Security denylist — union-merged across layers (ADR-004).
       secret_globs: z
@@ -698,7 +408,7 @@ export const PolicySchema = z.object({
         ]),
     })
     .default({}),
-});
+}).strip();
 export type Policy = z.infer<typeof PolicySchema>;
 
 // ─── Policy check result ────────────────────────────────────────────────────

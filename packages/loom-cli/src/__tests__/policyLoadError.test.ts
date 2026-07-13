@@ -48,13 +48,13 @@ function capture(fn: () => void): Captured {
   return { stderrLines, exitCode };
 }
 
-/** Write an invalid policy.yaml with a bad review_strategy into a temp loomdir. */
+/** Write an invalid policy.yaml with a bad llm_backend into a temp loomdir. */
 function makeInvalidLoomDir(tmpDir: string): string {
   const loomDir = path.join(tmpDir, '.loom');
   fs.mkdirSync(loomDir, { recursive: true });
   fs.writeFileSync(
     path.join(loomDir, 'policy.yaml'),
-    'agents:\n  review_strategy: invalid-value\n'
+    'agents:\n  llm_backend: invalid-backend\n'
   );
   return loomDir;
 }
@@ -74,7 +74,7 @@ describe('PolicyEngine.load — invalid policy', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('throws PolicyValidationError (not a raw ZodError) for an invalid enum value', () => {
+  it('throws PolicyValidationError (not a raw ZodError) for an invalid llm_backend value', () => {
     let thrown: unknown;
     try {
       PolicyEngine.load(loomDir);
@@ -116,9 +116,9 @@ describe('PolicyEngine.load — invalid policy', () => {
       assert.ok(e instanceof PolicyValidationError);
       assert.ok(e.policyPath.endsWith('policy.yaml'));
       assert.ok(e.issues.length > 0, 'at least one structured issue');
-      const issue = e.issues.find((i) => i.fieldPath.includes('review_strategy'));
-      assert.ok(issue, 'expected an issue for review_strategy');
-      assert.equal(issue.received, 'invalid-value');
+      const issue = e.issues.find((i) => i.fieldPath.includes('llm_backend'));
+      assert.ok(issue, 'expected an issue for llm_backend');
+      assert.equal(issue.received, 'invalid-backend');
       assert.match(issue.constraint, /one of:/);
     }
   });
@@ -130,8 +130,8 @@ describe('PolicyEngine.load — invalid policy', () => {
     } catch (e) {
       assert.ok(e instanceof PolicyValidationError);
       assert.match(e.message, /policy\.yaml/);
-      assert.match(e.message, /agents\.review_strategy/);
-      assert.match(e.message, /invalid-value/);
+      assert.match(e.message, /agents\.llm_backend/);
+      assert.match(e.message, /invalid-backend/);
       assert.match(e.message, /one of:/);
     }
   });
@@ -160,10 +160,12 @@ describe('PolicyEngine.load — valid policy (regression)', () => {
     assert.ok(engine instanceof PolicyEngine);
   });
 
-  it('valid policy review_strategy is accessible', () => {
+  it('valid policy max_concurrent is accessible (review_strategy baked-removed)', () => {
+    // review_strategy was a baked field removed in story-094-003; verify the policy
+    // still loads and a surviving field is readable.
     const loomDir = path.join(tmpDir, '.loom');
     const engine = PolicyEngine.load(loomDir);
-    assert.equal(engine.policyData.agents.review_strategy, 'comment');
+    assert.equal(engine.policyData.agents.max_concurrent, 5);
   });
 });
 
@@ -209,8 +211,8 @@ describe('handleTopLevelError — PolicyValidationError', () => {
     const err = makePolicyError();
     const { stderrLines } = capture(() => handleTopLevelError(err));
     const combined = stderrLines.join('');
-    assert.match(combined, /agents\.review_strategy/, 'field path in stderr');
-    assert.match(combined, /invalid-value/, 'received value in stderr');
+    assert.match(combined, /agents\.llm_backend/, 'field path in stderr');
+    assert.match(combined, /invalid-backend/, 'received value in stderr');
     assert.match(combined, /one of:/, 'constraint in stderr');
   });
 
@@ -310,7 +312,7 @@ describe('cross-command proof — invalid policy emits friendly message via ≥2
     const result = runLoom('guard check --command "git add ."');
     assert.notEqual(result.status, 0, 'guard check must exit non-zero for invalid policy');
     assert.match(result.stderr, /policy\.yaml/, 'stderr contains policy.yaml reference');
-    assert.match(result.stderr, /review_strategy/, 'stderr contains field path');
+    assert.match(result.stderr, /llm_backend/, 'stderr contains field path');
     assert.match(result.stderr, /one of:/, 'stderr contains constraint');
     // No stack frames
     assert.ok(!/^\s+at /m.test(result.stderr), 'stderr must not contain stack frames');
@@ -320,7 +322,7 @@ describe('cross-command proof — invalid policy emits friendly message via ≥2
     const result = runLoom('run');
     assert.notEqual(result.status, 0, 'run must exit non-zero for invalid policy');
     assert.match(result.stderr, /policy\.yaml/, 'stderr contains policy.yaml reference');
-    assert.match(result.stderr, /review_strategy/, 'stderr contains field path');
+    assert.match(result.stderr, /llm_backend/, 'stderr contains field path');
     assert.match(result.stderr, /one of:/, 'stderr contains constraint');
     // No stack frames
     assert.ok(!/^\s+at /m.test(result.stderr), 'stderr must not contain stack frames');

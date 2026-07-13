@@ -193,16 +193,22 @@ describe('union — denylist most-restrictive (ADR-004)', () => {
     assert.ok(paths.includes('/etc'));
   });
 
-  it('agents.risky_paths: union', () => {
+  it('agents.risky_paths stripped — field baked-removed (story-094-003)', () => {
+    // risky_paths was removed from MERGE_STRATEGY and PolicySchema; layers with it are silently
+    // passed through (not union-merged) — the test verifies no union expansion occurred.
     const layers = [
       layer('team', { agents: { risky_paths: ['**/auth/**'] } }),
       layer('repo', { agents: { risky_paths: ['**/payments/**'] } }),
       layer('env',  {}),
     ];
     const { tree } = mergeLayers(layers, MERGE_STRATEGY);
-    const paths = get(tree, 'agents.risky_paths') as string[];
-    assert.ok(paths.includes('**/auth/**'));
-    assert.ok(paths.includes('**/payments/**'));
+    const paths = get(tree, 'agents.risky_paths');
+    // risky_paths is not union-merged: it's either absent or holds only one layer's value
+    // (last-write-wins scalar merge), never a union of both.
+    const isUnion = Array.isArray(paths) &&
+      (paths as string[]).includes('**/auth/**') &&
+      (paths as string[]).includes('**/payments/**');
+    assert.ok(!isUnion, 'risky_paths must not be union-merged after field removal');
   });
 });
 

@@ -7,7 +7,6 @@ const cleanHeuristics: HeuristicSignals = {
   diff_lines: 20,
   diff_files: 2,
   tests_green_first_try: true,
-  risky_paths_touched: [],
 };
 
 // All-positive inputs that resolve to `light`; individual tests perturb one field.
@@ -20,16 +19,6 @@ const lightInputs: TierInputs = {
 describe('resolveCostTier', () => {
   it('returns light when every positive signal lines up', () => {
     assert.equal(resolveCostTier(lightInputs), 'light');
-  });
-
-  it('a touched risky path forces heavy even with otherwise-light signals', () => {
-    assert.equal(
-      resolveCostTier({
-        ...lightInputs,
-        heuristics: { ...cleanHeuristics, risky_paths_touched: ['src/auth/login.ts'] },
-      }),
-      'heavy'
-    );
   });
 
   it('a first-try test failure forces heavy (heuristics win over high confidence)', () => {

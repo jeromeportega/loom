@@ -14,7 +14,7 @@ import { SkillStore } from '../SkillStore.js';
 import { createDatabase } from '../../state/Database.js';
 import { EpicStore } from '../../state/EpicStore.js';
 import { AgentStore } from '../../state/AgentStore.js';
-import { PolicySchema, type Story } from '../../types.js';
+import type { Story } from '../../types.js';
 
 // ── FakeLLM ──────────────────────────────────────────────────────────────────
 
@@ -329,40 +329,33 @@ describe('SkillGenerator — judgeMinScore threshold (story-084-004)', () => {
   });
 });
 
-// ── policy wiring: skill_judge_min_score → judgeMinScore (story-084-004) ──────
+// ── judgeMinScore behaviour (skill_judge_min_score baked, story-094-003) ───────
 //
-// Validates the full wiring path: PolicySchema.parse() with skill_judge_min_score
-// produces the correct value that, when passed as judgeMinScore, causes the expected
-// acceptance/rejection behavior. Scores are on the same 0–10 scale the real LLM uses.
+// skill_judge_min_score was a policy knob; it is now baked to 6. These tests
+// verify makeGeneratorWithMinScore() directly, bypassing the removed field.
 
-describe('SkillGenerator — policy wiring: skill_judge_min_score (story-084-004)', () => {
-  it('policy with skill_judge_min_score: 7 rejects candidate with score 5', async () => {
-    const policy = PolicySchema.parse({ agents: { skill_judge_min_score: 7 } });
-    assert.strictEqual(policy.agents.skill_judge_min_score, 7, 'schema must preserve the value 7 without coercion');
+describe('SkillGenerator — judgeMinScore behaviour (skill_judge_min_score baked, story-094-003)', () => {
+  it('judgeMinScore: 7 rejects candidate with score 5', async () => {
     const judgeJson = JSON.stringify({ score: 5, verdict: 'accept', reason: 'borderline' });
     const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
-    const { generator, agentId } = makeGeneratorWithMinScore(fake, policy.agents.skill_judge_min_score);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, 7);
     const result = await generator.afterStory(agentId, MINIMAL_STORY);
-    assert.equal(result, null, 'score 5 must be rejected when policy skill_judge_min_score is 7');
+    assert.equal(result, null, 'score 5 must be rejected when judgeMinScore is 7');
   });
 
-  it('policy with skill_judge_min_score: 7 accepts candidate with score 8', async () => {
-    const policy = PolicySchema.parse({ agents: { skill_judge_min_score: 7 } });
-    assert.strictEqual(policy.agents.skill_judge_min_score, 7, 'schema must preserve the value 7 without coercion');
+  it('judgeMinScore: 7 accepts candidate with score 8', async () => {
     const judgeJson = JSON.stringify({ score: 8, verdict: 'accept', reason: 'solid pattern' });
     const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
-    const { generator, agentId } = makeGeneratorWithMinScore(fake, policy.agents.skill_judge_min_score);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, 7);
     const result = await generator.afterStory(agentId, MINIMAL_STORY);
-    assert.notEqual(result, null, 'score 8 must be accepted when policy skill_judge_min_score is 7');
+    assert.notEqual(result, null, 'score 8 must be accepted when judgeMinScore is 7');
   });
 
-  it('absent policy field → undefined → default 6 applies (score 5 rejected)', async () => {
-    const policy = PolicySchema.parse({ agents: {} });
-    assert.strictEqual(policy.agents.skill_judge_min_score, undefined, 'absent field must remain undefined after parse');
+  it('judgeMinScore: undefined → default 6 applies (score 5 rejected)', async () => {
     const judgeJson = JSON.stringify({ score: 5, verdict: 'accept', reason: 'below default' });
     const fake = new FakeLLM([VALID_SKILL_MD, judgeJson]);
-    const { generator, agentId } = makeGeneratorWithMinScore(fake, policy.agents.skill_judge_min_score);
+    const { generator, agentId } = makeGeneratorWithMinScore(fake, undefined);
     const result = await generator.afterStory(agentId, MINIMAL_STORY);
-    assert.equal(result, null, 'score 5 must be rejected when skill_judge_min_score absent (default 6)');
+    assert.equal(result, null, 'score 5 must be rejected when judgeMinScore is undefined (default 6)');
   });
 });

@@ -21,17 +21,16 @@ function parseError(bad: unknown): ZodError {
 // ── describePolicyIssues ─────────────────────────────────────────────────────
 
 describe('describePolicyIssues', () => {
-  it('enum violation: bad review_strategy yields a PolicyIssue with correct fields', () => {
-    const err = parseError({ agents: { review_strategy: 'loud' } });
+  it('enum violation: bad llm_backend yields a PolicyIssue with correct fields', () => {
+    const err = parseError({ agents: { llm_backend: 'invalid-value' } });
     const issues = describePolicyIssues(err);
 
-    const issue = issues.find((i: PolicyIssue) => i.fieldPath === 'agents.review_strategy');
-    assert.ok(issue, 'expected an issue for agents.review_strategy');
-    assert.equal(issue.received, 'loud');
+    const issue = issues.find((i: PolicyIssue) => i.fieldPath === 'agents.llm_backend');
+    assert.ok(issue, 'expected an issue for agents.llm_backend');
+    assert.equal(issue.received, 'invalid-value');
     assert.match(issue.constraint, /one of:/);
-    assert.match(issue.constraint, /off/);
-    assert.match(issue.constraint, /comment/);
-    assert.match(issue.constraint, /block-and-revise/);
+    assert.match(issue.constraint, /claude-cli/);
+    assert.match(issue.constraint, /cursor-cli/);
     assert.ok(issue.hint.length > 0, 'hint must be non-empty');
   });
 
@@ -68,18 +67,18 @@ describe('describePolicyIssues', () => {
   });
 
   it('enum issues that already carry received are unchanged by rawInput', () => {
-    const raw = { agents: { review_strategy: 'loud' } };
+    const raw = { agents: { llm_backend: 'invalid-value' } };
     const err = parseError(raw);
     const issues = describePolicyIssues(err, raw);
-    const issue = issues.find((i: PolicyIssue) => i.fieldPath === 'agents.review_strategy');
+    const issue = issues.find((i: PolicyIssue) => i.fieldPath === 'agents.llm_backend');
     assert.ok(issue);
     // enum issues always carry received; rawInput must not clobber it
-    assert.equal(issue.received, 'loud');
+    assert.equal(issue.received, 'invalid-value');
   });
 
   it('multiple issues: returns one PolicyIssue per ZodError issue', () => {
     const err = parseError({
-      agents: { review_strategy: 'loud', max_concurrent: 0 },
+      agents: { llm_backend: 'invalid-value', max_concurrent: 0 },
     });
     const issues = describePolicyIssues(err);
     assert.ok(issues.length >= 2, `expected ≥2 issues, got ${issues.length}`);
@@ -90,13 +89,13 @@ describe('describePolicyIssues', () => {
 
 describe('formatPolicyError', () => {
   it('contains all five FR-1 elements: policy path, field path, received, constraint, hint', () => {
-    const err = parseError({ agents: { review_strategy: 'loud' } });
+    const err = parseError({ agents: { llm_backend: 'invalid-value' } });
     const issues = describePolicyIssues(err);
     const msg = formatPolicyError('/project/.loom/policy.yaml', issues);
 
     assert.match(msg, /\/project\/.loom\/policy\.yaml/, 'policy file path');
-    assert.match(msg, /agents\.review_strategy/, 'field path');
-    assert.match(msg, /loud/, 'received value');
+    assert.match(msg, /agents\.llm_backend/, 'field path');
+    assert.match(msg, /invalid-value/, 'received value');
     assert.match(msg, /one of:/, 'constraint / allowed values');
     assert.match(msg, /Fix:|Set /, 'fix hint');
   });
@@ -114,13 +113,13 @@ describe('formatPolicyError', () => {
 
   it('multiple issues: all issues appear in the output (FR-9)', () => {
     const err = parseError({
-      agents: { review_strategy: 'loud', max_concurrent: 0 },
+      agents: { llm_backend: 'invalid-value', max_concurrent: 0 },
     });
     const issues = describePolicyIssues(err);
     assert.ok(issues.length >= 2);
     const msg = formatPolicyError('/p/policy.yaml', issues);
 
-    assert.match(msg, /review_strategy/, 'first issue present');
+    assert.match(msg, /llm_backend/, 'first issue present');
     assert.match(msg, /max_concurrent/, 'second issue present');
   });
 });
@@ -129,7 +128,7 @@ describe('formatPolicyError', () => {
 
 describe('PolicyValidationError', () => {
   it('carries policyPath and structured issues', () => {
-    const err = parseError({ agents: { review_strategy: 'loud' } });
+    const err = parseError({ agents: { llm_backend: 'invalid-value' } });
     const issues = describePolicyIssues(err);
     const pve = new PolicyValidationError('/my/policy.yaml', issues);
 
@@ -140,7 +139,7 @@ describe('PolicyValidationError', () => {
   });
 
   it('.message equals formatPolicyError(policyPath, issues)', () => {
-    const err = parseError({ agents: { review_strategy: 'loud' } });
+    const err = parseError({ agents: { llm_backend: 'invalid-value' } });
     const issues = describePolicyIssues(err);
     const pve = new PolicyValidationError('/my/policy.yaml', issues);
 
@@ -148,12 +147,12 @@ describe('PolicyValidationError', () => {
   });
 
   it('message contains field path and received value', () => {
-    const err = parseError({ agents: { review_strategy: 'loud' } });
+    const err = parseError({ agents: { llm_backend: 'invalid-value' } });
     const issues = describePolicyIssues(err);
     const pve = new PolicyValidationError('/project/.loom/policy.yaml', issues);
 
-    assert.match(pve.message, /agents\.review_strategy/);
-    assert.match(pve.message, /loud/);
+    assert.match(pve.message, /agents\.llm_backend/);
+    assert.match(pve.message, /invalid-value/);
   });
 });
 

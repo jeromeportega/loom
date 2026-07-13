@@ -2587,12 +2587,9 @@ export class Supervisor {
       const worktreePath = agent?.worktree_path;
       const baseSha = this.storyBaseSha.get(task.story.id);
       if (worktreePath && baseSha) {
-        // riskyPaths: agents.risky_paths was deleted (no replacement constant);
-        // risky_paths_touched will always be empty until the field is removed in full.
         const heuristics = computeHeuristics({
           worktreePath,
           baseSha,
-          riskyPaths: [],
           testsGreenFirstTry: null,
         });
         // Feed the worker's self-assessment (B1) into the tier resolution when
@@ -2618,17 +2615,6 @@ export class Supervisor {
     // Overwrite with the executed model when the system/init event provided one.
     if (result.model) {
       this.agents.setModel(task.agentId, result.model);
-    }
-    if (result.budgetExhausted) {
-      this.audit.record({
-        agent_id: task.agentId,
-        action: 'budget_exhausted',
-        command: task.story.id,
-        detail: {
-          budget: result.usage?.totalTokens,
-          summary: result.summary,
-        },
-      });
     }
     // Write the durable log_bytes offset at completion. The periodic flushTails
     // runs on a 1-second cadence so fast workers may complete before it fires;

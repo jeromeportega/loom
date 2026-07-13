@@ -223,7 +223,7 @@ export interface WorkerResult {
   review?: ReviewOutcome;
   /** Token usage from the worker subprocess (Epic 16); unset for backends that don't emit it. */
   usage?: WorkerUsage;
-  /** True when the run was halted because it crossed `budget_tokens_per_story`. */
+  /** True when the run was halted by the per-story token cap. */
   budgetExhausted?: boolean;
   /**
    * The worker's post-work self-rating (B1), parsed from its

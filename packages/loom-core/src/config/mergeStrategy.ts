@@ -19,7 +19,6 @@ export const MERGE_STRATEGY: Record<string, MergeStrategy> = {
   'git.protected_branches':     'union',
   'git.forbidden_flags':        'union',
   'filesystem.protected_paths': 'union',
-  'agents.risky_paths':         'union',
 
   // ── Guard allowlists — intersect, most-restrictive, precedence-independent (ADR-004) ──
   // The effective set is the tightest intersection across all present layers.

@@ -11,6 +11,7 @@ import { AgentStore } from '../../state/AgentStore.js';
 import { PolicyEngine } from '../../guardrails/PolicyEngine.js';
 import { EpicFinalizer } from '../EpicFinalizer.js';
 import type { Story } from '../../types.js';
+import { INTEGRATION_GATE, SMOKE_TIMEOUT_MINUTES } from '../constants.js';
 
 // ─── epic-078 regression — policy.agents.test_commands must reach the gate ────
 //
@@ -142,7 +143,7 @@ describe('test_commands wiring — policy → EpicFinalizer → real gate execut
       db,
       allowedRemotes: [],
       prStrategy: 'per-epic',
-      integrationGate: policy.agents.integration_gate,
+      integrationGate: INTEGRATION_GATE,
       testCommands: policy.agents.test_commands,
       pushBranch: () => ({ ok: true, output: 'pushed' }),
       openPr: () => 'https://example.com/pull/1',
@@ -199,9 +200,9 @@ describe('test_commands wiring — policy → EpicFinalizer → real gate execut
       db,
       allowedRemotes: [],
       prStrategy: 'per-epic',
-      integrationGate: policy.agents.integration_gate,
+      integrationGate: INTEGRATION_GATE,
       smokeCommand: policy.agents.smoke_command,
-      smokeTimeoutMinutes: policy.agents.smoke_timeout_minutes,
+      smokeTimeoutMinutes: SMOKE_TIMEOUT_MINUTES,
       pushBranch: () => ({ ok: true, output: 'pushed' }),
       openPr: () => 'https://example.com/pull/1',
     });
