@@ -1,7 +1,18 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { EpicReconciler, EpicFinalizer, EpicStore, AuditLog, PolicyEngine } from '@loom-ai/core';
+import {
+  EpicReconciler,
+  EpicFinalizer,
+  EpicStore,
+  AuditLog,
+  PolicyEngine,
+  PR_STRATEGY,
+  PUSH_GATE,
+  INTEGRATION_GATE,
+  PR_ATTRIBUTION,
+  SMOKE_TIMEOUT_MINUTES,
+} from '@loom-ai/core';
 import type { FinalizeResult } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
@@ -64,14 +75,14 @@ export async function runReconcile(epicId: string, opts: ReconcileCommandOptions
         projectRoot,
         db,
         allowedRemotes: policy.git.allowed_remotes,
-        prStrategy: policy.agents.pr_strategy,
-        pushGate: policy.agents.push_gate,
-        integrationGate: policy.agents.integration_gate,
-        prAttribution: policy.agents.pr_attribution,
+        prStrategy: PR_STRATEGY,
+        pushGate: PUSH_GATE,
+        integrationGate: INTEGRATION_GATE,
+        prAttribution: PR_ATTRIBUTION,
         testCommand: policy.agents.test_command,
         testCommands: policy.agents.test_commands,
         smokeCommand: policy.agents.smoke_command,
-        smokeTimeoutMinutes: policy.agents.smoke_timeout_minutes,
+        smokeTimeoutMinutes: SMOKE_TIMEOUT_MINUTES,
         adversarialReviewModel: policy.agents.adversarial_review_model || undefined,
         // Late-bound rebind — re-read from disk so a mid-run policy edit takes effect.
         refreshPolicy: () => {
@@ -81,10 +92,10 @@ export async function runReconcile(epicId: string, opts: ReconcileCommandOptions
             testCommand: live.agents.test_command,
             testCommands: live.agents.test_commands,
             smokeCommand: live.agents.smoke_command,
-            smokeTimeoutMinutes: live.agents.smoke_timeout_minutes,
-            integrationGate: live.agents.integration_gate,
-            pushGate: live.agents.push_gate,
-            prAttribution: live.agents.pr_attribution,
+            smokeTimeoutMinutes: SMOKE_TIMEOUT_MINUTES,
+            integrationGate: INTEGRATION_GATE,
+            pushGate: PUSH_GATE,
+            prAttribution: PR_ATTRIBUTION,
           };
         },
       });

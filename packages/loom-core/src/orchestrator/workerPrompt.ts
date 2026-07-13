@@ -29,7 +29,7 @@ export interface BuildWorkerPromptOptions {
    * When true, reads `<projectRoot>/.loom/guidance/<story-id>.md` and
    * appends it as a priority-instruction block. Off by default — the
    * worker prompt is identical to the bench baseline when this is
-   * unset. Operators turn it on via policy.agents.operator_guidance.
+   * unset. Operators turn it on via OPERATOR_GUIDANCE.
    */
   includeOperatorGuidance?: boolean;
   /**
@@ -52,12 +52,12 @@ export interface BuildWorkerPromptOptions {
    * When true, reads `<projectRoot>/.loom/contract/<epic-id>.md` (the architect's
    * epic-wide shared contract — interfaces + file-ownership map) and prepends it
    * so every parallel worker agrees on the same seams and stays in its lane. Off
-   * by default — set from policy.agents.shared_contract. When off (or the file is
+   * by default — set from SHARED_CONTRACT. When off (or the file is
    * absent) the prompt is byte-identical to the bench baseline.
    */
   includeSharedContract?: boolean;
   /**
-   * Which phase of the phased pipeline (policy.agents.phases='on') this spawn
+   * Which phase of the phased pipeline (PHASES='on') this spawn
    * is. `undefined` / 'implement' = the baseline implement prompt (byte-
    * identical to single-spawn). 'verify' appends a block telling the agent the
    * implementation is already committed and to run the full build/test suite,
@@ -68,14 +68,14 @@ export interface BuildWorkerPromptOptions {
    * When true, reads each dependency's `<projectRoot>/.loom/context/<dep-id>.md`
    * (a "what I built" note written when that upstream story succeeded) and
    * appends them so this worker knows the decisions + surface area it builds on.
-   * Off by default — set from policy.agents.context_notes. When off (or no notes
+   * Off by default — set from CONTEXT_NOTES. When off (or no notes
    * exist) the prompt is byte-identical to the bench baseline.
    */
   includeUpstreamContext?: boolean;
   /**
    * When true, appends a block asking the worker to end with a
    * `LOOM_SELF_ASSESSMENT {...}` marker rating its confidence + complexity (B1).
-   * Set from policy.agents.adaptive_cost. Off by default — when off the prompt
+   * Set from ADAPTIVE_COST. Off by default — when off the prompt
    * is byte-identical to the bench baseline. Only meaningful on the implement
    * spawn (not the verify phase).
    */
@@ -83,12 +83,12 @@ export interface BuildWorkerPromptOptions {
   /**
    * Inject the capped epic build-up (completed-story entries + conventions)
    * AS OF DISPATCH. Off/absent/empty store ⇒ prompt byte-identical to baseline
-   * (FR-6, NFR-5). Set from policy.agents.epic_buildup.
+   * (FR-6, NFR-5). Set from EPIC_BUILDUP.
    */
   includeEpicBuildup?: boolean;
   /**
    * Append conventionsInstruction() so the worker MAY emit LOOM_CONVENTIONS.
-   * Off ⇒ no change to prompt. Set from policy.agents.epic_buildup.
+   * Off ⇒ no change to prompt. Set from EPIC_BUILDUP.
    */
   requestConventions?: boolean;
 }
@@ -116,7 +116,7 @@ export function buildWorkerPrompt(
   const template = fs.readFileSync(workerTemplatePath(), 'utf8');
   let block = renderStoryBlock(assignment);
 
-  // Architect shared-contract side-channel (policy.agents.shared_contract=on).
+  // Architect shared-contract side-channel (SHARED_CONTRACT=on).
   // Epic-wide interfaces + file-ownership map injected into every parallel
   // worker so they agree on the seams and don't edit each other's files. Gated
   // on the option AND the file's presence so an off run (or no contract) keeps
@@ -135,7 +135,7 @@ export function buildWorkerPrompt(
     }
   }
 
-  // Cross-story context side-channel (policy.agents.context_notes=on). Each
+  // Cross-story context side-channel (CONTEXT_NOTES=on). Each
   // dependency that already succeeded left a "what I built" note; injecting them
   // gives this worker the upstream decisions + surface area in narrative form
   // (complementary to the rolling branch, which carries the code itself). Gated
@@ -158,7 +158,7 @@ export function buildWorkerPrompt(
     }
   }
 
-  // Epic build-up side-channel (policy.agents.epic_buildup=on). Injects the
+  // Epic build-up side-channel (EPIC_BUILDUP=on). Injects the
   // size-capped cumulative summary of completed stories and discovered
   // conventions as of dispatch time — so a later-wave worker knows what
   // earlier workers already landed without re-reading every branch. Gated so
@@ -185,7 +185,7 @@ export function buildWorkerPrompt(
       opts.revisionContext;
   }
 
-  // Operator guidance side-channel (policy.agents.operator_guidance=on).
+  // Operator guidance side-channel (OPERATOR_GUIDANCE=on).
   // The flag gates the READ — when off, the prompt is byte-identical to
   // the bench baseline. When on AND the guidance file has content, the
   // worker sees a priority block with the operator's most recent
@@ -222,7 +222,7 @@ export function buildWorkerPrompt(
     }
   }
 
-  // Verify phase (policy.agents.phases='on'). A fresh agent spawn whose job
+  // Verify phase (PHASES='on'). A fresh agent spawn whose job
   // is narrow: the implementation is already committed on this branch; run the
   // full build + test suite for the touched services and make it pass. This is
   // gated on phase==='verify' so the implement spawn stays byte-identical to
@@ -256,14 +256,14 @@ export function buildWorkerPrompt(
       'Treat any returned text as priority instructions.';
   }
 
-  // Conventions instruction (policy.agents.epic_buildup=on). Tells the worker
+  // Conventions instruction (EPIC_BUILDUP=on). Tells the worker
   // it MAY emit a LOOM_CONVENTIONS marker to share cross-cutting discoveries.
   // Gated so an off run keeps the byte-identical baseline prompt.
   if (opts.requestConventions) {
     block += conventionsInstruction();
   }
 
-  // Self-assessment marker (policy.agents.adaptive_cost=on). Requested only on
+  // Self-assessment marker (ADAPTIVE_COST=on). Requested only on
   // the implement spawn — the verify phase isn't where the worker rates the
   // work. Gated so an adaptive-off run keeps the byte-identical baseline prompt.
   if (opts.requestSelfAssessment && opts.phase !== 'verify') {

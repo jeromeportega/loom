@@ -66,7 +66,7 @@ function makeSearchRepo(): {
 }
 
 function defaultBounds(): SliceBounds {
-  return loadSliceBounds(PolicySchema.parse({}));
+  return loadSliceBounds();
 }
 
 function defaultSecretGlobs(): string[] {

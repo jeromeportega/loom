@@ -58,7 +58,7 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit']);
  * zero by `warnSec` it logs an audit entry, and if zero by `killSec`
  * it SIGTERMs the worker subprocess.
  *
- * Default behavior in loom is OFF (policy.agents.analysis_only_watchdog
+ * Default behavior in loom is OFF (ANALYSIS_ONLY_WATCHDOG
  * defaults to 'off'). Operators turn it on per repo. The flag stays off
  * for bench runs by default so the baseline measurement is preserved —
  * turning it on for a bench is a deliberate intervention that needs its

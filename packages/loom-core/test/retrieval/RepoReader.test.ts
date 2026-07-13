@@ -48,7 +48,7 @@ function makeRepo(): { repoDir: string; loomHome: string; resolved: ResolvedRepo
 }
 
 function defaultBounds(): SliceBounds {
-  return loadSliceBounds(PolicySchema.parse({}));
+  return loadSliceBounds();
 }
 
 function writeFile(dir: string, relPath: string, content: string): void {
@@ -59,19 +59,9 @@ function writeFile(dir: string, relPath: string, content: string): void {
 
 // ── AC-2: loadSliceBounds — defaults ─────────────────────────────────────────
 
-describe('loadSliceBounds — AC-2: conservative defaults from empty policy', () => {
-  it('returns correct defaults when cross_repo.bounds is absent', () => {
-    const policy = PolicySchema.parse({});
-    const bounds = loadSliceBounds(policy);
-    assert.equal(bounds.maxLineWindow, 200);
-    assert.equal(bounds.maxFileBytes, 262144);
-    assert.equal(bounds.maxFiles, 20);
-    assert.equal(bounds.maxMatchesPerFile, 10);
-  });
-
-  it('returns correct defaults when cross_repo is explicitly empty', () => {
-    const policy = PolicySchema.parse({ cross_repo: {} });
-    const bounds = loadSliceBounds(policy);
+describe('loadSliceBounds — AC-2: baked constants', () => {
+  it('returns baked constants (200/262144/20/10)', () => {
+    const bounds = loadSliceBounds();
     assert.equal(bounds.maxLineWindow, 200);
     assert.equal(bounds.maxFileBytes, 262144);
     assert.equal(bounds.maxFiles, 20);
@@ -92,64 +82,11 @@ describe('loadSliceBounds — AC-2: conservative defaults from empty policy', ()
   });
 });
 
-// ── AC-4: loadSliceBounds — configurability via resolveEffectiveConfig ────────
+// ── AC-4: cross_repo.secret_globs via resolveEffectiveConfig ─────────────────
+// Note: cross_repo.bounds fields are baked constants — policy overrides are
+// no longer accepted. Only secret_globs remains configurable.
 
-describe('loadSliceBounds — AC-4: override via policy.cross_repo.bounds', () => {
-  it('custom bounds override the defaults', () => {
-    const policy = PolicySchema.parse({
-      cross_repo: {
-        bounds: {
-          max_line_window: 50,
-          max_file_bytes: 1024,
-          max_files: 5,
-          max_matches_per_file: 3,
-        },
-      },
-    });
-    const bounds = loadSliceBounds(policy);
-    assert.equal(bounds.maxLineWindow, 50);
-    assert.equal(bounds.maxFileBytes, 1024);
-    assert.equal(bounds.maxFiles, 5);
-    assert.equal(bounds.maxMatchesPerFile, 3);
-  });
-
-  it('resolveEffectiveConfig team→repo→env precedence propagates through loadSliceBounds', () => {
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-bounds-layers-'));
-    const realTmpRoot = (() => { try { return fs.realpathSync(tmpRoot); } catch { return tmpRoot; } })();
-    const projectRoot = path.join(realTmpRoot, 'project');
-    const loomdir = path.join(projectRoot, '.loom');
-    const loomHomeDir = path.join(realTmpRoot, 'loom-home');
-    fs.mkdirSync(loomdir, { recursive: true });
-    fs.mkdirSync(loomHomeDir, { recursive: true });
-
-    try {
-      // team sets max_line_window=100
-      fs.writeFileSync(
-        path.join(loomHomeDir, 'team-config.yaml'),
-        yaml.dump({ cross_repo: { bounds: { max_line_window: 100 } } }),
-        'utf8',
-      );
-      // repo overrides max_line_window=75 and sets max_files=8
-      fs.writeFileSync(
-        path.join(loomdir, 'policy.yaml'),
-        yaml.dump({ cross_repo: { bounds: { max_line_window: 75, max_files: 8 } } }),
-        'utf8',
-      );
-      // env overrides max_line_window=30
-      const env: NodeJS.ProcessEnv = { LOOM_CROSS_REPO_BOUNDS_MAX_LINE_WINDOW: undefined };
-
-      const { policy } = resolveEffectiveConfig({ loomdir, projectRoot, env: {} });
-      // repo wins over team for max_line_window (scalar higher-wins)
-      const bounds = loadSliceBounds(policy);
-      assert.equal(bounds.maxLineWindow, 75, 'repo overrides team for max_line_window');
-      assert.equal(bounds.maxFiles, 8, 'repo value for max_files');
-      // maxFileBytes and maxMatchesPerFile fall through to defaults
-      assert.equal(bounds.maxFileBytes, 262144);
-      assert.equal(bounds.maxMatchesPerFile, 10);
-    } finally {
-      fs.rmSync(realTmpRoot, { recursive: true, force: true });
-    }
-  });
+describe('cross_repo — secret_globs union-merge (KEEP field)', () => {
 
   it('secret_globs union-merges across layers (security denylist cannot shrink)', () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-globs-union-'));

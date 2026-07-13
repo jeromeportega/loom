@@ -22,7 +22,7 @@ export interface CreateLLMOptions {
   /**
    * Per-call wall-clock bound for the underlying CLI subprocess, in
    * milliseconds. Default 10 min on both backends. Set explicitly for the
-   * reviewer so policy.agents.review_timeout_minutes takes effect — large
+   * reviewer so REVIEW_TIMEOUT_MINUTES takes effect — large
    * story diffs were silently shipping unreviewed at the hardcoded 10 min.
    */
   timeoutMs?: number;

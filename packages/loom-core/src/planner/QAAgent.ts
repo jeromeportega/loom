@@ -23,7 +23,7 @@ export interface QAResult {
 
 /**
  * Tessa — the QA Test Architect. Runs after the Architect when
- * policy.agents.qa_planning='advisory'. Produces a concrete, risk-based
+ * QA_PLANNING='advisory'. Produces a concrete, risk-based
  * test_plan for every story and appends it to the epic YAML files so each
  * worker prompt carries an explicit definition of "verified". Fully headless.
  *

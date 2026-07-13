@@ -8,6 +8,7 @@ import { resolveEffectiveConfig } from '../config/resolveEffectiveConfig.js';
 import { listWorkspaceRoots } from '../retrieval/ManifestResolver.js';
 import { CROSS_REPO_RULES } from '../retrieval/types.js';
 import type { AuditLog } from '../state/AuditLog.js';
+import { CROSS_REPO_ENABLED } from '../orchestrator/constants.js';
 
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
 export interface WorktreeContext {
@@ -115,7 +116,7 @@ export class PolicyEngine {
    * Every refusal is logged to ctx.audit before returning (invariant #5).
    */
   checkCrossRepoAccess(cmd: ParsedCommand, ctx: WorktreeContext): PolicyCheckResult {
-    if (!this.policy.cross_repo.enabled) return { allowed: true };
+    if (!CROSS_REPO_ENABLED) return { allowed: true };
 
     // Canonicalize own worktree: follow symlinks (e.g. macOS /var → /private/var).
     let ownWorktree: string;

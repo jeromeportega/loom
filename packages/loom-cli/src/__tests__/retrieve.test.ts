@@ -176,15 +176,15 @@ describe('retrieve CLI — directory-independent project resolution', () => {
       });
     });
     // Resolution succeeded: retrieve reached the RetrievalService, which refuses
-    // because the fixture policy leaves cross_repo.enabled=false (the default).
+    // because 'some-repo' is not registered in the workspace manifest.
     // The point is that the NO_PROJECT gate did NOT fire — retrieve ran from a
     // non-repo CWD by resolving the registered project.
     const joined = errors.join(' ');
     assert.equal(exitCode, 1, 'still exits 1 — but on a cross_repo refusal, not a missing project');
     assert.ok(!joined.includes('No loom project found'), `must NOT hit the no-project gate; got: ${joined}`);
     assert.ok(
-      joined.includes('cross_repo.disabled'),
-      `expected a cross_repo.disabled refusal proving resolution reached the service; got: ${joined}`,
+      joined.includes('cross_repo.unregistered'),
+      `expected a cross_repo.unregistered refusal proving resolution reached the service; got: ${joined}`,
     );
     // The registry fallback must be announced, not silent, so the operator can
     // see which project's policy governed.
@@ -210,7 +210,7 @@ describe('retrieve CLI — directory-independent project resolution', () => {
     });
     const joined = errors.join(' ');
     assert.equal(exitCode, 1, 'exits 1 on the cross_repo refusal, having resolved the enclosing repo');
-    assert.ok(joined.includes('cross_repo.disabled'), `expected refusal proving resolution reached the service; got: ${joined}`);
+    assert.ok(joined.includes('cross_repo.unregistered'), `expected refusal proving resolution reached the service; got: ${joined}`);
     // The notice must NOT claim there is no project — we are inside one.
     assert.ok(joined.includes('enclosing loom project'), `expected the enclosing-project notice; got: ${joined}`);
     assert.ok(!joined.includes('no loom project'), `must not claim no project when enclosed; got: ${joined}`);

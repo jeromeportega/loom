@@ -12,7 +12,7 @@ import path from 'node:path';
  *
  * Persisted as a sibling of the guidance/ and handoff/ side-channels so the
  * worker-prompt builder can read it by `epicId` at dispatch with no extra
- * threading. Gated end-to-end (policy.agents.shared_contract) so the worker
+ * threading. Gated end-to-end (SHARED_CONTRACT) so the worker
  * prompt is byte-identical to the bench baseline when off.
  *
  * File-ownership table format (cross-repo epics): the architect emits a `| Repo |`

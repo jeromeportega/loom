@@ -16,7 +16,7 @@ export class SignalLedger {
   /**
    * Writes StorySignals to both sinks (audit_log + markdown). Best-effort:
    * catches and swallows every error, never throws (FR-8). The audit row
-   * lands before return (NFR-2). Runs regardless of policy.agents.adaptive_cost.
+   * lands before return (NFR-2). Runs regardless of ADAPTIVE_COST.
    */
   record(storyId: string, signals: StorySignals, agentId?: string): void {
     let auditWritten = false;

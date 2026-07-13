@@ -70,17 +70,6 @@ describe('maybeWarnGatePreflight', () => {
     assert.equal(warnings.length, 1);
   });
 
-  it('is silent when integration_gate is off', () => {
-    let preflightCalled = false;
-    const spy: Preflight = () => {
-      preflightCalled = true;
-      return nonViable();
-    };
-    maybeWarnGatePreflight('/repo', policyWith('off'), spy);
-    assert.equal(warnings.length, 0);
-    assert.equal(preflightCalled, false, 'preflight is not even consulted when the gate is off');
-  });
-
   it('is silent when the preflight is viable', () => {
     maybeWarnGatePreflight('/repo', policyWith('warn'), viable);
     assert.equal(warnings.length, 0);

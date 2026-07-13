@@ -14,6 +14,11 @@ import {
   evaluateBriefGate,
   validateCursorModels,
   prepareRepoState,
+  MIN_BRIEF_QUALITY_SCORE,
+  INTAKE_TIMEOUT_MS,
+  INTAKE_ROUTING,
+  SHARED_CONTRACT,
+  QA_PLANNING,
 } from '@loom-ai/core';
 import type { LLMClient } from '@loom-ai/core';
 import { recordIntakeClassification } from '../intake/recordIntakeClassification.js';
@@ -100,7 +105,7 @@ export async function runEpic(
   store.setTitle(reservedId, derivePlaceholderTitle(brief));
 
   // Brief-quality gate. Always runs — refuses briefs scoring below
-  // policy.agents.min_brief_quality_score so the planner never spends
+  // MIN_BRIEF_QUALITY_SCORE so the planner never spends
   // tokens on something underspecified. The critique is printed so the
   // operator can tighten the prompt and re-run. With --force the gate
   // decision is overridden for this invocation only: the refiner still
@@ -120,7 +125,7 @@ export async function runEpic(
     process.exit(1);
     return;
   }
-  const minScore = policy.agents.min_brief_quality_score;
+  const minScore = MIN_BRIEF_QUALITY_SCORE;
   const verdict = evaluateBriefGate(refinement, minScore);
 
   if (force && verdict.outcome !== 'pass-clean') {
@@ -216,7 +221,7 @@ export async function runEpic(
     classifyBrief: refinement.refined_brief ?? brief,
     llm,
     model: modelFor(policy, 'planning'),
-    timeoutMs: policy.agents.intake_timeout_ms,
+    timeoutMs: INTAKE_TIMEOUT_MS,
   });
 
   // Resolve routing: translate the classification + policy level into an
@@ -225,7 +230,7 @@ export async function runEpic(
   // planner runs byte-identically to the legacy baseline (NFR-1).
   const routing = await resolveIntakeRouting({
     classification,
-    level: policy.agents.intake_routing,
+    level: INTAKE_ROUTING,
     isTTY: process.stdin.isTTY,
     audit: new AuditLog(db),
     epicId: reservedId,
@@ -250,8 +255,8 @@ export async function runEpic(
     llm,
     model: modelFor(policy, 'planning'),
     db,
-    sharedContract: policy.agents.shared_contract === 'on',
-    qaPlanning: policy.agents.qa_planning === 'advisory',
+    sharedContract: SHARED_CONTRACT === 'on',
+    qaPlanning: QA_PLANNING === 'advisory',
     onPlanningEvent: printer.handle,
     routing,
   });
@@ -321,14 +326,6 @@ export async function runEpic(
     `  Tokens: ${result.usage.inputTokens} in / ${result.usage.outputTokens} out ` +
       `(${result.usage.cacheReadTokens} cached). Billed: ${billed.toLocaleString()}.`
   );
-  const budget = policy.agents.planning_token_budget;
-  if (typeof budget === 'number' && billed > budget) {
-    console.log(
-      `  WARNING: planning ran over the configured budget — ` +
-        `${billed.toLocaleString()} > ${budget.toLocaleString()}. ` +
-        'See policy.agents.planning_token_budget.'
-    );
-  }
   console.log('');
 
   if (isStandaloneResult) {

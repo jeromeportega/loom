@@ -30,11 +30,11 @@ program
   .option('--model-name <name>', 'Value to embed in predictions.json (default: "loom")')
   .option(
     '--review-strategy <mode>',
-    'Override policy.agents.review_strategy per task: off | comment | block-and-revise'
+    'Override review strategy per task: off | comment | block-and-revise'
   )
   .option(
     '--skill-generation <mode>',
-    'Override policy.agents.skill_generation per task: on | off | sampled. Use "off" to isolate tasks from cross-bench candidate-skill pollution.'
+    'Override skill generation per task: on | off | sampled. Use "off" to isolate tasks from cross-bench candidate-skill pollution.'
   )
   .option(
     '--preserve-failures',
@@ -45,16 +45,8 @@ program
     'Keep every task tempdir, even ones loom marks successful. Implies --preserve-failures; disk usage scales with task count.'
   )
   .option(
-    '--review-model <mode>',
-    "Override policy.agents.review_model per task: 'same' (default) | 'cross'. Pair with --review-model-id when cross."
-  )
-  .option(
-    '--review-model-id <id>',
-    "Cursor-CLI model id used when --review-model=cross (e.g. 'claude-opus-4-7-medium')."
-  )
-  .option(
     '--review-revise-trigger <mode>',
-    "Override policy.agents.review_revise_trigger per task: 'blockers' (default) | 'any'."
+    "Override review revise trigger per task: 'blockers' (default) | 'any'."
   )
   .action(
     async (opts: {
@@ -67,8 +59,6 @@ program
       skillGeneration?: 'on' | 'off' | 'sampled';
       preserveFailures?: boolean;
       preserveAll?: boolean;
-      reviewModel?: 'same' | 'cross';
-      reviewModelId?: string;
       reviewReviseTrigger?: 'blockers' | 'any';
     }) => {
       await runBenchSweLite(opts);

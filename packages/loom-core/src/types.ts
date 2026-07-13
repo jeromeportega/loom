@@ -291,7 +291,7 @@ export interface HeuristicSignals {
   diff_files: number;
   /** null = unknown (no first-try test signal available). */
   tests_green_first_try: boolean | null;
-  /** Changed files matching policy.agents.risky_paths. */
+  /** Changed files matching risky paths. */
   risky_paths_touched: string[];
 }
 

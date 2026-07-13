@@ -24,26 +24,11 @@ describe('stallConfigWarning', () => {
     assert.match(w!, /false|falsely|kill/i);
   });
 
-  it('does not warn when stall equals the cap (boundary)', () => {
-    const w = stallConfigWarning(
-      policy({
-        worker_backend: 'cursor-cli',
-        story_stall_minutes: 60,
-        story_absolute_cap_minutes: 60,
-      })
-    );
-    assert.equal(w, undefined);
-  });
-
-  it('does not warn when stall is greater than the cap', () => {
-    const w = stallConfigWarning(
-      policy({
-        worker_backend: 'cursor-cli',
-        story_stall_minutes: 90,
-        story_absolute_cap_minutes: 60,
-      })
-    );
-    assert.equal(w, undefined);
+  it('always warns on cursor-cli (baked stall=12 < cap=60)', () => {
+    // With baked constants STORY_STALL_MINUTES=12 and STORY_ABSOLUTE_CAP_MINUTES=60,
+    // the stall budget is always below the cap on cursor-cli, so the warning always fires.
+    const w = stallConfigWarning(policy({ worker_backend: 'cursor-cli' }));
+    assert.equal(typeof w, 'string');
   });
 
   it('does not warn on other backends even when stall is below the cap', () => {
