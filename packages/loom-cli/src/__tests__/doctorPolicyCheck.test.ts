@@ -13,8 +13,8 @@ import { policyValidationCheck } from '../commands/doctor.js';
 
 const LOOM_CLI = path.resolve(__dirname, '../index.js');
 
-const INVALID_POLICY_YAML = 'agents:\n  review_strategy: loud\n';
-const VALID_POLICY_YAML = 'agents:\n  review_strategy: off\n';
+const INVALID_POLICY_YAML = 'agents:\n  llm_backend: invalid-backend\n';
+const VALID_POLICY_YAML = 'agents:\n  max_concurrent: 3\n';
 
 function capture(
   args: string[],
@@ -75,7 +75,7 @@ describe('policyValidationCheck', () => {
     const check = policyValidationCheck(tmpDir);
 
     // Build the expected detail via the same renderer path used by the load boundary
-    const result = PolicySchema.safeParse({ agents: { review_strategy: 'loud' } });
+    const result = PolicySchema.safeParse({ agents: { llm_backend: 'invalid-backend' } });
     assert.equal(result.success, false);
     const issues = describePolicyIssues(result.error!);
     const expectedDetail = formatPolicyError(
@@ -94,7 +94,7 @@ describe('policyValidationCheck', () => {
     fs.writeFileSync(path.join(loomDir, 'policy.yaml'), INVALID_POLICY_YAML);
     const check = policyValidationCheck(tmpDir);
     assert.ok(
-      check.detail.includes('agents.review_strategy'),
+      check.detail.includes('agents.llm_backend'),
       'detail must include the field path'
     );
     assert.ok(check.detail.includes('one of:'), 'detail must include allowed-values constraint');

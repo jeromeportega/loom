@@ -93,7 +93,7 @@ describe('loom approve / reject', () => {
     const parsed = JSON.parse(row!.policy_snapshot!);
     // Sanity: it's the parsed YAML, not a stale empty placeholder.
     assert.ok(parsed.agents, 'snapshot is a structured Policy object');
-    assert.equal(typeof parsed.agents.shared_contract, 'string');
+    assert.equal(typeof parsed.agents.model, 'string');
   });
 
   it('errors when approving an unknown epic', () => {
