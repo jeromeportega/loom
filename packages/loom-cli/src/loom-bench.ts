@@ -45,14 +45,6 @@ program
     'Keep every task tempdir, even ones loom marks successful. Implies --preserve-failures; disk usage scales with task count.'
   )
   .option(
-    '--review-model <mode>',
-    "Override review model per task: 'same' (default) | 'cross'. Pair with --review-model-id when cross."
-  )
-  .option(
-    '--review-model-id <id>',
-    "Cursor-CLI model id used when --review-model=cross (e.g. 'claude-opus-4-7-medium')."
-  )
-  .option(
     '--review-revise-trigger <mode>',
     "Override review revise trigger per task: 'blockers' (default) | 'any'."
   )
@@ -67,8 +59,6 @@ program
       skillGeneration?: 'on' | 'off' | 'sampled';
       preserveFailures?: boolean;
       preserveAll?: boolean;
-      reviewModel?: 'same' | 'cross';
-      reviewModelId?: string;
       reviewReviseTrigger?: 'blockers' | 'any';
     }) => {
       await runBenchSweLite(opts);

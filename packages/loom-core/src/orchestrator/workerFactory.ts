@@ -32,8 +32,6 @@ export interface WorkerFactoryOptions {
   maxReviewRevisions?: number;
   /** REVIEW_REVISE_TRIGGER — severity threshold for re-prompts. */
   reviewReviseTrigger?: 'blockers' | 'any';
-  /** Per-story token budget — halts the worker on exceed. */
-  budgetTokensPerStory?: number;
   /** OPERATOR_GUIDANCE — when 'on', worker reads .loom/guidance/<story-id>.md */
   operatorGuidance?: 'off' | 'on';
   /** SHARED_CONTRACT — when 'on', worker prompt prepends .loom/contract/<epic-id>.md */
@@ -144,7 +142,6 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
       reviewStrategy: opts.reviewStrategy,
       maxReviewRevisions: opts.maxReviewRevisions,
       reviewReviseTrigger: opts.reviewReviseTrigger,
-      budgetTokensPerStory: opts.budgetTokensPerStory,
       operatorGuidance: opts.operatorGuidance,
       sharedContract: opts.sharedContract,
       contextNotes: opts.contextNotes,
@@ -166,7 +163,6 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
     reviewAgent: opts.reviewAgent,
     reviewStrategy: opts.reviewStrategy,
     maxReviewRevisions: opts.maxReviewRevisions,
-    budgetTokensPerStory: opts.budgetTokensPerStory,
     operatorGuidance: opts.operatorGuidance,
     sharedContract: opts.sharedContract,
     contextNotes: opts.contextNotes,
