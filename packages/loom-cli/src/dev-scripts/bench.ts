@@ -30,14 +30,7 @@ export interface BenchOptions {
    */
   reviewStrategy?: 'off' | 'comment' | 'block-and-revise';
   skillGeneration?: 'on' | 'off' | 'sampled';
-  /**
-   * Override policy.agents.review_model per task — 'cross' routes the
-   * reviewer through a different model than the worker via Cursor-CLI
-   * (#20). Pair with reviewModelId.
-   */
-  reviewModel?: 'same' | 'cross';
-  reviewModelId?: string;
-  /** Override policy.agents.review_revise_trigger per task. */
+  /** Override review revise trigger per task. */
   reviewReviseTrigger?: 'blockers' | 'any';
   /**
    * Keep the tempdir of any task that failed (errored or empty patch)
@@ -235,8 +228,6 @@ function collectPolicyOverrides(opts: BenchOptions): Record<string, string | num
   };
   if (opts.reviewStrategy) out.review_strategy = opts.reviewStrategy;
   if (opts.skillGeneration) out.skill_generation = opts.skillGeneration;
-  if (opts.reviewModel) out.review_model = opts.reviewModel;
-  if (opts.reviewModelId) out.review_model_id = opts.reviewModelId;
   if (opts.reviewReviseTrigger) out.review_revise_trigger = opts.reviewReviseTrigger;
   return out;
 }

@@ -90,12 +90,12 @@ export interface PlannerOptions {
    */
   skillStore?: SkillStore;
   /**
-   * policy.agents.shared_contract === 'on'. Drives the Architect's optional
+   * SHARED_CONTRACT === 'on'. Drives the Architect's optional
    * shared-contract pass and its per-epic persistence for worker injection.
    */
   sharedContract?: boolean;
   /**
-   * policy.agents.qa_planning === 'advisory'. Runs the QA persona (Tessa)
+   * QA_PLANNING === 'advisory'. Runs the QA persona (Tessa)
    * after the Architect to enrich every story with a risk-based test plan.
    */
   qaPlanning?: boolean;
@@ -467,7 +467,7 @@ export class Planner {
       epicStore.updateTokens(epic.epic_id, usage, durationMs);
 
       // Materialize the shared contract per-epic so the worker-prompt builder
-      // can read it by epic id at dispatch (gated by policy.agents.shared_contract).
+      // can read it by epic id at dispatch (gated by SHARED_CONTRACT).
       if (architect.sharedContract && architect.sharedContract.trim().length > 0) {
         SharedContract.write(this.opts.projectRoot, epic.epic_id, architect.sharedContract);
       }

@@ -48,7 +48,7 @@ export interface MergeOutcome {
 }
 
 /**
- * The rolling integration branch (policy.agents.integration_branch='rolling').
+ * The rolling integration branch (INTEGRATION_BRANCH='rolling').
  *
  * Instead of the EpicFinalizer big-bang-merging every story branch at the end,
  * loom keeps a live `epic/<id>` branch in a dedicated worktree. Workers branch

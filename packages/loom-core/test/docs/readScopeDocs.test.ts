@@ -60,10 +60,12 @@ describe('docs/capabilities.md — read-scope enforcement (story-067-005)', () =
     );
   });
 
-  it('states it is independent of cross_repo.enabled', () => {
+  it('states it is independent of cross-repo retrieval', () => {
+    // cross_repo.enabled was baked-removed (knob-hardening); the doc now states
+    // read-scoping applies "regardless of cross-repo retrieval".
     assert.ok(
-      /independent of.*cross_repo\.enabled|cross_repo\.enabled.*independent/i.test(body),
-      'must state read-scope is independent of cross_repo.enabled'
+      /(independent of|regardless of).{0,25}cross[- _]?repo/i.test(body),
+      'must state read-scope is independent of cross-repo retrieval'
     );
   });
 
@@ -145,10 +147,11 @@ describe('README.md — read-scope enforcement (story-067-005)', () => {
     );
   });
 
-  it('states it is independent of cross_repo.enabled', () => {
+  it('states it is independent of cross-repo retrieval', () => {
+    // cross_repo.enabled was baked-removed (knob-hardening).
     assert.ok(
-      /independent of.*cross_repo\.enabled/i.test(body),
-      'README.md must state read-scope is independent of cross_repo.enabled'
+      /(independent of|regardless of).{0,25}cross[- _]?repo/i.test(body),
+      'README.md must state read-scope is independent of cross-repo retrieval'
     );
   });
 });

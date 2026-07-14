@@ -159,90 +159,50 @@ describe('capabilities.md — epic-028-005: within-epic same-file serialization'
   });
 });
 
-describe('capabilities.md — epic-029-005: epic build-up knob', () => {
+// NOTE: The former "epic-029-005: epic build-up knob" describe block was removed
+// in the knob-hardening refactor. `epic_buildup` was a dead knob (never wired to
+// anything); its "Epic cumulative build-up context" capability row was deleted,
+// so every assertion in that block (the default-off knob text, the conventions
+// channel, the staleness boundary, and its coverage:knob fence entry) has a
+// now-removed premise.
+
+describe('capabilities.md — epic-045-005: intake classification & standalone routing (intake_routing baked)', () => {
   const doc = fs.readFileSync(CAPABILITIES, 'utf8');
+  // intake_routing was baked to a constant ("advisory") and removed from the
+  // schema, so the off/advisory/confirm knob modes and the coverage:knob fence
+  // token are gone. The capability itself (always-on intake classification +
+  // standalone-story routing) remains and is what these subtests now assert.
+  const LABEL = 'Intake classification & standalone-story routing';
 
-  it('documents the epic_buildup knob with default-off', () => {
-    const r = row(doc, 'Epic cumulative build-up context');
-    assert.match(r, /epic_buildup/, 'row should reference the policy knob name');
-    assert.match(r, /default `off`|default off/i, 'row should state the default is off');
-    assert.match(r, /off.*keeps the worker prompt byte-identical/i, 'row should state off is byte-identical baseline');
-  });
-
-  it('documents the conventions-and-gotchas channel', () => {
-    const r = row(doc, 'Epic cumulative build-up context');
-    assert.match(r, /LOOM_CONVENTIONS/, 'row should reference the LOOM_CONVENTIONS marker');
-    assert.match(r, /conventions/i, 'row should describe the conventions channel');
-    assert.match(r, /gotcha/i, 'row should mention gotchas');
-  });
-
-  it('states the dispatch-time staleness boundary', () => {
-    const r = row(doc, 'Epic cumulative build-up context');
-    assert.match(r, /dispatch/i, 'row should mention dispatch');
-    assert.match(
+  it('documents that intake classification always runs (no removed knob reference)', () => {
+    const r = row(doc, LABEL);
+    assert.match(r, /always/i, 'row should state intake classification always runs');
+    assert.doesNotMatch(
       r,
-      /concurrent|same.wave|not yet reflected/i,
-      'row should describe same-wave sibling invisibility'
+      /policy\.agents\.intake_routing/,
+      'row must not reference the removed intake_routing knob'
     );
   });
 
-  it('epic_buildup is listed in the coverage:knob fence', () => {
-    assert.match(
-      doc,
-      /<!-- coverage:knob:start -->[\s\S]*`policy\.agents\.epic_buildup`[\s\S]*<!-- coverage:knob:end -->/,
-      'coverage:knob fence should include policy.agents.epic_buildup'
-    );
-  });
-});
-
-describe('capabilities.md — epic-045-005: intake_routing knob', () => {
-  const doc = fs.readFileSync(CAPABILITIES, 'utf8');
-
-  it('documents the intake_routing knob with all three levels and default', () => {
-    const r = row(doc, 'Intake routing mode');
-    assert.match(r, /intake_routing/, 'row should reference the policy knob name');
-    assert.match(r, /`off`/, 'row should document the off level');
-    assert.match(r, /`advisory`/, 'row should document the advisory level');
-    assert.match(r, /`confirm`/, 'row should document the confirm level');
-    assert.match(r, /default `off`|default off/i, 'row should state the default is off');
-  });
-
-  it('documents the routing-as-sizing-constraint behavior for advisory', () => {
-    const r = row(doc, 'Intake routing mode');
+  it('documents the routing-as-sizing-constraint injection into the PM prompt', () => {
+    const r = row(doc, LABEL);
     assert.match(
       r,
       /sizing\s+constraint|constraint\s+injected/i,
-      'row should describe the sizing constraint injection for advisory'
+      'row should describe the sizing-constraint injection'
     );
     assert.match(r, /PM\s+prompt/i, 'row should mention the PM prompt injection');
   });
 
-  it('documents the non-interactive confirm→advisory degrade with ADR-004 reference', () => {
-    const r = row(doc, 'Intake routing mode');
-    assert.match(
-      r,
-      /degrade|degrades/i,
-      'row should describe the degrade behavior'
-    );
-    assert.match(
-      r,
-      /non[-_]TTY/i,
-      'row should mention non-TTY stdin as the degrade trigger'
-    );
-    assert.match(r, /ADR-004/, 'row should reference ADR-004');
-    assert.match(r, /FR-7/, 'row should reference FR-7');
+  it('documents standalone-story routing (lightweight path, single PR)', () => {
+    const r = row(doc, LABEL);
+    assert.match(r, /standalone/i, 'row should document standalone-story routing');
+    assert.match(r, /no PM\/PRD|no.*decomposition/i, 'row should describe the lightweight path');
+    assert.match(r, /one PR|single.*PR/i, 'row should describe the single-PR outcome');
   });
 
   it('does not contain stale "not yet active" language', () => {
-    const r = row(doc, 'Intake routing mode');
+    const r = row(doc, LABEL);
     assert.doesNotMatch(r, /not yet active/, 'row must not contain stale "not yet active" language');
-  });
-
-  it('intake_routing is listed in the coverage:knob fence', () => {
-    assert.match(
-      doc,
-      /<!-- coverage:knob:start -->[\s\S]*`policy\.agents\.intake_routing`[\s\S]*<!-- coverage:knob:end -->/,
-      'coverage:knob fence should include policy.agents.intake_routing'
-    );
   });
 });

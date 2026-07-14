@@ -21,7 +21,7 @@ import {
   SPAWN_STAGGER_MAX_MS,
 } from '../orchestrator/resilience/constants.js';
 import type { LLMClient } from '../llm/index.js';
-import { PolicySchema, type Story } from '../types.js';
+import type { Story } from '../types.js';
 
 let repo: string;
 
@@ -1167,7 +1167,9 @@ describe('Supervisor — worker usage persistence (issue #5)', () => {
     assert.equal(agent?.cost_usd, 0.042);
   });
 
-  it('records a budget_exhausted audit row when the worker reports budgetExhausted', async () => {
+  it('budgetExhausted is ignored — no budget_exhausted audit row created (dead-code removed, story-094-003)', async () => {
+    // The budgetExhausted handler was removed from Supervisor as dead code: the
+    // worker never returns budgetExhausted=true in practice (no token cap).
     seedEpic('epic-001', [story('story-001-001')]);
     const db = openDatabase(path.join(repo, '.loom'));
 
@@ -1187,7 +1189,7 @@ describe('Supervisor — worker usage persistence (issue #5)', () => {
 
     const { AuditLog } = await import('../state/AuditLog.js');
     const rows = new AuditLog(db).getByCommand('story-001-001', ['budget_exhausted']);
-    assert.equal(rows.length, 1);
+    assert.equal(rows.length, 0, 'budgetExhausted handler removed — no audit row expected');
   });
 });
 
@@ -3208,28 +3210,24 @@ describe('Supervisor — pruneOrphans option (story-084-004)', () => {
     );
   });
 
-  it('policy wiring: prune_orphan_worktrees "off" → pruneOrphans false — orphan NOT removed', async () => {
-    // Validates the full wiring path: PolicySchema.parse() with prune_orphan_worktrees: 'off'
-    // produces false via the run.ts expression `policy.agents.prune_orphan_worktrees !== 'off'`.
+  it('pruneOrphans: false (prune_orphan_worktrees field baked-removed) — orphan NOT removed', async () => {
+    // prune_orphan_worktrees is now a baked field; this test directly passes pruneOrphans: false
+    // to cover the false branch without going through a removed policy field.
     seedEpic('epic-001', [story('story-001-001')]);
     const db = openDatabase(path.join(repo, '.loom'));
     const orphanPath = createOrphanWorktree();
-
-    const policy = PolicySchema.parse({ agents: { prune_orphan_worktrees: 'off' } });
-    // This mirrors the exact wiring expression in run.ts:
-    const pruneOrphans = policy.agents.prune_orphan_worktrees !== 'off';
 
     await new Supervisor({
       projectRoot: repo,
       db,
       worker: new MockWorkerRunner({ status: 'done' }),
       maxConcurrent: 1,
-      pruneOrphans,
+      pruneOrphans: false,
     }).run();
 
     assert.ok(
       fs.existsSync(orphanPath),
-      'orphan worktree must not be removed when policy prune_orphan_worktrees is "off"',
+      'orphan worktree must not be removed when pruneOrphans is false',
     );
   });
 });

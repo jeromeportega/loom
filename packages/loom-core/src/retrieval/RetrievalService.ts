@@ -22,21 +22,6 @@ export class RetrievalService {
     };
     if (req.pathGlob !== undefined) auditDetail.pathGlob = req.pathGlob;
 
-    if (!this.policy.cross_repo.enabled) {
-      const refused = new RetrievalRefused(
-        'cross_repo.disabled',
-        'cross-repo retrieval is disabled; set cross_repo.enabled=true in policy.yaml to enable',
-      );
-      this.audit.record({
-        action: 'cross_repo_search',
-        command: req.slug,
-        allowed: false,
-        policy_rule: refused.rule,
-        detail: auditDetail,
-      });
-      throw refused;
-    }
-
     // Step 1: resolve slug — throws RetrievalRefused(UNREGISTERED) when not found.
     let repo: ResolvedRepo;
     try {
@@ -60,7 +45,7 @@ export class RetrievalService {
     // so the caller sees the real error rather than a misleading UNREGISTERED label.
     let result: SearchResult;
     try {
-      const bounds = loadSliceBounds(this.policy);
+      const bounds = loadSliceBounds();
       result = searchBounded(repo, req.query, req.pathGlob, bounds, this.policy.cross_repo.secret_globs);
     } catch (err) {
       if (err instanceof RetrievalRefused) {
@@ -100,21 +85,6 @@ export class RetrievalService {
     };
     if (req.lines !== undefined) auditDetail.lines = req.lines;
 
-    if (!this.policy.cross_repo.enabled) {
-      const refused = new RetrievalRefused(
-        'cross_repo.disabled',
-        'cross-repo retrieval is disabled; set cross_repo.enabled=true in policy.yaml to enable',
-      );
-      this.audit.record({
-        action: 'cross_repo_read',
-        command: req.slug,
-        allowed: false,
-        policy_rule: refused.rule,
-        detail: auditDetail,
-      });
-      throw refused;
-    }
-
     // Step 1: resolve slug — throws RetrievalRefused(UNREGISTERED) when not found.
     let repo: ResolvedRepo;
     try {
@@ -137,7 +107,7 @@ export class RetrievalService {
     // unexpected errors are audited separately and re-thrown as-is.
     let result: ReadResult;
     try {
-      const bounds = loadSliceBounds(this.policy);
+      const bounds = loadSliceBounds();
       result = readBounded(repo, req.path, req.lines, bounds, this.policy.cross_repo.secret_globs);
     } catch (err) {
       if (err instanceof RetrievalRefused) {

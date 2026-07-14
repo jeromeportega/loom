@@ -19,11 +19,35 @@ import {
   createGlobalLimiter,
   EpicFinalizer,
   CodeReviewAgent,
-  stallConfigWarning,
   maxConcurrentAdvisory,
   validateCursorModels,
   registerReviewerSkills,
   prepareRepoState,
+  SKILL_GENERATION,
+  SKILL_AUTO_PROPOSE,
+  SKILL_JUDGE_MIN_SCORE,
+  INTEGRATION_BRANCH,
+  PR_STRATEGY,
+  INTEGRATOR,
+  PR_ATTRIBUTION,
+  PUSH_GATE,
+  INTEGRATION_GATE,
+  SMOKE_TIMEOUT_MINUTES,
+  REVIEW_STRATEGY,
+  REVIEW_TIMEOUT_MINUTES,
+  REVIEW_REVISE_TRIGGER,
+  REVIEW_MAX_PASSES,
+  OPERATOR_GUIDANCE,
+  SHARED_CONTRACT,
+  CONTEXT_NOTES,
+  STORY_STALL_MINUTES,
+  STORY_ABSOLUTE_CAP_MINUTES,
+  HUNG_REQUEST_SECONDS,
+  PHASES,
+  ADAPTIVE_COST,
+  ANALYSIS_ONLY_WATCHDOG,
+  STALL_RECOVERY_BUDGET,
+  PRUNE_ORPHAN_WORKTREES,
 } from '@loom-ai/core';
 import type { WorkerEvent, SkillEvent } from '@loom-ai/core';
 import { maybeWarnGatePreflight } from './gatePreflightWarning.js';
@@ -252,8 +276,6 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   }
 
   const policy = PolicyEngine.load(loomDir).policyData;
-  const stallWarning = stallConfigWarning(policy);
-  if (stallWarning) console.warn(`  ${stallWarning}`);
   const concurrentAdvisory = maxConcurrentAdvisory(policy);
   if (concurrentAdvisory) console.warn(`  ${concurrentAdvisory}`);
 
@@ -277,20 +299,15 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
 
   // Self-learning needs an LLM. Skip it (with a note) if the backend cannot be
   // built — skills still get injected into workers, they just are not generated.
-  // policy.agents.skill_generation = 'off' is the user-facing cost knob; the
-  // Supervisor honors it regardless of whether the generator is constructed.
   let skillGenerator: SkillGenerator | undefined;
-  if (policy.agents.skill_generation === 'off') {
-    skillGenerator = undefined;
-    console.log('  (skill generation disabled by policy: skill_generation=off)');
-  } else {
+  {
     try {
       // Wire the auto-propose pipeline only when policy turns it on AND
       // the operator has a sources.yaml. The proposer constructor is
       // best-effort — a malformed sources.yaml is surfaced by
       // `loom skills sync`, not silently here.
       let autoProposer: SkillProposer | undefined;
-      if (policy.agents.skill_auto_propose !== 'off') {
+      if (SKILL_AUTO_PROPOSE !== 'off') {
         try {
           autoProposer = new SkillProposer({
             audit: new AuditLog(db),
@@ -304,9 +321,9 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
         llm: createLLMClient(policy.agents.llm_backend),
         model: modelFor(policy, 'skill_gen'),
         skillStore,
-        judgeMinScore: policy.agents.skill_judge_min_score,
+        judgeMinScore: SKILL_JUDGE_MIN_SCORE,
         autoProposer,
-        autoProposeMode: policy.agents.skill_auto_propose,
+        autoProposeMode: SKILL_AUTO_PROPOSE,
       });
     } catch (err) {
       skillGenerator = undefined;
@@ -342,44 +359,35 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   } catch {
     finalizerLlm = undefined;
   }
-  // Rolling integration is only coherent with one PR per epic — under
-  // pr_strategy='per-story' each story opens its own PR, so there is no single
-  // epic branch to roll into. Fall back to 'off' (with a warning) in that case.
-  let integrationBranch = policy.agents.integration_branch;
-  if (integrationBranch === 'rolling' && policy.agents.pr_strategy !== 'per-epic') {
-    console.warn(
-      "  policy.agents.integration_branch='rolling' requires pr_strategy='per-epic'; " +
-        `ignoring it under pr_strategy='${policy.agents.pr_strategy}'.`
+  // Rolling integration is only coherent with one PR per epic. The baked
+  // constants must be self-consistent: INTEGRATION_BRANCH='rolling' requires
+  // PR_STRATEGY='per-epic'. Assert at startup so a future constants edit
+  // that breaks this invariant is caught immediately rather than silently
+  // rolling into per-story PRs.
+  if (INTEGRATION_BRANCH === 'rolling' && PR_STRATEGY !== 'per-epic') {
+    throw new Error(
+      `Invariant violation: INTEGRATION_BRANCH='rolling' requires PR_STRATEGY='per-epic', ` +
+      `but PR_STRATEGY='${PR_STRATEGY}'`
     );
-    integrationBranch = 'off';
   }
-  // The bounded integrator only fires on a rolling merge-back conflict, so it is
-  // meaningless without the rolling branch. Disable it (with a warning) if the
-  // operator turned it on without rolling.
-  let integrator = policy.agents.integrator;
-  if (integrator === 'on' && integrationBranch !== 'rolling') {
-    console.warn(
-      "  policy.agents.integrator='on' requires integration_branch='rolling'; " +
-        'ignoring it.'
-    );
-    integrator = 'off';
-  }
+  const integrationBranch = INTEGRATION_BRANCH;
+  const integrator = INTEGRATOR;
 
   const epicFinalizer = new EpicFinalizer({
     projectRoot,
     db,
     allowedRemotes: policy.git.allowed_remotes,
-    prStrategy: policy.agents.pr_strategy,
+    prStrategy: PR_STRATEGY,
     llmClient: finalizerLlm,
     llmModel: policy.agents.model,
     adversarialReviewModel: policy.agents.adversarial_review_model || undefined,
-    prAttribution: policy.agents.pr_attribution,
-    pushGate: policy.agents.push_gate,
-    integrationGate: policy.agents.integration_gate,
+    prAttribution: PR_ATTRIBUTION,
+    pushGate: PUSH_GATE,
+    integrationGate: INTEGRATION_GATE,
     testCommand: policy.agents.test_command,
     testCommands: policy.agents.test_commands,
     smokeCommand: policy.agents.smoke_command,
-    smokeTimeoutMinutes: policy.agents.smoke_timeout_minutes,
+    smokeTimeoutMinutes: SMOKE_TIMEOUT_MINUTES,
     integrationBranch,
     // Late-bound policy rebind — mirrors the MCP `buildDispatchSupervisor`.
     // At finalize entry, re-read the late-bound fields from disk so a
@@ -394,37 +402,28 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
         testCommand: live.agents.test_command,
         testCommands: live.agents.test_commands,
         smokeCommand: live.agents.smoke_command,
-        smokeTimeoutMinutes: live.agents.smoke_timeout_minutes,
-        integrationGate: live.agents.integration_gate,
-        pushGate: live.agents.push_gate,
-        prAttribution: live.agents.pr_attribution,
+        smokeTimeoutMinutes: SMOKE_TIMEOUT_MINUTES,
+        integrationGate: INTEGRATION_GATE,
+        pushGate: PUSH_GATE,
+        prAttribution: PR_ATTRIBUTION,
       };
     },
   });
 
   // Code reviewer — best-effort. Defaults to the worker's LLM/model so
-  // reviewer == worker brain; flips to a separate Cursor-CLI session
-  // targeting policy.agents.review_model_id when review_model='cross'.
-  // Both paths stay session-based (claude-cli or cursor-cli).
+  // reviewer == worker brain. Both paths stay session-based (claude-cli or cursor-cli).
   let reviewAgent: CodeReviewAgent | undefined;
   let reviewerLlm: ReturnType<typeof createLLMClient> | undefined;
-  if (policy.agents.review_strategy !== 'off') {
+  {
     try {
-      const cross =
-        policy.agents.review_model === 'cross' && policy.agents.review_model_id;
-      // Reviewer wall-clock — wire policy.agents.review_timeout_minutes so
-      // large-diff reviews don't silently time out at the hardcoded 10-min
-      // ClaudeCliClient default. Mirrors the MCP path.
-      const reviewerTimeoutMs = policy.agents.review_timeout_minutes * 60_000;
-      reviewerLlm = cross
-        ? undefined
-        : createLLMClient(policy.agents.llm_backend, { timeoutMs: reviewerTimeoutMs });
+      // Reviewer wall-clock budget (baked constant) so large-diff reviews
+      // don't silently time out at the hardcoded ClaudeCliClient default.
+      const reviewerTimeoutMs = REVIEW_TIMEOUT_MINUTES * 60_000;
+      reviewerLlm = createLLMClient(policy.agents.llm_backend, { timeoutMs: reviewerTimeoutMs });
       reviewAgent = new CodeReviewAgent({
         projectRoot,
-        llm: cross
-          ? new CursorCliClient({ timeoutMs: reviewerTimeoutMs })
-          : reviewerLlm!,
-        model: cross ? policy.agents.review_model_id! : policy.agents.model,
+        llm: reviewerLlm,
+        model: policy.agents.model,
       });
     } catch (err) {
       reviewAgent = undefined;
@@ -435,7 +434,7 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
 
   // Register LLM-backed reviewer skills when the Review Forge path is active.
   // Must be called before the first reviewer invocation (ADR-001 ordering).
-  if (policy.agents.review_strategy === 'block-and-revise' && reviewerLlm) {
+  if (REVIEW_STRATEGY === 'block-and-revise' && reviewerLlm) {
     registerReviewerSkills({
       llm: reviewerLlm,
       model: policy.agents.model,
@@ -451,22 +450,21 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     allowedRemotes: policy.git.allowed_remotes,
     cursorModel: policy.agents.cursor_model,
     model: policy.agents.model,
-    prStrategy: policy.agents.pr_strategy,
+    prStrategy: PR_STRATEGY,
     reviewAgent,
-    reviewStrategy: policy.agents.review_strategy,
-    reviewReviseTrigger: policy.agents.review_revise_trigger,
-    maxReviewRevisions: policy.agents.review_max_passes,
-    budgetTokensPerStory: policy.agents.budget_tokens_per_story,
-    operatorGuidance: policy.agents.operator_guidance,
-    sharedContract: policy.agents.shared_contract,
-    contextNotes: policy.agents.context_notes,
-    stallMs: policy.agents.story_stall_minutes * 60_000,
-    absoluteCapMs: policy.agents.story_absolute_cap_minutes * 60_000,
+    reviewStrategy: REVIEW_STRATEGY,
+    reviewReviseTrigger: REVIEW_REVISE_TRIGGER,
+    maxReviewRevisions: REVIEW_MAX_PASSES,
+    operatorGuidance: OPERATOR_GUIDANCE,
+    sharedContract: SHARED_CONTRACT,
+    contextNotes: CONTEXT_NOTES,
+    stallMs: STORY_STALL_MINUTES * 60_000,
+    absoluteCapMs: STORY_ABSOLUTE_CAP_MINUTES * 60_000,
     // epic-030: tighter hung-request bound; seconds→ms (story-030-002 consumes)
-    hungRequestMs: policy.agents.hung_request_seconds * 1000,
-    phases: policy.agents.phases,
+    hungRequestMs: HUNG_REQUEST_SECONDS * 1000,
+    phases: PHASES,
     workerAuth: policy.agents.worker_auth,
-    adaptiveCost: policy.agents.adaptive_cost,
+    adaptiveCost: ADAPTIVE_COST,
     db,
     llm: reviewerLlm,
   };
@@ -486,15 +484,15 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     globalLimiter,
     onWorkerEvent: makeEventPrinter({ verbose: opts.verbose === true }),
     onSkillEvent: skillReporter.printer,
-    skillGenerationMode: policy.agents.skill_generation,
+    skillGenerationMode: SKILL_GENERATION,
     epicFinalizer,
     watchdog: {
-      enabled: policy.agents.analysis_only_watchdog === 'on',
+      enabled: ANALYSIS_ONLY_WATCHDOG === 'on',
     },
     integrationBranch,
     integrator,
     testCommand: policy.agents.test_command,
-    contextNotes: policy.agents.context_notes,
+    contextNotes: CONTEXT_NOTES,
     // Late-bound rebind for the integrator's gate — mirrors MCP. A mid-run
     // edit to `policy.agents.test_command` changes which command
     // `attemptIntegratorRecovery` re-runs to validate its resolution. The
@@ -506,14 +504,11 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
       policy.agents.worker_backend === 'cursor-cli'
         ? policy.agents.cursor_model
         : policy.agents.model,
-    // @deprecated — auto_resume_attempts is no longer consumed by the Supervisor.
-    // Passed for API compatibility only; has no effect. Use stall_recovery_budget.
-    autoResumeAttempts: policy.agents.auto_resume_attempts,
     // epic-061: durable per-story clean-retry budget on stall
-    stallRecoveryBudget: policy.agents.stall_recovery_budget,
+    stallRecoveryBudget: STALL_RECOVERY_BUDGET,
     // epic-067: per-worker read-scope settings.json
     loomScriptPath: process.argv[1],
-    pruneOrphans: policy.agents.prune_orphan_worktrees !== 'off',
+    pruneOrphans: true,
   };
 
   const supervisor = new Supervisor(supervisorOpts);

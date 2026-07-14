@@ -1,4 +1,3 @@
-import { minimatch } from 'minimatch';
 import { gitSafe } from './git.js';
 import { resolveCostTier, tierSteps } from './tier.js';
 import type { HeuristicSignals, SelfAssessment, StorySignals, TriageSignal } from '../types.js';
@@ -6,7 +5,6 @@ import type { HeuristicSignals, SelfAssessment, StorySignals, TriageSignal } fro
 export interface HeuristicInput {
   worktreePath: string;
   baseSha: string;
-  riskyPaths: string[];
   /** Pass null this release — no first-try test source exists (ADR-3). */
   testsGreenFirstTry: boolean | null;
 }
@@ -20,7 +18,6 @@ export function computeHeuristics(input: HeuristicInput): HeuristicSignals {
   const range = `${input.baseSha}..HEAD`;
 
   const numstatRes = gitSafe(input.worktreePath, ['diff', '--numstat', range]);
-  const nameOnlyRes = gitSafe(input.worktreePath, ['diff', '--name-only', range]);
 
   let diff_lines = 0;
   let diff_files = 0;
@@ -37,23 +34,10 @@ export function computeHeuristics(input: HeuristicInput): HeuristicSignals {
     }
   }
 
-  const changedFiles: string[] =
-    nameOnlyRes.ok && nameOnlyRes.output.length > 0
-      ? nameOnlyRes.output
-          .split('\n')
-          .map((l) => l.trim())
-          .filter((l) => l.length > 0)
-      : [];
-
-  const risky_paths_touched = changedFiles.filter((file) =>
-    input.riskyPaths.some((pattern) => minimatch(file, pattern))
-  );
-
   return {
     diff_lines,
     diff_files,
     tests_green_first_try: input.testsGreenFirstTry,
-    risky_paths_touched,
   };
 }
 

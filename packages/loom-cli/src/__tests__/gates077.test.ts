@@ -67,16 +67,26 @@ describe('gates077 — docs/capabilities.md', () => {
     );
   });
 
-  it('references policy.agents.integration_gate for the finalize gates', () => {
-    // The finalize correctness gates row should mention integration_gate
+  it('finalize gates run automatically after the (now always-on) integration gate', () => {
+    // `integration_gate` was baked to a constant (INTEGRATION_GATE='block') and
+    // removed from the schema in the knob-hardening refactor, so the Finalize
+    // correctness gates row no longer references it as an operator toggle. The
+    // row now documents the gates as automatic, running after the always-on
+    // integration gate — the former assertion's premise (a now-removed knob) is
+    // gone, so it is updated to the baked reality here.
     const lines = doc.split('\n');
     const finalizeLine = lines.find(
       (l) => l.includes('Finalize correctness gates') && l.trimStart().startsWith('|')
     );
     assert.ok(finalizeLine, 'capabilities.md must have a "Finalize correctness gates" row');
+    assert.match(
+      finalizeLine!,
+      /after the integration gate/i,
+      'Finalize correctness gates row must document running after the integration gate'
+    );
     assert.ok(
-      finalizeLine!.includes('integration_gate'),
-      'Finalize correctness gates row must reference integration_gate policy knob'
+      !finalizeLine!.includes('integration_gate'),
+      'Finalize correctness gates row must not reference the removed integration_gate policy knob'
     );
   });
 

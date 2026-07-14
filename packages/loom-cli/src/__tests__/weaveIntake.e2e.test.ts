@@ -37,7 +37,7 @@ function fullPipelineResponder(req: LLMRequest): string {
 
   // Intake classifier: assistant prefill '{' is the last message.
   if (last.role === 'assistant' && last.content === '{') {
-    return '"type":"feature","size":"story","confidence":"high","rationale":"E2E test classification"}';
+    return '"type":"feature","size":"epic","confidence":"high","rationale":"E2E test classification"}';
   }
 
   const content = last.content as string;
@@ -151,7 +151,7 @@ describe('weave intake e2e — verdict persisted through the real runEpic path',
 
     assert.ok(verdict !== null, 'intake verdict must be persisted (non-null)');
     assert.equal(verdict!.type, 'feature');
-    assert.equal(verdict!.size, 'story');
+    assert.equal(verdict!.size, 'epic');
     assert.equal(verdict!.confidence, 'high');
     assert.ok(verdict!.rationale.length > 0, 'rationale must be non-empty');
   });
@@ -170,7 +170,7 @@ describe('weave intake e2e — verdict persisted through the real runEpic path',
     assert.equal(row.command, BRIEF.slice(0, 120), 'command must be the brief (truncated to 120 chars)');
     const detail = JSON.parse(row.detail!);
     assert.equal(detail.type, 'feature');
-    assert.equal(detail.size, 'story');
+    assert.equal(detail.size, 'epic');
   });
 
   it('epic is planned (verdict does not block the planner)', async () => {

@@ -224,18 +224,42 @@ describe('operatorKnobs — subset rule', () => {
     );
   });
 
-  it('container nodes (e.g. agents.story_timeout_multipliers) are NOT emitted as tokens', () => {
-    assert.ok(
-      !knobs.has('agents.story_timeout_multipliers'),
-      'container node agents.story_timeout_multipliers must not appear as a token'
-    );
+  // Post knob-hardening the schema was slimmed to exactly the operator-tunable
+  // KEEP set: the former object-container knob `agents.story_timeout_multipliers`
+  // (and its `.medium`/… leaf children) was baked to a constant and removed, so
+  // there are no nested-container knobs left to recurse into. The two former
+  // subtests asserting that container's exclusion / its leaf-child inclusion had
+  // their entire premise (a now-removed knob) deleted. These replacements pin the
+  // post-hardening reality: operatorKnobs and the capabilities coverage:knob
+  // fence now agree on the same 18 KEEP tokens.
+  const KEEP_TOKENS = [
+    'agents.adversarial_review_model',
+    'agents.cursor_model',
+    'agents.llm_backend',
+    'agents.max_concurrent',
+    'agents.model',
+    'agents.planning_model',
+    'agents.skill_gen_model',
+    'agents.smoke_command',
+    'agents.test_command',
+    'agents.test_commands',
+    'agents.worker_backend',
+    'filesystem.allowed_read_root',
+    'filesystem.allowed_write_root',
+    'filesystem.protected_paths',
+    'git.agents_must_use_pr',
+    'git.allowed_remotes',
+    'git.forbidden_flags',
+    'git.protected_branches',
+  ];
+
+  it('returns exactly the 18 hardened KEEP tokens (schema == coverage:knob fence)', () => {
+    assert.deepEqual([...knobs].sort(), [...KEEP_TOKENS].sort());
   });
 
-  it('leaf children of container nodes ARE included (e.g. agents.story_timeout_multipliers.medium)', () => {
-    assert.ok(
-      knobs.has('agents.story_timeout_multipliers.medium'),
-      'leaf child agents.story_timeout_multipliers.medium must be included'
-    );
+  it('emits no nested container-child tokens (every token is a single-dot leaf path)', () => {
+    const nested = [...knobs].filter((t) => t.split('.').length !== 2);
+    assert.deepEqual(nested, [], `unexpected nested-container tokens: ${nested.join(', ')}`);
   });
 
   it('fields outside git|filesystem|agents are NOT included (e.g. mcp.registry)', () => {

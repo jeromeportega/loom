@@ -6,9 +6,10 @@ import { maybeWarnGatePreflight } from '../commands/gatePreflightWarning.js';
 
 type Preflight = typeof preflightGateCommand;
 
-function policyWith(gate: 'off' | 'warn' | 'block', testCommand?: string): Policy {
+function policyWith(_gate: 'off' | 'warn' | 'block', testCommand?: string): Policy {
+  // integration_gate is now baked to INTEGRATION_GATE='block'; the gate arg is kept
+  // for call-site readability but is no longer set on the policy object.
   const policy = PolicyEngine.defaultPolicy();
-  policy.agents.integration_gate = gate;
   policy.agents.test_command = testCommand;
   return policy;
 }
@@ -68,17 +69,6 @@ describe('maybeWarnGatePreflight', () => {
   it('also warns under integration_gate=block — any non-off gate mode', () => {
     maybeWarnGatePreflight('/repo', policyWith('block'), nonViable);
     assert.equal(warnings.length, 1);
-  });
-
-  it('is silent when integration_gate is off', () => {
-    let preflightCalled = false;
-    const spy: Preflight = () => {
-      preflightCalled = true;
-      return nonViable();
-    };
-    maybeWarnGatePreflight('/repo', policyWith('off'), spy);
-    assert.equal(warnings.length, 0);
-    assert.equal(preflightCalled, false, 'preflight is not even consulted when the gate is off');
   });
 
   it('is silent when the preflight is viable', () => {

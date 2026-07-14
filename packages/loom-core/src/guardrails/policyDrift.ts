@@ -22,7 +22,7 @@ function asRecord(v: unknown): Record<string, unknown> {
  *
  * Template-driven on purpose: a fresh `loom init` (whose policy.yaml IS the
  * template) reports nothing, and only genuinely template-new knobs appear later.
- * Commented-out optional knobs in the template (e.g. `# budget_tokens_per_story`)
+ * Commented-out optional knobs in the template (e.g. `# test_command`)
  * are not parsed as keys, so they are never reported.
  */
 export function missingPolicyKeys(loomDir: string, templateYaml: string): MissingPolicyKey[] {

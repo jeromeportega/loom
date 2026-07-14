@@ -16,7 +16,7 @@ export class SignalLedger {
   /**
    * Writes StorySignals to both sinks (audit_log + markdown). Best-effort:
    * catches and swallows every error, never throws (FR-8). The audit row
-   * lands before return (NFR-2). Runs regardless of policy.agents.adaptive_cost.
+   * lands before return (NFR-2). Runs regardless of ADAPTIVE_COST.
    */
   record(storyId: string, signals: StorySignals, agentId?: string): void {
     let auditWritten = false;
@@ -98,14 +98,6 @@ function renderMarkdown(storyId: string, signals: StorySignals): string {
     lines.push(`  diff_lines: ${h.diff_lines}`);
     lines.push(`  diff_files: ${h.diff_files}`);
     lines.push(`  tests_green_first_try: ${h.tests_green_first_try}`);
-    if (h.risky_paths_touched.length > 0) {
-      lines.push('  risky_paths_touched:');
-      for (const p of h.risky_paths_touched) {
-        lines.push(`    - ${p}`);
-      }
-    } else {
-      lines.push('  risky_paths_touched: []');
-    }
   }
 
   lines.push('');

@@ -21,7 +21,6 @@ const BASE_HEURISTICS = {
   diff_lines: 50,
   diff_files: 2,
   tests_green_first_try: null as null,
-  risky_paths_touched: [] as string[],
 };
 
 function makeHeavySignals(): StorySignals {
@@ -31,7 +30,7 @@ function makeHeavySignals(): StorySignals {
 
 function makeLightSignals(): StorySignals {
   return buildStorySignals(
-    { diff_lines: 40, diff_files: 2, tests_green_first_try: true, risky_paths_touched: [] },
+    { diff_lines: 40, diff_files: 2, tests_green_first_try: true },
     {
       selfAssessment: { confidence: 'high', complexity: 'low' },
       triage: { risk: 'low', predicted_complexity: 'low', rationale: '' },
@@ -41,7 +40,7 @@ function makeLightSignals(): StorySignals {
 
 function makeStandardSignals(): StorySignals {
   return buildStorySignals(
-    { diff_lines: 150, diff_files: 6, tests_green_first_try: null, risky_paths_touched: [] },
+    { diff_lines: 150, diff_files: 6, tests_green_first_try: null },
     { selfAssessment: { confidence: 'medium', complexity: 'medium' } }
   );
 }
@@ -93,12 +92,11 @@ describe('renderBuildSignalAnalysis — section header', () => {
 });
 
 describe('renderBuildSignalAnalysis — heuristics and tier', () => {
-  it('renders diff_lines, diff_files, tests_green_first_try, risky_paths_touched', () => {
+  it('renders diff_lines, diff_files, tests_green_first_try', () => {
     const signals = buildStorySignals({
       diff_lines: 300,
       diff_files: 8,
       tests_green_first_try: true,
-      risky_paths_touched: ['src/auth.ts', 'src/db.ts'],
     });
     const out = renderBuildSignalAnalysis({
       records: new Map([['story-001-001', signals]]),
@@ -108,21 +106,6 @@ describe('renderBuildSignalAnalysis — heuristics and tier', () => {
     assert.ok(out.includes('diff_lines: 300'));
     assert.ok(out.includes('diff_files: 8'));
     assert.ok(out.includes('tests_green_first_try: true'));
-    assert.ok(out.includes('src/auth.ts'));
-    assert.ok(out.includes('src/db.ts'));
-  });
-
-  it('renders "none" for empty risky_paths_touched', () => {
-    const signals = buildStorySignals({
-      ...BASE_HEURISTICS,
-      risky_paths_touched: [],
-    });
-    const out = renderBuildSignalAnalysis({
-      records: new Map([['story-001-001', signals]]),
-      outcomes: new Map(),
-      storyOrder: ['story-001-001'],
-    });
-    assert.ok(out.includes('risky_paths_touched: none'));
   });
 
   it('renders tier and steps', () => {

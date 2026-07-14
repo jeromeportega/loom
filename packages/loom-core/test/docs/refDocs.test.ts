@@ -392,19 +392,21 @@ describe('story-064-003 — capabilities.md fences unchanged (ADR-006, NFR-1)', 
     assert.ok(commands.has('cost'), '`loom cost` must be in the command fence');
   });
 
-  it('policy.agents.stall_recovery_budget is in the knob fence', () => {
+  // stall_recovery_budget and intake_routing were baked-removed (knob-hardening);
+  // assert on kept knobs instead so the fence sanity check stays meaningful.
+  it('policy.agents.max_concurrent is in the knob fence', () => {
     const knobs = parseFenceTokens(caps, 'knob');
     assert.ok(
-      knobs.has('agents.stall_recovery_budget'),
-      '`policy.agents.stall_recovery_budget` must be in the knob fence'
+      knobs.has('agents.max_concurrent'),
+      '`policy.agents.max_concurrent` must be in the knob fence'
     );
   });
 
-  it('policy.agents.intake_routing is in the knob fence', () => {
+  it('policy.git.protected_branches is in the knob fence', () => {
     const knobs = parseFenceTokens(caps, 'knob');
     assert.ok(
-      knobs.has('agents.intake_routing'),
-      '`policy.agents.intake_routing` must be in the knob fence'
+      knobs.has('git.protected_branches'),
+      '`policy.git.protected_branches` must be in the knob fence'
     );
   });
 });

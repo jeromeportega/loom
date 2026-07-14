@@ -79,13 +79,11 @@ describe('docs/capabilities.md — standalone-story routing (story-047-006)', ()
     );
   });
 
-  it('describes the trigger: intake_routing advisory/confirm with effective size=story', () => {
-    const hasAdvisoryOrConfirm = /intake_routing=advisory.*confirm|advisory.*or.*confirm/i.test(body);
-    const hasSizeStory = /size.*story|effective.*size.*story|resolves to.*story/i.test(body);
-    assert.ok(
-      hasAdvisoryOrConfirm || /advisory.*confirm.*size.*story|intake_routing.*advisory.*confirm.*story/i.test(body),
-      'must mention advisory/confirm trigger'
-    );
+  it('describes the trigger: an effective size of story', () => {
+    // intake_routing was baked to "advisory" (knob-hardening) — there are no
+    // off/confirm modes anymore. The trigger is now purely the classifier
+    // resolving an effective size of story.
+    const hasSizeStory = /size.*story|effective.*size.*story|resolves to.*story|story.sized/i.test(body);
     assert.ok(hasSizeStory, 'must mention effective size=story as the trigger condition');
   });
 
@@ -103,10 +101,12 @@ describe('docs/capabilities.md — standalone-story routing (story-047-006)', ()
     );
   });
 
-  it('states that intake_routing=off always uses the normal epic path', () => {
+  it('states that briefs larger than story-sized use the normal epic path', () => {
+    // No intake_routing=off mode post knob-hardening; multi-story briefs always
+    // take the normal Analyst→PM→Architect epic path.
     assert.ok(
-      /intake_routing=off.*normal|off.*always|off.*epic path/i.test(body),
-      'must clarify that intake_routing=off bypasses standalone routing'
+      /larger.*epic path|normal.*epic path|multi.story.*epic|otherwise.*epic path/i.test(body),
+      'must clarify that larger briefs use the normal epic path'
     );
   });
 });

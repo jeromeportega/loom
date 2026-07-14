@@ -63,8 +63,6 @@ export function gateCommandCheck(
   try {
     const policy = PolicyEngine.load(path.join(projectRoot, '.loom')).policyData;
     const result = preflight(projectRoot, { testCommand: policy.agents.test_command });
-    const offSuffix =
-      policy.agents.integration_gate === 'off' ? ' (integration_gate is off — informational)' : '';
 
     if (!result.viable) {
       const cmd = result.resolved.command ?? '(none)';
@@ -73,8 +71,7 @@ export function gateCommandCheck(
         ok: false,
         detail:
           `"${cmd}" (${result.resolved.source}) won't run in a bare integration worktree — ` +
-          `set policy.agents.test_command, e.g. test_command: "${result.recommendation}"` +
-          offSuffix,
+          `set policy.agents.test_command, e.g. test_command: "${result.recommendation}"`,
         required: false,
       };
     }
@@ -85,8 +82,7 @@ export function gateCommandCheck(
         ok: true,
         detail:
           'no test command detected — the gate runs its amputation check only; ' +
-          'set policy.agents.test_command if this repo has a test suite' +
-          offSuffix,
+          'set policy.agents.test_command if this repo has a test suite',
         required: false,
       };
     }
@@ -96,8 +92,7 @@ export function gateCommandCheck(
       ok: true,
       detail:
         `"${result.resolved.command}" (${result.resolved.source}) looks runnable ` +
-        'in a bare integration worktree' +
-        offSuffix,
+        'in a bare integration worktree',
       required: false,
     };
   } catch (err) {

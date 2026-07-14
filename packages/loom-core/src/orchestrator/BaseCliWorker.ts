@@ -94,7 +94,7 @@ export interface CliWorkerOptions {
    */
   allowedRemotes?: string[];
   /**
-   * PR strategy (policy.agents.pr_strategy). When 'per-epic', workers commit
+   * PR strategy (PR_STRATEGY). When 'per-epic', workers commit
    * on their story branch locally but do NOT push or open a per-story PR —
    * the EpicFinalizer handles the single epic PR. 'both' keeps both. Defaults
    * to 'per-story' for backward compatibility at the worker level; the run.ts
@@ -117,7 +117,7 @@ export interface CliWorkerOptions {
   /** Max revision rounds for 'block-and-revise'. Defaults to 2. */
   maxReviewRevisions?: number;
   /**
-   * policy.agents.review_revise_trigger — severity threshold that
+   * REVIEW_REVISE_TRIGGER — severity threshold that
    * re-prompts the worker in block-and-revise:
    *   'blockers' (default) — only blocker-severity findings revise
    *   'any'                — any non-empty finding revises (still
@@ -143,28 +143,28 @@ export interface CliWorkerOptions {
    */
   budgetTokensPerStory?: number;
   /**
-   * policy.agents.operator_guidance — when 'on', the worker prompt includes
+   * OPERATOR_GUIDANCE — when 'on', the worker prompt includes
    * the operator's guidance file at .loom/guidance/<story-id>.md (when
    * the file exists). Default 'off' so the worker prompt is byte-identical
    * to the bench baseline.
    */
   operatorGuidance?: 'off' | 'on';
   /**
-   * policy.agents.shared_contract — when 'on', the worker prompt prepends the
+   * SHARED_CONTRACT — when 'on', the worker prompt prepends the
    * architect's epic-wide shared contract at .loom/contract/<epic-id>.md (when
    * the file exists). Default 'off' so the worker prompt is byte-identical to
    * the bench baseline.
    */
   sharedContract?: 'off' | 'on';
   /**
-   * policy.agents.context_notes — when 'on', the worker prompt appends each
+   * CONTEXT_NOTES — when 'on', the worker prompt appends each
    * dependency's "what I built" note at .loom/context/<dep-id>.md WHEN THOSE
    * FILES EXIST (written when the upstream story succeeded). Default 'off' so
    * the worker prompt is byte-identical to the bench baseline.
    */
   contextNotes?: 'off' | 'on';
   /**
-   * policy.agents.epic_buildup — when 'on', the worker prompt includes the
+   * EPIC_BUILDUP — when 'on', the worker prompt includes the
    * size-capped cumulative build-up (completed stories + conventions) and
    * requests the LOOM_CONVENTIONS marker. After a successful spawn the
    * parsed conventions are appended to the build-up store. Default 'off'
@@ -180,7 +180,7 @@ export interface CliWorkerOptions {
    */
   handoff?: 'off' | 'telemetry' | 'summarized';
   /**
-   * policy.agents.phases — when 'on', `run()` executes the story as discrete
+   * PHASES — when 'on', `run()` executes the story as discrete
    * agent spawns (implement, then verify) instead of one. Each phase gets its
    * own fresh stall/cap timer (a fresh `spawnAgent`), and the boundary commits
    * any residue + refreshes the handoff. Default 'off' keeps the single-spawn
@@ -196,14 +196,14 @@ export interface CliWorkerOptions {
    */
   workerAuth?: 'inherit' | 'session';
   /**
-   * policy.agents.adaptive_cost — when 'on', the implement prompt asks the
+   * ADAPTIVE_COST — when 'on', the implement prompt asks the
    * worker to end with a self-assessment marker (B1), and the worker surfaces
    * the parsed rating on its result for the signal ledger. Default 'off' keeps
    * the worker prompt byte-identical to the bench baseline.
    */
   adaptiveCost?: 'on' | 'off';
   /**
-   * policy.agents.hung_request_seconds × 1000 — tighter kill bound applied
+   * HUNG_REQUEST_SECONDS × 1000 — tighter kill bound applied
    * when the subprocess enters `requesting` state and no streamed response
    * arrives within this window. Forwarded to WorkerTimeoutGuard. 0 or undefined
    * disables the third budget and leaves existing stall/cap semantics unchanged.
@@ -640,7 +640,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
       );
     }
 
-    // ── Verify phase (policy.agents.phases='on') ─────────────────────────
+    // ── Verify phase (PHASES='on') ─────────────────────────
     // A fresh agent spawn — and therefore a fresh stall/cap timer — whose only
     // job is to run the full build/test suite over the committed implementation
     // and fix failures. Checkpointing + refreshing the handoff at the boundary
@@ -904,7 +904,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
     lastSummary = report.summary;
 
     // block-and-revise loop — re-prompt the worker with the review and re-review.
-    // Trigger condition depends on policy.agents.review_revise_trigger:
+    // Trigger condition depends on REVIEW_REVISE_TRIGGER:
     //   'blockers' (default) — only blocker-severity findings re-prompt
     //   'any'                — any non-empty finding re-prompts. Bounded by
     //                          maxReviewRevisions so 'any' can't soft-lock.

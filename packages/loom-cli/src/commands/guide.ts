@@ -12,7 +12,7 @@ export interface GuideOptions {
 /**
  * `loom guide <story-id> "<message>"` — append a guidance message for a
  * worker. Worker reads it on the next dispatch / revision (gated by
- * policy.agents.operator_guidance=on).
+ * OPERATOR_GUIDANCE=on).
  *
  * `loom guide <story-id> --clear` wipes the file.
  */
@@ -46,14 +46,14 @@ export function runGuide(storyId: string, message: string | undefined, opts: Gui
   console.log(`  ${guidance.fileFor(storyId)}`);
   console.log('');
   console.log('  The worker reads this file at story-start AND on every revision');
-  console.log('  when policy.agents.operator_guidance=on. Set the flag in your');
+  console.log('  when OPERATOR_GUIDANCE=on. Set the flag in your');
   console.log("  project's .loom/policy.yaml to wire it up.");
 }
 
 export const spec: CommandDescription = {
   name: 'guide',
   summary: 'Append operator guidance for a running worker',
-  whenToUse: 'Use to send steering messages to a running worker story. The worker reads the guidance at story-start and on each revision when policy.agents.operator_guidance=on.',
+  whenToUse: 'Use to send steering messages to a running worker story. The worker reads the guidance at story-start and on each revision when OPERATOR_GUIDANCE=on.',
   arguments: [
     { name: 'story-id', type: 'string', required: true, description: 'Story id (e.g. story-001-003)' },
     { name: 'message', type: 'string', required: false, description: 'Free-form guidance text (omit when using --clear)' },

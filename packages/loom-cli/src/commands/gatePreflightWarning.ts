@@ -1,4 +1,4 @@
-import { preflightGateCommand } from '@loom-ai/core';
+import { preflightGateCommand, INTEGRATION_GATE } from '@loom-ai/core';
 import type { Policy } from '@loom-ai/core';
 
 /**
@@ -19,8 +19,6 @@ export function maybeWarnGatePreflight(
   preflight: typeof preflightGateCommand = preflightGateCommand
 ): void {
   try {
-    if (policy.agents.integration_gate === 'off') return;
-
     const result = preflight(projectRoot, { testCommand: policy.agents.test_command });
     if (result.viable) return;
 
@@ -30,7 +28,7 @@ export function maybeWarnGatePreflight(
       '  ┌──────────────────────────────────────────────────────────────────┐',
       '  │ WARNING: integration gate command will fail                      │',
       '  └──────────────────────────────────────────────────────────────────┘',
-      `  The gate (integration_gate: "${policy.agents.integration_gate}") would run:`,
+      `  The gate (integration_gate: "${INTEGRATION_GATE}") would run:`,
       `      ${cmd}  [${result.resolved.source}]`,
       '  but it cannot work in a bare integration worktree:',
       ...result.reasons.map((r) => `    • ${r}`),

@@ -502,6 +502,7 @@ filesystem:
   # Root directory agents may read/search within, resolved relative to the worktree at hook time (not on init) (default: project root)
   allowed_read_root: "."
 
+# Quality and engineering settings are baked constants — see packages/loom-core/src/orchestrator/constants.ts
 agents:
   # Max number of story agents running simultaneously
   max_concurrent: 5
@@ -517,13 +518,6 @@ agents:
   #   cursor-cli  — story agents run via Cursor's cursor-agent CLI.
   worker_backend: "claude-code"
 
-  # PR strategy — one PR per epic by default, instead of one PR per story:
-  #   per-epic   — workers commit locally; the EpicFinalizer merges all story
-  #                branches into epic/<id> and opens ONE PR per epic. (default)
-  #   per-story  — legacy: each worker opens its own PR (N PRs per epic).
-  #   both       — story PRs AND an epic PR. Useful for transition / paranoia.
-  pr_strategy: "per-epic"
-
   # Claude model for story execution agents
   model: "claude-sonnet-4-6"
 
@@ -538,146 +532,9 @@ agents:
   # Claude model for post-story skill generation (cost-optimized)
   skill_gen_model: "claude-haiku-4-5-20251001"
 
-  # Worker review pass (Epic 18 story-018-002). Runs the CodeReviewAgent on
-  # the worker's diff before the PR opens.
-  #   off              — no review pass
-  #   comment          — review runs; findings attach as a PR comment (default)
-  #   block-and-revise — blockers re-prompt the worker (up to review_max_passes)
-  review_strategy: "comment"
-
-  # Max worker revision passes under block-and-revise before loom stops and
-  # marks the story blocked (replaces the old hardcoded cap of 2). Lower it to
-  # forcefully limit review cost; 0 = review once, never re-prompt.
-  review_max_passes: 2
-
-  # Adaptive cost control. When 'on' (default), loom sizes the expensive steps
-  # (reviewer count, verify-phase spawn, skill-gen) per story from cheap signals
-  # — a triage call, the worker's self-assessment, and heuristics — never
-  # exceeding the static flags above (the ceiling rule). 'off' runs every
-  # enabled step on every story (today's behavior).
-  adaptive_cost: "on"
-
-  # Cheap model for the per-story triage rating (one call/story: risk + complexity).
-  triage_model: "claude-haiku-4-5-20251001"
-
-  # Globs that force the heavy review tier when a story touches them, regardless
-  # of confidence — a safety floor for sensitive surface area.
-  risky_paths:
-    - "**/auth/**"
-    - "**/migrations/**"
-    - "**/payment/**"
-    - "**/payments/**"
-    - "**/.github/workflows/**"
-
-  # Wall-clock bound (in minutes) for the reviewer subprocess. The legacy
-  # hardcoded 10-min timeout silently shipped large story diffs unreviewed
-  # (e.g. story-007-003 in the multi-epic shared-client run); raise this
-  # if your repo has sizable diffs.
-  review_timeout_minutes: 10
-
-  # Brief-quality threshold (0-10). Every \`loom epic\` runs the BriefRefiner
-  # before the planner; briefs scoring below this are refused with a
-  # structured critique so you can tighten the prompt. Pass --force (CLI) or
-  # force: true (loom_start_epic) to override the gate for a single
-  # invocation — the refiner still runs and its critique is audit-logged
-  # (brief_gate_forced) before planning. It's a per-run escape hatch, not a
-  # disable switch. Only the threshold is tunable here. Default 6.
-  # Setting 0 disables the gate (the SWE-bench harness does this).
-  min_brief_quality_score: 6
-
-  # Operator guidance side-channel. When 'on', the worker prompt includes
-  # the contents of .loom/guidance/<story-id>.md if the file exists, treating
-  # it as priority instructions from the operator. Required for the
-  # \`loom guide\` CLI to actually reach workers — default 'off' so the
-  # baseline worker prompt is unchanged.
-  #   off — guidance file is written but workers never read it (default)
-  #   on  — workers read .loom/guidance/<story-id>.md at story-start + revisions
-  operator_guidance: "off"
-
-  # Integration gate — after the EpicFinalizer merges every story branch onto
-  # epic/<id>, run the build/test suite on the INTEGRATED tree before opening
-  # the PR. Catches cross-story regressions that each story's own tests miss,
-  # plus stories dropped by a merge conflict.
-  #   off   — never run the gate
-  #   warn  — run it; annotate the PR + audit on failure but still open it (default)
-  #   block — on failure, withhold the PR and flip the epic back to in_progress
-  integration_gate: "warn"
-  # Explicit gate command. Unset = auto-detect (npm test / make test / pytest).
+  # Explicit test command. Unset = auto-detect (npm test / make test / pytest).
   # loom never auto-installs deps; encode it here if needed, e.g. "npm ci && npm test".
-  # The gate's wall-clock bound is an engineering decision and is not tunable here.
   # test_command: "npm test"
-
-  # Architect shared-contract injection. When 'on' (the v0.5.0 default),
-  # Winston emits an epic-wide contract at plan time (shared interfaces/types
-  # + a per-story file-ownership map) and every worker prompt for the epic
-  # is prefixed with it — so parallel story agents agree on the seams and
-  # don't edit each other's files. Default flipped to 'on' after the multi-
-  # epic shared-client run: sibling stories appending to one client file
-  # caused rolling-merge conflicts on every multi-story epic.
-  # Costs one extra planning call per run; 'off' keeps the worker prompt
-  # byte-identical to the bench baseline.
-  #   on  — emit + inject the shared contract (default)
-  #   off — no contract pass
-  shared_contract: "on"
-
-  # Cross-story context notes. When 'on', loom writes a short "what I built" note
-  # to .loom/context/<story-id>.md when a story succeeds (and integrates, under
-  # the rolling branch) and appends each dependent worker's prompt with its
-  # dependencies' notes — the upstream decisions and files touched. A pure
-  # telemetry render (zero extra LLM tokens); 'off' keeps the prompt byte-identical.
-  #   off — no notes written or injected (default)
-  #   on  — write a note on success, inject dependency notes into dependents
-  context_notes: "off"
-
-  # QA test planning. When 'advisory', a QA persona (Tessa) runs after the
-  # architect at plan time and writes a risk-based test_plan onto every story
-  # (test levels + happy/error/edge cases + the verification bar); each worker
-  # prompt then carries its story's plan so agents build tests-first against an
-  # explicit definition of "verified". Costs one extra planning call per run;
-  # 'off' keeps the worker prompt byte-identical.
-  #   off      — no QA pass (default)
-  #   advisory — emit + inject per-story test plans
-  qa_planning: "off"
-
-  # Intake classification routing. Before planning, loom classifies the brief
-  # (feature / bug / chore, story / epic). This knob controls whether the
-  # verdict changes the planning path or is observe-only.
-  #   off      — classifier runs observe-only; planner is byte-identical to baseline (default)
-  #   advisory — route automatically: size=story → StandaloneStoryAgent (skips PM+Architect)
-  #   confirm  — like advisory but prompts the operator to confirm or override first
-  intake_routing: "off"
-
-  # Rolling integration branch. When 'rolling', loom keeps a live epic/<id>
-  # branch: workers branch from its tip and each story is merged back as it
-  # completes, so parallel agents build on real integrated code instead of
-  # colliding at the end. A conflicting merge blocks that story (work stays on
-  # story/<id>) instead of being silently dropped. Requires pr_strategy=per-epic.
-  #   off     — branch from first dependency; big-bang merge at finalize (default)
-  #   rolling — live epic branch with incremental merge-back
-  integration_branch: "off"
-
-  # Bounded integrator (needs integration_branch=rolling). When 'on', a story
-  # whose merge-back conflicts is handed to a bounded agent that resolves the
-  # conflict; loom commits the merge and re-runs the gate, integrating the story
-  # only if the gate is green — otherwise it rolls back and blocks the story
-  # (never a silent drop). The resolve+gate attempt cap is engine-tuned.
-  #   off — a conflict blocks the story immediately (default)
-  #   on  — try gate-verified auto-resolution before blocking
-  integrator: "off"
-
-  # Per-story token budget (Epic 16 story-016-005). Uncomment to enforce.
-  # When the worker's cumulative usage crosses this, the subprocess is killed
-  # and the story marked failed with "budget exhausted". Requires a backend
-  # that emits inflight usage (currently only claude-code via stream-json).
-  # budget_tokens_per_story: 200000
-
-  # Self-learning toggle. The skill loop (extract -> judge -> candidate ->
-  # lifecycle) is loom's highest-leverage feature, but every story spends an
-  # LLM call on it. Cost-conscious teams can switch this off.
-  #   on      — extract a skill after every successful story (default)
-  #   off     — never run extraction
-  #   sampled — run every Nth successful story (engine-tuned sample)
-  skill_generation: "on"
 
 mcp:
   # Path to a checkout of your org's approved-MCP registry — a directory of

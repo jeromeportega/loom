@@ -20,6 +20,7 @@ import {
   PolicyEngine,
   createLLMClient,
   modelFor,
+  MIN_BRIEF_QUALITY_SCORE,
 } from '@loom-ai/core';
 import type { LLMClient } from '@loom-ai/core';
 import type { ResolveProjectDb } from '../resolveProjectDb.js';
@@ -107,7 +108,7 @@ export function registerOpportunityRoutes(app: Express, deps: OpportunityDeps): 
         llm = createLLMClient(policy.agents.llm_backend);
         refineModel = modelFor(policy, 'planning');
         planModel = modelFor(policy, 'planning');
-        minBriefQualityScore = policy.agents.min_brief_quality_score;
+        minBriefQualityScore = MIN_BRIEF_QUALITY_SCORE;
       } catch {
         resolved.cleanup();
         res.status(503).json({ error: 'LLM not configured — run loom init first' });

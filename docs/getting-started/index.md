@@ -169,10 +169,9 @@ loom cost --json               # machine-readable output
 
 ## Stall recovery
 
-Loom automatically retries stalled workers (default: up to 2 clean retries per
-story, controlled by `policy.agents.stall_recovery_budget`). Recovered stories
-appear as `(recovered N)` in `loom status`. Set `stall_recovery_budget: 0` to
-disable clean retry and require manual `loom retry <story-id>` on every stall.
+Loom automatically retries stalled workers (up to 2 clean retries per story).
+Recovered stories appear as `(recovered N)` in `loom status`. Once that budget is
+exhausted, a stall surfaces for manual `loom retry <story-id>`.
 
 ## Standalone stories
 

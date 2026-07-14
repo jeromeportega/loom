@@ -821,26 +821,23 @@ describe('recordAutoRecovery — row shape', () => {
   });
 });
 
-// ─── Unit: PolicySchema — stall_recovery_budget ───────────────────────────────
+// ─── Unit: PolicySchema — stall_recovery_budget silently stripped (story-094-003) ──
 
-describe('PolicySchema — stall_recovery_budget', () => {
-  it('defaults to 2 when unset', () => {
+describe('PolicySchema — stall_recovery_budget silently stripped (story-094-003)', () => {
+  it('stall_recovery_budget is absent from the parsed result (baked field removed)', () => {
     const policy = PolicySchema.parse({});
-    assert.equal(policy.agents.stall_recovery_budget, 2);
+    assert.ok(!('stall_recovery_budget' in policy.agents), 'stall_recovery_budget must be stripped');
   });
 
-  it('honours an explicit value', () => {
-    const policy = PolicySchema.parse({ agents: { stall_recovery_budget: 3 } });
-    assert.equal(policy.agents.stall_recovery_budget, 3);
+  it('passing stall_recovery_budget: 3 does not cause a parse error', () => {
+    assert.doesNotThrow(() => PolicySchema.parse({ agents: { stall_recovery_budget: 3 } }));
   });
 
-  it('accepts 0 (disable sentinel)', () => {
-    const policy = PolicySchema.parse({ agents: { stall_recovery_budget: 0 } });
-    assert.equal(policy.agents.stall_recovery_budget, 0);
+  it('passing stall_recovery_budget: 0 does not cause a parse error', () => {
+    assert.doesNotThrow(() => PolicySchema.parse({ agents: { stall_recovery_budget: 0 } }));
   });
 
-  it('rejects negative values', () => {
-    const result = PolicySchema.safeParse({ agents: { stall_recovery_budget: -1 } });
-    assert.equal(result.success, false);
+  it('passing stall_recovery_budget: -1 does not cause a parse error (stripped, not validated)', () => {
+    assert.doesNotThrow(() => PolicySchema.parse({ agents: { stall_recovery_budget: -1 } }));
   });
 });

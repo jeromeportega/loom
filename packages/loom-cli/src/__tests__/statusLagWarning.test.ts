@@ -162,28 +162,6 @@ describe('loom status — integration_lag JSON (AC2)', () => {
     assert.equal(calls.length, 1, 'spawnSync was called');
   });
 
-  it('[AC6] integration_branch !== rolling → no field, no git subprocess call', () => {
-    seedEpicWithAgent('epic-075', 'Non-rolling epic');
-    writePolicyYaml('version: 1\nagents:\n  integration_branch: off\n');
-
-    const { fn, calls } = makeStub('99\n');
-    const payload = captureJson({ _spawnSync: fn });
-    const epic = payload.epics.find((e) => e.id === 'epic-075');
-    assert.ok(epic, 'epic-075 must appear in JSON');
-    assert.ok(!epic.integration_lag, 'integration_lag must be absent when not rolling');
-    assert.equal(calls.length, 0, 'spawnSync must NOT be called when integration_branch is off');
-  });
-
-  it('[AC6] no policy → defaults to off → no field, no subprocess call', () => {
-    seedEpicWithAgent('epic-075', 'Default-policy epic');
-    // policy.yaml has version: 1 only, no agents section → defaults apply
-
-    const { fn, calls } = makeStub('99\n');
-    const payload = captureJson({ _spawnSync: fn });
-    const epic = payload.epics.find((e) => e.id === 'epic-075');
-    assert.ok(!epic?.integration_lag, 'integration_lag absent with default (off) policy');
-    assert.equal(calls.length, 0, 'no subprocess with default policy');
-  });
 });
 
 // ─── Lag warning: human-readable output ──────────────────────────────────────
@@ -191,12 +169,12 @@ describe('loom status — integration_lag JSON (AC2)', () => {
 describe('loom status — integration_lag text (AC1)', () => {
   it('[AC1] warn=true → ⚠ line in human-readable output', () => {
     seedEpicWithAgent('epic-075', 'Lag epic');
-    writePolicyYaml('version: 1\nagents:\n  integration_branch: rolling\n  integration_branch_lag_threshold: 5\n');
+    writePolicyYaml('version: 1\nagents:\n  integration_branch: rolling\n');
 
-    const { fn } = makeStub('8\n');
+    const { fn } = makeStub('15\n');
     const out = captureText({ _spawnSync: fn });
     assert.ok(out.includes('⚠'), `Expected ⚠ in text output:\n${out}`);
-    assert.ok(out.includes('8 commits behind main'), `Expected commit count in output:\n${out}`);
+    assert.ok(out.includes('15 commits behind main'), `Expected commit count in output:\n${out}`);
   });
 
   it('[AC5] warn=false → no ⚠ line', () => {
@@ -283,14 +261,14 @@ describe('loom status — stale_planning text (AC3)', () => {
 // ─── Policy defaults (AC4) ────────────────────────────────────────────────────
 
 describe('loom status — policy defaults (AC4)', () => {
-  it('[AC4] integration_branch_lag_threshold absent → defaults to 10', () => {
+  it('[AC4] integration_branch_lag_threshold is stripped (baked to INTEGRATION_BRANCH_LAG_THRESHOLD=10)', () => {
     const policy = PolicySchema.parse({ version: 1, agents: { integration_branch: 'rolling' } });
-    assert.equal(policy.agents.integration_branch_lag_threshold, 10);
+    assert.ok(!('integration_branch_lag_threshold' in policy.agents), 'must be stripped (baked field removed)');
   });
 
-  it('[AC4] stale_planning_minutes absent → defaults to 30', () => {
+  it('[AC4] stale_planning_minutes is stripped (baked to STALE_PLANNING_MINUTES=30)', () => {
     const policy = PolicySchema.parse({ version: 1 });
-    assert.equal(policy.agents.stale_planning_minutes, 30);
+    assert.ok(!('stale_planning_minutes' in policy.agents), 'must be stripped (baked field removed)');
   });
 
   it('[AC4] lag threshold default (10) used when only integration_branch: rolling set', () => {
@@ -318,19 +296,16 @@ describe('loom status — policy defaults (AC4)', () => {
     assert.equal(epic.stale_planning.warn, true, '35m > 30m default → warn');
   });
 
-  it('[AC4] Zod schema accepts both knobs as optional', () => {
+  it('[AC4] Zod schema strips both knobs without error (baked fields removed, story-094-003)', () => {
     assert.doesNotThrow(() => {
       PolicySchema.parse({ version: 1, agents: { integration_branch_lag_threshold: 5, stale_planning_minutes: 15 } });
     });
-  });
-
-  it('[AC4] Zod schema enforces minimum 1 for both knobs', () => {
-    assert.throws(() => {
+    assert.doesNotThrow(() => {
       PolicySchema.parse({ version: 1, agents: { integration_branch_lag_threshold: 0 } });
-    }, 'lag threshold must be >= 1');
-    assert.throws(() => {
+    });
+    assert.doesNotThrow(() => {
       PolicySchema.parse({ version: 1, agents: { stale_planning_minutes: 0 } });
-    }, 'stale_planning_minutes must be >= 1');
+    });
   });
 });
 

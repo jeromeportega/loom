@@ -70,25 +70,14 @@ describe('brief-quality gate copy (story-001-004)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('loom init policy comment documents the --force escape hatch and drops the unbypassable claim', () => {
-    const policy = fs.readFileSync(path.join(tmpDir, '.loom', 'policy.yaml'), 'utf8');
-    const lines = policy.split('\n');
-    const idx = lines.findIndex((l) => l.includes('min_brief_quality_score:'));
-    assert.ok(idx > 0, 'policy.yaml should define min_brief_quality_score');
-
-    // The comment block immediately precedes the key.
-    let start = idx - 1;
-    while (start >= 0 && lines[start].trimStart().startsWith('#')) start--;
-    const comment = lines.slice(start + 1, idx).join('\n');
-
-    assert.match(comment, /--force/, 'comment should mention the --force escape hatch');
-    assert.match(comment, /force: true/, 'comment should mention the MCP force: true form');
-    assert.doesNotMatch(
-      comment,
-      gatePhraseRe,
-      'comment must not claim the gate is impossible to override'
-    );
-  });
+  // NOTE: The former "loom init policy comment documents the --force escape
+  // hatch" subtest was removed in the knob-hardening refactor. It asserted that
+  // `loom init` writes a `min_brief_quality_score:` key (with a --force comment)
+  // into policy.yaml. That knob was baked to a constant (MIN_BRIEF_QUALITY_SCORE)
+  // and dropped from the generated DEFAULT_POLICY_YAML, so the key no longer
+  // exists — the subtest's entire premise is a now-removed knob. The two subtests
+  // below still cover the live requirement (gate copy never claims the gate is
+  // impossible to override).
 
   it('gate-copy files describe the override as an escape hatch, not a disable switch', () => {
     for (const rel of GATE_COPY_FILES) {

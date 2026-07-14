@@ -54,7 +54,7 @@ export interface WorkerAssignment {
   /** Absolute path to the main project root (for resolving policy, docs). */
   projectRoot: string;
   /**
-   * policy.agents.integration_branch. 'rolling' means this worktree was
+   * INTEGRATION_BRANCH. 'rolling' means this worktree was
    * branched from the live `epic/<id>` tip (it already contains every story
    * completed before dispatch), which changes the dependency wording in the
    * prompt. 'off'/undefined keeps the legacy first-dependency wording.
@@ -123,7 +123,7 @@ export interface WorkerAssignment {
   onChannel?: (channel: WorkerInputChannel) => void;
   /**
    * Optional phase-boundary sink — invoked by the phased pipeline
-   * (policy.agents.phases='on') after each phase's agent spawn returns and its
+   * (PHASES='on') after each phase's agent spawn returns and its
    * work is checkpoint-committed. The Supervisor uses it to refresh the
    * crash-resilient handoff doc mid-run, so a crash between phases (e.g. during
    * verify) still resumes from the committed implement work. No-op when phases
@@ -223,7 +223,7 @@ export interface WorkerResult {
   review?: ReviewOutcome;
   /** Token usage from the worker subprocess (Epic 16); unset for backends that don't emit it. */
   usage?: WorkerUsage;
-  /** True when the run was halted because it crossed `budget_tokens_per_story`. */
+  /** True when the run was halted by the per-story token cap. */
   budgetExhausted?: boolean;
   /**
    * The worker's post-work self-rating (B1), parsed from its

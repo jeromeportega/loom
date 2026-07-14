@@ -430,18 +430,6 @@ describe('story-058-007: per-repo confinement (structural, real guard)', () => {
       assert.equal(r.rule, CROSS_REPO_RULES.READ_ONLY);
     });
 
-    it('disabling cross_repo guard relaxes confinement — guard is opt-in (cross_repo.enabled controls it)', () => {
-      // When cross_repo.enabled=false, the guard is disabled and writes to siblings
-      // are NOT denied by the cross-repo guard.  (Other guards like checkRm /
-      // filesystem.protected_paths may still fire for their own reasons.)
-      const disabledEngine = makeEngine(false);
-      // Use touch (not rm) so we avoid checkRm firing on allowed_write_root.
-      const r = disabledEngine.check(`touch ${path.join(repoBRoot, 'x.ts')}`, ctx);
-      // With the cross-repo guard disabled, the touch is allowed by cross-repo rules.
-      // (The filesystem guard may or may not deny it; we only assert cross-repo is bypassed.)
-      assert.equal(r.rule !== CROSS_REPO_RULES.READ_ONLY, true,
-        'disabled guard must not fire READ_ONLY — cross_repo.enabled controls the guard');
-    });
   });
 
   // ── assertConfinedWrite helper ─────────────────────────────────────────────

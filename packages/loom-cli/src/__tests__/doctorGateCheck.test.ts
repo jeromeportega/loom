@@ -87,19 +87,6 @@ describe('gateCommandCheck', () => {
     assert.equal(received, 'make check');
   });
 
-  it('annotates the detail when integration_gate is off', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-doctor-off-'));
-    fs.mkdirSync(path.join(root, '.loom'), { recursive: true });
-    fs.writeFileSync(
-      path.join(root, '.loom', 'policy.yaml'),
-      'agents:\n  integration_gate: "off"\n'
-    );
-    const check = gateCommandCheck(root, nonViable);
-    fs.rmSync(root, { recursive: true, force: true });
-    assert.ok(check.detail.includes('integration_gate is off'));
-    assert.equal(check.required, false);
-  });
-
   it('swallows an internal preflight failure instead of breaking doctor', () => {
     const throwing: Preflight = () => {
       throw new Error('boom');

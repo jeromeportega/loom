@@ -31,7 +31,6 @@ const LARGE_DIFF_FILES = 15;
 export function resolveCostTier(inputs: TierInputs): CostTier {
   const { triage, selfAssessment, heuristics } = inputs;
 
-  if (heuristics && heuristics.risky_paths_touched.length > 0) return 'heavy';
   if (heuristics && heuristics.tests_green_first_try === false) return 'heavy';
   if (heuristics && (heuristics.diff_lines > LARGE_DIFF_LINES || heuristics.diff_files > LARGE_DIFF_FILES)) {
     return 'heavy';

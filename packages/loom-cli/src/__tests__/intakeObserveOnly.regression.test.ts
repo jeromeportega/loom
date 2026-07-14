@@ -1,19 +1,16 @@
 /**
- * FR-4 observe-only regression test (story-023-003).
+ * Intake-classification planning-stability tests (story-023-003).
  *
- * Asserts that planner + execution output is byte-identical whether the
- * intake classifier succeeds (verdict persisted) or fails (no verdict). The
- * verdict is a side-effect with no downstream influence on planning decisions.
- *
- * Scenarios compared:
- *   A. Classifier succeeds with a valid verdict
- *   B. Classifier fails  — mock LLM throws on the classifier call
- *   C. Parameterised verdict-value invariance — multiple verdict types/sizes/
- *      confidences all produce identical planning output (the verdict value
- *      itself must not influence the planner).
- *
- * The produced epic artifact (title, status, parsed YAML) must be identical
- * across all scenarios.
+ * NOTE (knob-hardening): the original FR-4 "observe-only" invariant — that the
+ * classifier verdict has NO downstream influence on planning — no longer holds
+ * as a general property. intake_routing is baked to "advisory", so the verdict
+ * is always injected into the PM prompt as a sizing constraint. What these first
+ * two tests now pin is narrower: for epic-sized verdicts the planning MOCK
+ * output is stable regardless of the verdict value (the mock planner is
+ * prompt-independent), i.e. a stored-vs-absent or type/confidence-varying
+ * verdict does not change the produced epic artifact. The third test — that the
+ * classifier is fed the REFINED brief, not the raw one — is unaffected by the
+ * bake and remains the load-bearing behavioral assertion here.
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -174,7 +171,7 @@ afterEach(() => {
 
 // ── FR-4 regression tests ─────────────────────────────────────────────────────
 
-describe('FR-4 observe-only invariant — planner output identical with vs without verdict', { concurrency: false }, () => {
+describe('intake classification — planning stability + refined-brief flow (intake_routing baked advisory)', { concurrency: false }, () => {
   it('planning output is byte-identical whether the classifier succeeds or fails', async () => {
     // Scenario A: classifier SUCCEEDS — mock returns a valid verdict.
     const dirA = makeLoomRepo('loom-observe-only-a-');
@@ -182,7 +179,7 @@ describe('FR-4 observe-only invariant — planner output identical with vs witho
     try {
       process.chdir(dirA);
       resetDatabaseForTest();
-      const llmA = new MockLLMClient(makeVerdictResponder('feature', 'story', 'high', EPIC_TITLE));
+      const llmA = new MockLLMClient(makeVerdictResponder('feature', 'epic', 'high', EPIC_TITLE));
       const { exitCode: exitA } = await runInProcess(() => runEpic(BRIEF, { llm: llmA, force: true }));
       assert.ok(exitA === null || exitA === 0, 'scenario A (verdict present) must exit cleanly');
       artifactA = readEpicArtifact(dirA);
@@ -226,9 +223,9 @@ describe('FR-4 observe-only invariant — planner output identical with vs witho
     // sizes, and both confidence extremes — enough to confirm no verdict value
     // influences planning output.
     const variants: Array<{ type: string; size: string; confidence: string }> = [
-      { type: 'feature', size: 'story', confidence: 'high' },
-      { type: 'bug',     size: 'epic',  confidence: 'low'  },
-      { type: 'chore',   size: 'story', confidence: 'medium' },
+      { type: 'feature', size: 'epic', confidence: 'high' },
+      { type: 'bug',     size: 'epic', confidence: 'low'  },
+      { type: 'chore',   size: 'epic', confidence: 'medium' },
     ];
 
     // Capture baseline from a classifier-failure run.

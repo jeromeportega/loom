@@ -36,7 +36,7 @@ export interface EpicFinalizerOptions {
   db: Database.Database;
   /** policy.git.allowed_remotes — gates where loom may push. */
   allowedRemotes: string[];
-  /** policy.agents.pr_strategy — controls whether finalize runs at all. */
+  /** PR_STRATEGY — controls whether finalize runs at all. */
   prStrategy: PrStrategy;
   /**
    * Optional LLM client + model — when set, the finalizer asks the
@@ -53,20 +53,20 @@ export interface EpicFinalizerOptions {
    */
   adversarialReviewModel?: string;
   /**
-   * policy.agents.pr_attribution — when 'on', the finalizer prepends a
+   * PR_ATTRIBUTION — when 'on', the finalizer prepends a
    * "Loom built this" provenance block to every PR body so reviewers can
    * tell loom generated it. Off by default (operators opt in per repo).
    */
   prAttribution?: 'off' | 'on';
   /**
-   * policy.agents.push_gate — when 'confirm', the finalizer stops at the
+   * PUSH_GATE — when 'confirm', the finalizer stops at the
    * local merge. No push, no PR. The operator inspects the diff and runs
    * `git push` + `gh pr create` themselves. Off by default — the existing
    * push-immediately-after-merge behavior.
    */
   pushGate?: 'off' | 'confirm';
   /**
-   * policy.agents.integration_gate — runs the build/test suite on the merged
+   * INTEGRATION_GATE — runs the build/test suite on the merged
    * epic branch before the PR opens. 'off' skips it; 'warn' annotates + audits
    * on failure but still opens the PR; 'block' withholds the PR on failure.
    * Default 'off' here so existing callers/tests are unchanged; the CLI/MCP
@@ -77,18 +77,18 @@ export interface EpicFinalizerOptions {
   testCommand?: string;
   /** policy.agents.test_commands — named per-path gate commands. */
   testCommands?: TestCommandEntry[];
-  /** policy.agents.integration_gate_timeout_minutes, in ms. */
+  /** Integration gate timeout, in ms. */
   integrationGateTimeoutMs?: number;
   /** Injectable gate (tests). Defaults to one built from the fields above. */
   gate?: IntegrationGate;
   /** policy.agents.smoke_command — explicit smoke command (else auto-detected from package.json). */
   smokeCommand?: string;
-  /** policy.agents.smoke_timeout_minutes — wall-clock budget for the smoke command. Default 15 min. */
+  /** SMOKE_TIMEOUT_MINUTES — wall-clock budget for the smoke command. Default 15 min. */
   smokeTimeoutMinutes?: number;
   /** Injectable smoke runner (tests). Defaults to the real process-spawning runner in runSmoke. */
   smokeRunner?: CommandRunner;
   /**
-   * policy.agents.integration_branch. When 'rolling', the Supervisor already
+   * INTEGRATION_BRANCH. When 'rolling', the Supervisor already
    * merged each story into a live `epic/<id>` as it completed, so finalize
    * skips the big-bang merge: it reconciles any unmerged story (crash safety),
    * runs the gate in the integration worktree, and pushes. 'off' (default) is
@@ -655,8 +655,7 @@ export class EpicFinalizer {
           cleaned: [],
           note:
             `Integration gate BLOCKED ${epicBranch}: ${gateOutcome.summary} ` +
-            'Branch left local for inspection; no PR opened. Fix and re-run, or set ' +
-            'policy.agents.integration_gate=warn to land regardless.',
+            'Branch left local for inspection; no PR opened. Fix and re-run.',
         };
       }
     }
@@ -753,8 +752,7 @@ export class EpicFinalizer {
           `no-caller=${gatesResult.noCallers.findings.length}. ` +
           '(Only env-var, epic-introduced dead-field, and no-caller findings block; ' +
           'drift/regression and pre-existing dead fields are advisory.) ' +
-          'Fix and re-run, set policy.agents.integration_gate=warn to land regardless, ' +
-          'or annotate exports with // @loom-public-api to suppress no-caller findings.',
+          'Fix and re-run, or annotate exports with // @loom-public-api to suppress no-caller findings.',
       };
     }
 
@@ -836,7 +834,7 @@ export class EpicFinalizer {
               note:
                 `Smoke gate BLOCKED ${epicBranch}: '${resolvedSmokeCmd}' exited ${smokeResult.exitCode}` +
                 `${smokeResult.timeoutKilled ? ` (timed out after ${smokeTimeoutMinutes}m)` : ''}. ` +
-                'Fix and re-run, or set policy.agents.integration_gate=warn to land regardless.',
+                'Fix and re-run.',
             };
           } else {
             console.warn(
@@ -883,13 +881,13 @@ export class EpicFinalizer {
       });
     }
 
-    // Push gate — when the operator opted in with policy.agents.push_gate =
-    // 'confirm', stop here. The merge is local; the operator inspects the
+    // Push gate — when PUSH_GATE is 'confirm', stop here. The merge is local;
+    // the operator inspects the
     // diff and runs push + gh pr create themselves. Cleanup already ran
     // above, so this is a clean leave-state.
     if (this.effectivePushGate === 'confirm') {
       const note =
-        `${epicBranch} ready locally — push gated by policy.agents.push_gate=confirm. ` +
+        `${epicBranch} ready locally — push gated (confirm mode). ` +
         `Inspect with: git diff ${epic.base_sha}..${epicBranch} ; then push + gh pr create yourself.`;
       audit.record({
         agent_id: undefined,
@@ -1851,7 +1849,7 @@ function topoSort(stories: Story[]): Story[] {
 }
 
 /**
- * Provenance header for an epic PR — prepended when policy.agents.pr_attribution
+ * Provenance header for an epic PR — prepended when PR_ATTRIBUTION
  * is 'on'. Tells the reviewer loom generated the PR.
  * Planning artifacts (brief, PRD, architecture, epic YAML) are committed to the
  * loom-home repository, not to this branch.
