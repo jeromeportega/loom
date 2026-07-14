@@ -2,25 +2,16 @@
  * Tests for the intake_routing policy knob (story-045-001).
  *
  * story-094-003 update: intake_routing and intake_timeout_ms are baked-removed
- * fields. AC1/AC2 tests are converted to stripping tests. YAML tests remain
- * (the YAML file still documents these fields for operator reference).
- * AC4 tests use the INTAKE_TIMEOUT_MS constant directly.
+ * fields. AC1/AC2 tests are converted to stripping tests. The former YAML ↔
+ * schema agreement block was deleted (the knob no longer appears in
+ * policy.schema.yaml). AC4 tests use the INTAKE_TIMEOUT_MS constant directly.
  */
-import { describe, it, before } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import yaml from 'js-yaml';
 import { PolicySchema } from '../../src/types.js';
 import { MockLLMClient } from '../../src/llm/MockLLMClient.js';
 import { classifyIntake } from '../../src/intake/IntakeClassifier.js';
 import { INTAKE_TIMEOUT_MS } from '../../src/orchestrator/constants.js';
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-function findPolicySchema(): string {
-  return path.resolve(__dirname, '../../../../../schemas/policy.schema.yaml');
-}
 
 // ── AC1: intake_routing silently stripped (story-094-003) ─────────────────────
 
@@ -74,55 +65,9 @@ describe('PolicySchema — agents.intake_routing invalid values stripped (story-
   });
 });
 
-// ── YAML/schema agreement ─────────────────────────────────────────────────────
-
-describe('schemas/policy.schema.yaml ↔ PolicySchema agreement', () => {
-  let agentsProps: Record<string, unknown>;
-
-  before(() => {
-    const filePath = findPolicySchema();
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const schemaObj = yaml.load(raw) as Record<string, Record<string, unknown>>;
-    agentsProps = (
-      (schemaObj.properties?.agents as Record<string, unknown>)
-        ?.properties as Record<string, unknown>
-    ) ?? {};
-  });
-
-  it('YAML defines intake_routing in the agents properties', () => {
-    assert.ok(agentsProps.intake_routing, 'intake_routing must appear in agents properties');
-  });
-
-  it('YAML intake_routing has exactly three enum values', () => {
-    const knob = agentsProps.intake_routing as { enum?: unknown[] };
-    assert.ok(Array.isArray(knob.enum), 'intake_routing.enum must be an array');
-    assert.equal(knob.enum!.length, 3, 'intake_routing must have exactly three allowed values');
-  });
-
-  it('YAML enum values are "off", "advisory", "confirm"', () => {
-    const knob = agentsProps.intake_routing as { enum?: unknown[] };
-    const sorted = knob.enum!.map(String).sort();
-    assert.deepEqual(sorted, ['advisory', 'confirm', 'off']);
-  });
-
-  it('YAML default for intake_routing is "off"', () => {
-    const knob = agentsProps.intake_routing as { default?: unknown };
-    assert.equal(knob.default, 'off');
-  });
-
-  it('PolicySchema.safeParse succeeds for all three YAML enum levels (field is stripped, not validated)', () => {
-    const LEVELS = ['off', 'advisory', 'confirm'];
-    for (const level of LEVELS) {
-      const r = PolicySchema.safeParse({ agents: { intake_routing: level } });
-      assert.ok(r.success, `PolicySchema must not throw when intake_routing="${level}" (stripped)`);
-    }
-    const knob = agentsProps.intake_routing as { enum?: unknown[] };
-    const yamlValues = (knob.enum ?? []).map(String);
-    for (const level of LEVELS) {
-      assert.ok(yamlValues.includes(level), `YAML enum must contain "${level}"`);
-    }
-  });
-});
+// intake_routing is a baked-removed knob (knob-hardening): it no longer appears
+// in schemas/policy.schema.yaml or PolicySchema, so the former "YAML ↔ schema
+// agreement" block for it was deleted. Strip behavior is covered above.
 
 // ── AC4 / NFR-4: observe-only classifier path unchanged ──────────────────────
 

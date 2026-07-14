@@ -86,13 +86,12 @@ AI-forward orgs still want to see deliberate cost control. Loom bakes it in:
 
 - **Always refine before you plan.** Every `loom weave` (and its `epic` alias)
   runs the `loom-brief-builder` rubric automatically before the planner — a
-  single cheap Sonnet call. Briefs scoring below
-  `policy.agents.min_brief_quality_score` (default 6/10) are refused with a
-  structured critique so you tighten the prompt before paying the Opus
-  planner. Pass `--force` (or `force: true` on `loom_start_epic`) to override
-  the gate for a single run — the refiner still runs and its critique is
-  audit-logged. The override is a per-invocation escape hatch, not a disable
-  switch; only the threshold is tunable per repo.
+  single cheap Sonnet call. Briefs scoring below the built-in quality bar
+  (6/10) are refused with a structured critique so you tighten the prompt
+  before paying the Opus planner. Pass `--force` (or `force: true` on
+  `loom_start_epic`) to override the gate for a single run — the refiner
+  still runs and its critique is audit-logged. The override is a
+  per-invocation escape hatch, not a disable switch.
 - **Tiered model routing, not all-top-tier.** The planner runs on the latest Claude models
   at the highest reasoning tier, where depth matters most. Story execution uses the
   mid-tier; meta-work (skill generation, the skill judge) uses the lightweight tier.
@@ -100,9 +99,9 @@ AI-forward orgs still want to see deliberate cost control. Loom bakes it in:
 - **Planner token tracking, per epic.** Every planning run records input / output /
   cached tokens and wall-clock time on the epic row. `loom status` displays it so
   cost is visible, not buried.
-- **Planning token budget.** Set `policy.agents.planning_token_budget`; `loom weave`
-  warns at the end of the run if the planning step ran over. Catches a brief that
-  blew up the pipeline.
+- **Planning token budget.** `loom weave` warns at the end of the run if the
+  planning step ran over its built-in budget. Catches a brief that blew up the
+  pipeline.
 - **Session-based by default.** `claude-cli` and `cursor-cli` backends use the
   Claude Code or Cursor login you already pay for — **no API metering**. The
   `anthropic-api` backend exists for cases where session auth is not viable; it is
@@ -137,8 +136,8 @@ Loom is autonomous, not unsupervised. Before anything else, know your brakes:
   are confined to the agent's own worktree and `policy.filesystem.allowed_read_root`
   (default `.`, resolved relative to the worktree at hook time). Out-of-scope
   attempts are blocked by the PreToolUse hook (the sole enforcement path) and
-  audit-logged. On by default; independent of `cross_repo.enabled`. Best-effort on
-  the Bash channel — interpreters and shell redirection need an OS sandbox.
+  audit-logged. On by default, regardless of cross-repo retrieval. Best-effort
+  on the Bash channel — interpreters and shell redirection need an OS sandbox.
 - **`loom stop`** halts a run gracefully at any time — in-flight stories finish, no
   more dispatch. Resume later with `loom run`.
 - **Checkpoints.** `loom run --checkpoint story` (or `epic`) pauses at each boundary
@@ -347,19 +346,17 @@ are skipped without failing the gate. When the base commit cannot be resolved
 every entry's binary resolves on PATH.
 
 Build steps (`next build`, `cargo build`) run full compilations and
-materially increase gate wall-clock — plan accordingly when enabling
-`integration_gate: block`.
+materially increase gate wall-clock — plan accordingly, since the
+integration gate always runs before a PR opens.
 
-Immediately after the integration gate, five **finalize correctness gates** run: **contract-symbol drift** (every significant symbol this epic's shared contract pins is still present somewhere in the integrated tree), **undocumented env-var** (new `process.env.VAR` references are documented in `.env.example`, ambient vars allow-listed — automatically skipped when `.env.example` is absent), **cross-epic regression** (a symbol a prior delivered epic pinned that was present before this epic is gone after it), **no-production-caller** (exported symbols whose only callers are test files — annotate with `// @loom-public-api` to suppress), and **dead-policy-field** (policy fields defined in `schemas/policy.schema.yaml` with zero production reads — annotate with `# @loom-public-api` in the schema to suppress). Presence is tested against the integrated git tree, not a diff. All five respect the `policy.agents.integration_gate` knob (`off` / `warn` / `block`). Under `block`, the **undocumented-env-var**, **no-production-caller**, and **dead-policy-field** gates can withhold a PR and exit non-zero — each is an exact set-membership or pattern test. The **contract-symbol drift** and **cross-epic regression** gates are always advisory (printed, never blocking) because they are heuristics over prose-heavy contracts.
+Immediately after the integration gate, five **finalize correctness gates** run: **contract-symbol drift** (every significant symbol this epic's shared contract pins is still present somewhere in the integrated tree), **undocumented env-var** (new `process.env.VAR` references are documented in `.env.example`, ambient vars allow-listed — automatically skipped when `.env.example` is absent), **cross-epic regression** (a symbol a prior delivered epic pinned that was present before this epic is gone after it), **no-production-caller** (exported symbols whose only callers are test files — annotate with `// @loom-public-api` to suppress), and **dead-policy-field** (policy fields defined in `schemas/policy.schema.yaml` with zero production reads — annotate with `# @loom-public-api` in the schema to suppress). Presence is tested against the integrated git tree, not a diff. The **undocumented-env-var**, **no-production-caller**, and **dead-policy-field** gates can withhold a PR and exit non-zero — each is an exact set-membership or pattern test. The **contract-symbol drift** and **cross-epic regression** gates are always advisory (printed, never blocking) because they are heuristics over prose-heavy contracts.
 
-After the correctness gates, loom runs a **smoke gate** — a quick command on the integrated worktree to verify the merged code still starts or behaves correctly. The gate is governed by the same `integration_gate` knob. Use `policy.agents.smoke_command` to configure an explicit command; when unset, loom auto-detects from `package.json`: `scripts.smoke` → `npm run smoke`, then `scripts.verify` → `npm run verify`, else the step is skipped. Set `policy.agents.smoke_timeout_minutes` to control the wall-clock budget (default: 15 minutes; the process group is SIGKILLed on timeout). In `block` mode a failing smoke gate withholds the PR and sets the epic back to `in_progress`; in `warn` mode the failure is noted but the PR still opens.
+After the correctness gates, loom runs a **smoke gate** — a quick command on the integrated worktree to verify the merged code still starts or behaves correctly. It runs on every finalize. Use `policy.agents.smoke_command` to configure an explicit command; when unset, loom auto-detects from `package.json`: `scripts.smoke` → `npm run smoke`, then `scripts.verify` → `npm run verify`, else the step is skipped. A built-in 15-minute wall-clock budget applies (the process group is SIGKILLed on timeout). A failing smoke gate withholds the PR and sets the epic back to `in_progress`.
 
 ```yaml
 # .loom/policy.yaml
 agents:
   smoke_command: "npm run smoke"          # optional explicit command
-  smoke_timeout_minutes: 15               # default; positive integer
-  integration_gate: block                 # off | warn | block — governs smoke too
 ```
 
 After the smoke gate, an optional **adversarial review pass** runs when `policy.agents.adversarial_review_model` is set. This independent `CodeReviewAgent` uses an adversarial system prompt — treating worker-authored tests as self-serving and demanding evidence from real production call sites — to catch issues that the standard block-and-revise reviewer might miss. Blocker findings surface in `loom doctor` as errors; should-fix and nit findings appear as warnings. Set the knob to a model ID to activate; omit it to run without a second pass.
@@ -372,7 +369,7 @@ agents:
 
 See `docs/runbooks/finalize.md`.
 
-`policy.agents.pr_strategy` is the knob; only `per-epic` is accepted (one PR per repository for cross-repo epics; the landing order is controlled by the coordinator, not this knob).
+One pull request is opened per repository (for cross-repo epics, the landing order is controlled by the coordinator).
 
 ### The local web dashboard — `loom web`
 

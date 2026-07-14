@@ -8,6 +8,7 @@ import yaml from 'js-yaml';
 import { loadSkillJudgeCases } from '../loadCases.js';
 import { SkillJudgeEvalCaseSchema } from '../caseSchema.js';
 import { BANDS, BAND_TOLERANCE, JUDGE_MIN_SCORE, scoreInBand } from '../bands.js';
+import { SKILL_JUDGE_MIN_SCORE } from '../../../orchestrator/constants.js';
 
 // ── BANDS are derived from JUDGE_MIN_SCORE (not hard-coded) ──────────────────
 
@@ -48,25 +49,14 @@ describe('bands — derived from JUDGE_MIN_SCORE (AC4)', () => {
     assert.equal(BAND_TOLERANCE, 1);
   });
 
-  it('JUDGE_MIN_SCORE matches skill_judge_min_score default in policy.schema.yaml', () => {
-    // Resolve schema relative to compiled dist location (dist/eval/skill-judge/__tests__)
-    const candidates = [
-      path.resolve(__dirname, '../../../../../../schemas/policy.schema.yaml'),
-      path.resolve(process.cwd(), 'schemas/policy.schema.yaml'),
-      path.resolve(process.cwd(), '../../schemas/policy.schema.yaml'),
-    ];
-    const schemaPath = candidates.find((p) => fs.existsSync(p));
-    if (!schemaPath) {
-      // Skip if schema file is not available in this checkout
-      return;
-    }
-    const schema = yaml.load(fs.readFileSync(schemaPath, 'utf8')) as Record<string, unknown>;
-    const agents = (schema as any).properties?.agents?.properties;
-    const policyDefault = agents?.skill_judge_min_score?.default;
+  it('JUDGE_MIN_SCORE matches the baked SKILL_JUDGE_MIN_SCORE constant', () => {
+    // skill_judge_min_score was a policy knob; it is now baked to a constant
+    // (knob-hardening). The eval's JUDGE_MIN_SCORE must stay in sync with that
+    // baked value rather than a (now-removed) policy.schema.yaml default.
     assert.equal(
       JUDGE_MIN_SCORE,
-      policyDefault,
-      `JUDGE_MIN_SCORE (${JUDGE_MIN_SCORE}) must match skill_judge_min_score default (${policyDefault}) in policy.schema.yaml`,
+      SKILL_JUDGE_MIN_SCORE,
+      `JUDGE_MIN_SCORE (${JUDGE_MIN_SCORE}) must match the baked SKILL_JUDGE_MIN_SCORE (${SKILL_JUDGE_MIN_SCORE})`,
     );
   });
 });

@@ -70,27 +70,18 @@ describe('docs/capabilities.md — weave entry', () => {
     );
   });
 
-  it('weave entry references intake_routing behavior', () => {
+  it('weave entry references the intake-classification behavior', () => {
+    // intake_routing was baked to "advisory" (knob-hardening) — the verdict is
+    // now always injected as a PM sizing constraint, so the weave entry points
+    // at the intake-classification layer rather than the removed knob.
     const doc = readDoc();
     const weaveRow = doc
       .split('\n')
       .find((line) => line.includes('**Plan via the weave intake path**') && line.trimStart().startsWith('|'));
     assert.ok(weaveRow, 'weave row must exist');
     assert.ok(
-      weaveRow.includes('intake_routing'),
-      'capabilities.md weave entry must reference intake_routing'
-    );
-  });
-
-  it('weave entry states byte-identical output when intake_routing is off', () => {
-    const doc = readDoc();
-    const weaveRow = doc
-      .split('\n')
-      .find((line) => line.includes('**Plan via the weave intake path**') && line.trimStart().startsWith('|'));
-    assert.ok(weaveRow, 'weave row must exist');
-    assert.ok(
-      weaveRow.includes('byte-identical'),
-      'capabilities.md weave entry must state byte-identical output when intake_routing=off (default)'
+      /intake-classification|sizing constraint/i.test(weaveRow),
+      'capabilities.md weave entry must reference the intake-classification / sizing-constraint behavior'
     );
   });
 });

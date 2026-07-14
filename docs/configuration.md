@@ -39,7 +39,7 @@ and `LOOM_LOOM_HOME` cannot redirect where loom looks for `team-config.yaml`
 |---|---|---|
 | **Scalar** (`string`, `number`, `boolean`, `enum`) | `scalar` | Higher layer wins; lower layers are ignored when the field is present in a higher layer |
 | **Object / map** | `deep` | Keys are merged recursively; each nested field follows its own strategy; no layer can remove a key contributed by another |
-| **Guard denylist** (`protected_branches`, `forbidden_flags`, `protected_paths`, `risky_paths`) | `union` | Set union across all layers — adding a layer can only grow the set, never shrink it; precedence-independent |
+| **Guard denylist** (`protected_branches`, `forbidden_flags`, `protected_paths`) | `union` | Set union across all layers — adding a layer can only grow the set, never shrink it; precedence-independent |
 | **Guard allowlist** (`allowed_remotes`) | `intersect` | Set intersection across all non-empty layers — the effective set is the tightest cross-layer intersection; precedence-independent |
 | **Guard boolean** (`agents_must_use_pr`) | `and` | `true` wins regardless of which layer sets it; once asserted by any layer it cannot be loosened by a higher layer. `false` is only effective when no other layer has set the field to `true`. If no layer sets it, the schema default (`false`) applies. |
 | **Non-guard list** (all other arrays) | `replace` | Higher layer replaces the entire list from a lower layer |
@@ -214,20 +214,21 @@ a run.
 
 ---
 
-## Convenience aliases
+## Baked quality and engineering settings
 
-Two knobs accept the literal string `on` as a convenience alias for their
-most-permissive named value:
+Loom's quality and engineering behaviors are no longer operator-tunable knobs —
+they are baked to their most-robust values as code constants (see
+`packages/loom-core/src/orchestrator/constants.ts`). Two behaviors that used to
+be togglable are now always-on:
 
-| Knob | `on` maps to | Full value set |
-|---|---|---|
-| `agents.qa_planning` | `advisory` | `off`, `advisory` |
-| `agents.integration_branch` | `rolling` | `off`, `rolling` |
+| Behavior | Baked value |
+|---|---|
+| QA / test-plan authoring (formerly `agents.qa_planning`) | `advisory` — the QA persona always writes a risk-based test plan onto every story |
+| Rolling integration branch (formerly `agents.integration_branch`) | `rolling` — workers always build on the live `epic/<id>` integration branch |
 
-The alias is resolved at parse time by a `z.preprocess` step before Zod
-validation runs — the canonical value (`advisory`, `rolling`) is what all
-downstream code sees. `on` never appears after validation. This makes
-`qa_planning: on` and `qa_planning: advisory` byte-identical in effect.
+Because these are constants there is nothing to configure and no alias to set.
+An existing `.loom/policy.yaml` that still lists either field loads without
+error — the removed field is silently ignored.
 
 ---
 
