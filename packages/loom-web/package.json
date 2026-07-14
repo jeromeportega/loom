@@ -1,6 +1,6 @@
 {
   "name": "@loom-ai/web",
-  "version": "6.15.0",
+  "version": "6.16.0",
   "description": "Loom web dashboard — local Express + React SPA over the SQLite state",
   "license": "UNLICENSED",
   "homepage": "https://github.com/jeromeportega/loom",
