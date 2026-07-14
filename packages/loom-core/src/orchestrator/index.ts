@@ -76,7 +76,7 @@ export type { TierInputs, TierSteps } from './tier.js';
 export { parseSelfAssessment, selfAssessmentInstruction, SELF_ASSESSMENT_MARKER } from './selfAssessment.js';
 export { buildWorkerPrompt, workerTemplatePath } from './workerPrompt.js';
 export { git, gitSafe, isGitRepo, hasCommits, defaultRemote } from './git.js';
-export { stallConfigWarning, maxConcurrentAdvisory } from './configWarnings.js';
+export { maxConcurrentAdvisory } from './configWarnings.js';
 export { enforceCursorMcpAllowlist } from './CursorMcpEnforcer.js';
 export type { CursorEnforceOptions, CursorEnforceResult } from './CursorMcpEnforcer.js';
 export type {

@@ -19,7 +19,6 @@ import {
   createGlobalLimiter,
   EpicFinalizer,
   CodeReviewAgent,
-  stallConfigWarning,
   maxConcurrentAdvisory,
   validateCursorModels,
   registerReviewerSkills,
@@ -277,8 +276,6 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
   }
 
   const policy = PolicyEngine.load(loomDir).policyData;
-  const stallWarning = stallConfigWarning(policy);
-  if (stallWarning) console.warn(`  ${stallWarning}`);
   const concurrentAdvisory = maxConcurrentAdvisory(policy);
   if (concurrentAdvisory) console.warn(`  ${concurrentAdvisory}`);
 
