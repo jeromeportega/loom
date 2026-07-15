@@ -16,6 +16,8 @@ export function useAuditVerify(): UseQueryResult<VerifyChainResult> {
       }
       return res.json() as Promise<VerifyChainResult>;
     },
+    staleTime: 60_000,
+    refetchInterval: 60_000,
     retry: (_, err) => {
       const status = (err as Error & { status?: number }).status;
       return status == null || status >= 500;

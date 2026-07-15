@@ -102,16 +102,20 @@ describe('GET /api/audit/verify — response shape', () => {
   });
 
   it('on a broken chain (tampered row), response body has ok: false and brokenAtId is set', async () => {
+    srv.auditLog.record({ action: 'first_action' });
     srv.auditLog.record({ action: 'tamper_target' });
-    // Corrupt the entry_hash to simulate tampering
+    // Corrupt only the second row so brokenAtId is predictable
+    const target = srv.db
+      .prepare('SELECT id FROM audit_log ORDER BY id DESC LIMIT 1')
+      .get() as { id: number };
     srv.db
-      .prepare("UPDATE audit_log SET entry_hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' WHERE 1=1")
-      .run();
+      .prepare("UPDATE audit_log SET entry_hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' WHERE id = ?")
+      .run(target.id);
 
     const res = await fetch(`${srv.baseUrl}/api/audit/verify`, authed());
     const body = await res.json() as { ok: boolean; brokenAtId: number };
     assert.equal(body.ok, false);
-    assert.ok(typeof body.brokenAtId === 'number', 'brokenAtId should be a number');
+    assert.equal(body.brokenAtId, target.id, 'brokenAtId should match the corrupted row id');
   });
 
   it('returns ok: true and hashedRows: 0 when the audit log is empty', async () => {

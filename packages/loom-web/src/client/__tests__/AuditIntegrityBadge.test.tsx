@@ -43,8 +43,6 @@ describe('AuditIntegrityBadge — loading state', () => {
     const { container } = renderBadge();
     const skeleton = container.querySelector('.animate-pulse');
     expect(skeleton).not.toBeNull();
-    // No Badge rendered while loading
-    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('does not render a Badge while loading', () => {
