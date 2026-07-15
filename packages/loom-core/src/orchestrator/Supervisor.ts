@@ -1185,25 +1185,34 @@ export class Supervisor {
       // Fill the worker pool with ready stories — each gated by the local cap
       // and, when configured, a machine-level concurrency slot.
       let globalBlocked = false;
+      // Stories whose requires are unmet this tick are soft-skipped (status
+      // stays 'pending') so they can be re-evaluated after an in-flight
+      // upstream story completes and writes its provides_output. If the run
+      // ends with nothing in-flight and the upstream can never satisfy the
+      // requires (e.g. upstream completed without provides_output), the
+      // post-loop sweep transitions them to 'blocked'.
+      const requiresSkipped = new Set<string>();
       while (!haltDispatch && inFlight.size < cap) {
         const ready = [...tasks.values()].find(
           (t) =>
             t.status === 'pending' &&
+            !requiresSkipped.has(t.story.id) &&
             t.story.dependencies.every(depDone) &&
             (firstActiveEpic === undefined || t.epicId === firstActiveEpic)
         );
         if (!ready) break;
 
         // Check typed requires before acquiring a slot or spawning a worker.
-        // When satisfied, provides values are injected into the worker prompt
-        // inside dispatch(). When unmet, block without consuming concurrency.
+        // Soft-skip (stay pending) when unmet so an in-flight upstream story
+        // can still satisfy the requires before the run ends. audit_log the
+        // unmet keys for observability; the post-loop sweep handles the final
+        // status transition if the run ends without satisfying them.
+        let gateMap: Map<string, Record<string, unknown>> | undefined;
         if (ready.story.requires && Object.keys(ready.story.requires).length > 0) {
-          const providesMap = this.buildProvidesMapForStory(ready.story);
-          const check = checkRequires(ready.story, providesMap);
+          gateMap = this.buildProvidesMapForStory(ready.story);
+          const check = checkRequires(ready.story, gateMap);
           if (!check.ok) {
-            ready.status = 'blocked';
-            this.agents.updateStatus(ready.agentId, 'blocked');
-            this.skillUsage.recordOutcome(ready.agentId, 'blocked');
+            requiresSkipped.add(ready.story.id);
             this.audit.record({
               agent_id: ready.agentId,
               action: 'requires_unmet',
@@ -1226,7 +1235,7 @@ export class Supervisor {
           }
           heldSlots.set(ready.story.id, slot);
         }
-        inFlight.set(ready.story.id, this.dispatch(ready));
+        inFlight.set(ready.story.id, this.dispatch(ready, gateMap));
       }
 
       if (inFlight.size === 0) {
@@ -1838,7 +1847,10 @@ export class Supervisor {
     return this.spawnStagger;
   }
 
-  private dispatch(task: StoryTask): Promise<{ storyId: string; result: WorkerResult }> {
+  private dispatch(
+    task: StoryTask,
+    gateProvides?: Map<string, Record<string, unknown>>
+  ): Promise<{ storyId: string; result: WorkerResult }> {
     // Claim a spawn-stagger slot up front (story-006-004) so concurrent
     // dispatches space their cursor-agent spawns apart and clear the
     // `~/.cursor/cli-config.json` rename herd. The slot is claimed in dispatch
@@ -2114,10 +2126,12 @@ export class Supervisor {
 
     // Compute upstream provides section for injection into worker prompt.
     // Only when the story has `requires` entries — otherwise no-op to keep
-    // the prompt byte-identical to the pre-feature baseline.
+    // the prompt byte-identical to the pre-feature baseline. Reuse the map
+    // already computed by the dispatch gate (gateProvides) when available to
+    // avoid a second round of DB reads for the same upstream story IDs.
     let upstreamProvidesSection: string | undefined;
     if (task.story.requires && Object.keys(task.story.requires).length > 0) {
-      const providesMap = this.buildProvidesMapForStory(task.story);
+      const providesMap = gateProvides ?? this.buildProvidesMapForStory(task.story);
       const section = injectProvidesSection('', task.story, providesMap);
       if (section.trim().length > 0) {
         upstreamProvidesSection = section;
@@ -2693,6 +2707,9 @@ export class Supervisor {
     // Only enforced on a successful worker exit — failures keep the failed status.
     // Stories without `provides` skip this block entirely (backward-compat: no
     // extra audit entries, prompt byte-identical to pre-feature).
+    // When blocking due to parse failure, pr_url is not carried so a blocked
+    // agent never appears to have an open PR.
+    let providesParseBlocked = false;
     if (SUCCESS.has(status) && task.story.provides && Object.keys(task.story.provides).length > 0) {
       const rawOutput = result.logTail ?? '';
       let parsedProvides: Record<string, unknown> | null = null;
@@ -2706,6 +2723,7 @@ export class Supervisor {
       if (parseErr !== null) {
         // Malformed trailer → block
         status = 'blocked';
+        providesParseBlocked = true;
         this.audit.record({
           agent_id: task.agentId,
           action: 'provides_parse_failed',
@@ -2716,6 +2734,7 @@ export class Supervisor {
       } else if (parsedProvides === null) {
         // Absent trailer when story.provides is declared → block
         status = 'blocked';
+        providesParseBlocked = true;
         this.audit.record({
           agent_id: task.agentId,
           action: 'provides_parse_failed',
@@ -2724,14 +2743,35 @@ export class Supervisor {
           detail: { reason: 'trailer_absent' },
         });
       } else {
-        // Valid provides → persist to agents.provides_output
-        this.agents.setProvidesOutput(task.agentId, JSON.stringify(parsedProvides));
+        // Check that all keys declared in story.provides are present in the
+        // parsed object. A worker emitting LOOM_PROVIDES {} for a story that
+        // declares provides: { schemaVersion: {} } would otherwise silently
+        // pass — the downstream requires check would then fail with a
+        // misleading error pointing at the dependent story.
+        const declaredKeys = Object.keys(task.story.provides);
+        const missingKeys = declaredKeys.filter((k) => !(k in parsedProvides!));
+        if (missingKeys.length > 0) {
+          status = 'blocked';
+          providesParseBlocked = true;
+          this.audit.record({
+            agent_id: task.agentId,
+            action: 'provides_parse_failed',
+            command: task.story.id,
+            allowed: false,
+            detail: { reason: 'missing_keys', keys: missingKeys },
+          });
+        } else {
+          // All declared keys present → persist to agents.provides_output
+          this.agents.setProvidesOutput(task.agentId, JSON.stringify(parsedProvides));
+        }
       }
     }
 
     task.status = status;
     this.agents.updateStatus(task.agentId, status, {
-      pr_url: result.prUrl ?? null,
+      // Do not carry pr_url when blocking due to parse failure — a blocked
+      // agent should not appear to have an open PR.
+      pr_url: providesParseBlocked ? null : (result.prUrl ?? null),
     });
     if (result.review && result.review.status !== 'skipped') {
       this.agents.setReview(task.agentId, result.review.status, result.review.summary);

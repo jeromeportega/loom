@@ -522,4 +522,98 @@ describe('dispatch integration — LOOM_PROVIDES persistence', () => {
     const unmetRow = rows.find((r) => r.action === 'requires_unmet');
     assert.strictEqual(unmetRow, undefined, 'no requires_unmet entry for no-requires story');
   });
+
+  it('[Negative] LOOM_PROVIDES with missing declared keys → blocked + audit with reason=missing_keys', async () => {
+    // Worker emits a valid JSON object but omits a declared provides key.
+    // The downstream requires check must not blame the dependent story.
+    const story = makeStory('story-001-001', {
+      provides: { schemaVersion: {}, dbUrl: {} },
+    });
+    seedEpic(repoDir, 'epic-001', [story]);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const worker = new MockWorkerRunner({
+      status: 'done',
+      commitCount: 1,
+      summary: 'ok',
+      logTail: 'Did work.\nLOOM_PROVIDES {"schemaVersion": "3.0"}\n', // dbUrl missing
+    });
+    const supervisor = new Supervisor({ projectRoot: repoDir, db, worker, maxConcurrent: 1, lease: false });
+
+    const result = await supervisor.run(['epic-001']);
+
+    assert.strictEqual(result.storiesBlocked, 1, 'story blocked due to missing provides key');
+    assert.strictEqual(result.storiesDone, 0, 'story did not advance to completed');
+
+    const audit = new AuditLog(db);
+    const rows = audit.getByStory('story-001-001');
+    const failRow = rows.find((r) => r.action === 'provides_parse_failed');
+    assert.ok(failRow, 'provides_parse_failed audit entry present');
+    const detail = JSON.parse(failRow!.detail ?? '{}') as { reason: string; keys: string[] };
+    assert.strictEqual(detail.reason, 'missing_keys');
+    assert.ok(Array.isArray(detail.keys), 'detail.keys is array');
+    assert.ok(detail.keys.includes('dbUrl'), 'missing key listed');
+    assert.ok(!detail.keys.includes('schemaVersion'), 'present key not listed');
+
+    const agents = new AgentStore(db);
+    const agent = agents.getByStory('story-001-001');
+    assert.strictEqual(agent?.provides_output, null, 'provides_output not written when keys missing');
+  });
+});
+
+// ─── Integration: shared upstream provider ────────────────────────────────────
+
+describe('dispatch integration — shared upstream provider', () => {
+  it('[Happy] two downstream stories sharing the same upstream provider each get injected provides', async () => {
+    // storyA provides schemaVersion; storyB and storyC both require it.
+    const storyA = makeStory('story-001-001', {
+      provides: { schemaVersion: {} },
+    });
+    const storyB = makeStory('story-001-002', {
+      dependencies: ['story-001-001'],
+      requires: { schemaVersion: 'story-001-001' },
+    });
+    const storyC = makeStory('story-001-003', {
+      dependencies: ['story-001-001'],
+      requires: { schemaVersion: 'story-001-001' },
+    });
+    seedEpic(repoDir, 'epic-001', [storyA, storyB, storyC]);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    // Pre-seed storyA as done with valid provides_output
+    const agents = new AgentStore(db);
+    const agentA = agents.create('epic-001', 'story-001-001', 'Story A');
+    agents.updateStatus(agentA.id, 'done');
+    agents.setProvidesOutput(agentA.id, JSON.stringify({ schemaVersion: '3.0' }));
+
+    const worker = new MockWorkerRunner({ status: 'done', commitCount: 1, summary: 'ok', logTail: '' });
+    const supervisor = new Supervisor({ projectRoot: repoDir, db, worker, maxConcurrent: 2, lease: false });
+
+    const result = await supervisor.run(['epic-001']);
+
+    assert.strictEqual(result.storiesDone, 3, 'all three stories done');
+    assert.strictEqual(result.storiesBlocked, 0, 'no blocked stories');
+
+    // Both storyB and storyC must have received the upstream provides section
+    const assignmentB = worker.assignments.find((a) => a.storyId === 'story-001-002');
+    const assignmentC = worker.assignments.find((a) => a.storyId === 'story-001-003');
+    assert.ok(assignmentB, 'storyB was dispatched');
+    assert.ok(assignmentC, 'storyC was dispatched');
+    assert.ok(
+      assignmentB!.upstreamProvidesSection?.includes('schemaVersion'),
+      'storyB receives schemaVersion in provides section'
+    );
+    assert.ok(
+      assignmentC!.upstreamProvidesSection?.includes('schemaVersion'),
+      'storyC receives schemaVersion in provides section'
+    );
+    assert.ok(
+      assignmentB!.upstreamProvidesSection?.includes('"3.0"'),
+      'storyB receives correct value'
+    );
+    assert.ok(
+      assignmentC!.upstreamProvidesSection?.includes('"3.0"'),
+      'storyC receives correct value'
+    );
+  });
 });
