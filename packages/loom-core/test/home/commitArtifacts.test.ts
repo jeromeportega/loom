@@ -475,8 +475,8 @@ describe('commitArtifacts — case 7: migration — new columns present and defa
 
   after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-  it('SCHEMA_VERSION is 30', () => {
-    assert.equal(SCHEMA_VERSION, 30);
+  it('SCHEMA_VERSION is 31', () => {
+    assert.equal(SCHEMA_VERSION, 31);
   });
 
   it('createDatabase adds loom_home_status column', () => {
