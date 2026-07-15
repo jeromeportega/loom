@@ -318,6 +318,7 @@ export function createDatabase(dbPath: string): Database.Database {
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');
   runMigrations(db);
   return db;
 }
@@ -583,6 +584,7 @@ export function runMigrations(db: Database.Database): void {
   if (!auditLogCols.some((c) => c.name === 'entry_hash')) {
     db.exec('ALTER TABLE audit_log ADD COLUMN entry_hash TEXT');
   }
+  // contract_hash MUST remain NULL until the payload format is versioned (changing arity re-hashes every row).
   if (!auditLogCols.some((c) => c.name === 'contract_hash')) {
     db.exec('ALTER TABLE audit_log ADD COLUMN contract_hash TEXT');
   }

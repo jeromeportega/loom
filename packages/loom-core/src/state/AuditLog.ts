@@ -36,7 +36,37 @@ type RawAuditRow = {
 };
 
 export class AuditLog {
-  constructor(private db: Database.Database) {}
+  private readonly getHeadStmt: Database.Statement;
+  private readonly insertRowStmt: Database.Statement;
+  private readonly getRowStmt: Database.Statement;
+  private readonly updateHashesStmt: Database.Statement;
+  // contract_hash MUST remain NULL until the payload format is versioned (future epic).
+  private readonly updateAnchorStmt: Database.Statement;
+
+  constructor(private db: Database.Database) {
+    this.getHeadStmt = db.prepare(
+      'SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY id DESC LIMIT 1'
+    );
+    this.insertRowStmt = db.prepare(
+      `INSERT INTO audit_log (agent_id, action, command, allowed, policy_rule, detail)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    this.getRowStmt = db.prepare(
+      `SELECT id, agent_id, action, command, allowed, policy_rule, detail, timestamp
+       FROM audit_log WHERE id = ?`
+    );
+    this.updateHashesStmt = db.prepare(
+      'UPDATE audit_log SET prev_hash = ?, entry_hash = ? WHERE id = ?'
+    );
+    this.updateAnchorStmt = db.prepare(
+      `UPDATE audit_chain_head
+       SET hashed_row_count = hashed_row_count + 1,
+           cutover_id = COALESCE(cutover_id, ?),
+           last_id = ?,
+           last_entry_hash = ?
+       WHERE id = 1`
+    );
+  }
 
   record(entry: {
     agent_id?: string;
@@ -46,30 +76,15 @@ export class AuditLog {
     policy_rule?: string;
     detail?: Record<string, unknown>;
   }): void {
-    const getHead = this.db.prepare(
-      'SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY id DESC LIMIT 1'
-    );
-    const insertRow = this.db.prepare(
-      `INSERT INTO audit_log (agent_id, action, command, allowed, policy_rule, detail)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    );
-    const getRow = this.db.prepare(
-      `SELECT id, agent_id, action, command, allowed, policy_rule, detail, timestamp
-       FROM audit_log WHERE id = ?`
-    );
-    const updateHashes = this.db.prepare(
-      'UPDATE audit_log SET prev_hash = ?, entry_hash = ? WHERE id = ?'
-    );
-
     const allowedVal =
       entry.allowed !== undefined ? (entry.allowed ? 1 : 0) : null;
     const detailVal = entry.detail ? JSON.stringify(entry.detail) : null;
 
     const txn = this.db.transaction(() => {
-      const head = getHead.get() as { entry_hash: string } | undefined;
+      const head = this.getHeadStmt.get() as { entry_hash: string } | undefined;
       const prevHash = head?.entry_hash ?? AUDIT_GENESIS_HASH;
 
-      const result = insertRow.run(
+      const result = this.insertRowStmt.run(
         entry.agent_id ?? null,
         entry.action,
         entry.command ?? null,
@@ -78,8 +93,7 @@ export class AuditLog {
         detailVal
       );
 
-      const rowId = Number(result.lastInsertRowid);
-      const row = getRow.get(rowId) as {
+      const row = this.getRowStmt.get(Number(result.lastInsertRowid)) as {
         id: number;
         agent_id: string | null;
         action: string;
@@ -98,13 +112,17 @@ export class AuditLog {
         row.allowed,
         row.policy_rule,
         row.detail,
-        null,
+        null, // contract_hash MUST remain NULL until the payload format is versioned (future epic).
         row.timestamp,
         prevHash
       );
       const entryHash = computeEntryHash(payload);
 
-      updateHashes.run(prevHash, entryHash, row.id);
+      this.updateHashesStmt.run(prevHash, entryHash, row.id);
+      const anchorInfo = this.updateAnchorStmt.run(row.id, row.id, entryHash);
+      if (anchorInfo.changes !== 1) {
+        throw new Error('audit_chain_head anchor row missing (id=1); transaction will roll back');
+      }
     });
 
     txn.immediate();
