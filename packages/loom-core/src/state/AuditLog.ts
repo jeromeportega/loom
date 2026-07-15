@@ -114,7 +114,10 @@ export class AuditLog {
       const entryHash = computeEntryHash(payload);
 
       updateHashes.run(prevHash, entryHash, row.id);
-      updateAnchor.run(rowId, rowId, entryHash);
+      const anchorInfo = updateAnchor.run(rowId, rowId, entryHash);
+      if (anchorInfo.changes !== 1) {
+        throw new Error('audit_chain_head anchor row missing (id=1); transaction will roll back');
+      }
     });
 
     txn.immediate();

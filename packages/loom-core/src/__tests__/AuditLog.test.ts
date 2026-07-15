@@ -165,13 +165,25 @@ describe('AuditLog.record — anchor update (story-097-002)', () => {
       .prepare('SELECT * FROM audit_chain_head WHERE id = 1')
       .get() as AnchorRow;
 
-    // Rename anchor table so the UPDATE inside record() fails, forcing rollback.
-    db.exec('ALTER TABLE audit_chain_head RENAME TO audit_chain_head_bak');
+    // Inject a fault INSIDE the transaction using a BEFORE UPDATE trigger.
+    // The trigger fires after the audit_log INSERT (which is already in flight
+    // within the same BEGIN IMMEDIATE transaction) and causes the UPDATE to fail,
+    // which rolls back the entire transaction — proving atomicity of both writes.
+    // (A table-rename before record() would fail at prepare-time, before the
+    //  transaction even starts, and would not test in-transaction rollback.)
+    db.exec(`
+      CREATE TRIGGER fail_anchor_update
+      BEFORE UPDATE ON audit_chain_head
+      BEGIN
+        SELECT RAISE(FAIL, 'injected anchor failure for rollback test');
+      END
+    `);
 
-    assert.throws(() => audit.record({ action: 'should_rollback' }));
-
-    // Restore so we can re-SELECT the anchor state.
-    db.exec('ALTER TABLE audit_chain_head_bak RENAME TO audit_chain_head');
+    try {
+      assert.throws(() => audit.record({ action: 'should_rollback' }));
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_anchor_update');
+    }
 
     const afterCount = (
       db.prepare('SELECT COUNT(*) as n FROM audit_log').get() as { n: number }
