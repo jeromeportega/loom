@@ -9,7 +9,8 @@ export function AuditIntegrityBadge(): JSX.Element {
     return <Skeleton className="h-5 w-20" />;
   }
 
-  if (isError || data == null) {
+  const rawOk = (data as unknown as { ok?: unknown })?.ok;
+  if (isError || data == null || typeof rawOk !== 'boolean') {
     return <Badge variant="secondary">Unknown</Badge>;
   }
 

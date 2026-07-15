@@ -22,6 +22,7 @@ import { useRepos } from '../hooks/useRepos';
 import { useEpics } from '../hooks/useEpics';
 import { useStories } from '../hooks/useStories';
 import { useStory } from '../hooks/useStory';
+import { useAuditVerify } from '../hooks/useAuditVerify';
 
 // Accepts an optional client so both call styles work: makeWrapper() creates a
 // default (story-004 arg-assertion tests), makeWrapper(qc) uses a caller-owned
@@ -108,6 +109,28 @@ describe('useStories — polling', () => {
 
     unmount();
     qc.clear();
+  });
+});
+
+// ─── Case 6: useAuditVerify query config ─────────────────────────────────────
+
+describe('useAuditVerify — query config', () => {
+  it('passes staleTime >= 1 and refetchInterval >= 1 to useQuery', () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, hashedRows: 0, legacyRows: 0, fromId: null, toId: null }),
+    } as Response);
+
+    const spy = vi.mocked(useQuery);
+
+    renderHook(() => useAuditVerify(), { wrapper: makeWrapper() });
+
+    const lastCall = spy.mock.calls[spy.mock.calls.length - 1];
+    const opts = lastCall[0] as { staleTime?: number; refetchInterval?: number | false };
+    expect(typeof opts.staleTime).toBe('number');
+    expect(opts.staleTime as number).toBeGreaterThanOrEqual(1);
+    expect(typeof opts.refetchInterval).toBe('number');
+    expect(opts.refetchInterval as number).toBeGreaterThanOrEqual(1);
   });
 });
 

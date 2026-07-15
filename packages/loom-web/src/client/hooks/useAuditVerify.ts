@@ -16,8 +16,10 @@ export function useAuditVerify(): UseQueryResult<VerifyChainResult> {
       }
       return res.json() as Promise<VerifyChainResult>;
     },
-    // Badge is permanently mounted in AppShell; poll every 60 s for live integrity monitoring.
-    refetchInterval: 60_000,
+    // staleTime prevents window-focus/remount from re-triggering a full verify.
+    staleTime: 60_000,
+    // Poll every 2 minutes; staleTime above prevents spurious refetches in between.
+    refetchInterval: 120_000,
     retry: (_, err) => {
       const status = (err as Error & { status?: number }).status;
       return status == null || status >= 500;
