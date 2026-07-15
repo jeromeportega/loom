@@ -8,7 +8,7 @@ import { resolve } from 'node:path';
 import { Command } from 'commander';
 import { operatorCommands, operatorKnobs } from '../describe/coverage.js';
 import { buildProgram } from '../index.js';
-import { collectSpecs } from '../describe/registry.js';
+import { collectSpecs, enumerateRegisteredCommands } from '../describe/registry.js';
 
 // ---------------------------------------------------------------------------
 // operatorCommands — happy path + AC1/AC4
@@ -62,17 +62,23 @@ describe('operatorCommands(buildProgram())', () => {
     assert.ok(tokens.has('traces'), 'expected "traces" in operator commands');
   });
 
-  it('contains audit', () => {
-    assert.ok(tokens.has('audit'), 'expected "audit" in operator commands');
+  it('contains audit verify (audit is now a parent command with a verify subcommand)', () => {
+    assert.ok(tokens.has('audit verify'), 'expected "audit verify" in operator commands');
   });
 
   it('contains autonomy', () => {
     assert.ok(tokens.has('autonomy'), 'expected "autonomy" in operator commands');
   });
 
-  it('includes all operator-audience specs from collectSpecs()', () => {
+  it('includes all operator-audience LEAF specs from collectSpecs()', () => {
+    // Parent commands (specs whose names map to non-leaf Commander commands because they gained
+    // subcommands) are intentionally excluded from Commander leaf enumeration. Only leaf specs
+    // are checked here; the no-program spec-list path in checkCapabilitiesCoverage() covers
+    // parent specs (e.g. "audit" alongside "audit verify").
+    const leafSet = new Set(enumerateRegisteredCommands(program));
     for (const name of REQUIRED_OPERATOR_COMMANDS) {
-      assert.ok(tokens.has(name), `expected "${name}" (operator spec) in result`);
+      if (!leafSet.has(name)) continue; // parent command — not expected in leaf enumeration
+      assert.ok(tokens.has(name), `expected "${name}" (operator leaf spec) in result`);
     }
   });
 });

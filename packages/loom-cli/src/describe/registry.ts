@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import type { CommandDescription } from './schema.js';
 import { spec as archiveSpec, specUnarchive } from '../commands/archive.js';
 import { spec as artifactsSpec } from '../commands/artifacts.js';
-import { spec as auditSpec } from '../commands/audit.js';
+import { spec as auditSpec, verifySpec as auditVerifySpec } from '../commands/audit.js';
 import { spec as autonomySpec } from '../commands/autonomy.js';
 import { spec as diffSpec } from '../commands/diff.js';
 import { spec as doctorSpec } from '../commands/doctor.js';
@@ -48,6 +48,7 @@ export function collectSpecs(): CommandDescription[] {
     specUnarchive,
     artifactsSpec,
     auditSpec,
+    auditVerifySpec,
     autonomySpec,
     diffSpec,
     doctorSpec,

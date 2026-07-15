@@ -2,6 +2,7 @@ import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { AuditLog } from '@loom-ai/core';
+import type { VerifyChainResult } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 
 export interface AuditOptions {
@@ -49,6 +50,61 @@ export function runAudit(opts: AuditOptions = {}): void {
     console.log(`  ${e.timestamp}  ${mark} ${e.action}${cmd}`);
   }
 }
+
+export interface AuditVerifyOptions {
+  json?: boolean;
+  /** Override the project root (defaults to process.cwd()). Avoids process.chdir() in tests. */
+  projectRoot?: string;
+}
+
+export function runAuditVerify(opts: AuditVerifyOptions = {}): void {
+  const projectRoot = opts.projectRoot ?? process.cwd();
+  const loomDir = path.join(projectRoot, '.loom');
+  if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
+    console.error('loom is not initialized in this directory. Run `loom init` first.');
+    process.exit(1);
+  }
+
+  const db = openProjectDatabase(projectRoot);
+  const result: VerifyChainResult = new AuditLog(db).verifyChain();
+
+  if (opts.json) {
+    console.log(JSON.stringify(result));
+    if (!result.ok) process.exit(1);
+    return;
+  }
+
+  if (result.ok) {
+    console.log(`Chain intact — ${result.hashedRows} hashed rows`);
+  } else {
+    console.error(`Chain broken at row ID ${result.brokenAtId}: ${result.reason}`);
+    process.exit(1);
+  }
+}
+
+export const verifySpec: CommandDescription = {
+  name: 'audit verify',
+  summary: 'Verify the tamper-evidence hash chain of the audit log',
+  whenToUse: 'Use after an incident or before a compliance review to confirm no audit_log rows have been silently altered. Exits 0 when intact, 1 when broken.',
+  arguments: [],
+  options: [
+    { name: '--json', type: 'boolean', description: 'Emit VerifyChainResult as JSON (semver-stable output contract)', changesOutputShape: true },
+  ],
+  output: {
+    text: 'Single-line pass/fail message: "Chain intact — N hashed rows" or "Chain broken at row ID <id>: <reason>"',
+    json: { supported: true, shape: 'VerifyChainResult: { ok, hashedRows, legacyRows, fromId, toId, brokenAtId?, reason? }' },
+  },
+  examples: [
+    { command: 'loom audit verify', description: 'Check the audit log chain and print a human-readable result' },
+    { command: 'loom audit verify --json', description: 'Emit the full VerifyChainResult as JSON' },
+  ],
+  exitCodes: [
+    { code: 0, meaning: 'Chain intact (or no hashed rows yet)' },
+    { code: 1, meaning: 'Chain broken or loom not initialized' },
+  ],
+  errors: ['loom is not initialized — run `loom init` first'],
+  relationships: { prerequisites: ['init'], nextSteps: ['audit', 'traces'] },
+};
 
 export const spec: CommandDescription = {
   name: 'audit',
