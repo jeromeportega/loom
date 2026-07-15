@@ -36,6 +36,12 @@ export type WorkerEvent =
       summary: string;
       commitCount: number;
       prUrl?: string;
+    }
+  | {
+      type: 'rerouted';
+      storyId: string;
+      subStoryIds: string[];
+      trigger: 'LOOM_TOO_BIG' | 'cap';
     };
 
 export type WorkerEventCallback = (event: WorkerEvent) => void;

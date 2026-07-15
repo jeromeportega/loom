@@ -73,6 +73,16 @@ import { StoryRetryService } from './StoryRetryService.js';
 import { recordStallKill, recordAutoRecovery } from './StallKillAudit.js';
 import { classifyWorkerExit } from './classifyWorkerExit.js';
 
+// ─── Reroute imports (epic-095 story-095-005) ─────────────────────────────────
+import {
+  handleReroute,
+  injectSubStories,
+  RerouteBudgetExhaustedError,
+  type ReroutePayload,
+  type DownstreamOverride,
+} from './rerouteHandler.js';
+import { LOOM_TOO_BIG_SIGNAL } from './constants.js';
+
 // ─── LOOM_PROVIDES helpers (epic-095 story-095-004) ──────────────────────────
 // Exported at module level so unit tests can exercise them directly.
 
@@ -191,12 +201,41 @@ export function parseLoomProvides(rawOutput: string): Record<string, unknown> | 
   return parsed as Record<string, unknown>;
 }
 
+/**
+ * Scans a log tail string for a LOOM_TOO_BIG_SIGNAL line. Returns the
+ * fan-out payload (the text after the signal keyword, trimmed) when found,
+ * or `undefined` when the signal is absent. "Last occurrence wins" so a
+ * worker that emits the signal multiple times uses the final payload.
+ *
+ * Used as the logTail fallback in applyResult (mirrors LOOM_PROVIDES's
+ * logTail fallback so test runners that bypass onOutput still trigger reroutes).
+ */
+function scanLogTailForTooBigSignal(logTail: string): string | undefined {
+  let result: string | undefined;
+  for (const line of logTail.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === LOOM_TOO_BIG_SIGNAL) {
+      result = '';
+    } else if (trimmed.startsWith(LOOM_TOO_BIG_SIGNAL + ' ')) {
+      result = trimmed.slice(LOOM_TOO_BIG_SIGNAL.length).trim();
+    }
+  }
+  return result;
+}
+
 export interface SupervisorOptions {
   projectRoot: string;
   db: Database.Database;
   worker: WorkerRunner;
   /** Max worker agents running concurrently (policy.agents.max_concurrent). */
   maxConcurrent: number;
+  /**
+   * PM persona for story re-split (epic-095 story-095-005). When set, the
+   * Supervisor invokes this agent whenever a worker emits `LOOM_TOO_BIG` or
+   * is killed by absoluteCapMs. When unset, those triggers surface as normal
+   * failed stories (backward-compat: no reroute path active).
+   */
+  pmAgent?: import('./rerouteHandler.js').PMAgent;
   /** When set, relevant skills are injected into each worker assignment. */
   skillStore?: SkillStore;
   /** When set, runs post-story skill extraction after each successful story. */
@@ -534,6 +573,25 @@ export class Supervisor {
   private runCleanRetryCount = 0;
   /** Persists structured review findings per agent attempt (story-076-002). */
   private findings: FindingStore;
+
+  // ─── Reroute state (epic-095 story-095-005) ───────────────────────────────
+  /**
+   * Streaming LOOM_TOO_BIG signal capture: storyId → fan-out payload string
+   * seen in the most recent stdout line containing LOOM_TOO_BIG. Populated
+   * during the dispatch's onOutput handler; consumed and cleared by
+   * applyResult (injection point A). An empty string means the signal was
+   * present but carried no payload (plain "LOOM_TOO_BIG" line).
+   */
+  private capturedTooBigSignals = new Map<string, string>();
+  /**
+   * Pending reroute descriptors: storyId → { trigger, fanOutPayload }.
+   * Set by applyResult (injection points A and B) when a reroute is needed;
+   * consumed and cleared by dispatchLoop's post-applyResult reroute sweep.
+   */
+  private pendingReroutes = new Map<
+    string,
+    { trigger: 'LOOM_TOO_BIG' | 'cap'; fanOutPayload: string }
+  >();
 
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
@@ -1286,6 +1344,15 @@ export class Supervisor {
       }
       const task = tasks.get(storyId)!;
       this.applyResult(task, result);
+      // Reroute sweep (epic-095-005): if applyResult queued a reroute, handle it
+      // before rolling integration or checkpoint checks. `continue` skips
+      // completedThisRun++ so a rerouted story does not count as a completed unit.
+      if (this.pendingReroutes.has(storyId)) {
+        const pending = this.pendingReroutes.get(storyId)!;
+        this.pendingReroutes.delete(storyId);
+        await this.doReroute(task, pending, tasks);
+        continue;
+      }
       // Rolling integration: fold a just-succeeded story into the live epic
       // branch NOW, so the next worker dispatched branches from a tip that
       // includes it. A distinct step (not inside applyResult) so the worker-
@@ -2058,6 +2125,11 @@ export class Supervisor {
     let loomProvidesLineBuffer = '';
     let capturedProvidesLineLocal: string | null = null;
 
+    // ── LOOM_TOO_BIG streaming capture (injection point B setup, epic-095-005) ──
+    // Scan ALL stories' stdout for LOOM_TOO_BIG_SIGNAL (not gated on `provides`).
+    // Last occurrence wins; the fan-out payload is everything after the signal word.
+    let tooBigLineBuffer = '';
+
     const onOutput = (chunk: string, stream: 'stdout' | 'stderr'): void => {
       // Redaction runs ONCE here — before any persistence path (DB tail or file).
       const redacted = redactSecrets(chunk);
@@ -2088,6 +2160,27 @@ export class Supervisor {
             const trimmed = rawLine.trim();
             if (trimmed.startsWith('LOOM_PROVIDES ')) {
               capturedProvidesLineLocal = trimmed;
+            }
+          }
+        }
+      }
+      // Scan ALL stdout for LOOM_TOO_BIG_SIGNAL (epic-095 story-095-005).
+      if (stream === 'stdout') {
+        tooBigLineBuffer += redacted;
+        const nlIdx = tooBigLineBuffer.lastIndexOf('\n');
+        if (nlIdx !== -1) {
+          const section = tooBigLineBuffer.slice(0, nlIdx);
+          tooBigLineBuffer = tooBigLineBuffer.slice(nlIdx + 1);
+          for (const rawLine of section.split('\n')) {
+            const trimmed = rawLine.trim();
+            if (
+              trimmed === LOOM_TOO_BIG_SIGNAL ||
+              trimmed.startsWith(LOOM_TOO_BIG_SIGNAL + ' ')
+            ) {
+              this.capturedTooBigSignals.set(
+                task.story.id,
+                trimmed.slice(LOOM_TOO_BIG_SIGNAL.length).trim()
+              );
             }
           }
         }
@@ -2236,6 +2329,17 @@ export class Supervisor {
         // Using the full streaming capture avoids logTail truncation.
         if (capturesProvides) {
           this.capturedProvidesLines.set(task.story.id, capturedProvidesLineLocal);
+        }
+        // Flush any incomplete LOOM_TOO_BIG line from the buffer (epic-095-005).
+        const pendingTooBig = tooBigLineBuffer.trim();
+        if (
+          pendingTooBig === LOOM_TOO_BIG_SIGNAL ||
+          pendingTooBig.startsWith(LOOM_TOO_BIG_SIGNAL + ' ')
+        ) {
+          this.capturedTooBigSignals.set(
+            task.story.id,
+            pendingTooBig.slice(LOOM_TOO_BIG_SIGNAL.length).trim()
+          );
         }
         return { storyId: task.story.id, result };
       })
@@ -2773,6 +2877,10 @@ export class Supervisor {
     // across block-and-revise retry cycles.
     const capturedProvidesLine = this.capturedProvidesLines.get(task.story.id);
     this.capturedProvidesLines.delete(task.story.id);
+    // Consume LOOM_TOO_BIG signal for injection point A (epic-095-005).
+    // Delete unconditionally so stale signals don't bleed into retries.
+    const capturedTooBigPayload = this.capturedTooBigSignals.get(task.story.id);
+    this.capturedTooBigSignals.delete(task.story.id);
 
     let status: AgentStatus =
       result.status === 'done' ? (result.prUrl ? 'pr_open' : 'done') : 'failed';
@@ -3073,6 +3181,130 @@ export class Supervisor {
       }
       // Budget spent or prep rejected → surface for manual intervention.
     }
+
+    // Injection point A: reroute on LOOM_TOO_BIG signal (epic-095-005).
+    // Prefer streaming capture (full fidelity); fall back to scanning logTail so
+    // test runners that bypass onOutput (MockWorkerRunner) also trigger reroutes.
+    // This mirrors the LOOM_PROVIDES capturedLine / logTail fallback pattern.
+    const effectiveTooBigPayload =
+      capturedTooBigPayload !== undefined
+        ? capturedTooBigPayload
+        : scanLogTailForTooBigSignal(result.logTail ?? '');
+    if (effectiveTooBigPayload !== undefined && this.opts.pmAgent) {
+      this.pendingReroutes.set(task.story.id, {
+        trigger: 'LOOM_TOO_BIG',
+        fanOutPayload: effectiveTooBigPayload,
+      });
+      task.status = 'pending';
+      return;
+    }
+
+    // Injection point B: reroute on absoluteCapMs kill (epic-095-005).
+    // A 'cap' kill means the story is genuinely too large for a single worker
+    // run; re-decompose it rather than treating it as a permanent failure.
+    if (result.killReason === 'cap' && this.opts.pmAgent) {
+      this.pendingReroutes.set(task.story.id, {
+        trigger: 'cap',
+        fanOutPayload: '',
+      });
+      task.status = 'pending';
+      return;
+    }
+  }
+
+  /**
+   * Handles a queued reroute for a story whose applyResult set `pendingReroutes`.
+   * Calls the PM persona to decompose the original story into N ≥ 2 sub-stories,
+   * injects them atomically into DB, and updates the in-memory tasks map so the
+   * dispatchLoop dispatches them without re-loading from disk.
+   *
+   * On RerouteBudgetExhaustedError: marks original task 'failed' in memory and
+   * throws so the Supervisor's run() surfaces the error for the operator.
+   * On any other PM error: same — throws to surface for manual intervention.
+   */
+  private async doReroute(
+    task:    StoryTask,
+    pending: { trigger: 'LOOM_TOO_BIG' | 'cap'; fanOutPayload: string },
+    tasks:   Map<string, StoryTask>
+  ): Promise<void> {
+    const payload: ReroutePayload = {
+      story:         task.story,
+      fanOutPayload: pending.fanOutPayload,
+      trigger:       pending.trigger,
+    };
+
+    let subStories: Story[];
+    try {
+      subStories = await handleReroute(payload, {
+        pmAgent:  this.opts.pmAgent!,
+        db:       this.opts.db,
+        epicId:   task.epicId,
+        auditLog: this.audit,
+      });
+    } catch (err) {
+      // On budget exhaustion or PM failure the DB already shows 'failed' from
+      // the normal applyResult path. Reflect that in memory and propagate.
+      task.status = 'failed';
+      throw err;
+    }
+
+    // Re-point every in-flight task that depends on the original story to the
+    // final sub-story. The final sub-story is the logical "gate" that the original
+    // story provided — once it completes, downstream work can proceed.
+    const finalSubStory = subStories[subStories.length - 1];
+    const downstreamOverrides: DownstreamOverride[] = [];
+    for (const t of tasks.values()) {
+      if (t.story.dependencies.includes(task.story.id)) {
+        const newDeps = t.story.dependencies.map((d) =>
+          d === task.story.id ? finalSubStory.id : d
+        );
+        downstreamOverrides.push({ storyId: t.story.id, newDependencies: newDeps });
+      }
+    }
+
+    // Atomically write sub-story agent rows + dep_override updates to DB.
+    injectSubStories(
+      task.story,
+      subStories,
+      task.epicId,
+      this.opts.db,
+      this.audit,
+      downstreamOverrides
+    );
+
+    // Mirror DB writes in the in-memory tasks map so this run's dispatchLoop
+    // can immediately schedule sub-stories without a full reload.
+    for (const sub of subStories) {
+      const agentRow = this.agents.getByStory(sub.id);
+      if (agentRow) {
+        tasks.set(sub.id, {
+          epicId:  task.epicId,
+          story:   sub,
+          agentId: agentRow.id,
+          status:  'pending',
+        });
+      }
+    }
+    for (const override of downstreamOverrides) {
+      const t = tasks.get(override.storyId);
+      if (t) {
+        t.story = { ...t.story, dependencies: override.newDependencies };
+      }
+    }
+
+    // Remove original from the in-memory tasks map — it is superseded by sub-stories.
+    // DB shows 'failed' from applyResult (the correct historical record). Removing
+    // from the map prevents it from counting in storiesDone/Failed and from being
+    // re-dispatched. Downstream tasks already have dep_overrides re-pointing them
+    // to the final sub-story, so they don't wait on this story ID any more.
+    tasks.delete(task.story.id);
+
+    this.opts.onWorkerEvent?.({
+      type:        'rerouted',
+      storyId:     task.story.id,
+      subStoryIds: subStories.map((s) => s.id),
+      trigger:     pending.trigger,
+    });
   }
 
   /**

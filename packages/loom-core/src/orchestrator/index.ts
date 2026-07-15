@@ -1,5 +1,3 @@
-export { buildStoryGraph, criticalPath, topologicalSort, detectCycles, findReadyStories, StoryGraphCycleError } from './storyGraph.js';
-export type { StoryGraph, CriticalPathResult } from './storyGraph.js';
 export { loadEpicStories } from './epicCriticalPath.js';
 export { WorktreeManager } from './WorktreeManager.js';
 export type { WorktreeInfo } from './WorktreeManager.js';
