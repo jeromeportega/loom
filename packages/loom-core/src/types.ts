@@ -264,6 +264,9 @@ export interface AuditLogEntry {
   policy_rule: string | null;
   detail: string | null;
   timestamp: string;
+  prev_hash?: string | null;
+  entry_hash?: string | null;
+  contract_hash?: string | null;
 }
 
 // ─── Adaptive cost-control signals (epic: adaptive review) ───────────────────

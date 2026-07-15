@@ -6,6 +6,7 @@ export { LessonStore } from './LessonStore.js';
 export { EpicStore } from './EpicStore.js';
 export { AgentStore } from './AgentStore.js';
 export { AuditLog } from './AuditLog.js';
+export type { VerifyChainResult } from './AuditLog.js';
 export { SkillUsageStore } from './SkillUsageStore.js';
 export type { SkillTrackRecord } from './SkillUsageStore.js';
 export { EvalRunStore } from './EvalRunStore.js';
