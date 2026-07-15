@@ -23,7 +23,8 @@ export function runAudit(opts: AuditOptions = {}): void {
   const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
     console.error('loom is not initialized in this directory. Run `loom init` first.');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   const db = openProjectDatabase(projectRoot);
@@ -61,31 +62,59 @@ export function runAuditVerify(opts: AuditVerifyOptions = {}): void {
   const projectRoot = opts.projectRoot ?? process.cwd();
   const loomDir = path.join(projectRoot, '.loom');
   if (!fs.existsSync(path.join(loomDir, 'policy.yaml'))) {
-    console.error('loom is not initialized in this directory. Run `loom init` first.');
-    process.exit(1);
-  }
-
-  const db = openProjectDatabase(projectRoot);
-  const result: VerifyChainResult = new AuditLog(db).verifyChain();
-
-  if (opts.json) {
-    console.log(JSON.stringify(result));
-    if (!result.ok) process.exit(1);
+    if (opts.json) {
+      console.log(JSON.stringify({ ok: false, reason: 'not-initialized' }));
+    } else {
+      console.error('loom is not initialized in this directory. Run `loom init` first.');
+    }
+    process.exitCode = 1;
     return;
   }
 
-  if (result.ok) {
-    console.log(`Chain intact — ${result.hashedRows} hashed rows`);
-  } else {
-    console.error(`Chain broken at row ID ${result.brokenAtId}: ${result.reason}`);
-    process.exit(1);
+  if (opts.json) {
+    try {
+      const db = openProjectDatabase(projectRoot);
+      try {
+        const result = new AuditLog(db).verifyChain();
+        console.log(JSON.stringify(result));
+        if (!result.ok) {
+          process.exitCode = 1;
+        }
+      } finally {
+        db.close();
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.log(JSON.stringify({ ok: false, reason: 'error', detail }));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  try {
+    const db = openProjectDatabase(projectRoot);
+    try {
+      const result = new AuditLog(db).verifyChain();
+      if (result.ok) {
+        console.log(`Chain intact — ${result.hashedRows} hashed rows`);
+      } else {
+        console.error(`Chain broken at row ID ${result.brokenAtId}: ${result.reason}`);
+        process.exitCode = 1;
+      }
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Chain verification failed: ${msg}`);
+    process.exitCode = 1;
   }
 }
 
 export const verifySpec: CommandDescription = {
   name: 'audit verify',
-  summary: 'Verify the tamper-evidence hash chain of the audit log',
-  whenToUse: 'Use after an incident or before a compliance review to confirm no audit_log rows have been silently altered. Exits 0 when intact, 1 when broken.',
+  summary: 'Verify audit log SHA-256 chain. Not tamper-proof if audit_chain_head is also rewritten.',
+  whenToUse: 'Use after an incident to check whether audit_log rows have been edited, reordered, deleted (including tail truncation), or had unhashed rows inserted in the chained region. Exits 0 when intact, 1 when broken. Caveat: verify does not defend against an adversary with full DB write access who ALSO rewrites audit_chain_head.',
   arguments: [],
   options: [
     { name: '--json', type: 'boolean', description: 'Emit VerifyChainResult as JSON (semver-stable output contract)', changesOutputShape: true },
