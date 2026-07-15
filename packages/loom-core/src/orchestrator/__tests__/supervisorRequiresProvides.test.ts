@@ -387,7 +387,8 @@ describe('dispatch integration — requires blocking', () => {
 
     const result = await supervisor.run(['epic-001']);
 
-    // storyA pre-seeded as done + storyB dispatched and completed
+    // storiesDone counts all tasks with SUCCESS status at end of run, including
+    // stories that were already done before this run started (pre-seeded storyA).
     assert.strictEqual(result.storiesDone, 2, 'both stories done (A pre-seeded, B dispatched)');
     // storyB should have been dispatched with the provides section
     const assignment = worker.assignments.find((a) => a.storyId === 'story-001-002');
@@ -558,6 +559,75 @@ describe('dispatch integration — LOOM_PROVIDES persistence', () => {
     const agents = new AgentStore(db);
     const agent = agents.getByStory('story-001-001');
     assert.strictEqual(agent?.provides_output, null, 'provides_output not written when keys missing');
+  });
+});
+
+// ─── Integration: streaming LOOM_PROVIDES capture ─────────────────────────────
+// Exercises the path where the worker's LOOM_PROVIDES line is captured via the
+// onOutput streaming callback so it isn't lost when logTail is truncated.
+
+describe('dispatch integration — streaming LOOM_PROVIDES capture', () => {
+  it('[Happy] LOOM_PROVIDES emitted via onOutput stream and logTail is empty → persisted', async () => {
+    // Simulate a worker that emits LOOM_PROVIDES via onOutput (real worker path),
+    // then returns a logTail that does NOT contain the trailer (truncation scenario).
+    const story = makeStory('story-001-001', {
+      provides: { schemaVersion: {} },
+    });
+    seedEpic(repoDir, 'epic-001', [story]);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const worker = new MockWorkerRunner(async (assignment) => {
+      // Simulate streaming: emit LOOM_PROVIDES via onOutput before returning
+      assignment.onOutput?.('Did many lines of work...\n', 'stdout');
+      assignment.onOutput?.('LOOM_PROVIDES {"schemaVersion": "4.0"}\n', 'stdout');
+      assignment.onOutput?.('Verbose post-trailer diagnostic output.\n', 'stdout');
+      return {
+        status: 'done' as const,
+        commitCount: 1,
+        summary: 'ok',
+        // logTail simulates truncation: does NOT contain the LOOM_PROVIDES line
+        logTail: 'Verbose post-trailer diagnostic output.',
+      };
+    });
+    const supervisor = new Supervisor({ projectRoot: repoDir, db, worker, maxConcurrent: 1, lease: false });
+
+    const result = await supervisor.run(['epic-001']);
+
+    assert.strictEqual(result.storiesDone, 1, 'story completed');
+    assert.strictEqual(result.storiesBlocked, 0, 'no blocked stories');
+    const agents = new AgentStore(db);
+    const agent = agents.getByStory('story-001-001');
+    assert.ok(agent?.provides_output, 'provides_output persisted via stream capture');
+    const parsed = JSON.parse(agent!.provides_output!);
+    assert.deepStrictEqual(parsed, { schemaVersion: '4.0' }, 'captured value is correct');
+  });
+
+  it('[Happy] last LOOM_PROVIDES in stream wins when emitted across multiple chunks', async () => {
+    const story = makeStory('story-001-001', {
+      provides: { schemaVersion: {} },
+    });
+    seedEpic(repoDir, 'epic-001', [story]);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const worker = new MockWorkerRunner(async (assignment) => {
+      // Two LOOM_PROVIDES lines — last occurrence wins
+      assignment.onOutput?.('LOOM_PROVIDES {"schemaVersion": "1.0"}\n', 'stdout');
+      assignment.onOutput?.('LOOM_PROVIDES {"schemaVersion": "2.0"}\n', 'stdout');
+      return {
+        status: 'done' as const,
+        commitCount: 1,
+        summary: 'ok',
+        logTail: '',
+      };
+    });
+    const supervisor = new Supervisor({ projectRoot: repoDir, db, worker, maxConcurrent: 1, lease: false });
+
+    await supervisor.run(['epic-001']);
+
+    const agents = new AgentStore(db);
+    const agent = agents.getByStory('story-001-001');
+    const parsed = JSON.parse(agent!.provides_output!);
+    assert.deepStrictEqual(parsed, { schemaVersion: '2.0' }, 'last occurrence wins');
   });
 });
 

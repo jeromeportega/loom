@@ -111,6 +111,40 @@ export function checkRequires(
 }
 
 /**
+ * Builds the `## Upstream Provides` Markdown block content for stories that
+ * have `requires` entries. Returns an empty string when no entries are available
+ * (story has no requires, or none of the required keys are in the provides map).
+ *
+ * Newlines inside JSON-serialized values are escaped so they do not break the
+ * Markdown bullet-list boundary.
+ */
+function buildProvidesBlock(
+  story: Story,
+  provides: Map<string, Record<string, unknown>>
+): string {
+  if (!story.requires || Object.keys(story.requires).length === 0) return '';
+  const entries: Array<[string, unknown]> = [];
+  for (const [key, sourceStoryId] of Object.entries(story.requires)) {
+    const storyProvides = provides.get(sourceStoryId);
+    if (storyProvides !== undefined && key in storyProvides) {
+      entries.push([key, storyProvides[key]]);
+    }
+  }
+  if (entries.length === 0) return '';
+  return [
+    '',
+    '## Upstream Provides',
+    '',
+    'The following values were produced by upstream stories and are available for use:',
+    '',
+    ...entries.map(([key, value]) => {
+      const serialized = JSON.stringify(value).replace(/\n/g, '\\n');
+      return `- **${key}**: ${serialized}`;
+    }),
+  ].join('\n');
+}
+
+/**
  * Appends a `## Upstream Provides` block to `basePrompt` listing every
  * key/value pair from `provides` that this story's `requires` map references.
  * No-op (returns `basePrompt` unchanged) when `story.requires` is absent or empty.
@@ -120,28 +154,8 @@ export function injectProvidesSection(
   story: Story,
   provides: Map<string, Record<string, unknown>>
 ): string {
-  if (!story.requires || Object.keys(story.requires).length === 0) {
-    return basePrompt;
-  }
-  const entries: Array<[string, unknown]> = [];
-  for (const [key, sourceStoryId] of Object.entries(story.requires)) {
-    const storyProvides = provides.get(sourceStoryId);
-    if (storyProvides !== undefined && key in storyProvides) {
-      entries.push([key, storyProvides[key]]);
-    }
-  }
-  if (entries.length === 0) {
-    return basePrompt;
-  }
-  const lines = [
-    '',
-    '## Upstream Provides',
-    '',
-    'The following values were produced by upstream stories and are available for use:',
-    '',
-    ...entries.map(([key, value]) => `- **${key}**: ${JSON.stringify(value)}`),
-  ];
-  return basePrompt + lines.join('\n');
+  const block = buildProvidesBlock(story, provides);
+  return block ? basePrompt + block : basePrompt;
 }
 
 /**
@@ -502,6 +516,12 @@ export class Supervisor {
   private workerLogs: WorkerLogStore;
   /** Cumulative post-redaction byte length per story, updated by onOutput. */
   private logBytes = new Map<string, number>();
+  /**
+   * Last LOOM_PROVIDES line seen in each story's streaming stdout, captured
+   * by dispatch's onOutput before logTail truncation. Null = stream finished
+   * with no LOOM_PROVIDES line found. Consumed and deleted by applyResult.
+   */
+  private capturedProvidesLines = new Map<string, string | null>();
   /** Maps agentId → storyId so flushTails can look up the log_bytes offset. */
   private agentToStory = new Map<string, string>();
   /** Durable per-story clean-retry budget store (story-061-001). */
@@ -1159,6 +1179,10 @@ export class Supervisor {
     let stopped = false;
     const limiter = this.opts.globalLimiter;
     const heldSlots = new Map<string, LimiterSlot>();
+    // Stories whose requires have already been audit-logged as unmet this run.
+    // Hoisted outside the tick loop so a story that stays unmet across multiple
+    // ticks only produces one audit entry rather than one per tick.
+    const requiresAuditedOnce = new Set<string>();
 
     for (;;) {
       // Keep held slots fresh so a long-running worker is not reclaimed.
@@ -1213,13 +1237,18 @@ export class Supervisor {
           const check = checkRequires(ready.story, gateMap);
           if (!check.ok) {
             requiresSkipped.add(ready.story.id);
-            this.audit.record({
-              agent_id: ready.agentId,
-              action: 'requires_unmet',
-              command: ready.story.id,
-              allowed: false,
-              detail: { unmet: check.unmet },
-            });
+            // Audit once per run, not once per tick — upstream satisfying the
+            // requires on a later tick would otherwise cause duplicate entries.
+            if (!requiresAuditedOnce.has(ready.story.id)) {
+              requiresAuditedOnce.add(ready.story.id);
+              this.audit.record({
+                agent_id: ready.agentId,
+                action: 'requires_unmet',
+                command: ready.story.id,
+                allowed: false,
+                detail: { unmet: check.unmet },
+              });
+            }
             continue;
           }
         }
@@ -2019,6 +2048,16 @@ export class Supervisor {
     // it is not redundantly re-set on every output chunk.
     this.agentToStory.set(task.agentId, task.story.id);
 
+    // Whether this story declares provides — used to gate the LOOM_PROVIDES
+    // streaming capture below so stories without provides pay zero overhead.
+    const capturesProvides =
+      task.story.provides !== undefined && Object.keys(task.story.provides).length > 0;
+    // Line buffer for streaming LOOM_PROVIDES capture. Chunks may not align to
+    // line boundaries, so we accumulate until a newline, then scan complete lines.
+    // This avoids calling parseLoomProvides on the (possibly truncated) logTail.
+    let loomProvidesLineBuffer = '';
+    let capturedProvidesLineLocal: string | null = null;
+
     const onOutput = (chunk: string, stream: 'stdout' | 'stderr'): void => {
       // Redaction runs ONCE here — before any persistence path (DB tail or file).
       const redacted = redactSecrets(chunk);
@@ -2036,6 +2075,23 @@ export class Supervisor {
         task.story.id,
         this.workerLogs.append(task.story.id, redacted)
       );
+      // Scan stdout for LOOM_PROVIDES lines (only when story declares provides).
+      // Accumulate in a line buffer so we handle chunks that straddle a newline.
+      // Last occurrence wins — updated on every matching line.
+      if (capturesProvides && stream === 'stdout') {
+        loomProvidesLineBuffer += redacted;
+        const newlineIdx = loomProvidesLineBuffer.lastIndexOf('\n');
+        if (newlineIdx !== -1) {
+          const completeSection = loomProvidesLineBuffer.slice(0, newlineIdx);
+          loomProvidesLineBuffer = loomProvidesLineBuffer.slice(newlineIdx + 1);
+          for (const rawLine of completeSection.split('\n')) {
+            const trimmed = rawLine.trim();
+            if (trimmed.startsWith('LOOM_PROVIDES ')) {
+              capturedProvidesLineLocal = trimmed;
+            }
+          }
+        }
+      }
     };
 
     // Persist the worker subprocess pid as soon as it spawns so an
@@ -2132,10 +2188,8 @@ export class Supervisor {
     let upstreamProvidesSection: string | undefined;
     if (task.story.requires && Object.keys(task.story.requires).length > 0) {
       const providesMap = gateProvides ?? this.buildProvidesMapForStory(task.story);
-      const section = injectProvidesSection('', task.story, providesMap);
-      if (section.trim().length > 0) {
-        upstreamProvidesSection = section;
-      }
+      const block = buildProvidesBlock(task.story, providesMap);
+      if (block) upstreamProvidesSection = block;
     }
 
     const assignment: WorkerAssignment = {
@@ -2171,7 +2225,19 @@ export class Supervisor {
         try { activeCollector()?.markFirstToken(); } catch { /* timing is observability */ }
         return this.opts.worker.run(assignment);
       })
-      .then((result) => ({ storyId: task.story.id, result }))
+      .then((result) => {
+        // Flush any remaining incomplete line from the LOOM_PROVIDES buffer.
+        // This handles output that ends without a trailing newline.
+        if (capturesProvides && loomProvidesLineBuffer.trim().startsWith('LOOM_PROVIDES ')) {
+          capturedProvidesLineLocal = loomProvidesLineBuffer.trim();
+        }
+        // Persist captured LOOM_PROVIDES line for applyResult to consume.
+        // Using the full streaming capture avoids logTail truncation.
+        if (capturesProvides) {
+          this.capturedProvidesLines.set(task.story.id, capturedProvidesLineLocal);
+        }
+        return { storyId: task.story.id, result };
+      })
       .catch((err: unknown) => ({
         storyId: task.story.id,
         result: {
@@ -2711,7 +2777,13 @@ export class Supervisor {
     // agent never appears to have an open PR.
     let providesParseBlocked = false;
     if (SUCCESS.has(status) && task.story.provides && Object.keys(task.story.provides).length > 0) {
-      const rawOutput = result.logTail ?? '';
+      // Prefer the streaming-captured LOOM_PROVIDES line (full fidelity, immune
+      // to logTail's 2 kB truncation). When the streaming capture found a line
+      // (non-null string), use it. Otherwise fall back to logTail so the mock
+      // test runner (which never calls onOutput) still exercises the parse path.
+      const capturedLine = this.capturedProvidesLines.get(task.story.id);
+      this.capturedProvidesLines.delete(task.story.id);
+      const rawOutput = typeof capturedLine === 'string' ? capturedLine : (result.logTail ?? '');
       let parsedProvides: Record<string, unknown> | null = null;
       let parseErr: LoomProvidesParseError | null = null;
       try {
@@ -2768,6 +2840,19 @@ export class Supervisor {
     }
 
     task.status = status;
+    // Emit an audit entry for any orphaned PR so operators can find and close
+    // it even though the story is blocked (pr_url not stored on the blocked record).
+    if (providesParseBlocked && result.prUrl) {
+      try {
+        this.audit.record({
+          agent_id: task.agentId,
+          action: 'orphaned_pr',
+          command: task.story.id,
+          allowed: false,
+          detail: { pr_url: result.prUrl, reason: 'provides_parse_failed' },
+        });
+      } catch { /* audit is best-effort */ }
+    }
     this.agents.updateStatus(task.agentId, status, {
       // Do not carry pr_url when blocking due to parse failure — a blocked
       // agent should not appear to have an open PR.
@@ -3027,7 +3112,17 @@ export class Supervisor {
           result.set(sourceStoryId, parsed as Record<string, unknown>);
         }
       } catch {
-        // Ignore malformed persisted provides_output
+        // Emit a low-severity audit entry so operators can diagnose why a
+        // downstream story is unexpectedly blocked due to corrupt upstream data.
+        try {
+          this.audit.record({
+            agent_id: agent.id,
+            action: 'provides_output_corrupt',
+            command: sourceStoryId,
+            allowed: false,
+            detail: { story_id: sourceStoryId },
+          });
+        } catch { /* audit is best-effort; never fail a build over telemetry */ }
       }
     }
     return result;
