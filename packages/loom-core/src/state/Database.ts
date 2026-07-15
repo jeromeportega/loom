@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -561,6 +561,21 @@ export function runMigrations(db: Database.Database): void {
 
   // v26: repoint epic-NNN standalone ids to story-NNN (no schema change).
   repointStandaloneIds(db);
+
+  // v31: audit-log tamper-evidence columns (epic-096 story-096-001).
+  // All three are nullable TEXT with no default; never backfilled on pre-v31 rows.
+  const auditLogCols = db.prepare('PRAGMA table_info(audit_log)').all() as {
+    name: string;
+  }[];
+  if (!auditLogCols.some((c) => c.name === 'prev_hash')) {
+    db.exec('ALTER TABLE audit_log ADD COLUMN prev_hash TEXT');
+  }
+  if (!auditLogCols.some((c) => c.name === 'entry_hash')) {
+    db.exec('ALTER TABLE audit_log ADD COLUMN entry_hash TEXT');
+  }
+  if (!auditLogCols.some((c) => c.name === 'contract_hash')) {
+    db.exec('ALTER TABLE audit_log ADD COLUMN contract_hash TEXT');
+  }
 
   const row = db
     .prepare('SELECT version FROM schema_version LIMIT 1')
