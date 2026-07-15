@@ -60,6 +60,15 @@ export class AuditLog {
     const updateHashes = this.db.prepare(
       'UPDATE audit_log SET prev_hash = ?, entry_hash = ? WHERE id = ?'
     );
+    // contract_hash MUST remain NULL until the payload format is versioned (future epic).
+    const updateAnchor = this.db.prepare(
+      `UPDATE audit_chain_head
+       SET hashed_row_count = hashed_row_count + 1,
+           cutover_id = COALESCE(cutover_id, ?),
+           last_id = ?,
+           last_entry_hash = ?
+       WHERE id = 1`
+    );
 
     const allowedVal =
       entry.allowed !== undefined ? (entry.allowed ? 1 : 0) : null;
@@ -98,13 +107,14 @@ export class AuditLog {
         row.allowed,
         row.policy_rule,
         row.detail,
-        null,
+        null, // contract_hash MUST remain NULL until the payload format is versioned (future epic).
         row.timestamp,
         prevHash
       );
       const entryHash = computeEntryHash(payload);
 
       updateHashes.run(prevHash, entryHash, row.id);
+      updateAnchor.run(rowId, rowId, entryHash);
     });
 
     txn.immediate();

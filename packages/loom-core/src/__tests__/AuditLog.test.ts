@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDatabase, resetDatabaseForTest } from '../state/Database.js';
+import { openDatabase, createDatabase, resetDatabaseForTest } from '../state/Database.js';
 import { AuditLog } from '../state/AuditLog.js';
 import { EpicStore } from '../state/EpicStore.js';
 import { AgentStore } from '../state/AgentStore.js';
@@ -100,5 +100,105 @@ describe('AuditLog.getByStory — story-id prefix guard (v0.5.0)', () => {
     const rows = audit.getByStory('story-005-006');
     assert.equal(rows.length, 1);
     assert.equal(rows[0].action, 'epic_rolling_merge_conflict');
+  });
+});
+
+type AnchorRow = {
+  id: number;
+  hashed_row_count: number;
+  cutover_id: number | null;
+  last_id: number | null;
+  last_entry_hash: string | null;
+};
+
+describe('AuditLog.record — anchor update (story-097-002)', () => {
+  it('first record sets anchor: hashed_row_count=1, cutover_id=last_id=row id, last_entry_hash matches', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+
+    audit.record({ action: 'first_action' });
+
+    const anchor = db.prepare('SELECT * FROM audit_chain_head WHERE id = 1').get() as AnchorRow;
+    const row = db
+      .prepare('SELECT id, entry_hash FROM audit_log ORDER BY id DESC LIMIT 1')
+      .get() as { id: number; entry_hash: string };
+
+    assert.equal(anchor.hashed_row_count, 1, 'hashed_row_count = 1 after first record');
+    assert.equal(anchor.cutover_id, row.id, 'cutover_id equals first row id');
+    assert.equal(anchor.last_id, row.id, 'last_id equals first row id');
+    assert.equal(anchor.last_entry_hash, row.entry_hash, 'last_entry_hash matches entry_hash');
+  });
+
+  it('three records: hashed_row_count=3, cutover_id unchanged, last_id/hash from third row', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+
+    audit.record({ action: 'first' });
+    const firstRow = db
+      .prepare('SELECT id FROM audit_log ORDER BY id ASC LIMIT 1')
+      .get() as { id: number };
+
+    audit.record({ action: 'second' });
+    audit.record({ action: 'third' });
+
+    const anchor = db.prepare('SELECT * FROM audit_chain_head WHERE id = 1').get() as AnchorRow;
+    const lastRow = db
+      .prepare('SELECT id, entry_hash FROM audit_log ORDER BY id DESC LIMIT 1')
+      .get() as { id: number; entry_hash: string };
+
+    assert.equal(anchor.hashed_row_count, 3, 'hashed_row_count = 3 after three records');
+    assert.equal(anchor.cutover_id, firstRow.id, 'cutover_id unchanged (still first row id)');
+    assert.equal(anchor.last_id, lastRow.id, 'last_id is third row id');
+    assert.equal(anchor.last_entry_hash, lastRow.entry_hash, 'last_entry_hash is third row entry_hash');
+  });
+
+  it('atomic rollback: anchor table failure rolls back the audit_log insert', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+
+    audit.record({ action: 'baseline' });
+
+    const beforeCount = (
+      db.prepare('SELECT COUNT(*) as n FROM audit_log').get() as { n: number }
+    ).n;
+    const beforeAnchor = db
+      .prepare('SELECT * FROM audit_chain_head WHERE id = 1')
+      .get() as AnchorRow;
+
+    // Rename anchor table so the UPDATE inside record() fails, forcing rollback.
+    db.exec('ALTER TABLE audit_chain_head RENAME TO audit_chain_head_bak');
+
+    assert.throws(() => audit.record({ action: 'should_rollback' }));
+
+    // Restore so we can re-SELECT the anchor state.
+    db.exec('ALTER TABLE audit_chain_head_bak RENAME TO audit_chain_head');
+
+    const afterCount = (
+      db.prepare('SELECT COUNT(*) as n FROM audit_log').get() as { n: number }
+    ).n;
+    const afterAnchor = db
+      .prepare('SELECT * FROM audit_chain_head WHERE id = 1')
+      .get() as AnchorRow;
+
+    assert.equal(afterCount, beforeCount, 'audit_log row count unchanged after rollback');
+    assert.deepEqual(afterAnchor, beforeAnchor, 'anchor unchanged after rollback');
+  });
+
+  it('busy_timeout pragma is >= 5000 on createDatabase', () => {
+    const db = createDatabase(':memory:');
+    const timeout = db.pragma('busy_timeout', { simple: true }) as number;
+    assert.ok(timeout >= 5000, `busy_timeout should be >= 5000, got ${timeout}`);
+  });
+
+  it('contract_hash stays NULL after record()', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+
+    audit.record({ action: 'test_contract_hash' });
+
+    const row = db
+      .prepare('SELECT contract_hash FROM audit_log ORDER BY id DESC LIMIT 1')
+      .get() as { contract_hash: string | null };
+    assert.equal(row.contract_hash, null, 'contract_hash must remain NULL');
   });
 });
