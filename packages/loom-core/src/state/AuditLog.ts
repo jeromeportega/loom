@@ -5,6 +5,35 @@ import type {
   AttemptClass,
   InfraSignature,
 } from '../orchestrator/resilience/types.js';
+import {
+  AUDIT_GENESIS_HASH,
+  canonicalPayload,
+  computeEntryHash,
+} from './auditHash.js';
+
+export interface VerifyChainResult {
+  ok:          boolean;
+  hashedRows:  number;
+  legacyRows:  number;
+  fromId:      number | null;
+  toId:        number | null;
+  brokenAtId?: number;
+  reason?:     string;
+}
+
+type RawAuditRow = {
+  id:            number;
+  agent_id:      string | null;
+  action:        string;
+  command:       string | null;
+  allowed:       number | null;
+  policy_rule:   string | null;
+  detail:        string | null;
+  timestamp:     string;
+  prev_hash:     string | null;
+  entry_hash:    string | null;
+  contract_hash: string | null;
+};
 
 export class AuditLog {
   constructor(private db: Database.Database) {}
@@ -17,19 +46,133 @@ export class AuditLog {
     policy_rule?: string;
     detail?: Record<string, unknown>;
   }): void {
-    this.db
-      .prepare(
-        `INSERT INTO audit_log (agent_id, action, command, allowed, policy_rule, detail)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      )
-      .run(
+    const getHead = this.db.prepare(
+      'SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY id DESC LIMIT 1'
+    );
+    const insertRow = this.db.prepare(
+      `INSERT INTO audit_log (agent_id, action, command, allowed, policy_rule, detail)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    const getRow = this.db.prepare(
+      `SELECT id, agent_id, action, command, allowed, policy_rule, detail, timestamp
+       FROM audit_log WHERE id = ?`
+    );
+    const updateHashes = this.db.prepare(
+      'UPDATE audit_log SET prev_hash = ?, entry_hash = ? WHERE id = ?'
+    );
+
+    const allowedVal =
+      entry.allowed !== undefined ? (entry.allowed ? 1 : 0) : null;
+    const detailVal = entry.detail ? JSON.stringify(entry.detail) : null;
+
+    const txn = this.db.transaction(() => {
+      const head = getHead.get() as { entry_hash: string } | undefined;
+      const prevHash = head?.entry_hash ?? AUDIT_GENESIS_HASH;
+
+      const result = insertRow.run(
         entry.agent_id ?? null,
         entry.action,
         entry.command ?? null,
-        entry.allowed !== undefined ? (entry.allowed ? 1 : 0) : null,
+        allowedVal,
         entry.policy_rule ?? null,
-        entry.detail ? JSON.stringify(entry.detail) : null
+        detailVal
       );
+
+      const rowId = Number(result.lastInsertRowid);
+      const row = getRow.get(rowId) as {
+        id: number;
+        agent_id: string | null;
+        action: string;
+        command: string | null;
+        allowed: number | null;
+        policy_rule: string | null;
+        detail: string | null;
+        timestamp: string;
+      };
+
+      const payload = canonicalPayload(
+        row.id,
+        row.agent_id,
+        row.action,
+        row.command,
+        row.allowed,
+        row.policy_rule,
+        row.detail,
+        null,
+        row.timestamp,
+        prevHash
+      );
+      const entryHash = computeEntryHash(payload);
+
+      updateHashes.run(prevHash, entryHash, row.id);
+    });
+
+    txn.immediate();
+  }
+
+  verifyChain(): VerifyChainResult {
+    const rows = this.db
+      .prepare('SELECT * FROM audit_log ORDER BY id ASC')
+      .all() as RawAuditRow[];
+
+    let hashedRows = 0;
+    let legacyRows = 0;
+    let fromId: number | null = null;
+    let toId: number | null = null;
+    let expectedPrev = AUDIT_GENESIS_HASH;
+
+    for (const row of rows) {
+      if (row.entry_hash === null) {
+        legacyRows++;
+        continue;
+      }
+
+      hashedRows++;
+      if (fromId === null) fromId = row.id;
+      toId = row.id;
+
+      const payload = canonicalPayload(
+        row.id,
+        row.agent_id,
+        row.action,
+        row.command,
+        row.allowed,
+        row.policy_rule,
+        row.detail,
+        null,
+        row.timestamp,
+        row.prev_hash as string
+      );
+      const recomputed = computeEntryHash(payload);
+
+      if (recomputed !== row.entry_hash) {
+        return {
+          ok: false,
+          hashedRows,
+          legacyRows,
+          fromId,
+          toId,
+          brokenAtId: row.id,
+          reason: 'entry-hash-mismatch',
+        };
+      }
+
+      if (row.prev_hash !== expectedPrev) {
+        return {
+          ok: false,
+          hashedRows,
+          legacyRows,
+          fromId,
+          toId,
+          brokenAtId: row.id,
+          reason: 'broken-link',
+        };
+      }
+
+      expectedPrev = row.entry_hash;
+    }
+
+    return { ok: true, hashedRows, legacyRows, fromId, toId };
   }
 
   /**
