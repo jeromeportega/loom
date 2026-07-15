@@ -65,47 +65,6 @@ Rules:
 - Each note is 1–4 sentences, concrete and actionable — name files/components/libraries.
 - If a story is trivial, a single sentence is fine. Do not pad.
 
-**Optional decomposition fields** — when your architecture analysis reveals a
-meaningful inter-story data contract (one story produces a type, schema, or
-artifact another story consumes), add the three fields below to the relevant
-story objects inside the `tech_notes` JSON. Omit them silently when the
-information is uncertain; invented values mislead the orchestrator.
-
-- `provides` — JSON object of named outputs (key = short name, value = shape
-  or description). Emit when a story definitively produces a contract a
-  downstream story needs.
-- `requires` — JSON object mapping input-name → upstream story-id. Only fill
-  this when you have identified the specific story that provides the value.
-- `estimated_effort` — whole minutes (integer ≥ 0): trivial ≈ 30, small ≈ 60,
-  medium ≈ 120, large ≈ 240. Omit when you cannot give a reliable estimate.
-
-Example enriched story object within the `tech_notes` payload:
-
-```json
-{
-  "tech_notes": {
-    "story-001-001": "Define UserRecord interface in packages/core/src/types.ts; use zod for runtime validation. No external deps needed.",
-    "story-001-002": "Implement POST /auth/login in packages/api/src/routes/auth.ts; import UserRecord from story-001-001's types file.",
-    "story-001-003": "Add React login form in packages/web/src/pages/Login.tsx; consumes the JWT shape from the auth endpoint."
-  },
-  "story_updates": {
-    "story-001-001": {
-      "provides": { "user_record_type": "UserRecord interface with id, email, hashed_password fields" },
-      "estimated_effort": 30
-    },
-    "story-001-002": {
-      "requires": { "user_record_type": "story-001-001" },
-      "provides": { "jwt_shape": "{ token: string, expires_at: string (ISO8601) }" },
-      "estimated_effort": 60
-    },
-    "story-001-003": {
-      "requires": { "jwt_shape": "story-001-002" },
-      "estimated_effort": 90
-    }
-  }
-}
-```
-
 # Headless task C: produce the shared implementation contract
 
 The stories of an epic are implemented by independent agents working in parallel,

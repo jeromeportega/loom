@@ -58,20 +58,13 @@ const PROGRESS_COLOR: Record<string, string> = {
   pending: 'bg-muted-foreground/25',
 };
 
-function StoryProgress({
-  stories,
-  criticalPath,
-}: {
-  stories: FleetStory[];
-  criticalPath: FleetCard['criticalPath'];
-}) {
+function StoryProgress({ stories }: { stories: FleetStory[] }) {
   if (stories.length === 0) return null;
   const counts = new Map<string, number>();
   for (const s of stories) counts.set(s.status, (counts.get(s.status) ?? 0) + 1);
   const done = (counts.get('done') ?? 0) + (counts.get('pr_open') ?? 0);
   // Stable segment order so colors don't jump as counts change.
   const order = ['done', 'pr_open', 'running', 'integrating', 'blocked', 'failed', 'pending'];
-  const criticalSet = new Set(criticalPath?.chain ?? []);
   return (
     <div className="mt-2">
       <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted">
@@ -90,30 +83,6 @@ function StoryProgress({
       <span className="mt-1 block text-[11px] tabular-nums text-muted-foreground">
         {done}/{stories.length}
       </span>
-      {criticalPath && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1">
-          <span className="shrink-0 text-[10px] font-medium text-amber-600 dark:text-amber-400">⚡</span>
-          {stories.map((s) => (
-            <span
-              key={s.story_id}
-              data-testid={`story-dot-${s.story_id}`}
-              className={cn(
-                'rounded px-1 font-mono text-[10px]',
-                criticalSet.has(s.story_id)
-                  ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-400 dark:bg-amber-950 dark:text-amber-300'
-                  : 'text-muted-foreground'
-              )}
-            >
-              {s.story_id}
-            </span>
-          ))}
-          {criticalPath.estimatedMinutes > 0 && (
-            <span className="text-[10px] text-muted-foreground">
-              {criticalPath.estimatedMinutes}m
-            </span>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -325,7 +294,7 @@ export function EpicCard({ card, mutations, onReject, showRepo = true, overlay =
 
       <p className="mt-1.5 line-clamp-2 text-[13px] font-medium leading-snug">{card.title}</p>
 
-      {card.stories.length > 0 ? <StoryProgress stories={card.stories} criticalPath={card.criticalPath} /> : <div className="mt-2"><BusyChip card={card} /></div>}
+      {card.stories.length > 0 ? <StoryProgress stories={card.stories} /> : <div className="mt-2"><BusyChip card={card} /></div>}
 
       <MetaChips card={card} />
 

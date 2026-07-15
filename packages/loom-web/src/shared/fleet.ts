@@ -56,14 +56,4 @@ export interface FleetCard {
   epic_pr_url: string | null;
   /** 'standalone' for single-story containers; undefined for normal epics. */
   kind?: string;
-  /**
-   * Critical path for this epic: the longest dependency chain weighted by
-   * estimated_effort. null when no story in the epic has estimated_effort data.
-   * Always present in the response (never absent); consumers must not treat
-   * its absence as null.
-   */
-  criticalPath: {
-    chain: string[];
-    estimatedMinutes: number;
-  } | null;
 }

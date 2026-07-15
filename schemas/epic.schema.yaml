@@ -83,16 +83,3 @@ definitions:
             depends_on: { type: string }
             reason: { type: string, enum: ["same-file-conflict-avoidance"] }
             path: { type: string }
-      provides:
-        type: object
-        description: "Key→value map of outputs this story promises to downstream stories that declare a matching requires entry. Values are any JSON-serialisable type."
-        additionalProperties: true
-      requires:
-        type: object
-        description: "Key→story-id map. Each entry declares that this story needs a specific output (keyed by name) produced by the identified upstream story."
-        additionalProperties:
-          type: string
-      estimated_effort:
-        type: integer
-        minimum: 0
-        description: "Estimated implementation effort in whole minutes (≥ 0). Used by the orchestrator to compute the critical path. Absent = unknown."

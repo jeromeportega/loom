@@ -26,7 +26,6 @@ function card(overrides: Partial<FleetCard>): FleetCard {
     blockers: 0,
     updated_at: '2026-07-10T00:00:00.000Z',
     planning_phase: null, finalize_phase: null, epic_pr_url: null,
-    criticalPath: null,
     ...overrides,
   };
 }
@@ -48,74 +47,6 @@ function renderBoard(cards: FleetCard[]) {
 afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
-});
-
-describe('KanbanBoard — critical path highlighting', () => {
-  it('highlights critical-path stories and leaves non-critical stories unstyled', () => {
-    const stories = [
-      { story_id: 's1', status: 'done' as const },
-      { story_id: 's2', status: 'running' as const },
-      { story_id: 's3', status: 'pending' as const },
-    ];
-    renderBoard([
-      card({
-        epic_id: 'epic-001',
-        status: 'in_progress' as EpicStatus,
-        stories,
-        criticalPath: { chain: ['s1', 's3'], estimatedMinutes: 45 },
-      }),
-    ]);
-
-    const s1 = screen.getByTestId('story-dot-s1');
-    const s3 = screen.getByTestId('story-dot-s3');
-    const s2 = screen.getByTestId('story-dot-s2');
-
-    // Critical-path stories have the amber ring class
-    expect(s1.className).toContain('ring-amber-400');
-    expect(s3.className).toContain('ring-amber-400');
-    // Non-critical story does not
-    expect(s2.className).not.toContain('ring-amber-400');
-  });
-
-  it('renders without errors and with no critical-path treatment when criticalPath is null', () => {
-    const stories = [
-      { story_id: 's1', status: 'done' as const },
-      { story_id: 's2', status: 'running' as const },
-    ];
-    renderBoard([
-      card({
-        epic_id: 'epic-001',
-        status: 'in_progress' as EpicStatus,
-        stories,
-        criticalPath: null,
-      }),
-    ]);
-
-    // Component renders the card without errors
-    expect(screen.getByText('epic-001')).toBeTruthy();
-    // No story dots (critical path section is hidden when criticalPath is null)
-    expect(screen.queryByTestId('story-dot-s1')).toBeNull();
-    expect(screen.queryByTestId('story-dot-s2')).toBeNull();
-  });
-
-  it('existing card content (title, status) is unaffected when criticalPath is set', () => {
-    const stories = [
-      { story_id: 's1', status: 'done' as const },
-    ];
-    renderBoard([
-      card({
-        epic_id: 'epic-cp',
-        title: 'Epic with critical path',
-        status: 'in_progress' as EpicStatus,
-        stories,
-        criticalPath: { chain: ['s1'], estimatedMinutes: 30 },
-      }),
-    ]);
-
-    expect(screen.getByText('epic-cp')).toBeTruthy();
-    expect(screen.getByText('Epic with critical path')).toBeTruthy();
-    expect(screen.getByTestId('story-dot-s1').className).toContain('ring-amber-400');
-  });
 });
 
 describe('KanbanBoard', () => {

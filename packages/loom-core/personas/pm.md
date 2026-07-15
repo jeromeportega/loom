@@ -94,37 +94,6 @@ Schema:
 }
 ```
 
-**Optional decomposition fields** — emit these on a story when the information
-is naturally available from the brief; omit them silently when it is not. Do
-NOT invent values. The orchestrator uses them for scheduling; wrong values are
-worse than absent values.
-
-- `provides` — a JSON object of named outputs this story will produce for
-  downstream stories (e.g. a shared type, a compiled artifact, an API shape).
-  Keys are short names; values can be any JSON-serialisable description.
-- `requires` — a JSON object mapping needed input names to the story-id that
-  provides them. Only fill this when you can identify the specific upstream
-  story; `dependencies` already handles sequencing for everything else.
-- `estimated_effort` — implementation effort in whole minutes (integer ≥ 0).
-  Use rough multiples of 30: trivial ≈ 30, small ≈ 60, medium ≈ 120, large ≈ 240.
-  Omit when you have no reliable basis.
-
-Example with all three fields:
-
-```json
-{
-  "id": "story-001-002",
-  "title": "Implement user authentication endpoint",
-  "description": "Add POST /auth/login that validates credentials and returns a JWT.",
-  "acceptance_criteria": ["Returns 200 + JWT on valid credentials", "Returns 401 on invalid credentials"],
-  "estimated_complexity": "small",
-  "dependencies": ["story-001-001"],
-  "provides": { "jwt_shape": "{ token: string, expires_at: ISO8601 }" },
-  "requires": { "db_schema": "story-001-001" },
-  "estimated_effort": 60
-}
-```
-
 Rules:
 - `epic_id` is `epic-NNN` zero-padded, sequential from `epic-001`.
 - `story.id` is `story-NNN-MMM` where `NNN` matches the epic number.
