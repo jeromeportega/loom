@@ -3015,7 +3015,7 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
       worker,
       maxConcurrent: 1,
       autoResumeAttempts: 2,
-      cleanRetryService: mockRetry,
+      retryService: mockRetry,
     }).run();
 
     // Prepare rejected → story left failed, no re-dispatch.
@@ -3039,7 +3039,6 @@ describe('Supervisor — auto-resume from checkpoint (story-032-002)', () => {
       db,
       worker,
       maxConcurrent: 1,
-      stallRecoveryBudget: 0,  // also disable stall recovery — test targets auto-resume only
       // autoResumeAttempts not set → defaults to 0 inside Supervisor (disabled)
     }).run();
 

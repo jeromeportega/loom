@@ -1,16 +1,10 @@
 import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import yaml from 'js-yaml';
 import {
   EpicStore,
   PolicyEngine,
-  buildStoryGraph,
-  detectCycles,
-  EpicYamlSchema,
-  readManifest,
-  resolvePrimaryRepo,
-  loomHome,
+  detectCyclesInEpicYaml,
 } from '@loom-ai/core';
 import { openProjectDatabase } from '../dbHelper.js';
 import { printOverlapAdvisory as defaultPrintOverlapAdvisory } from '../crossEpicOverlap.js';
@@ -134,9 +128,9 @@ export async function runApprove(
     // therefore never dispatched.
     if (epic.yaml_path) {
       const projectRoot = path.dirname(loomDir);
-      const cycle = loadAndDetectCycles(epic.yaml_path, projectRoot);
-      if (cycle.length > 0) {
-        console.error(`Cannot approve "${displayId}": cycle detected — ${cycle.join(' → ')}`);
+      const cycleErr = detectCyclesInEpicYaml(epic.yaml_path, projectRoot);
+      if (cycleErr) {
+        console.error(`Cannot approve "${displayId}": ${cycleErr}`);
         process.exit(1);
       }
     }
@@ -173,9 +167,9 @@ export async function runApprove(
   for (const epic of planned) {
     // Cycle check before each individual bulk approval.
     if (epic.yaml_path) {
-      const cycle = loadAndDetectCycles(epic.yaml_path, projectRoot);
-      if (cycle.length > 0) {
-        console.error(`  skipped   ${epic.id}: cycle detected — ${cycle.join(' → ')}`);
+      const cycleErr = detectCyclesInEpicYaml(epic.yaml_path, projectRoot);
+      if (cycleErr) {
+        console.error(`  skipped   ${epic.id}: ${cycleErr}`);
         continue;
       }
     }
@@ -222,40 +216,6 @@ export function runReject(epicId: string, reason: string | undefined): void {
   store.updateStatus(internalId, 'rejected', reason);
   console.log(`  rejected  ${displayId}: ${epic.title}`);
   if (reason) console.log(`  reason    ${reason}`);
-}
-
-/**
- * Loads the epic YAML from disk, builds its story graph, and returns the cycle
- * path (ordered story IDs) from detectCycles. Returns [] when acyclic or when
- * the check cannot run (missing file, parse error, no manifest).
- */
-function loadAndDetectCycles(yamlPath: string, projectRoot: string): string[] {
-  const resolvedRoot = path.resolve(projectRoot);
-  const abs = path.resolve(projectRoot, yamlPath);
-  if (!abs.startsWith(resolvedRoot + path.sep) && abs !== resolvedRoot) return [];
-  if (!fs.existsSync(abs)) return [];
-
-  let stories: ReturnType<typeof EpicYamlSchema.parse>['stories'];
-  try {
-    const raw = yaml.load(fs.readFileSync(abs, 'utf8'), { schema: yaml.JSON_SCHEMA });
-    stories = EpicYamlSchema.parse(raw).stories;
-  } catch (e) {
-    console.error(`  warn: cycle check skipped — epic YAML could not be parsed (${(e as Error).message})`);
-    return [];
-  }
-
-  const graph = buildStoryGraph(stories);
-
-  let manifest;
-  let primarySlug: string | undefined;
-  try {
-    manifest = readManifest(loomHome());
-    primarySlug = resolvePrimaryRepo(manifest);
-  } catch {
-    // No manifest or ambiguous primary repo — cross-repo check skipped, story-level check still runs.
-  }
-
-  return detectCycles(graph, manifest ? { manifest, primarySlug } : undefined);
 }
 
 function openLoom(): { db: ReturnType<typeof openProjectDatabase>; loomDir: string } {

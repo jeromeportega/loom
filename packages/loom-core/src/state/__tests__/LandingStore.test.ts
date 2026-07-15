@@ -80,7 +80,7 @@ describe('schema v27 migration', () => {
       db.prepare("INSERT INTO repo_merges (attempt_id, repo_slug, merge_state) VALUES ('a1', 'r1', 'pending')").run();
     }, 'duplicate (attempt_id, repo_slug) must throw');
 
-    assert.ok(SCHEMA_VERSION >= 30, 'SCHEMA_VERSION must be at least 30 (LandingStore migration is present)');
+    assert.equal(SCHEMA_VERSION, 30);
     db.close();
   });
 

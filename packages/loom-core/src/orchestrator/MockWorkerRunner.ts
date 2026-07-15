@@ -45,7 +45,6 @@ export class MockWorkerRunner implements WorkerRunner {
         ...(fixed.usage ? { usage: fixed.usage } : {}),
         ...(fixed.budgetExhausted ? { budgetExhausted: fixed.budgetExhausted } : {}),
         ...(fixed.model ? { model: fixed.model } : {}),
-        ...(fixed.killReason ? { killReason: fixed.killReason } : {}),
       });
     }
   }

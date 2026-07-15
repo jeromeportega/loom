@@ -479,7 +479,7 @@ describe('v26 migration — FK deferral implicit proof and schema version', () =
     const db = seedPreV26Db(dbPath);
     runMigrations(db);
     assert.equal(schemaVersion(db), SCHEMA_VERSION);
-    assert.ok(SCHEMA_VERSION >= 30, 'SCHEMA_VERSION must be at least 30 (migration059 is present)');
+    assert.equal(SCHEMA_VERSION, 30);
     db.close();
   });
 });

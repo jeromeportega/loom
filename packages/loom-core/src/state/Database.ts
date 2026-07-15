@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 30;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -519,33 +519,6 @@ export function runMigrations(db: Database.Database): void {
     db.exec(
       'ALTER TABLE agents ADD COLUMN revise_round INTEGER NOT NULL DEFAULT 0'
     );
-  }
-  // v31: decomposition-aware orchestration fields (epic-095 story-095-001).
-  // provides_output: JSON blob from the LOOM_PROVIDES trailer emitted by a
-  // worker; NULL = absent or not yet parsed. Written by story-095-004.
-  // resplit_count: how many re-split attempts have been made for this story
-  // when LOOM_TOO_BIG is signalled; DEFAULT 0 so pre-migration rows read 0
-  // without backfill.
-  if (!agentCols.some((c) => c.name === 'provides_output')) {
-    db.exec('ALTER TABLE agents ADD COLUMN provides_output TEXT');
-  }
-  if (!agentCols.some((c) => c.name === 'resplit_count')) {
-    db.exec(
-      'ALTER TABLE agents ADD COLUMN resplit_count INTEGER NOT NULL DEFAULT 0'
-    );
-  }
-  // v31 (cont.) / epic-095 story-095-005: sub-story injection columns.
-  // story_json: full Story JSON blob for sub-stories created by the reroute
-  // handler; NULL for normal stories. Lets the Supervisor re-hydrate sub-story
-  // objects from DB after a reroute without re-reading the YAML plan.
-  // dep_overrides: JSON array of dependency-id strings that supersedes a
-  // downstream story's YAML-declared dependencies after its upstream was
-  // re-split. NULL = use YAML deps; non-NULL = use this array instead.
-  if (!agentCols.some((c) => c.name === 'story_json')) {
-    db.exec('ALTER TABLE agents ADD COLUMN story_json TEXT');
-  }
-  if (!agentCols.some((c) => c.name === 'dep_overrides')) {
-    db.exec('ALTER TABLE agents ADD COLUMN dep_overrides TEXT');
   }
   if (!epicCols.some((c) => c.name === 'planner_model')) {
     db.exec('ALTER TABLE epics ADD COLUMN planner_model TEXT');

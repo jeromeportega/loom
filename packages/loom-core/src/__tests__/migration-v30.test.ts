@@ -114,7 +114,7 @@ describe('DatabaseMigrationV30 — agents.revise_round + review_findings (story-
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
     assert.equal(ver.version, SCHEMA_VERSION, 'schema_version must equal SCHEMA_VERSION constant');
-    assert.ok(SCHEMA_VERSION >= 30, 'SCHEMA_VERSION constant must be at least 30 (v30 migration is present)');
+    assert.equal(SCHEMA_VERSION, 30, 'SCHEMA_VERSION constant must be 30');
 
     // Check review_findings columns
     const rfCols = db.prepare('PRAGMA table_info(review_findings)').all() as {
@@ -215,7 +215,7 @@ describe('DatabaseMigrationV30 — agents.revise_round + review_findings (story-
     const ver = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(ver.version, SCHEMA_VERSION, 'schema_version must remain at SCHEMA_VERSION after second run');
+    assert.equal(ver.version, 30, 'schema_version must remain 30 after second run');
 
     // Exactly one revise_round column — no duplicate
     const revCols = (
@@ -257,6 +257,6 @@ describe('DatabaseMigrationV30 — agents.revise_round + review_findings (story-
     const ver = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(ver.version, SCHEMA_VERSION, 'schema_version must equal SCHEMA_VERSION after migration from v29');
+    assert.equal(ver.version, 30, 'schema_version must be 30 after migration from v29');
   });
 });

@@ -40,7 +40,6 @@ function card(overrides: Partial<FleetCard> = {}): FleetCard {
     planning_phase: null,
     finalize_phase: null,
     epic_pr_url: null,
-    criticalPath: null,
     ...overrides,
   };
 }
