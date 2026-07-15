@@ -282,6 +282,19 @@ export class AgentStore {
     }
   }
 
+  /**
+   * Persists the LOOM_PROVIDES trailer parsed from a successful worker's output
+   * (epic-095 story-095-004). `json` must be a valid JSON-stringified object.
+   * Calling this more than once for the same agent overwrites the prior value.
+   */
+  setProvidesOutput(agentId: string, json: string): void {
+    this.db
+      .prepare(
+        'UPDATE agents SET provides_output = ?, updated_at = ? WHERE id = ?'
+      )
+      .run(json, new Date().toISOString(), agentId);
+  }
+
   // Sets the revise-round count to an absolute value (idempotent). Used by the
   // Supervisor to record the actual number of block-and-revise rounds a story's
   // real review loop ran (ReviewOutcome.revisions). No-op if the agent is absent.
