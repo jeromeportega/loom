@@ -1,3 +1,4 @@
+export { loadEpicStories } from './epicCriticalPath.js';
 export { WorktreeManager } from './WorktreeManager.js';
 export type { WorktreeInfo } from './WorktreeManager.js';
 export { WorktreeJanitor } from './WorktreeJanitor.js';
@@ -162,4 +163,13 @@ export { CyclicRepoDependencyError, assertNoCycles, detectCyclesInEpicYaml } fro
 export { resolveSmokeCommand } from './SmokeResolver.js';
 export type { NoCallerFinding, NoCallerResult } from './GateNoProductionCaller.js';
 export { checkNoProductionCallers } from './GateNoProductionCaller.js';
+export {
+  buildStoryGraph,
+  topologicalSort,
+  detectCycles,
+  findReadyStories,
+  criticalPath,
+  StoryGraphCycleError,
+} from './storyGraph.js';
+export type { StoryGraph, CriticalPathResult } from './storyGraph.js';
 

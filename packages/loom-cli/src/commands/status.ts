@@ -2,6 +2,7 @@ import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync as nodeSpawnSync } from 'node:child_process';
+import yaml from 'js-yaml';
 import {
   INTEGRATION_BRANCH,
   INTEGRATION_BRANCH_LAG_THRESHOLD,
@@ -22,6 +23,10 @@ import {
   deriveBlocked,
   displayModel,
   STANDALONE_KIND,
+  EpicYamlSchema,
+  buildStoryGraph,
+  criticalPath,
+  type CriticalPathResult,
   type IntakeVerdict,
   type EpicRecord,
   type LandingReport,
@@ -444,6 +449,25 @@ function collectJsonEpics(
   }
 }
 
+/**
+ * Loads the epic YAML and computes its critical path. Returns null when the
+ * YAML is absent, unparseable, or the graph is empty.
+ */
+function loadCriticalPath(yamlPath: string, projectRoot: string): CriticalPathResult | null {
+  const resolvedRoot = path.resolve(projectRoot);
+  const abs = path.resolve(projectRoot, yamlPath);
+  if (!abs.startsWith(resolvedRoot + path.sep) && abs !== resolvedRoot) return null;
+  if (!fs.existsSync(abs)) return null;
+  try {
+    const raw = yaml.load(fs.readFileSync(abs, 'utf8'), { schema: yaml.JSON_SCHEMA });
+    const { stories } = EpicYamlSchema.parse(raw);
+    const graph = buildStoryGraph(stories);
+    return criticalPath(graph);
+  } catch {
+    return null;
+  }
+}
+
 /** Renders a landing report section under an epic when an attempt exists. */
 function renderLandingReport(report: LandingReport): void {
   const icon = STATUS_ICONS[report.status] ?? '?';
@@ -573,6 +597,16 @@ function renderLoomDir(
 
       const v = verdicts.get(epic.id) ?? null;
       console.log(`        verdict: ${v ? `${v.type}/${v.size} (${v.confidence})` : 'no verdict'}`);
+
+      if (epic.yaml_path) {
+        const cp = loadCriticalPath(epic.yaml_path, repoRoot);
+        if (cp !== null && cp.chain.length > 0) {
+          const effortLabel = cp.estimatedMinutes === 0
+            ? '(no effort estimates)'
+            : `${cp.estimatedMinutes} min estimated`;
+          console.log(`        Critical path: ${cp.chain.join(' → ')}  ${effortLabel}`);
+        }
+      }
 
       if (epic.planner_tokens_input || epic.planner_tokens_output) {
         const inn = epic.planner_tokens_input ?? 0;

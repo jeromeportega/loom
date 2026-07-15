@@ -98,6 +98,12 @@ export const SMOKE_TIMEOUT_MINUTES = 15;
 /** Prune done/merged worktrees at run end. */
 export const PRUNE_ORPHAN_WORKTREES = 'on' as const;
 
+// ─── Decomposition-aware orchestration (epic-095) ────────────────────────────
+/** Signal a worker emits (on its own line in stdout) to request story re-split. */
+export const LOOM_TOO_BIG_SIGNAL = 'LOOM_TOO_BIG' as const;
+/** Max re-split attempts per story before the orchestrator gives up and blocks. */
+export const MAX_RESPLIT_BUDGET = 2;
+
 // ─── Cross-repo retrieval ────────────────────────────────────────────────────
 /** Cross-repo read-only retrieval is always enabled. */
 export const CROSS_REPO_ENABLED = true;
