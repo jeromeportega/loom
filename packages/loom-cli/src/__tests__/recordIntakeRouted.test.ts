@@ -337,7 +337,7 @@ describe('NFR-3: no schema change', () => {
     // Verify the existing columns are present — no new column was added.
     const cols = (db.prepare('PRAGMA table_info(audit_log)').all() as Array<{ name: string }>)
       .map((c) => c.name);
-    const expected = ['id', 'agent_id', 'action', 'command', 'allowed', 'policy_rule', 'detail', 'timestamp'];
+    const expected = ['id', 'agent_id', 'action', 'command', 'allowed', 'policy_rule', 'detail', 'timestamp', 'prev_hash', 'entry_hash', 'contract_hash'];
     for (const col of expected) {
       assert.ok(cols.includes(col), `audit_log must have column '${col}'`);
     }
