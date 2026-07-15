@@ -22,7 +22,7 @@ import { startPhase, endPhase } from '../metrics/timing.js';
 import { toLLMUsage } from '../metrics/workerUsage.js';
 import { buildRunAttribution } from '../metrics/runAttribution.js';
 import type { RunScope, RunOutcome } from '../metrics/types.js';
-import { EpicYamlSchema, type Story, type AgentStatus } from '../types.js';
+import { EpicYamlSchema, StorySchema, type Story, type AgentStatus } from '../types.js';
 import { approveAndDispatch } from './actions/approveAndDispatch.js';
 import {
   SkillStore,
@@ -842,6 +842,45 @@ export class Supervisor {
           tasks.set(story.id, task);
         } else {
           tasks.set(story.id, this.taskFor(epicId, story));
+        }
+      }
+      // Restart recovery: re-hydrate injected sub-stories and dep_overrides that
+      // survive across runs in the DB but are absent from the YAML plan file.
+      // Only runs in the simple (non-repoFilter) path — cross-repo partitioning
+      // does not split-and-reroute within a partition, so sub-stories won't exist.
+      if (repoFilter === undefined) {
+        const latestRows = this.agents.listLatestByEpic(epicId);
+        for (const row of latestRows) {
+          // Sub-story recovery: rows with story_json were injected by injectSubStories.
+          if (row.story_json != null && !tasks.has(row.story_id)) {
+            try {
+              const parsed = StorySchema.parse(JSON.parse(row.story_json));
+              tasks.set(parsed.id, {
+                epicId,
+                story:   parsed,
+                agentId: row.id,
+                status:  row.status,
+              });
+            } catch {
+              this.audit.record({
+                action: 'sub_story_json_corrupt',
+                command: row.story_id,
+                allowed: false,
+                detail: { epicId, agentId: row.id },
+              });
+            }
+          }
+          // dep_overrides recovery: re-point downstream YAML stories re-directed
+          // by a prior reroute (dep_overrides survives in the DB across restarts).
+          if (row.dep_overrides != null) {
+            const t = tasks.get(row.story_id);
+            if (t) {
+              try {
+                const newDeps = JSON.parse(row.dep_overrides) as string[];
+                t.story = { ...t.story, dependencies: newDeps };
+              } catch { /* corrupt dep_overrides: leave YAML deps unchanged */ }
+            }
+          }
         }
       }
     }
@@ -3276,14 +3315,21 @@ export class Supervisor {
     // can immediately schedule sub-stories without a full reload.
     for (const sub of subStories) {
       const agentRow = this.agents.getByStory(sub.id);
-      if (agentRow) {
-        tasks.set(sub.id, {
-          epicId:  task.epicId,
-          story:   sub,
-          agentId: agentRow.id,
-          status:  'pending',
-        });
+      if (!agentRow) {
+        // injectSubStories just wrote this row in a committed transaction; a
+        // null result here means the DB is in an inconsistent state — surface
+        // immediately rather than silently dropping the sub-story from dispatch.
+        throw new Error(
+          `Internal error: agent row for injected sub-story ${sub.id} not found ` +
+          `immediately after injectSubStories transaction committed`
+        );
       }
+      tasks.set(sub.id, {
+        epicId:  task.epicId,
+        story:   sub,
+        agentId: agentRow.id,
+        status:  'pending',
+      });
     }
     for (const override of downstreamOverrides) {
       const t = tasks.get(override.storyId);

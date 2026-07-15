@@ -17,6 +17,7 @@ import { openDatabase, resetDatabaseForTest } from '../../state/Database.js';
 import { EpicStore } from '../../state/EpicStore.js';
 import { AgentStore } from '../../state/AgentStore.js';
 import { AuditLog } from '../../state/AuditLog.js';
+import { StoryRetryService } from '../StoryRetryService.js';
 import { Supervisor } from '../Supervisor.js';
 import { MockWorkerRunner } from '../MockWorkerRunner.js';
 import { MAX_RESPLIT_BUDGET, LOOM_TOO_BIG_SIGNAL } from '../constants.js';
@@ -191,6 +192,16 @@ describe('Supervisor reroute — absoluteCapMs cap kill (AC-3)', () => {
       return { status: 'done' as const, commitCount: 1, summary: 'done', logTail: '' };
     });
 
+    // Spy cleanRetryService to assert the destructive-delete path (stall recovery)
+    // is NOT taken for a cap-killed story. AC-3 explicitly requires this.
+    const cleanRetryCalledFor: string[] = [];
+    const spyCleanRetryService = {
+      prepare: (storyId: string) => {
+        cleanRetryCalledFor.push(storyId);
+        return { status: 'ready' as const, storyId, cleaned: true, resetStories: [], willResume: false, message: 'spy' };
+      },
+    } as unknown as StoryRetryService;
+
     const events: WorkerEvent[] = [];
     const supervisor = new Supervisor({
       projectRoot: repoDir,
@@ -199,6 +210,7 @@ describe('Supervisor reroute — absoluteCapMs cap kill (AC-3)', () => {
       maxConcurrent: 3,
       lease: false,
       pmAgent: pm,
+      cleanRetryService: spyCleanRetryService,
       onWorkerEvent: (e) => events.push(e),
     });
 
@@ -209,6 +221,13 @@ describe('Supervisor reroute — absoluteCapMs cap kill (AC-3)', () => {
     const reroutedEvent = events.find((e) => e.type === 'rerouted') as Extract<WorkerEvent, { type: 'rerouted' }> | undefined;
     assert.ok(reroutedEvent, 'rerouted event emitted for cap kill');
     assert.strictEqual(reroutedEvent!.trigger, 'cap');
+
+    // Verify checkpointUncommitted (cleanRetryService.prepare) was NOT called
+    // for the cap-killed story — the reroute path bypasses destructive worktree teardown.
+    assert.ok(
+      !cleanRetryCalledFor.includes('story-001-001'),
+      `cleanRetryService.prepare must NOT be called for cap-killed story; was called for: ${JSON.stringify(cleanRetryCalledFor)}`
+    );
   });
 
   it('[Boundary] cap kill without pmAgent configured → story stays failed (no reroute)', async () => {
@@ -351,5 +370,17 @@ describe('Supervisor reroute — MAX_RESPLIT_BUDGET enforcement (AC-5)', () => {
     const rows = audit.getByStory('story-001-001');
     const exhausted = rows.find((r) => r.action === 'reroute_budget_exhausted');
     assert.ok(exhausted, 'reroute_budget_exhausted audit row present');
+
+    // Verify that handleReroute actually read MAX_RESPLIT_BUDGET from the DB row,
+    // confirming AgentStore.create() inherited the seeded resplit_count correctly
+    // and the budget check fired on the right value — not a fresh 0.
+    const finalAgents = new AgentStore(db);
+    const latestRow = finalAgents.getByStory('story-001-001');
+    assert.ok(latestRow, 'agent row exists after budget exhaustion');
+    assert.strictEqual(
+      latestRow!.resplit_count,
+      MAX_RESPLIT_BUDGET,
+      `resplit_count must equal MAX_RESPLIT_BUDGET=${MAX_RESPLIT_BUDGET} on the row handleReroute reads`
+    );
   });
 });

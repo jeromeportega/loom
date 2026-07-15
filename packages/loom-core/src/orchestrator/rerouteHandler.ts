@@ -9,6 +9,7 @@
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { AuditLog } from '../state/AuditLog.js';
+import { AGENT_ID_RANDOM_BYTES } from '../state/AgentStore.js';
 import type { Story } from '../types.js';
 import { MAX_RESPLIT_BUDGET } from './constants.js';
 
@@ -74,6 +75,13 @@ export interface DownstreamOverride {
  * The resplit_count increment is a separate DB write (not in the same
  * transaction as injectSubStories) because it must happen AFTER a
  * successful PM call — if PM fails, the budget is not decremented.
+ * Crash window: if the process dies after the resplit_count UPDATE but before
+ * injectSubStories commits, the budget counter is permanently decremented
+ * without sub-stories being injected. On restart, AgentStore.create() carries
+ * forward MAX(resplit_count) so the next run sees the incremented count. This
+ * is a deliberate trade-off: the increment guards against runaway PM calls on
+ * repeated crashes (conservative), and the sub-story insertion is idempotent
+ * enough that operators can retry manually if needed.
  */
 export async function handleReroute(
   payload: ReroutePayload,
@@ -189,7 +197,7 @@ export function injectSubStories(
     // Insert pending agent rows for each sub-story.
     for (const sub of subStories) {
       const agentId =
-        `agent-${sub.id}-${crypto.randomBytes(4).toString('hex')}`;
+        `agent-${sub.id}-${crypto.randomBytes(AGENT_ID_RANDOM_BYTES).toString('hex')}`;
       db.prepare(
         `INSERT INTO agents
            (id, epic_id, story_id, story_title, status, story_json, updated_at)
