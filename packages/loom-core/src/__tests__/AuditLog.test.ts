@@ -180,7 +180,7 @@ describe('AuditLog.record — anchor update (story-097-002)', () => {
     `);
 
     try {
-      assert.throws(() => audit.record({ action: 'should_rollback' }));
+      assert.throws(() => audit.record({ action: 'should_rollback' }), /injected anchor failure/);
     } finally {
       db.exec('DROP TRIGGER IF EXISTS fail_anchor_update');
     }
