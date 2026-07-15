@@ -25,6 +25,7 @@ function card(overrides: Partial<FleetCard>): FleetCard {
     blockers: 0,
     updated_at: '2026-07-10T00:00:00.000Z',
     planning_phase: null, finalize_phase: null, epic_pr_url: null,
+    criticalPath: null,
     ...overrides,
   };
 }
