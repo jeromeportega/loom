@@ -664,6 +664,57 @@ describe('v32 migration: empty chain', () => {
   });
 });
 
+describe('v32 migration: anchor seed is one-time (security — no self-heal)', () => {
+  it('does NOT re-seed a deleted anchor on a steady-state v32 reopen', () => {
+    const dbPath = path.join(tmpDir, 'v32-reseed-guard.db');
+    const db = seedV31Db(dbPath);
+
+    const ins = db.prepare('INSERT INTO audit_log (action, entry_hash) VALUES (?, ?)');
+    ins.run('hashed_a', 'hash-a');
+    ins.run('hashed_b', 'hash-b');
+
+    runMigrations(db); // v31 -> v32 upgrade: seeds the anchor once
+    assert.equal(schemaVersion(db), 32);
+    assert.equal(
+      (db.prepare('SELECT COUNT(*) AS c FROM audit_chain_head').get() as { c: number }).c,
+      1,
+      'precondition: anchor seeded on the v31->v32 upgrade'
+    );
+
+    // A tamperer deletes the witness row.
+    db.prepare('DELETE FROM audit_chain_head').run();
+
+    // A subsequent steady-state open (already v32) must NOT silently rebuild the anchor from the
+    // (possibly truncated) rows — otherwise tail-truncation is undetectable and verifyChain's
+    // missing-anchor branch is dead code.
+    runMigrations(db);
+    assert.equal(
+      (db.prepare('SELECT COUNT(*) AS c FROM audit_chain_head').get() as { c: number }).c,
+      0,
+      'a deleted anchor must stay deleted on a v32 reopen (no self-heal re-seed)'
+    );
+
+    db.close();
+  });
+
+  it('leaves an intact anchor unchanged on a v32 reopen (idempotent, no drift)', () => {
+    const dbPath = path.join(tmpDir, 'v32-reopen-idempotent.db');
+    const db = seedV31Db(dbPath);
+    const ins = db.prepare('INSERT INTO audit_log (action, entry_hash) VALUES (?, ?)');
+    ins.run('hashed_a', 'hash-a');
+    ins.run('hashed_b', 'hash-b');
+
+    runMigrations(db);
+    const before = db.prepare('SELECT * FROM audit_chain_head WHERE id = 1').get();
+
+    runMigrations(db); // steady-state reopen at v32
+    const after = db.prepare('SELECT * FROM audit_chain_head WHERE id = 1').get();
+
+    assert.deepEqual(after, before, 'a legitimate v32 reopen must not alter the anchor');
+    db.close();
+  });
+});
+
 describe('v32 migration: audit_log rows not mutated', () => {
   it('every audit_log row is byte-identical before and after migration', () => {
     const dbPath = path.join(tmpDir, 'v32-no-mutation.db');

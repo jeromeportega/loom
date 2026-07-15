@@ -98,7 +98,11 @@ export function runAuditVerify(opts: AuditVerifyOptions = {}): void {
       if (result.ok) {
         console.log(`Chain intact — ${result.hashedRows} hashed rows`);
       } else {
-        console.error(`Chain broken at row ID ${result.brokenAtId}: ${result.reason}`);
+        console.error(
+          result.brokenAtId !== undefined
+            ? `Chain broken at row ID ${result.brokenAtId}: ${result.reason}`
+            : `Chain broken: ${result.reason}`
+        );
         process.exitCode = 1;
       }
     } finally {
@@ -114,7 +118,7 @@ export function runAuditVerify(opts: AuditVerifyOptions = {}): void {
 export const verifySpec: CommandDescription = {
   name: 'audit verify',
   summary: 'Verify audit log SHA-256 chain. Not tamper-proof if audit_chain_head is also rewritten.',
-  whenToUse: 'Use after an incident to check whether audit_log rows have been edited, reordered, deleted (including tail truncation), or had unhashed rows inserted in the chained region. Exits 0 when intact, 1 when broken. Caveat: verify does not defend against an adversary with full DB write access who ALSO rewrites audit_chain_head.',
+  whenToUse: 'Use after an incident to check whether audit_log rows have been edited, reordered, deleted (including tail truncation), or had unhashed rows inserted in the chained region. Exits 0 when intact, 1 when broken. The guarantee covers the chained region (rows from the anchor cutover onward) — pre-cutover legacy rows are not integrity-checked. Caveat: being an in-DB, unkeyed SHA-256 chain, it does not defend against an adversary with full DB write access who ALSO rewrites audit_chain_head; full resistance requires an external signed witness (planned).',
   arguments: [],
   options: [
     { name: '--json', type: 'boolean', description: 'Emit VerifyChainResult as JSON (semver-stable output contract)', changesOutputShape: true },

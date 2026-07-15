@@ -590,38 +590,35 @@ export function runMigrations(db: Database.Database): void {
   }
 
   // v32: audit_chain_head singleton anchor (epic-097 story-097-001).
-  // Guard: create only if absent (DDL handles fresh DBs; this covers upgrades).
-  const chainHeadCols = db.prepare('PRAGMA table_info(audit_chain_head)').all() as {
-    name: string;
-  }[];
-  if (chainHeadCols.length === 0) {
-    db.exec(`CREATE TABLE IF NOT EXISTS audit_chain_head (
-      id               INTEGER PRIMARY KEY CHECK (id = 1),
-      hashed_row_count INTEGER NOT NULL DEFAULT 0,
-      cutover_id       INTEGER,
-      last_id          INTEGER,
-      last_entry_hash  TEXT
-    )`);
-  }
-  // Seed the singleton row idempotently. INSERT OR IGNORE + PK ensures at most one row.
-  // On an empty chain, COUNT()=0 and the scalar subqueries yield NULL — the required empty-init row.
-  db.exec(`
-    INSERT OR IGNORE INTO audit_chain_head (id, hashed_row_count, cutover_id, last_id, last_entry_hash)
-    SELECT 1,
-      (SELECT COUNT(*)    FROM audit_log WHERE entry_hash IS NOT NULL),
-      (SELECT MIN(id)     FROM audit_log WHERE entry_hash IS NOT NULL),
-      (SELECT MAX(id)     FROM audit_log WHERE entry_hash IS NOT NULL),
-      (SELECT entry_hash  FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY id DESC LIMIT 1)
-  `);
-
-  const row = db
+  // The DDL at the top of runMigrations already created the table (fresh + existing DBs).
+  //
+  // SECURITY (epic-097 re-gate finding): seed the anchor row ONLY on fresh-init or a genuine
+  // pre-v32 upgrade — NEVER on a steady-state open of an already-v32 DB. If the seed ran on every
+  // open, a tamperer could `DELETE FROM audit_chain_head`, truncate audit_log, and have loom
+  // silently re-derive a matching anchor from the truncated rows on the next command — defeating
+  // tail-truncation detection and making verifyChain's `missing-anchor` branch unreachable. So we
+  // read the STORED schema version BEFORE deciding, and only seed when crossing into v32.
+  const versionRow = db
     .prepare('SELECT version FROM schema_version LIMIT 1')
     .get() as { version: number } | undefined;
-  if (!row) {
+  if (!versionRow || versionRow.version < 32) {
+    // One-time seed from the current chain state. INSERT OR IGNORE + the id=1 PK keeps it to one
+    // row. On an empty chain, COUNT()=0 and the scalar subqueries yield NULL — the empty-init row.
+    db.exec(`
+      INSERT OR IGNORE INTO audit_chain_head (id, hashed_row_count, cutover_id, last_id, last_entry_hash)
+      SELECT 1,
+        (SELECT COUNT(*)    FROM audit_log WHERE entry_hash IS NOT NULL),
+        (SELECT MIN(id)     FROM audit_log WHERE entry_hash IS NOT NULL),
+        (SELECT MAX(id)     FROM audit_log WHERE entry_hash IS NOT NULL),
+        (SELECT entry_hash  FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY id DESC LIMIT 1)
+    `);
+  }
+
+  if (!versionRow) {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
       SCHEMA_VERSION
     );
-  } else if (row.version !== SCHEMA_VERSION) {
+  } else if (versionRow.version !== SCHEMA_VERSION) {
     db.prepare('UPDATE schema_version SET version = ?').run(SCHEMA_VERSION);
   }
 }
