@@ -19,7 +19,7 @@ export function AuditIntegrityBadge(): JSX.Element {
 
   return (
     <Badge variant="destructive">
-      Broken at #{data.brokenAtId}
+      {data.brokenAtId != null ? `Broken at #${data.brokenAtId}` : 'Chain broken'}
     </Badge>
   );
 }

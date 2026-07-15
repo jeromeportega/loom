@@ -137,8 +137,8 @@ describe('GET /api/audit/verify — no new npm dependencies', () => {
     // This test documents the invariant: no new packages were introduced.
     // If this list needs updating, ensure the addition was intentional.
     const forbidden = ['axios', 'node-fetch', 'got', 'ky', 'superagent'];
-    for (const pkg of forbidden) {
-      assert.ok(!(pkg in allDeps), `unexpected new dependency: ${pkg}`);
+    for (const depName of forbidden) {
+      assert.ok(!(depName in allDeps), `unexpected new dependency: ${depName}`);
     }
   });
 });
