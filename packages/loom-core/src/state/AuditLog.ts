@@ -18,7 +18,7 @@ export interface VerifyChainResult {
   fromId:      number | null;
   toId:        number | null;
   brokenAtId?: number;
-  reason?:     string;
+  reason?:     'entry-hash-mismatch' | 'broken-link' | 'missing-anchor' | 'null-in-chain' | 'count-mismatch' | 'head-mismatch';
 }
 
 type RawAuditRow = {
@@ -129,6 +129,29 @@ export class AuditLog {
   }
 
   verifyChain(): VerifyChainResult {
+    type AnchorRow = {
+      hashed_row_count: number;
+      cutover_id:       number | null;
+      last_id:          number | null;
+      last_entry_hash:  string | null;
+    };
+
+    // Step 1: read the anchor row.
+    const anchor = this.db
+      .prepare('SELECT * FROM audit_chain_head WHERE id = 1')
+      .get() as AnchorRow | undefined;
+
+    // Absent anchor while hashed rows exist means the anchor was removed.
+    if (!anchor) {
+      const hasHashed = this.db
+        .prepare('SELECT 1 FROM audit_log WHERE entry_hash IS NOT NULL LIMIT 1')
+        .get();
+      if (hasHashed) {
+        return { ok: false, hashedRows: 0, legacyRows: 0, fromId: null, toId: null, reason: 'missing-anchor' };
+      }
+    }
+
+    // Step 2: walk all rows in insertion order.
     const rows = this.db
       .prepare('SELECT * FROM audit_log ORDER BY id ASC')
       .all() as RawAuditRow[];
@@ -137,10 +160,24 @@ export class AuditLog {
     let legacyRows = 0;
     let fromId: number | null = null;
     let toId: number | null = null;
+    let lastHashedEntryHash: string | null = null;
     let expectedPrev = AUDIT_GENESIS_HASH;
 
     for (const row of rows) {
       if (row.entry_hash === null) {
+        // A NULL after cutover is unexpected — the chain is broken.
+        if (anchor && anchor.cutover_id !== null && row.id >= anchor.cutover_id) {
+          return {
+            ok: false,
+            hashedRows,
+            legacyRows,
+            fromId,
+            toId,
+            brokenAtId: row.id,
+            reason: 'null-in-chain',
+          };
+        }
+        // Pre-cutover legacy row: tolerated, do NOT advance expectedPrev.
         legacyRows++;
         continue;
       }
@@ -148,6 +185,7 @@ export class AuditLog {
       hashedRows++;
       if (fromId === null) fromId = row.id;
       toId = row.id;
+      lastHashedEntryHash = row.entry_hash;
 
       const payload = canonicalPayload(
         row.id,
@@ -188,6 +226,16 @@ export class AuditLog {
       }
 
       expectedPrev = row.entry_hash;
+    }
+
+    // Step 3: cross-check the walked result against the anchor.
+    if (anchor) {
+      if (hashedRows !== anchor.hashed_row_count) {
+        return { ok: false, hashedRows, legacyRows, fromId, toId, reason: 'count-mismatch' };
+      }
+      if (hashedRows > 0 && (toId !== anchor.last_id || lastHashedEntryHash !== anchor.last_entry_hash)) {
+        return { ok: false, hashedRows, legacyRows, fromId, toId, reason: 'head-mismatch' };
+      }
     }
 
     return { ok: true, hashedRows, legacyRows, fromId, toId };

@@ -8,6 +8,11 @@ import { AuditLog } from '../state/AuditLog.js';
 import { EpicStore } from '../state/EpicStore.js';
 import { AgentStore } from '../state/AgentStore.js';
 import type Database from 'better-sqlite3';
+import {
+  AUDIT_GENESIS_HASH,
+  canonicalPayload,
+  computeEntryHash,
+} from '../state/auditHash.js';
 
 /**
  * Inserts an `agents` row with the exact id we need to test the LIKE/length
@@ -212,5 +217,250 @@ describe('AuditLog.record — anchor update (story-097-002)', () => {
       .prepare('SELECT contract_hash FROM audit_log ORDER BY id DESC LIMIT 1')
       .get() as { contract_hash: string | null };
     assert.equal(row.contract_hash, null, 'contract_hash must remain NULL');
+  });
+});
+
+// ─── FR-11: AuditLog.verifyChain — anchor-aware (story-097-003) ───────────────
+
+type RawAuditRow097 = {
+  id:            number;
+  agent_id:      string | null;
+  action:        string;
+  command:       string | null;
+  allowed:       number | null;
+  policy_rule:   string | null;
+  detail:        string | null;
+  timestamp:     string;
+  prev_hash:     string | null;
+  entry_hash:    string | null;
+  contract_hash: string | null;
+};
+
+function allAuditRows(db: Database.Database): RawAuditRow097[] {
+  return db.prepare('SELECT * FROM audit_log ORDER BY id ASC').all() as RawAuditRow097[];
+}
+
+describe('AuditLog.verifyChain — known-answer vector (FR-11)', () => {
+  it('computeEntryHash of a fixed literal payload equals the hardcoded sha256 constant', () => {
+    // This pins the canonicalPayload format. If the format changes (field order,
+    // serialisation, arity), this test catches it before chain verification breaks.
+    const GENESIS = '0'.repeat(64);
+    const payload = canonicalPayload(
+      1, null, 'test_action', null, null, null, null, null,
+      '2024-01-01T00:00:00.000Z', GENESIS
+    );
+    const actual = computeEntryHash(payload);
+    const EXPECTED = '87a236da1324c9a8632ed27f2a1b3db223d4199c8bebb69e654df62f4f5e15bb';
+    assert.equal(actual, EXPECTED, 'sha256 must match hardcoded constant — format drift detected');
+    assert.equal(actual.length, 64, 'hash must be 64-char hex');
+    assert.ok(/^[0-9a-f]+$/.test(actual), 'hash must be lowercase hex');
+  });
+});
+
+describe('AuditLog.verifyChain — regression: existing checks unchanged (FR-11)', () => {
+  it('editing a mid-chain row returns entry-hash-mismatch at that row id', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+    for (let i = 0; i < 5; i++) audit.record({ action: `action_${i}` });
+
+    const rows = allAuditRows(db);
+    const targetId = rows[2].id;
+    db.prepare('UPDATE audit_log SET action = ? WHERE id = ?').run('tampered', targetId);
+
+    const result = audit.verifyChain();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'entry-hash-mismatch', 'reason must be exact string entry-hash-mismatch');
+    assert.equal(result.brokenAtId, targetId, 'brokenAtId must point to the tampered row');
+  });
+
+  it('deleting a MIDDLE hashed row returns broken-link at the successor id', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+    for (let i = 0; i < 5; i++) audit.record({ action: `action_${i}` });
+
+    const rows = allAuditRows(db);
+    const deletedId = rows[2].id;
+    const successorId = rows[3].id;
+    db.prepare('DELETE FROM audit_log WHERE id = ?').run(deletedId);
+
+    const result = audit.verifyChain();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'broken-link', 'reason must be exact string broken-link');
+    assert.equal(result.brokenAtId, successorId, 'brokenAtId must be the successor of the deleted row');
+  });
+});
+
+describe('AuditLog.verifyChain — content tamper exact reason (FR-11)', () => {
+  it('changing detail without updating entry_hash returns entry-hash-mismatch (not a renamed reason)', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+    audit.record({ action: 'original', detail: { x: 1 } });
+
+    const rows = allAuditRows(db);
+    db.prepare('UPDATE audit_log SET detail = ? WHERE id = ?')
+      .run('{"x":999}', rows[0].id);
+
+    const result = audit.verifyChain();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'entry-hash-mismatch');
+  });
+});
+
+describe('AuditLog.verifyChain — edit + local rehash caught at successor (FR-11)', () => {
+  it('updating detail AND rehashing row 2 correctly exposes broken-link at row 3', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+    audit.record({ action: 'row1' });
+    audit.record({ action: 'row2', detail: { v: 'original' } });
+    audit.record({ action: 'row3' });
+
+    const rows = allAuditRows(db);
+    const row2 = rows[1];
+    const row3 = rows[2];
+
+    // Recompute a "valid-looking" entry_hash for row2 with tampered detail,
+    // keeping prev_hash unchanged — this makes row2 pass its own check but
+    // breaks the chain at row3 (its prev_hash still points to the original H2).
+    const tamperedDetail = '{"v":"tampered"}';
+    const newPayload = canonicalPayload(
+      row2.id, row2.agent_id, row2.action, row2.command,
+      row2.allowed, row2.policy_rule, tamperedDetail,
+      null, row2.timestamp, row2.prev_hash as string
+    );
+    const newHash = computeEntryHash(newPayload);
+
+    db.prepare('UPDATE audit_log SET detail = ?, entry_hash = ? WHERE id = ?')
+      .run(tamperedDetail, newHash, row2.id);
+
+    const result = audit.verifyChain();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'broken-link', 'successor row must detect the stale prev_hash');
+    assert.equal(result.brokenAtId, row3.id, 'broken at row 3, not row 2');
+  });
+});
+
+describe('AuditLog.verifyChain — tail truncation (FR-11)', () => {
+  it('deleting the 2 newest hashed rows returns count-mismatch (anchor says 5, walked 3)', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+    for (let i = 0; i < 5; i++) audit.record({ action: `row_${i}` });
+
+    const rows = allAuditRows(db);
+    // Delete last 2 rows
+    db.prepare('DELETE FROM audit_log WHERE id IN (?, ?)').run(rows[3].id, rows[4].id);
+
+    const result = audit.verifyChain();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'count-mismatch');
+    assert.equal(result.hashedRows, 3, 'walked 3 hashed rows after deletion');
+  });
+});
+
+describe('AuditLog.verifyChain — head mismatch (FR-11)', () => {
+  it('corrupting last_entry_hash in the anchor returns head-mismatch', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+    for (let i = 0; i < 3; i++) audit.record({ action: `row_${i}` });
+
+    db.prepare('UPDATE audit_chain_head SET last_entry_hash = ? WHERE id = 1')
+      .run('dead'.repeat(16));  // 64-char fake hash
+
+    const result = audit.verifyChain();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'head-mismatch');
+  });
+
+  it('corrupting last_id in the anchor returns head-mismatch', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+    for (let i = 0; i < 3; i++) audit.record({ action: `row_${i}` });
+
+    db.prepare('UPDATE audit_chain_head SET last_id = 9999 WHERE id = 1').run();
+
+    const result = audit.verifyChain();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'head-mismatch');
+  });
+});
+
+describe('AuditLog.verifyChain — null-in-chain (FR-11)', () => {
+  it('NULL entry_hash row at id >= cutover_id returns null-in-chain at that id', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+    audit.record({ action: 'first_hashed' });  // sets cutover_id
+
+    // Insert a NULL-hash row after cutover — simulates a row that bypassed hashing.
+    db.prepare("INSERT INTO audit_log (action) VALUES ('unhashed_post_cutover')").run();
+    const rows = allAuditRows(db);
+    const nullRowId = rows[rows.length - 1].id;
+
+    const result = audit.verifyChain();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'null-in-chain');
+    assert.equal(result.brokenAtId, nullRowId, 'brokenAtId must be the NULL row');
+  });
+});
+
+describe('AuditLog.verifyChain — legacy tolerated (FR-11)', () => {
+  it('NULL entry_hash row at id < cutover_id is counted as legacy and chain is ok', () => {
+    const db = createDatabase(':memory:');
+    // Insert legacy row directly (entry_hash stays NULL, no anchor update).
+    db.prepare("INSERT INTO audit_log (action) VALUES ('legacy_pre_cutover')").run();
+    // Now record a hashed row — sets cutover_id to this row's id (> legacy row id).
+    const audit = new AuditLog(db);
+    audit.record({ action: 'first_hashed' });
+
+    const result = audit.verifyChain();
+    assert.equal(result.ok, true, 'legacy row before cutover must be tolerated');
+    assert.equal(result.legacyRows, 1, 'legacy row counted');
+    assert.equal(result.hashedRows, 1, 'hashed row counted');
+  });
+});
+
+describe('AuditLog.verifyChain — missing anchor (FR-11)', () => {
+  it('deleting the anchor row while hashed rows exist returns missing-anchor', () => {
+    const db = createDatabase(':memory:');
+    const audit = new AuditLog(db);
+    audit.record({ action: 'some_action' });
+
+    db.prepare('DELETE FROM audit_chain_head WHERE id = 1').run();
+
+    const result = audit.verifyChain();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'missing-anchor');
+  });
+
+  it('absent anchor with no hashed rows is ok (empty chain)', () => {
+    const db = createDatabase(':memory:');
+    db.prepare('DELETE FROM audit_chain_head WHERE id = 1').run();
+
+    const audit = new AuditLog(db);
+    const result = audit.verifyChain();
+    assert.equal(result.ok, true, 'empty chain without anchor is valid');
+    assert.equal(result.hashedRows, 0);
+  });
+});
+
+describe('AuditLog.verifyChain — sequential multi-handle writes produce linear chain (FR-11)', () => {
+  // better-sqlite3 is synchronous; these writes are strictly sequential, not concurrent.
+  // This test confirms the chain integrity invariant holds when two DB handles alternate
+  // writes. It does NOT test locking or true concurrent access.
+  it('alternating record() calls via two handles produce a verifiable linear chain', () => {
+    const db1 = createDatabase(':memory:');
+    // Verify the chain via a separate AuditLog instance pointing at the same DB.
+    const audit1 = new AuditLog(db1);
+    const audit2 = new AuditLog(db1);  // same in-memory DB
+
+    for (let i = 0; i < 6; i++) {
+      if (i % 2 === 0) {
+        audit1.record({ action: `handle1_${i}` });
+      } else {
+        audit2.record({ action: `handle2_${i}` });
+      }
+    }
+
+    const result = audit1.verifyChain();
+    assert.equal(result.ok, true, 'linear chain must verify ok');
+    assert.equal(result.hashedRows, 6, 'all 6 rows hashed');
   });
 });
