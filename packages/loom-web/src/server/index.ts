@@ -42,6 +42,7 @@ import { registerOpportunityRoutes } from './routes/opportunities.js';
 import { registerProposeRoutes } from './routes/propose.js';
 import { registerLessonRoutes } from './routes/lessons.js';
 import { registerRepoRoutes } from './routes/repos.js';
+import { registerAuditVerifyRoute } from './routes/audit.js';
 import { makeResolveProjectDb } from './resolveProjectDb.js';
 
 export interface CreateAppOptions {
@@ -194,6 +195,7 @@ export function createApp(opts: CreateAppOptions): Express {
   const workerLogs = new WorkerLogStore(path.join(currentProjectRoot, '.loom'));
 
   // ─── Route modules (owned by sibling stories; mounted here) ─────────────
+  registerAuditVerifyRoute(app, { auditLog });
   registerAutonomyRoutes(app, { epicStore, auditLog });
   registerFleetRoutes(app, { epicStore, agentStore, db: opts.db, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });
   registerInboxRoutes(app, { epicStore, agentStore, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });

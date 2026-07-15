@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { cn } from '@/lib/utils';
+import { AuditIntegrityBadge } from './AuditIntegrityBadge';
 
 interface AppShellProps {
   children: ReactNode;
@@ -26,6 +27,9 @@ export function AppShell({ children }: AppShellProps) {
             Repos
           </NavLink>
         </nav>
+        <div className="ml-auto">
+          <AuditIntegrityBadge />
+        </div>
       </header>
       <main className="min-h-0 flex-1">{children}</main>
     </div>
