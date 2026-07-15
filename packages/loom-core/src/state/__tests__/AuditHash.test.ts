@@ -335,16 +335,19 @@ describe('AuditLog.verifyChain — mixed legacy and hashed rows', () => {
     db.close();
   });
 
-  it('legacy row interspersed among hashed rows never causes ok:false', () => {
+  it('NULL-hash row appearing after cutover (id >= cutover_id) returns null-in-chain', () => {
+    // After story-097-003: a NULL entry_hash row whose id is >= the first hashed
+    // row's id is invalid — the cutover boundary means hashing is mandatory.
     const db = freshDb('verify-legacy-interspersed');
     const log = new AuditLog(db);
 
-    log.record({ action: 'hashed_before' });
-    insertLegacyRow(db, 'legacy_middle');
+    log.record({ action: 'hashed_before' });   // cutover_id = this row's id
+    insertLegacyRow(db, 'legacy_middle');       // NULL hash, id >= cutover_id → invalid
     log.record({ action: 'hashed_after' });
 
     const result = log.verifyChain();
-    assert.equal(result.ok, true, 'legacy rows between hashed rows must not cause failure');
+    assert.equal(result.ok, false, 'NULL-hash after cutover must be detected');
+    assert.equal(result.reason, 'null-in-chain');
 
     db.close();
   });
@@ -460,9 +463,12 @@ describe('AuditLog.verifyChain — return shape completeness', () => {
   });
 });
 
-// ─── Concurrent write test ─────────────────────────────────────────────────────
+// ─── Multi-handle sequential write test ────────────────────────────────────────
+// Note: better-sqlite3 is synchronous; the writes below are strictly sequential,
+// not concurrent. This test verifies that two handles sharing a WAL database
+// maintain a linear chain under alternating (but non-overlapping) writes.
 
-describe('AuditLog.record — concurrent writes via two DB handles', () => {
+describe('AuditLog.record — sequential writes via two DB handles', () => {
   it('alternating record() calls produce a linear chain with no forks', () => {
     const dbPath = path.join(tmpDir, 'concurrent.db');
     createDatabase(dbPath);
