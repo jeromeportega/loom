@@ -236,9 +236,29 @@ describe('loom audit verify — docs gate [AC5]', () => {
 // ─── [AC6] --json robustness: all four paths emit valid JSON ─────────────────
 
 describe('loom audit verify --json robustness [AC6]', () => {
+  // Per-test isolation: each test gets a fresh temp repo with a valid policy.yaml
+  // and no pre-existing loom.db, so mutations in one test never affect the next.
+  let ac6Repo: string;
+
+  beforeEach(() => {
+    resetDatabaseForTest();
+    ac6Repo = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-verify-ac6-'));
+    const loomDir = path.join(ac6Repo, '.loom');
+    fs.mkdirSync(loomDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(loomDir, 'policy.yaml'),
+      `version: 1\nloom_home: ${path.join(ac6Repo, '.loom-home')}\n`
+    );
+  });
+
+  afterEach(() => {
+    resetDatabaseForTest();
+    fs.rmSync(ac6Repo, { recursive: true, force: true });
+  });
+
   it('--json not-initialized → parseable JSON with reason not-initialized, exit 1', async () => {
-    fs.unlinkSync(path.join(repo, '.loom', 'policy.yaml'));
-    const result = await capture(() => runAuditVerify({ projectRoot: repo, json: true }));
+    fs.unlinkSync(path.join(ac6Repo, '.loom', 'policy.yaml'));
+    const result = await capture(() => runAuditVerify({ projectRoot: ac6Repo, json: true }));
     assert.strictEqual(result.exitCode, 1, 'should set exitCode 1 when not initialized');
     assert.strictEqual(result.logs.length, 1, 'exactly one JSON line on stdout');
     assert.strictEqual(result.errors.length, 0, 'no stderr output in --json mode');
@@ -250,10 +270,10 @@ describe('loom audit verify --json robustness [AC6]', () => {
   it('--json internal error (corrupted DB file) → parseable JSON with reason error, exit 1', async () => {
     // Write a non-SQLite file where the DB would be found. better-sqlite3 will
     // throw immediately when it tries to open/parse the file.
-    const dbPath = path.join(repo, '.loom', 'loom.db');
+    const dbPath = path.join(ac6Repo, '.loom', 'loom.db');
     fs.writeFileSync(dbPath, 'THIS IS NOT A VALID SQLITE FILE — CORRUPTED FOR TESTING');
 
-    const result = await capture(() => runAuditVerify({ projectRoot: repo, json: true }));
+    const result = await capture(() => runAuditVerify({ projectRoot: ac6Repo, json: true }));
     assert.strictEqual(result.exitCode, 1, 'should set exitCode 1 on internal error');
     assert.strictEqual(result.logs.length, 1, 'exactly one JSON line on stdout');
     assert.strictEqual(result.errors.length, 0, 'no stderr output in --json mode on error');
@@ -264,12 +284,12 @@ describe('loom audit verify --json robustness [AC6]', () => {
   });
 
   it('--json ok → parseable JSON with ok:true and VerifyChainResult keys, exit 0', async () => {
-    const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
+    const db = createDatabase(path.join(ac6Repo, '.loom', 'loom.db'));
     const audit = new AuditLog(db);
     audit.record({ action: 'ac6_ok_test' });
     db.close();
 
-    const result = await capture(() => runAuditVerify({ projectRoot: repo, json: true }));
+    const result = await capture(() => runAuditVerify({ projectRoot: ac6Repo, json: true }));
     assert.strictEqual(result.exitCode, null, 'ok chain should not set exit code');
     assert.strictEqual(result.logs.length, 1, 'exactly one JSON line');
     const payload = JSON.parse(result.logs[0]) as {
@@ -288,7 +308,7 @@ describe('loom audit verify --json robustness [AC6]', () => {
   });
 
   it('--json broken (tail truncation) → parseable JSON with ok:false reason count-mismatch, exit 1', async () => {
-    const db = createDatabase(path.join(repo, '.loom', 'loom.db'));
+    const db = createDatabase(path.join(ac6Repo, '.loom', 'loom.db'));
     const audit = new AuditLog(db);
     audit.record({ action: 'chain_row_1' });
     audit.record({ action: 'chain_row_2' });
@@ -300,12 +320,26 @@ describe('loom audit verify --json robustness [AC6]', () => {
     db.prepare('DELETE FROM audit_log WHERE id = ?').run(lastId);
     db.close();
 
-    const result = await capture(() => runAuditVerify({ projectRoot: repo, json: true }));
+    const result = await capture(() => runAuditVerify({ projectRoot: ac6Repo, json: true }));
     assert.strictEqual(result.exitCode, 1, 'broken chain must set exitCode 1');
     assert.strictEqual(result.logs.length, 1, 'exactly one JSON line');
     const payload = JSON.parse(result.logs[0]) as { ok: boolean; reason: string };
     assert.strictEqual(payload.ok, false);
     assert.strictEqual(payload.reason, 'count-mismatch', `expected count-mismatch, got: ${payload.reason}`);
+  });
+
+  it('non-json internal error (corrupted DB file) → human-readable stderr, exit 1', async () => {
+    const dbPath = path.join(ac6Repo, '.loom', 'loom.db');
+    fs.writeFileSync(dbPath, 'THIS IS NOT A VALID SQLITE FILE — CORRUPTED FOR TESTING');
+
+    const result = await capture(() => runAuditVerify({ projectRoot: ac6Repo }));
+    assert.strictEqual(result.exitCode, 1, 'should set exitCode 1 on internal error');
+    assert.strictEqual(result.logs.length, 0, 'no stdout on error');
+    assert.ok(result.errors.length > 0, 'should print error to stderr');
+    assert.ok(
+      result.errors.some((e) => e.toLowerCase().includes('failed') || e.toLowerCase().includes('error')),
+      `expected error message in stderr: ${result.errors.join('\n')}`
+    );
   });
 
   it('audit.ts command file has no process.exit() calls', () => {

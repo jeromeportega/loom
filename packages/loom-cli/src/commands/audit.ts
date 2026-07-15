@@ -72,29 +72,41 @@ export function runAuditVerify(opts: AuditVerifyOptions = {}): void {
   }
 
   if (opts.json) {
-    let result: VerifyChainResult;
     try {
       const db = openProjectDatabase(projectRoot);
-      result = new AuditLog(db).verifyChain();
+      try {
+        const result = new AuditLog(db).verifyChain();
+        console.log(JSON.stringify(result));
+        if (!result.ok) {
+          process.exitCode = 1;
+        }
+      } finally {
+        db.close();
+      }
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       console.log(JSON.stringify({ ok: false, reason: 'error', detail }));
-      process.exitCode = 1;
-      return;
-    }
-    console.log(JSON.stringify(result));
-    if (!result.ok) {
       process.exitCode = 1;
     }
     return;
   }
 
-  const db = openProjectDatabase(projectRoot);
-  const result: VerifyChainResult = new AuditLog(db).verifyChain();
-  if (result.ok) {
-    console.log(`Chain intact — ${result.hashedRows} hashed rows`);
-  } else {
-    console.error(`Chain broken at row ID ${result.brokenAtId}: ${result.reason}`);
+  try {
+    const db = openProjectDatabase(projectRoot);
+    try {
+      const result = new AuditLog(db).verifyChain();
+      if (result.ok) {
+        console.log(`Chain intact — ${result.hashedRows} hashed rows`);
+      } else {
+        console.error(`Chain broken at row ID ${result.brokenAtId}: ${result.reason}`);
+        process.exitCode = 1;
+      }
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Chain verification failed: ${msg}`);
     process.exitCode = 1;
   }
 }
