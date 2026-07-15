@@ -165,9 +165,9 @@ describe('v27 → v28 migration (story_recovery table)', () => {
 
     runMigrations(db);
 
-    // Schema bumped to current SCHEMA_VERSION (30 after epic-076 story-076-001).
+    // Schema bumped to current SCHEMA_VERSION.
     assert.equal(schemaVersion(db), SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 30, 'SCHEMA_VERSION constant is 30');
+    assert.ok(SCHEMA_VERSION >= 31, 'SCHEMA_VERSION must be >= 31 for v28 features');
 
     // story_recovery table now exists.
     assert.ok(tableExists(db, 'story_recovery'), 'story_recovery created by migration');

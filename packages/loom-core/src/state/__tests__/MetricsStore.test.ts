@@ -118,9 +118,9 @@ describe('v28 → v29 migration (run_metrics tables)', () => {
     assert.ok(indexExists(db, 'idx_run_metrics_scope'),     'idx_run_metrics_scope exists');
     assert.ok(indexExists(db, 'idx_run_metrics_phase_run'), 'idx_run_metrics_phase_run exists');
 
-    // SCHEMA_VERSION bumped to 30
-    assert.equal(schemaVersion(db), 30);
-    assert.equal(SCHEMA_VERSION, 30, 'SCHEMA_VERSION constant is 30');
+    // SCHEMA_VERSION bumped to current version
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
+    assert.ok(SCHEMA_VERSION >= 31, 'SCHEMA_VERSION must be >= 31 for v29 features');
 
     db.close();
   });
@@ -178,7 +178,7 @@ describe('v28 → v29 migration (run_metrics tables)', () => {
 
     runMigrations(db);
 
-    assert.equal(schemaVersion(db), 30);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
     assert.ok(tableExists(db, 'run_metrics'));
     assert.ok(tableExists(db, 'run_metrics_phase'));
 

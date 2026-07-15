@@ -42,6 +42,7 @@ import { registerOpportunityRoutes } from './routes/opportunities.js';
 import { registerProposeRoutes } from './routes/propose.js';
 import { registerLessonRoutes } from './routes/lessons.js';
 import { registerRepoRoutes } from './routes/repos.js';
+import { registerAuditVerifyRoute } from './routes/audit.js';
 import { makeResolveProjectDb } from './resolveProjectDb.js';
 
 export interface CreateAppOptions {
@@ -109,7 +110,10 @@ export function createApp(opts: CreateAppOptions): Express {
   // readOnly=false (default): token required on every request (byte-identical
   // to the old requireToken behavior).
   // readOnly=true: GET/HEAD pass tokenless; non-GET/HEAD → 403 without token.
-  app.use('/api', accessGuard({ token: opts.token, readOnly: opts.readOnly ?? false }));
+  // Saved to a variable so security-sensitive routes can reference it explicitly
+  // and survive any future sub-router or mount-point refactor.
+  const guard = accessGuard({ token: opts.token, readOnly: opts.readOnly ?? false });
+  app.use('/api', guard);
 
   // Resolve the static dir once; registration happens below in each code path.
   const defaultStaticDir = path.join(__dirname, '../../client-dist');
@@ -194,6 +198,7 @@ export function createApp(opts: CreateAppOptions): Express {
   const workerLogs = new WorkerLogStore(path.join(currentProjectRoot, '.loom'));
 
   // ─── Route modules (owned by sibling stories; mounted here) ─────────────
+  registerAuditVerifyRoute(app, { auditLog, authMiddleware: guard });
   registerAutonomyRoutes(app, { epicStore, auditLog });
   registerFleetRoutes(app, { epicStore, agentStore, db: opts.db, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });
   registerInboxRoutes(app, { epicStore, agentStore, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });
@@ -414,7 +419,14 @@ export function createApp(opts: CreateAppOptions): Express {
       typeof req.query.limit === 'string'
         ? Math.min(parseInt(req.query.limit, 10) || 50, 500)
         : 50;
-    const entries = auditLog.getByAgent(agent.id, limit) as AuditEntry[];
+    // Project to the wire shape — prev_hash, entry_hash, contract_hash are excluded.
+    // AuditLogEntry.allowed is typed boolean|null (core) but the DB stores 0|1|null;
+    // the cast realigns with the AuditEntry wire type without touching the runtime value.
+    const entries: AuditEntry[] = (auditLog.getByAgent(agent.id, limit) as unknown as AuditEntry[]).map(
+      ({ id, agent_id, action, command, allowed, policy_rule, detail, timestamp }) => ({
+        id, agent_id, action, command, allowed, policy_rule, detail, timestamp,
+      })
+    );
     res.json({ entries });
   });
 

@@ -7,4 +7,5 @@ export const queryKeys = {
   planningArtifacts: (slug: string, epicId: string) =>
     ['repos', slug, epicId, 'planning-artifacts'] as const,
   fleet: () => ['fleet'] as const,
+  auditVerify: () => ['audit', 'verify'] as const,
 };

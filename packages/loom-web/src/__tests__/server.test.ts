@@ -1186,3 +1186,66 @@ describe('loom-web — SSE planning-output events (story-017-002)', () => {
     assert.match((data as PlanningOutputData).chunk, /persona output/);
   });
 });
+
+describe('loom-web — GET /api/audit/verify — JSON 500 on internal error', () => {
+  it('returns HTTP 500 with application/json body (no HTML) when the DB is closed', async () => {
+    // Create an isolated server+DB for this test — closing the shared DB
+    // would break the suite's other tests.
+    const tmpDb = createDatabase(':memory:');
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'loom-verify-err-'));
+    fs.mkdirSync(path.join(projectRoot, '.loom', 'logs'), { recursive: true });
+    const app = createApp({ db: tmpDb, token: 'test-token-123', loomBin: ['true'], projectRoot });
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address() as { port: number };
+    const url = `http://127.0.0.1:${addr.port}`;
+
+    try {
+      // Close the DB so verifyChain() throws on every read.
+      tmpDb.close();
+
+      const res = await fetch(`${url}/api/audit/verify`, {
+        headers: { 'x-loom-token': 'test-token-123' },
+      });
+
+      assert.equal(res.status, 500);
+      const ct = res.headers.get('content-type') ?? '';
+      assert.ok(ct.includes('application/json'), `expected application/json, got: ${ct}`);
+      const text = await res.text();
+      assert.ok(!text.includes('<'), `response must not contain HTML: ${text}`);
+      const json = JSON.parse(text) as { error?: string };
+      assert.equal(typeof json.error, 'string', 'body must have a string error field');
+    } finally {
+      await new Promise<void>((resolve) =>
+        server.close(() => {
+          fs.rmSync(projectRoot, { recursive: true, force: true });
+          resolve();
+        })
+      );
+    }
+  });
+});
+
+describe('loom-web — GET /api/agents/:id/audit — column hygiene', () => {
+  it('excludes prev_hash, entry_hash, and contract_hash from every audit entry', async () => {
+    const epics = new EpicStore(db);
+    const agents = new AgentStore(db);
+    const audit = new AuditLog(db);
+    epics.create('epic-001', 'Column hygiene check');
+    const a = agents.create('epic-001', 'story-001-001', 'Hygiene story');
+    audit.record({ agent_id: a.id, action: 'hygiene_test_action' });
+
+    const res = await fetch(`${baseUrl}/api/agents/${a.id}/audit`, {
+      headers: { 'x-loom-token': 'test-token-123' },
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { entries: Record<string, unknown>[] };
+    assert.ok(body.entries.length > 0, 'should have at least one entry');
+    for (const entry of body.entries) {
+      const keys = Object.keys(entry);
+      assert.ok(!keys.includes('prev_hash'), 'prev_hash must not appear in audit entries');
+      assert.ok(!keys.includes('entry_hash'), 'entry_hash must not appear in audit entries');
+      assert.ok(!keys.includes('contract_hash'), 'contract_hash must not appear in audit entries');
+    }
+  });
+});

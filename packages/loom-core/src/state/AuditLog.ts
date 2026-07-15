@@ -5,9 +5,68 @@ import type {
   AttemptClass,
   InfraSignature,
 } from '../orchestrator/resilience/types.js';
+import {
+  AUDIT_GENESIS_HASH,
+  canonicalPayload,
+  computeEntryHash,
+} from './auditHash.js';
+
+export interface VerifyChainResult {
+  ok:          boolean;
+  hashedRows:  number;
+  legacyRows:  number;
+  fromId:      number | null;
+  toId:        number | null;
+  brokenAtId?: number;
+  reason?:     'entry-hash-mismatch' | 'broken-link' | 'missing-anchor' | 'null-in-chain' | 'count-mismatch' | 'head-mismatch';
+}
+
+type RawAuditRow = {
+  id:            number;
+  agent_id:      string | null;
+  action:        string;
+  command:       string | null;
+  allowed:       number | null;
+  policy_rule:   string | null;
+  detail:        string | null;
+  timestamp:     string;
+  prev_hash:     string | null;
+  entry_hash:    string | null;
+  contract_hash: string | null;
+};
 
 export class AuditLog {
-  constructor(private db: Database.Database) {}
+  private readonly getHeadStmt: Database.Statement;
+  private readonly insertRowStmt: Database.Statement;
+  private readonly getRowStmt: Database.Statement;
+  private readonly updateHashesStmt: Database.Statement;
+  // contract_hash MUST remain NULL until the payload format is versioned (future epic).
+  private readonly updateAnchorStmt: Database.Statement;
+
+  constructor(private db: Database.Database) {
+    this.getHeadStmt = db.prepare(
+      'SELECT entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY id DESC LIMIT 1'
+    );
+    this.insertRowStmt = db.prepare(
+      `INSERT INTO audit_log (agent_id, action, command, allowed, policy_rule, detail)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    this.getRowStmt = db.prepare(
+      `SELECT id, agent_id, action, command, allowed, policy_rule, detail, timestamp
+       FROM audit_log WHERE id = ?`
+    );
+    this.updateHashesStmt = db.prepare(
+      'UPDATE audit_log SET prev_hash = ?, entry_hash = ? WHERE id = ?'
+    );
+    this.updateAnchorStmt = db.prepare(
+      `UPDATE audit_chain_head
+       SET hashed_row_count = hashed_row_count + 1,
+           cutover_id = COALESCE(cutover_id, ?),
+           last_id = ?,
+           last_entry_hash = ?
+       WHERE id = 1`
+    );
+  }
 
   record(entry: {
     agent_id?: string;
@@ -17,19 +76,169 @@ export class AuditLog {
     policy_rule?: string;
     detail?: Record<string, unknown>;
   }): void {
-    this.db
-      .prepare(
-        `INSERT INTO audit_log (agent_id, action, command, allowed, policy_rule, detail)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      )
-      .run(
+    const allowedVal =
+      entry.allowed !== undefined ? (entry.allowed ? 1 : 0) : null;
+    const detailVal = entry.detail ? JSON.stringify(entry.detail) : null;
+
+    const txn = this.db.transaction(() => {
+      const head = this.getHeadStmt.get() as { entry_hash: string } | undefined;
+      const prevHash = head?.entry_hash ?? AUDIT_GENESIS_HASH;
+
+      const result = this.insertRowStmt.run(
         entry.agent_id ?? null,
         entry.action,
         entry.command ?? null,
-        entry.allowed !== undefined ? (entry.allowed ? 1 : 0) : null,
+        allowedVal,
         entry.policy_rule ?? null,
-        entry.detail ? JSON.stringify(entry.detail) : null
+        detailVal
       );
+
+      const row = this.getRowStmt.get(Number(result.lastInsertRowid)) as {
+        id: number;
+        agent_id: string | null;
+        action: string;
+        command: string | null;
+        allowed: number | null;
+        policy_rule: string | null;
+        detail: string | null;
+        timestamp: string;
+      };
+
+      const payload = canonicalPayload(
+        row.id,
+        row.agent_id,
+        row.action,
+        row.command,
+        row.allowed,
+        row.policy_rule,
+        row.detail,
+        null, // contract_hash MUST remain NULL until the payload format is versioned (future epic).
+        row.timestamp,
+        prevHash
+      );
+      const entryHash = computeEntryHash(payload);
+
+      this.updateHashesStmt.run(prevHash, entryHash, row.id);
+      const anchorInfo = this.updateAnchorStmt.run(row.id, row.id, entryHash);
+      if (anchorInfo.changes !== 1) {
+        throw new Error('audit_chain_head anchor row missing (id=1); transaction will roll back');
+      }
+    });
+
+    txn.immediate();
+  }
+
+  verifyChain(): VerifyChainResult {
+    type AnchorRow = {
+      hashed_row_count: number;
+      cutover_id:       number | null;
+      last_id:          number | null;
+      last_entry_hash:  string | null;
+    };
+
+    // Step 1: read the anchor row.
+    const anchor = this.db
+      .prepare('SELECT * FROM audit_chain_head WHERE id = 1')
+      .get() as AnchorRow | undefined;
+
+    // Absent anchor while hashed rows exist means the anchor was removed.
+    if (!anchor) {
+      const hasHashed = this.db
+        .prepare('SELECT 1 FROM audit_log WHERE entry_hash IS NOT NULL LIMIT 1')
+        .get();
+      if (hasHashed) {
+        return { ok: false, hashedRows: 0, legacyRows: 0, fromId: null, toId: null, reason: 'missing-anchor' };
+      }
+    }
+
+    // Step 2: walk all rows in insertion order.
+    const rows = this.db
+      .prepare('SELECT * FROM audit_log ORDER BY id ASC')
+      .all() as RawAuditRow[];
+
+    let hashedRows = 0;
+    let legacyRows = 0;
+    let fromId: number | null = null;
+    let toId: number | null = null;
+    let lastHashedEntryHash: string | null = null;
+    let expectedPrev = AUDIT_GENESIS_HASH;
+
+    for (const row of rows) {
+      if (row.entry_hash === null) {
+        // A NULL after cutover is unexpected — the chain is broken.
+        if (anchor && anchor.cutover_id !== null && row.id >= anchor.cutover_id) {
+          return {
+            ok: false,
+            hashedRows,
+            legacyRows,
+            fromId,
+            toId,
+            brokenAtId: row.id,
+            reason: 'null-in-chain',
+          };
+        }
+        // Pre-cutover legacy row: tolerated, do NOT advance expectedPrev.
+        legacyRows++;
+        continue;
+      }
+
+      hashedRows++;
+      if (fromId === null) fromId = row.id;
+      toId = row.id;
+      lastHashedEntryHash = row.entry_hash;
+
+      const payload = canonicalPayload(
+        row.id,
+        row.agent_id,
+        row.action,
+        row.command,
+        row.allowed,
+        row.policy_rule,
+        row.detail,
+        null,
+        row.timestamp,
+        row.prev_hash as string
+      );
+      const recomputed = computeEntryHash(payload);
+
+      if (recomputed !== row.entry_hash) {
+        return {
+          ok: false,
+          hashedRows,
+          legacyRows,
+          fromId,
+          toId,
+          brokenAtId: row.id,
+          reason: 'entry-hash-mismatch',
+        };
+      }
+
+      if (row.prev_hash !== expectedPrev) {
+        return {
+          ok: false,
+          hashedRows,
+          legacyRows,
+          fromId,
+          toId,
+          brokenAtId: row.id,
+          reason: 'broken-link',
+        };
+      }
+
+      expectedPrev = row.entry_hash;
+    }
+
+    // Step 3: cross-check the walked result against the anchor.
+    if (anchor) {
+      if (hashedRows !== anchor.hashed_row_count) {
+        return { ok: false, hashedRows, legacyRows, fromId, toId, reason: 'count-mismatch' };
+      }
+      if (hashedRows > 0 && (toId !== anchor.last_id || lastHashedEntryHash !== anchor.last_entry_hash)) {
+        return { ok: false, hashedRows, legacyRows, fromId, toId, reason: 'head-mismatch' };
+      }
+    }
+
+    return { ok: true, hashedRows, legacyRows, fromId, toId };
   }
 
   /**

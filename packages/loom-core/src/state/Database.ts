@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 32;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -292,6 +292,16 @@ CREATE TABLE IF NOT EXISTS review_findings (
 
 CREATE INDEX IF NOT EXISTS idx_review_findings_agent ON review_findings(agent_id);
 CREATE INDEX IF NOT EXISTS idx_review_findings_story ON review_findings(story_id);
+
+-- v32: audit chain head — single-row anchor for tamper-evidence (epic-097 story-097-001).
+-- Seeded by runMigrations() with current chain state; updated atomically by AuditLog.record().
+CREATE TABLE IF NOT EXISTS audit_chain_head (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  hashed_row_count INTEGER NOT NULL DEFAULT 0,
+  cutover_id       INTEGER,
+  last_id          INTEGER,
+  last_entry_hash  TEXT
+);
 `;
 
 let _db: Database.Database | null = null;
@@ -308,6 +318,7 @@ export function createDatabase(dbPath: string): Database.Database {
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');
   runMigrations(db);
   return db;
 }
@@ -562,14 +573,52 @@ export function runMigrations(db: Database.Database): void {
   // v26: repoint epic-NNN standalone ids to story-NNN (no schema change).
   repointStandaloneIds(db);
 
-  const row = db
+  // v31: audit-log tamper-evidence columns (epic-096 story-096-001).
+  // All three are nullable TEXT with no default; never backfilled on pre-v31 rows.
+  const auditLogCols = db.prepare('PRAGMA table_info(audit_log)').all() as {
+    name: string;
+  }[];
+  if (!auditLogCols.some((c) => c.name === 'prev_hash')) {
+    db.exec('ALTER TABLE audit_log ADD COLUMN prev_hash TEXT');
+  }
+  if (!auditLogCols.some((c) => c.name === 'entry_hash')) {
+    db.exec('ALTER TABLE audit_log ADD COLUMN entry_hash TEXT');
+  }
+  // contract_hash MUST remain NULL until the payload format is versioned (changing arity re-hashes every row).
+  if (!auditLogCols.some((c) => c.name === 'contract_hash')) {
+    db.exec('ALTER TABLE audit_log ADD COLUMN contract_hash TEXT');
+  }
+
+  // v32: audit_chain_head singleton anchor (epic-097 story-097-001).
+  // The DDL at the top of runMigrations already created the table (fresh + existing DBs).
+  //
+  // SECURITY (epic-097 re-gate finding): seed the anchor row ONLY on fresh-init or a genuine
+  // pre-v32 upgrade — NEVER on a steady-state open of an already-v32 DB. If the seed ran on every
+  // open, a tamperer could `DELETE FROM audit_chain_head`, truncate audit_log, and have loom
+  // silently re-derive a matching anchor from the truncated rows on the next command — defeating
+  // tail-truncation detection and making verifyChain's `missing-anchor` branch unreachable. So we
+  // read the STORED schema version BEFORE deciding, and only seed when crossing into v32.
+  const versionRow = db
     .prepare('SELECT version FROM schema_version LIMIT 1')
     .get() as { version: number } | undefined;
-  if (!row) {
+  if (!versionRow || versionRow.version < 32) {
+    // One-time seed from the current chain state. INSERT OR IGNORE + the id=1 PK keeps it to one
+    // row. On an empty chain, COUNT()=0 and the scalar subqueries yield NULL — the empty-init row.
+    db.exec(`
+      INSERT OR IGNORE INTO audit_chain_head (id, hashed_row_count, cutover_id, last_id, last_entry_hash)
+      SELECT 1,
+        (SELECT COUNT(*)    FROM audit_log WHERE entry_hash IS NOT NULL),
+        (SELECT MIN(id)     FROM audit_log WHERE entry_hash IS NOT NULL),
+        (SELECT MAX(id)     FROM audit_log WHERE entry_hash IS NOT NULL),
+        (SELECT entry_hash  FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY id DESC LIMIT 1)
+    `);
+  }
+
+  if (!versionRow) {
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
       SCHEMA_VERSION
     );
-  } else if (row.version !== SCHEMA_VERSION) {
+  } else if (versionRow.version !== SCHEMA_VERSION) {
     db.prepare('UPDATE schema_version SET version = ?').run(SCHEMA_VERSION);
   }
 }

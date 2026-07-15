@@ -23,6 +23,8 @@ export async function capture(fn: () => Promise<void> | void): Promise<Captured>
   const origExit = process.exit;
   const origLog = console.log;
   const origErr = console.error;
+  const origExitCode = process.exitCode;
+  process.exitCode = undefined;
   const logs: string[] = [];
   const errors: string[] = [];
   let exitCode: number | null = null;
@@ -39,12 +41,17 @@ export async function capture(fn: () => Promise<void> | void): Promise<Captured>
   };
   try {
     await fn();
+    // Detect process.exitCode = N; return (does not throw)
+    if (exitCode === null && process.exitCode !== undefined && process.exitCode !== null) {
+      exitCode = process.exitCode as number;
+    }
   } catch (err) {
     if (!(err instanceof ExitSignal)) throw err;
   } finally {
     process.exit = origExit;
     console.log = origLog;
     console.error = origErr;
+    process.exitCode = origExitCode;
   }
   return { exitCode, logs, errors };
 }

@@ -24,7 +24,7 @@ import { runDiff, spec as diffSpec } from './commands/diff.js';
 import { runReview, spec as reviewSpec } from './commands/review.js';
 import { runArtifacts, spec as artifactsSpec } from './commands/artifacts.js';
 import { runTraces, spec as tracesSpec } from './commands/traces.js';
-import { runAudit, spec as auditSpec } from './commands/audit.js';
+import { runAudit, runAuditVerify, spec as auditSpec, verifySpec as auditVerifySpec } from './commands/audit.js';
 import { runCost, spec as costSpec } from './commands/cost.js';
 import { runAutonomy, spec as autonomySpec } from './commands/autonomy.js';
 import { runProjects, spec as projectsSpec } from './commands/projects.js';
@@ -311,12 +311,18 @@ export function buildProgram(): Command {
     });
 
   // ─── loom audit ───────────────────────────────────────────────────────────
-  applySpec(program.command('audit'), auditSpec)
+  const auditCmd = applySpec(program.command('audit'), auditSpec)
     .action((opts: { story?: string; agent?: string; limit?: string | number; json?: boolean }) => {
       runAudit({
         ...opts,
         limit: opts.limit !== undefined ? parseInt(String(opts.limit), 10) : undefined,
       });
+    });
+
+  applySpec(auditCmd.command('verify'), auditVerifySpec)
+    .addHelpText('after', '\nExamples:\n  loom audit verify\n  loom audit verify --json')
+    .action((opts: { json?: boolean }) => {
+      runAuditVerify({ json: opts.json });
     });
 
   // ─── loom cost ────────────────────────────────────────────────────────────
