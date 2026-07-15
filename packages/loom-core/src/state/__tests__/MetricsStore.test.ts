@@ -120,7 +120,7 @@ describe('v28 → v29 migration (run_metrics tables)', () => {
 
     // SCHEMA_VERSION bumped to current version
     assert.equal(schemaVersion(db), SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 31, 'SCHEMA_VERSION constant is 31');
+    assert.ok(SCHEMA_VERSION >= 31, 'SCHEMA_VERSION must be >= 31 for v29 features');
 
     db.close();
   });

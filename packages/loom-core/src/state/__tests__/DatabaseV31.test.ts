@@ -81,8 +81,8 @@ function seedV30Db(dbPath: string): Database.Database {
 // ─── SCHEMA_VERSION constant ──────────────────────────────────────────────────
 
 describe('SCHEMA_VERSION constant (v31)', () => {
-  it('equals 31', () => {
-    assert.equal(SCHEMA_VERSION, 31);
+  it('is at least 31 (v31 features present)', () => {
+    assert.ok(SCHEMA_VERSION >= 31, 'SCHEMA_VERSION must be >= 31 for v31 features');
   });
 });
 
@@ -106,7 +106,7 @@ describe('v31 — fresh install', () => {
       assert.equal(byName[col].type,       'TEXT', `${col}: type must be TEXT`);
     }
 
-    assert.equal(schemaVersion(db), 31, 'schema_version must be 31 after fresh install');
+    assert.equal(schemaVersion(db), SCHEMA_VERSION, 'schema_version must equal SCHEMA_VERSION after fresh install');
 
     db.close();
   });
@@ -147,8 +147,8 @@ describe('v30 → v31 upgrade', () => {
       assert.ok(after.includes(col), `original column ${col} still present`);
     }
 
-    // (d) schema_version reads 31.
-    assert.equal(schemaVersion(db), 31, 'schema_version bumped to 31');
+    // (d) schema_version reads current SCHEMA_VERSION.
+    assert.equal(schemaVersion(db), SCHEMA_VERSION, 'schema_version bumped to SCHEMA_VERSION');
 
     db.close();
   });
@@ -183,7 +183,7 @@ describe('v31 migration — idempotency', () => {
       () => runMigrations(db),
       'second runMigrations() on a fresh DB must not throw'
     );
-    assert.equal(schemaVersion(db), 31);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
 
     // Columns appear exactly once after two runs.
     const cols = auditLogColInfo(db).map((c) => c.name);
@@ -204,7 +204,7 @@ describe('v31 migration — idempotency', () => {
       () => runMigrations(db),
       'second runMigrations() on an upgraded v30 DB must not throw'
     );
-    assert.equal(schemaVersion(db), 31);
+    assert.equal(schemaVersion(db), SCHEMA_VERSION);
 
     db.close();
   });

@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { runMigrations, SCHEMA_VERSION } from '../Database.js';
+import { createDatabase, runMigrations, SCHEMA_VERSION } from '../Database.js';
 import { idNumber } from '../../planner/paths.js';
 
 let tmpDir: string;
@@ -479,7 +479,249 @@ describe('v26 migration — FK deferral implicit proof and schema version', () =
     const db = seedPreV26Db(dbPath);
     runMigrations(db);
     assert.equal(schemaVersion(db), SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 31);
+    assert.equal(SCHEMA_VERSION, 32);
+    db.close();
+  });
+});
+
+// ─── v32 migration: audit_chain_head ─────────────────────────────────────────
+
+type AnchorRow = {
+  id: number;
+  hashed_row_count: number;
+  cutover_id: number | null;
+  last_id: number | null;
+  last_entry_hash: string | null;
+};
+
+/**
+ * Seeds a minimal v31 DB: the three hash columns on audit_log exist, but
+ * audit_chain_head does not yet exist.
+ */
+function seedV31Db(dbPath: string): Database.Database {
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE TABLE schema_version (version INTEGER NOT NULL);
+    CREATE TABLE epics (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'planned',
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE agents (
+      id TEXT PRIMARY KEY,
+      epic_id TEXT NOT NULL,
+      story_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id TEXT,
+      action TEXT NOT NULL,
+      command TEXT,
+      allowed INTEGER,
+      policy_rule TEXT,
+      detail TEXT,
+      timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      prev_hash TEXT,
+      entry_hash TEXT,
+      contract_hash TEXT
+    );
+  `);
+  db.prepare('INSERT INTO schema_version (version) VALUES (31)').run();
+  return db;
+}
+
+describe('v32 migration: SCHEMA_VERSION constant', () => {
+  it('SCHEMA_VERSION equals 32', () => {
+    assert.equal(SCHEMA_VERSION, 32);
+  });
+
+  it('runMigrations() on a v31 DB advances schema_version to 32', () => {
+    const dbPath = path.join(tmpDir, 'v32-version-bump.db');
+    const db = seedV31Db(dbPath);
+    assert.equal(schemaVersion(db), 31, 'precondition: starts at v31');
+    runMigrations(db);
+    assert.equal(schemaVersion(db), 32, 'schema_version bumped to 32 after migration');
+    db.close();
+  });
+});
+
+describe('v32 migration: audit_chain_head table structure', () => {
+  it('PRAGMA table_info returns all five columns after migration', () => {
+    const dbPath = path.join(tmpDir, 'v32-columns.db');
+    const db = seedV31Db(dbPath);
+    runMigrations(db);
+
+    const cols = db.prepare('PRAGMA table_info(audit_chain_head)').all() as {
+      name: string;
+    }[];
+    const names = cols.map((c) => c.name);
+
+    assert.ok(names.includes('id'),               'id column must exist');
+    assert.ok(names.includes('hashed_row_count'), 'hashed_row_count column must exist');
+    assert.ok(names.includes('cutover_id'),       'cutover_id column must exist');
+    assert.ok(names.includes('last_id'),          'last_id column must exist');
+    assert.ok(names.includes('last_entry_hash'),  'last_entry_hash column must exist');
+    assert.equal(names.length, 5, 'exactly five columns');
+
+    db.close();
+  });
+
+  it('contains exactly one row with id=1 after migration', () => {
+    const dbPath = path.join(tmpDir, 'v32-one-row.db');
+    const db = seedV31Db(dbPath);
+    runMigrations(db);
+
+    const rows = db.prepare('SELECT * FROM audit_chain_head').all() as AnchorRow[];
+    assert.equal(rows.length, 1, 'exactly one anchor row');
+    assert.equal(rows[0].id, 1, 'anchor row id must be 1');
+
+    db.close();
+  });
+});
+
+describe('v32 migration: init from seeded chain', () => {
+  it('anchor row reflects count/cutover/last of hashed rows', () => {
+    const dbPath = path.join(tmpDir, 'v32-seeded-chain.db');
+    const db = seedV31Db(dbPath);
+
+    // Insert 5 audit_log rows: rows 1,2 unhashed; rows 3,4,5 hashed.
+    const ins = db.prepare(
+      'INSERT INTO audit_log (action, entry_hash) VALUES (?, ?)'
+    );
+    ins.run('unhashed_a', null);
+    ins.run('unhashed_b', null);
+    ins.run('hashed_a',   'hash-a');
+    ins.run('hashed_b',   'hash-b');
+    ins.run('hashed_c',   'hash-c');
+
+    // Capture the ids of hashed rows so we know the expected min/max.
+    const hashedRows = db
+      .prepare('SELECT id, entry_hash FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY id ASC')
+      .all() as { id: number; entry_hash: string }[];
+    assert.equal(hashedRows.length, 3, 'precondition: 3 hashed rows');
+
+    const expectedCutoverId  = hashedRows[0].id;
+    const expectedLastId     = hashedRows[2].id;
+    const expectedLastHash   = hashedRows[2].entry_hash;
+
+    runMigrations(db);
+
+    const anchor = db.prepare('SELECT * FROM audit_chain_head').get() as AnchorRow;
+    assert.ok(anchor, 'anchor row must exist');
+    assert.equal(anchor.hashed_row_count, 3,                  'hashed_row_count = 3');
+    assert.equal(anchor.cutover_id,       expectedCutoverId,  'cutover_id = MIN(hashed id)');
+    assert.equal(anchor.last_id,          expectedLastId,     'last_id = MAX(hashed id)');
+    assert.equal(anchor.last_entry_hash,  expectedLastHash,   'last_entry_hash = last hashed row hash');
+
+    db.close();
+  });
+});
+
+describe('v32 migration: empty chain', () => {
+  it('creates exactly one anchor row with hashed_row_count=0 and NULL fields', () => {
+    const dbPath = path.join(tmpDir, 'v32-empty-chain.db');
+    const db = seedV31Db(dbPath);
+
+    // No rows in audit_log at all.
+    runMigrations(db);
+
+    const rows = db.prepare('SELECT * FROM audit_chain_head').all() as AnchorRow[];
+    assert.equal(rows.length, 1, 'must have exactly ONE anchor row (not zero)');
+
+    const anchor = rows[0];
+    assert.equal(anchor.id,               1,    'id = 1');
+    assert.equal(anchor.hashed_row_count, 0,    'hashed_row_count = 0 on empty chain');
+    assert.equal(anchor.cutover_id,       null, 'cutover_id = NULL on empty chain');
+    assert.equal(anchor.last_id,          null, 'last_id = NULL on empty chain');
+    assert.equal(anchor.last_entry_hash,  null, 'last_entry_hash = NULL on empty chain');
+
+    db.close();
+  });
+
+  it('also works when audit_log has rows but none are hashed', () => {
+    const dbPath = path.join(tmpDir, 'v32-unhashed-only.db');
+    const db = seedV31Db(dbPath);
+
+    db.prepare('INSERT INTO audit_log (action, entry_hash) VALUES (?, NULL)').run('guard_checked');
+    db.prepare('INSERT INTO audit_log (action, entry_hash) VALUES (?, NULL)').run('guard_checked');
+
+    runMigrations(db);
+
+    const anchor = db.prepare('SELECT * FROM audit_chain_head').get() as AnchorRow;
+    assert.ok(anchor, 'anchor row must exist');
+    assert.equal(anchor.hashed_row_count, 0,    'hashed_row_count = 0 when no hashed rows');
+    assert.equal(anchor.cutover_id,       null, 'cutover_id = NULL');
+    assert.equal(anchor.last_id,          null, 'last_id = NULL');
+    assert.equal(anchor.last_entry_hash,  null, 'last_entry_hash = NULL');
+
+    db.close();
+  });
+});
+
+describe('v32 migration: audit_log rows not mutated', () => {
+  it('every audit_log row is byte-identical before and after migration', () => {
+    const dbPath = path.join(tmpDir, 'v32-no-mutation.db');
+    const db = seedV31Db(dbPath);
+
+    const ins = db.prepare(
+      'INSERT INTO audit_log (action, command, entry_hash) VALUES (?, ?, ?)'
+    );
+    ins.run('guard_checked', 'git status', null);
+    ins.run('guard_checked', 'npm test',   'hash-xyz');
+    ins.run('epic_approved', null,         null);
+
+    type AuditRow = Record<string, unknown>;
+    const before = db.prepare('SELECT * FROM audit_log ORDER BY id').all() as AuditRow[];
+
+    runMigrations(db);
+
+    const after = db.prepare('SELECT * FROM audit_log ORDER BY id').all() as AuditRow[];
+
+    assert.equal(after.length, before.length, 'row count unchanged');
+    for (let i = 0; i < before.length; i++) {
+      assert.deepEqual(after[i], before[i], `row ${i + 1} must be byte-identical`);
+    }
+
+    db.close();
+  });
+});
+
+describe('v32 migration: idempotency', () => {
+  it('running runMigrations twice does not throw and leaves exactly one anchor row', () => {
+    const dbPath = path.join(tmpDir, 'v32-idempotent.db');
+    const db = seedV31Db(dbPath);
+
+    runMigrations(db);
+    assert.doesNotThrow(
+      () => runMigrations(db),
+      'second runMigrations() must not throw'
+    );
+
+    const rows = db.prepare('SELECT * FROM audit_chain_head').all();
+    assert.equal(rows.length, 1, 'still exactly one anchor row after two migrations');
+    assert.equal(schemaVersion(db), SCHEMA_VERSION, 'schema_version unchanged by second run');
+
+    db.close();
+  });
+
+  it('idempotent on a fresh DB (createDatabase path)', () => {
+    const dbPath = path.join(tmpDir, 'v32-idempotent-fresh.db');
+    const db = createDatabase(dbPath);
+
+    assert.doesNotThrow(
+      () => runMigrations(db),
+      'second runMigrations() on fresh DB must not throw'
+    );
+
+    const rows = db.prepare('SELECT * FROM audit_chain_head').all();
+    assert.equal(rows.length, 1, 'exactly one anchor row on fresh DB');
+
     db.close();
   });
 });

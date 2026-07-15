@@ -114,7 +114,7 @@ describe('DatabaseMigrationV30 — agents.revise_round + review_findings (story-
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
     assert.equal(ver.version, SCHEMA_VERSION, 'schema_version must equal SCHEMA_VERSION constant');
-    assert.equal(SCHEMA_VERSION, 31, 'SCHEMA_VERSION constant must be 31');
+    assert.ok(SCHEMA_VERSION >= 31, 'SCHEMA_VERSION must be >= 31 for v30 features');
 
     // Check review_findings columns
     const rfCols = db.prepare('PRAGMA table_info(review_findings)').all() as {
