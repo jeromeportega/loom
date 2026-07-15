@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -292,6 +292,16 @@ CREATE TABLE IF NOT EXISTS review_findings (
 
 CREATE INDEX IF NOT EXISTS idx_review_findings_agent ON review_findings(agent_id);
 CREATE INDEX IF NOT EXISTS idx_review_findings_story ON review_findings(story_id);
+
+-- v32: audit chain head — single-row anchor for tamper-evidence (epic-097 story-097-001).
+-- Seeded by runMigrations() with current chain state; updated atomically by AuditLog.record().
+CREATE TABLE IF NOT EXISTS audit_chain_head (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  hashed_row_count INTEGER NOT NULL DEFAULT 0,
+  cutover_id       INTEGER,
+  last_id          INTEGER,
+  last_entry_hash  TEXT
+);
 `;
 
 let _db: Database.Database | null = null;
@@ -576,6 +586,31 @@ export function runMigrations(db: Database.Database): void {
   if (!auditLogCols.some((c) => c.name === 'contract_hash')) {
     db.exec('ALTER TABLE audit_log ADD COLUMN contract_hash TEXT');
   }
+
+  // v32: audit_chain_head singleton anchor (epic-097 story-097-001).
+  // Guard: create only if absent (DDL handles fresh DBs; this covers upgrades).
+  const chainHeadCols = db.prepare('PRAGMA table_info(audit_chain_head)').all() as {
+    name: string;
+  }[];
+  if (chainHeadCols.length === 0) {
+    db.exec(`CREATE TABLE IF NOT EXISTS audit_chain_head (
+      id               INTEGER PRIMARY KEY CHECK (id = 1),
+      hashed_row_count INTEGER NOT NULL DEFAULT 0,
+      cutover_id       INTEGER,
+      last_id          INTEGER,
+      last_entry_hash  TEXT
+    )`);
+  }
+  // Seed the singleton row idempotently. INSERT OR IGNORE + PK ensures at most one row.
+  // On an empty chain, COUNT()=0 and the scalar subqueries yield NULL — the required empty-init row.
+  db.exec(`
+    INSERT OR IGNORE INTO audit_chain_head (id, hashed_row_count, cutover_id, last_id, last_entry_hash)
+    SELECT 1,
+      (SELECT COUNT(*)    FROM audit_log WHERE entry_hash IS NOT NULL),
+      (SELECT MIN(id)     FROM audit_log WHERE entry_hash IS NOT NULL),
+      (SELECT MAX(id)     FROM audit_log WHERE entry_hash IS NOT NULL),
+      (SELECT entry_hash  FROM audit_log WHERE entry_hash IS NOT NULL ORDER BY id DESC LIMIT 1)
+  `);
 
   const row = db
     .prepare('SELECT version FROM schema_version LIMIT 1')
