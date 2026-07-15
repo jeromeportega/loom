@@ -3281,6 +3281,7 @@ export class Supervisor {
         db:       this.opts.db,
         epicId:   task.epicId,
         auditLog: this.audit,
+        agents:   this.agents,
       });
     } catch (err) {
       // On budget exhaustion or PM failure the DB already shows 'failed' from
@@ -3289,79 +3290,89 @@ export class Supervisor {
       throw err;
     }
 
-    // Re-point every in-flight task that depends on the original story to the
-    // final sub-story. The final sub-story is the logical "gate" that the original
-    // story provided — once it completes, downstream work can proceed.
-    const finalSubStory = subStories[subStories.length - 1];
-    const downstreamOverrides: DownstreamOverride[] = [];
-    for (const t of tasks.values()) {
-      if (t.story.dependencies.includes(task.story.id)) {
-        const newDeps = t.story.dependencies.map((d) =>
-          d === task.story.id ? finalSubStory.id : d
-        );
-        downstreamOverrides.push({ storyId: t.story.id, newDependencies: newDeps });
+    // All post-handleReroute mutations — wrapped so any throw sets task.status='failed'
+    // before propagating, keeping in-memory and DB state consistent.
+    try {
+      // Pre-flight ID collision check: run BEFORE injectSubStories so a collision
+      // never partially writes sub-story rows to the DB. A partial write would leave
+      // orphan rows that recovery sees as dispatchable tasks, producing a stalled DAG.
+      for (const sub of subStories) {
+        if (tasks.has(sub.id)) {
+          throw new Error(
+            `PM reroute for ${task.story.id} returned sub-story ID "${sub.id}" that ` +
+            `already exists in the active tasks map — ID collision. Marking original story failed.`
+          );
+        }
       }
-    }
 
-    // Atomically write sub-story agent rows + dep_override updates to DB.
-    injectSubStories(
-      task.story,
-      subStories,
-      task.epicId,
-      this.opts.db,
-      this.audit,
-      downstreamOverrides
-    );
+      // Re-point every in-flight task that depends on the original story to the
+      // final sub-story. The final sub-story is the logical "gate" that the original
+      // story provided — once it completes, downstream work can proceed.
+      const finalSubStory = subStories[subStories.length - 1];
+      const downstreamOverrides: DownstreamOverride[] = [];
+      for (const t of tasks.values()) {
+        if (t.story.dependencies.includes(task.story.id)) {
+          const newDeps = t.story.dependencies.map((d) =>
+            d === task.story.id ? finalSubStory.id : d
+          );
+          downstreamOverrides.push({ storyId: t.story.id, newDependencies: newDeps });
+        }
+      }
 
-    // Mirror DB writes in the in-memory tasks map so this run's dispatchLoop
-    // can immediately schedule sub-stories without a full reload.
-    for (const sub of subStories) {
-      // ID collision guard: if PM returns a sub-story ID that already exists in
-      // the active tasks map, overwriting it would silently displace the original
-      // YAML story and stall everything that depended on it. Fail loudly instead.
-      if (tasks.has(sub.id)) {
-        throw new Error(
-          `PM reroute for ${task.story.id} returned sub-story ID "${sub.id}" that ` +
-          `already exists in the active tasks map — ID collision. Marking original story failed.`
-        );
+      // Atomically write sub-story agent rows + dep_override updates to DB.
+      injectSubStories(
+        task.story,
+        subStories,
+        task.epicId,
+        this.opts.db,
+        this.audit,
+        downstreamOverrides
+      );
+
+      // Mirror DB writes in the in-memory tasks map so this run's dispatchLoop
+      // can immediately schedule sub-stories without a full reload.
+      for (const sub of subStories) {
+        const agentRow = this.agents.getByStory(sub.id);
+        if (!agentRow) {
+          // injectSubStories just wrote this row in a committed transaction; a
+          // null result here means the DB is in an inconsistent state — surface
+          // immediately rather than silently dropping the sub-story from dispatch.
+          throw new Error(
+            `Internal error: agent row for injected sub-story ${sub.id} not found ` +
+            `immediately after injectSubStories transaction committed`
+          );
+        }
+        tasks.set(sub.id, {
+          epicId:  task.epicId,
+          story:   sub,
+          agentId: agentRow.id,
+          status:  'pending',
+        });
       }
-      const agentRow = this.agents.getByStory(sub.id);
-      if (!agentRow) {
-        // injectSubStories just wrote this row in a committed transaction; a
-        // null result here means the DB is in an inconsistent state — surface
-        // immediately rather than silently dropping the sub-story from dispatch.
-        throw new Error(
-          `Internal error: agent row for injected sub-story ${sub.id} not found ` +
-          `immediately after injectSubStories transaction committed`
-        );
+      for (const override of downstreamOverrides) {
+        const t = tasks.get(override.storyId);
+        if (t) {
+          t.story = { ...t.story, dependencies: override.newDependencies };
+        }
       }
-      tasks.set(sub.id, {
-        epicId:  task.epicId,
-        story:   sub,
-        agentId: agentRow.id,
-        status:  'pending',
+
+      // Remove original from the in-memory tasks map — it is superseded by sub-stories.
+      // DB shows 'failed' from applyResult (the correct historical record). Removing
+      // from the map prevents it from counting in storiesDone/Failed and from being
+      // re-dispatched. Downstream tasks already have dep_overrides re-pointing them
+      // to the final sub-story, so they don't wait on this story ID any more.
+      tasks.delete(task.story.id);
+
+      this.opts.onWorkerEvent?.({
+        type:        'rerouted',
+        storyId:     task.story.id,
+        subStoryIds: subStories.map((s) => s.id),
+        trigger:     pending.trigger,
       });
+    } catch (err) {
+      task.status = 'failed';
+      throw err;
     }
-    for (const override of downstreamOverrides) {
-      const t = tasks.get(override.storyId);
-      if (t) {
-        t.story = { ...t.story, dependencies: override.newDependencies };
-      }
-    }
-
-    // Remove original from the in-memory tasks map — it is superseded by sub-stories.
-    // DB shows 'failed' from applyResult (the correct historical record). Removing
-    // from the map prevents it from counting in storiesDone/Failed and from being
-    // re-dispatched. Downstream tasks already have dep_overrides re-pointing them
-    // to the final sub-story, so they don't wait on this story ID any more.
-    tasks.delete(task.story.id);
-
-    this.opts.onWorkerEvent?.({
-      type:        'rerouted',
-      storyId:     task.story.id,
-      subStoryIds: subStories.map((s) => s.id),
-      trigger:     pending.trigger,
-    });
   }
 
   /**

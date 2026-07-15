@@ -27,9 +27,11 @@ export class AgentStore {
     const now = new Date().toISOString();
     // Carry forward the resplit_count from any prior agent row so the re-split
     // budget is durable across loom run restarts (epic-095 story-095-005).
+    // Filter by epic_id so cross-epic stories with recycled IDs don't contaminate
+    // each other's budget counters.
     const prior = this.db
-      .prepare('SELECT MAX(resplit_count) AS mc FROM agents WHERE story_id = ?')
-      .get(storyId) as { mc: number | null };
+      .prepare('SELECT MAX(resplit_count) AS mc FROM agents WHERE story_id = ? AND epic_id = ?')
+      .get(storyId, epicId) as { mc: number | null };
     const inheritedResplit = prior?.mc ?? 0;
     this.db
       .prepare(
@@ -321,13 +323,22 @@ export class AgentStore {
   /**
    * Returns the resplit_count for the most-recent agent row for a story.
    * Returns 0 when no agent row exists (first reroute attempt).
+   *
+   * Pass `epicId` to scope to a specific epic; cross-epic stories with recycled
+   * IDs won't contaminate each other's budget counters.
    */
-  getResplitCount(storyId: string): number {
-    const row = this.db
-      .prepare(
-        'SELECT resplit_count FROM agents WHERE story_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1'
-      )
-      .get(storyId) as { resplit_count: number } | undefined;
+  getResplitCount(storyId: string, epicId?: string): number {
+    const row = epicId
+      ? (this.db
+          .prepare(
+            'SELECT resplit_count FROM agents WHERE story_id = ? AND epic_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1'
+          )
+          .get(storyId, epicId) as { resplit_count: number } | undefined)
+      : (this.db
+          .prepare(
+            'SELECT resplit_count FROM agents WHERE story_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1'
+          )
+          .get(storyId) as { resplit_count: number } | undefined);
     return row?.resplit_count ?? 0;
   }
 

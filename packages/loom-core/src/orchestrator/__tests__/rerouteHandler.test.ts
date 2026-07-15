@@ -96,7 +96,7 @@ describe('handleReroute', () => {
       trigger: 'LOOM_TOO_BIG',
     };
 
-    const result = await handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit });
+    const result = await handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit, agents });
 
     assert.strictEqual(result.length, 2);
     assert.strictEqual(result[0].id, 'story-001-001a');
@@ -142,7 +142,7 @@ describe('handleReroute', () => {
     };
 
     await assert.rejects(
-      () => handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit }),
+      () => handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit, agents }),
       (err: unknown) => {
         assert.ok(err instanceof RerouteBudgetExhaustedError);
         assert.strictEqual(err.storyId, 'story-001-001');
@@ -175,7 +175,7 @@ describe('handleReroute', () => {
     };
 
     await assert.rejects(
-      () => handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit }),
+      () => handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit, agents }),
       (err: unknown) => {
         assert.ok(err instanceof Error);
         assert.ok(!(err instanceof RerouteBudgetExhaustedError));
@@ -197,7 +197,7 @@ describe('handleReroute', () => {
     const pm = makePMAgent([makeStory('sub-a'), makeStory('sub-b')]);
     const payload: ReroutePayload = { story: original, fanOutPayload: '', trigger: 'cap' };
 
-    const result = await handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit });
+    const result = await handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit, agents });
     assert.strictEqual(result.length, 2);
 
     const updated = db

@@ -9,7 +9,7 @@
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { AuditLog } from '../state/AuditLog.js';
-import { AGENT_ID_RANDOM_BYTES } from '../state/AgentStore.js';
+import { AGENT_ID_RANDOM_BYTES, AgentStore } from '../state/AgentStore.js';
 import type { Story } from '../types.js';
 import { MAX_RESPLIT_BUDGET } from './constants.js';
 
@@ -90,18 +90,15 @@ export async function handleReroute(
     db:        Database.Database;
     epicId:    string;
     auditLog:  AuditLog;
+    agents:    AgentStore;
   }
 ): Promise<Story[]> {
   const { story, fanOutPayload, trigger } = payload;
-  const { pmAgent, db, epicId, auditLog } = opts;
+  const { pmAgent, db, epicId, auditLog, agents } = opts;
 
-  // Read current resplit_count from the most-recent agent row for this story.
-  const agentRow = db
-    .prepare(
-      'SELECT resplit_count FROM agents WHERE story_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1'
-    )
-    .get(story.id) as { resplit_count: number } | undefined;
-  const resplitCount = agentRow?.resplit_count ?? 0;
+  // Read current resplit_count via AgentStore (scoped to epicId) to avoid
+  // cross-epic contamination when story IDs are recycled across epics.
+  const resplitCount = agents.getResplitCount(story.id, epicId);
 
   if (resplitCount >= MAX_RESPLIT_BUDGET) {
     auditLog.record({
@@ -143,13 +140,15 @@ export async function handleReroute(
     );
   }
 
-  // Increment resplit_count on the most-recent agent row.
+  // Increment resplit_count on the most-recent agent row, scoped to epicId
+  // so cross-epic stories with recycled IDs don't contaminate each other.
   db.prepare(
     `UPDATE agents SET resplit_count = resplit_count + 1, updated_at = ?
-     WHERE story_id = ? AND id = (
-       SELECT id FROM agents WHERE story_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1
+     WHERE story_id = ? AND epic_id = ? AND id = (
+       SELECT id FROM agents WHERE story_id = ? AND epic_id = ?
+       ORDER BY updated_at DESC, id DESC LIMIT 1
      )`
-  ).run(new Date().toISOString(), story.id, story.id);
+  ).run(new Date().toISOString(), story.id, epicId, story.id, epicId);
 
   auditLog.record({
     action:  'reroute_pm_succeeded',
@@ -221,24 +220,21 @@ export function injectSubStories(
         now
       );
 
-      // Audit entry per sub-story so operators can trace the injection.
-      db.prepare(
-        `INSERT INTO audit_log (agent_id, action, command, allowed, detail, timestamp)
-         VALUES (?,?,?,?,?,?)`
-      ).run(
-        agentId,
-        'sub_story_injected',
-        sub.id,
-        1,
-        JSON.stringify({
+      // Audit entry per sub-story via AuditLog.record() so schema changes to
+      // audit_log (new NOT NULL columns) are caught in one place, not here.
+      auditLog.record({
+        agent_id: agentId,
+        action:   'sub_story_injected',
+        command:  sub.id,
+        allowed:  true,
+        detail: {
           epicId,
           parentStoryId:   originalStory.id,
           trigger:         'reroute',
           title:           sub.title,
           dependenciesLen: sub.dependencies.length,
-        }),
-        now
-      );
+        },
+      });
     }
 
     // Re-point downstream dependents: store dep_overrides so the Supervisor's
@@ -262,21 +258,24 @@ export function injectSubStories(
         epicId
       );
 
-      db.prepare(
-        `INSERT INTO audit_log (agent_id, action, command, allowed, detail, timestamp)
-         VALUES (?,?,?,?,?,?)`
-      ).run(
-        null,
-        'dep_override_applied',
-        override.storyId,
-        1,
-        JSON.stringify({
+      // Resolve downstream story's agent id to attribute the audit row correctly.
+      const downstreamAgent = db
+        .prepare(
+          'SELECT id FROM agents WHERE story_id = ? AND epic_id = ? ORDER BY updated_at DESC, id DESC LIMIT 1'
+        )
+        .get(override.storyId, epicId) as { id: string } | undefined;
+
+      auditLog.record({
+        agent_id: downstreamAgent?.id,
+        action:   'dep_override_applied',
+        command:  override.storyId,
+        allowed:  true,
+        detail: {
           epicId,
           newDependencies:  override.newDependencies,
           replacedForStory: originalStory.id,
-        }),
-        now
-      );
+        },
+      });
     }
   })();
 }
