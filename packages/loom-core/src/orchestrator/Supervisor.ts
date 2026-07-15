@@ -2183,11 +2183,12 @@ export class Supervisor {
     // Compute upstream provides section for injection into worker prompt.
     // Only when the story has `requires` entries — otherwise no-op to keep
     // the prompt byte-identical to the pre-feature baseline. Reuse the map
-    // already computed by the dispatch gate (gateProvides) when available to
-    // avoid a second round of DB reads for the same upstream story IDs.
+    // already computed by the dispatch gate (gateProvides) to avoid a second
+    // round of DB reads. gateProvides is always defined here: the dispatch gate
+    // sets it when story.requires has keys, and this guard fires only then.
     let upstreamProvidesSection: string | undefined;
     if (task.story.requires && Object.keys(task.story.requires).length > 0) {
-      const providesMap = gateProvides ?? this.buildProvidesMapForStory(task.story);
+      const providesMap = gateProvides!;
       const block = buildProvidesBlock(task.story, providesMap);
       if (block) upstreamProvidesSection = block;
     }
@@ -2766,6 +2767,13 @@ export class Supervisor {
   }
 
   private applyResult(task: StoryTask, result: WorkerResult): void {
+    // Always clean up the captured provides line regardless of worker exit status.
+    // Cleaning up only inside the SUCCESS guard would leave stale entries for
+    // stories with `provides` that exit 'failed', causing them to accumulate
+    // across block-and-revise retry cycles.
+    const capturedProvidesLine = this.capturedProvidesLines.get(task.story.id);
+    this.capturedProvidesLines.delete(task.story.id);
+
     let status: AgentStatus =
       result.status === 'done' ? (result.prUrl ? 'pr_open' : 'done') : 'failed';
 
@@ -2779,10 +2787,13 @@ export class Supervisor {
     if (SUCCESS.has(status) && task.story.provides && Object.keys(task.story.provides).length > 0) {
       // Prefer the streaming-captured LOOM_PROVIDES line (full fidelity, immune
       // to logTail's 2 kB truncation). When the streaming capture found a line
-      // (non-null string), use it. Otherwise fall back to logTail so the mock
-      // test runner (which never calls onOutput) still exercises the parse path.
-      const capturedLine = this.capturedProvidesLines.get(task.story.id);
-      this.capturedProvidesLines.delete(task.story.id);
+      // (non-null string, captured before applyResult was called), use it directly.
+      // Otherwise fall back to logTail so the mock test runner (which never calls
+      // onOutput) still exercises the parse path.
+      // Note: capturedProvidesLine reflects "last occurrence wins" semantics already
+      // — the streaming capture overwrites on each matching line, so the value here
+      // is the last LOOM_PROVIDES line seen, not the first.
+      const capturedLine = capturedProvidesLine;
       const rawOutput = typeof capturedLine === 'string' ? capturedLine : (result.logTail ?? '');
       let parsedProvides: Record<string, unknown> | null = null;
       let parseErr: LoomProvidesParseError | null = null;

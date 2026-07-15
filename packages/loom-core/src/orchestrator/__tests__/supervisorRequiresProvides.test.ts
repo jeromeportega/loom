@@ -356,6 +356,11 @@ describe('dispatch integration — requires blocking', () => {
     assert.strictEqual(result.storiesBlocked, 1, 'storyB blocked due to unmet requires');
     assert.strictEqual(dispatchCount, 0, 'no worker spawned for storyB');
 
+    // Verify the DB record (not just the in-memory counter) reflects blocked status.
+    const agentB = new AgentStore(db).getByStory('story-001-002');
+    assert.ok(agentB, 'agent record created for storyB');
+    assert.strictEqual(agentB!.status, 'blocked', 'storyB DB status is blocked');
+
     const audit = new AuditLog(db);
     const rows = audit.getByStory('story-001-002');
     const unmetRow = rows.find((r) => r.action === 'requires_unmet');
