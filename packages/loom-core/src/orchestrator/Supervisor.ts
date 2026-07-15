@@ -3229,7 +3229,9 @@ export class Supervisor {
       capturedTooBigPayload !== undefined
         ? capturedTooBigPayload
         : scanLogTailForTooBigSignal(result.logTail ?? '');
-    if (effectiveTooBigPayload !== undefined && this.opts.pmAgent) {
+    // Guard: a successful worker that incidentally printed the signal must not be
+    // re-decomposed. Only reroute when the worker actually did not finish the story.
+    if (effectiveTooBigPayload !== undefined && result.status !== 'done' && this.opts.pmAgent) {
       this.pendingReroutes.set(task.story.id, {
         trigger: 'LOOM_TOO_BIG',
         fanOutPayload: effectiveTooBigPayload,
@@ -3314,6 +3316,15 @@ export class Supervisor {
     // Mirror DB writes in the in-memory tasks map so this run's dispatchLoop
     // can immediately schedule sub-stories without a full reload.
     for (const sub of subStories) {
+      // ID collision guard: if PM returns a sub-story ID that already exists in
+      // the active tasks map, overwriting it would silently displace the original
+      // YAML story and stall everything that depended on it. Fail loudly instead.
+      if (tasks.has(sub.id)) {
+        throw new Error(
+          `PM reroute for ${task.story.id} returned sub-story ID "${sub.id}" that ` +
+          `already exists in the active tasks map — ID collision. Marking original story failed.`
+        );
+      }
       const agentRow = this.agents.getByStory(sub.id);
       if (!agentRow) {
         // injectSubStories just wrote this row in a committed transaction; a

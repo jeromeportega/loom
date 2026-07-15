@@ -258,6 +258,50 @@ describe('Supervisor reroute — absoluteCapMs cap kill (AC-3)', () => {
   });
 });
 
+// ─── Backward-compat: successful worker emitting LOOM_TOO_BIG not rerouted ────
+
+describe('Supervisor reroute — successful worker with LOOM_TOO_BIG signal (AC-1 guard)', () => {
+  it('[Boundary] worker status=done + LOOM_TOO_BIG in logTail → NOT rerouted, normal completion', async () => {
+    const original = makeStory('story-001-001');
+    seedEpic(repoDir, 'epic-001', [original]);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    const pm = makePMAgent([makeStory('story-001-001a'), makeStory('story-001-001b')]);
+    const events: WorkerEvent[] = [];
+
+    const worker = new MockWorkerRunner({
+      // Worker succeeded but incidentally printed the LOOM_TOO_BIG signal
+      status: 'done',
+      commitCount: 1,
+      summary: 'done',
+      logTail: `All good.\n${LOOM_TOO_BIG_SIGNAL} some payload\n`,
+    });
+
+    const supervisor = new Supervisor({
+      projectRoot: repoDir,
+      db,
+      worker,
+      maxConcurrent: 1,
+      lease: false,
+      pmAgent: pm,
+      onWorkerEvent: (e) => events.push(e),
+    });
+
+    const result = await supervisor.run(['epic-001']);
+
+    // Original story completes; no reroute
+    assert.strictEqual(result.storiesDone, 1, 'original story done — not rerouted');
+    assert.strictEqual(result.storiesFailed, 0);
+    const reroutedEvent = events.find((e) => e.type === 'rerouted');
+    assert.ok(!reroutedEvent, 'rerouted event must NOT be emitted for status=done worker');
+
+    // Sub-stories must NOT exist in DB
+    const agents = new AgentStore(db);
+    assert.ok(!agents.getByStory('story-001-001a'), 'sub-a must not be injected');
+    assert.ok(!agents.getByStory('story-001-001b'), 'sub-b must not be injected');
+  });
+});
+
 // ─── AC-4: downstream re-pointing ─────────────────────────────────────────────
 
 describe('Supervisor reroute — downstream re-pointing (AC-4)', () => {
@@ -381,6 +425,56 @@ describe('Supervisor reroute — MAX_RESPLIT_BUDGET enforcement (AC-5)', () => {
       latestRow!.resplit_count,
       MAX_RESPLIT_BUDGET,
       `resplit_count must equal MAX_RESPLIT_BUDGET=${MAX_RESPLIT_BUDGET} on the row handleReroute reads`
+    );
+  });
+});
+
+// ─── Sub-story ID collision guard ─────────────────────────────────────────────
+
+describe('Supervisor reroute — sub-story ID collision guard', () => {
+  it('[Negative] PM returns sub-story ID colliding with existing YAML story → reroute throws', async () => {
+    // epic has two YAML stories: story-001-001 and story-001-002
+    // PM tries to decompose story-001-001 into sub-stories, one of which collides with story-001-002
+    const original = makeStory('story-001-001');
+    const existing = makeStory('story-001-002');
+    seedEpic(repoDir, 'epic-001', [original, existing]);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+
+    // PM returns sub-stories where one ID collides with the existing YAML story
+    const pm = makePMAgent([
+      makeStory('story-001-001a'),
+      makeStory('story-001-002'), // ID collision with YAML story
+    ]);
+
+    const worker = new MockWorkerRunner((assignment) => {
+      if (assignment.storyId === 'story-001-001') {
+        return {
+          status: 'failed' as const,
+          commitCount: 0,
+          summary: 'too big',
+          logTail: `${LOOM_TOO_BIG_SIGNAL}\n`,
+          killReason: undefined,
+        };
+      }
+      return { status: 'done' as const, commitCount: 1, summary: 'done', logTail: '' };
+    });
+
+    const supervisor = new Supervisor({
+      projectRoot: repoDir,
+      db,
+      worker,
+      maxConcurrent: 1,
+      lease: false,
+      pmAgent: pm,
+    });
+
+    await assert.rejects(
+      () => supervisor.run(['epic-001']),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok((err as Error).message.includes('ID collision'));
+        return true;
+      }
     );
   });
 });

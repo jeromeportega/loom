@@ -194,8 +194,17 @@ export function injectSubStories(
   const now = new Date().toISOString();
 
   db.transaction(() => {
-    // Insert pending agent rows for each sub-story.
+    // Insert pending agent rows for each sub-story. Check for a pre-existing row
+    // first so a crash-and-restart that re-enters injectSubStories doesn't create
+    // phantom duplicate rows for the same sub-story.
     for (const sub of subStories) {
+      const existingRow = db
+        .prepare('SELECT id FROM agents WHERE story_id = ? AND epic_id = ? LIMIT 1')
+        .get(sub.id, epicId) as { id: string } | undefined;
+      if (existingRow) {
+        // Already injected (crash-restart idempotency): skip INSERT, no new audit row.
+        continue;
+      }
       const agentId =
         `agent-${sub.id}-${crypto.randomBytes(AGENT_ID_RANDOM_BYTES).toString('hex')}`;
       db.prepare(

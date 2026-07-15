@@ -289,4 +289,29 @@ describe('injectSubStories', () => {
     const origRow = agents.getByStory('story-001-001');
     assert.ok(origRow, 'original row still present');
   });
+
+  it('[Boundary] idempotent on double-call: second injectSubStories call does not create phantom rows', () => {
+    const db = openDatabase(path.join(tmpDir, '.loom'));
+    new EpicStore(db).create('epic-001', 'Test Epic');
+    const agents = new AgentStore(db);
+    const audit = new AuditLog(db);
+    const original = makeStory('story-001-001');
+    agents.create('epic-001', original.id, original.title);
+
+    const sub1 = makeStory('story-001-001a');
+    const sub2 = makeStory('story-001-001b');
+
+    // First call (normal path)
+    injectSubStories(original, [sub1, sub2], 'epic-001', db, audit);
+    const countAfterFirst = (db.prepare('SELECT COUNT(*) AS c FROM agents WHERE epic_id = ?').get('epic-001') as { c: number }).c;
+
+    // Second call (crash-restart scenario)
+    injectSubStories(original, [sub1, sub2], 'epic-001', db, audit);
+    const countAfterSecond = (db.prepare('SELECT COUNT(*) AS c FROM agents WHERE epic_id = ?').get('epic-001') as { c: number }).c;
+
+    assert.strictEqual(countAfterFirst, countAfterSecond, 'second call must not insert duplicate rows');
+    // Sub-story rows are still readable
+    assert.ok(agents.getByStory('story-001-001a'), 'sub-a row still present');
+    assert.ok(agents.getByStory('story-001-001b'), 'sub-b row still present');
+  });
 });
