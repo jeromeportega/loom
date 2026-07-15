@@ -233,6 +233,8 @@ describe('DatabaseMigrationV20 — agents.model + epics.planner_model (story-013
       revise_round: 0,
       provides_output: null,
       resplit_count: 0,
+      story_json: null,
+      dep_overrides: null,
     };
     assert.equal(record.model, null);
 

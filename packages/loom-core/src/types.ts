@@ -145,6 +145,19 @@ export interface AgentRecord {
    * schema v31, epic-095).
    */
   resplit_count: number;
+  /**
+   * Full Story JSON for sub-stories created by the reroute handler (epic-095
+   * story-095-005). NULL for normal stories dispatched from the YAML plan.
+   * Written atomically by injectSubStories; read by the Supervisor to
+   * re-hydrate sub-story objects after a reroute.
+   */
+  story_json: string | null;
+  /**
+   * JSON array of dependency-id strings that overrides the YAML-declared
+   * dependencies for a downstream story that was re-pointed after its upstream
+   * story was re-split (epic-095 story-095-005). NULL = use YAML deps.
+   */
+  dep_overrides: string | null;
 }
 
 export interface EpicRecord {

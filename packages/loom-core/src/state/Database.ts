@@ -534,6 +534,19 @@ export function runMigrations(db: Database.Database): void {
       'ALTER TABLE agents ADD COLUMN resplit_count INTEGER NOT NULL DEFAULT 0'
     );
   }
+  // v31 (cont.) / epic-095 story-095-005: sub-story injection columns.
+  // story_json: full Story JSON blob for sub-stories created by the reroute
+  // handler; NULL for normal stories. Lets the Supervisor re-hydrate sub-story
+  // objects from DB after a reroute without re-reading the YAML plan.
+  // dep_overrides: JSON array of dependency-id strings that supersedes a
+  // downstream story's YAML-declared dependencies after its upstream was
+  // re-split. NULL = use YAML deps; non-NULL = use this array instead.
+  if (!agentCols.some((c) => c.name === 'story_json')) {
+    db.exec('ALTER TABLE agents ADD COLUMN story_json TEXT');
+  }
+  if (!agentCols.some((c) => c.name === 'dep_overrides')) {
+    db.exec('ALTER TABLE agents ADD COLUMN dep_overrides TEXT');
+  }
   if (!epicCols.some((c) => c.name === 'planner_model')) {
     db.exec('ALTER TABLE epics ADD COLUMN planner_model TEXT');
   }
