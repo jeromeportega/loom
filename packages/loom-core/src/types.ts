@@ -132,6 +132,32 @@ export interface AgentRecord {
    * round; 0 until the first revision begins (added in schema v30).
    */
   revise_round: number;
+  /**
+   * JSON-stringified LOOM_PROVIDES output emitted by the worker as a trailer
+   * on its own line. NULL when the story declared no provides, the worker
+   * omitted the trailer, or parsing failed. Written by the Supervisor after
+   * the worker exits (added in schema v31, epic-095).
+   */
+  provides_output: string | null;
+  /**
+   * Number of re-split attempts made when LOOM_TOO_BIG was signalled.
+   * Bounded by MAX_RESPLIT_BUDGET; 0 until the first re-split (added in
+   * schema v31, epic-095).
+   */
+  resplit_count: number;
+  /**
+   * Full Story JSON for sub-stories created by the reroute handler (epic-095
+   * story-095-005). NULL for normal stories dispatched from the YAML plan.
+   * Written atomically by injectSubStories; read by the Supervisor to
+   * re-hydrate sub-story objects after a reroute.
+   */
+  story_json: string | null;
+  /**
+   * JSON array of dependency-id strings that overrides the YAML-declared
+   * dependencies for a downstream story that was re-pointed after its upstream
+   * story was re-split (epic-095 story-095-005). NULL = use YAML deps.
+   */
+  dep_overrides: string | null;
 }
 
 export interface EpicRecord {
@@ -471,6 +497,25 @@ export const StorySchema = z.object({
       })
     )
     .optional(),
+  /**
+   * Key→value map of outputs this story promises to deliver for downstream
+   * stories that declare a matching `requires` entry. Values are any
+   * JSON-serialisable type. Absent = no outputs declared.
+   */
+  provides: z.record(z.unknown()).optional(),
+  /**
+   * Key→story-id map. Each entry declares that this story needs a specific
+   * output (keyed by name) produced by the identified story before it can
+   * run. Absent = no upstream dependencies on story outputs.
+   */
+  requires: z.record(z.string()).optional(),
+  /**
+   * Estimated implementation effort in whole minutes (≥ 0). Used by the
+   * orchestrator to compute the critical path when scheduling parallel
+   * stories. Absent = unknown; stories without this field are treated as
+   * zero-weight nodes by the critical-path algorithm.
+   */
+  estimated_effort: z.number().int().min(0).optional(),
 });
 export type Story = z.infer<typeof StorySchema>;
 

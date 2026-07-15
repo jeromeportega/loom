@@ -158,6 +158,13 @@ export function buildWorkerPrompt(
     }
   }
 
+  // Upstream provides side-channel (epic-095). Pre-computed by the Supervisor
+  // when the story has `requires` entries satisfied by upstream stories.
+  // Absent = no-op so a story without `requires` keeps the byte-identical baseline.
+  if (assignment.upstreamProvidesSection && assignment.upstreamProvidesSection.trim().length > 0) {
+    block += assignment.upstreamProvidesSection;
+  }
+
   // Epic build-up side-channel (EPIC_BUILDUP=on). Injects the
   // size-capped cumulative summary of completed stories and discovered
   // conventions as of dispatch time — so a later-wave worker knows what
