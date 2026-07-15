@@ -44,24 +44,28 @@ function dfsColorMark(dag: Map<string, string[]>): string[] {
   const WHITE = 0, GRAY = 1, BLACK = 2;
   const colors = new Map<string, number>();
   const pathStack: string[] = [];
+  // Parallel index map avoids O(n) indexOf scans on the path stack.
+  const stackIndex = new Map<string, number>();
   let found: string[] = [];
 
   for (const node of dag.keys()) colors.set(node, WHITE);
 
   function dfs(node: string): boolean {
     colors.set(node, GRAY);
+    stackIndex.set(node, pathStack.length);
     pathStack.push(node);
     for (const dep of dag.get(node) ?? []) {
       if (!colors.has(dep)) continue; // dep absent from this dag — skip
       if (colors.get(dep) === GRAY) {
         // Back-edge: everything from dep's stack position to here is the cycle.
-        const start = pathStack.indexOf(dep);
+        const start = stackIndex.get(dep)!;
         found = [...pathStack.slice(start), dep]; // dep repeated to show the loop
         return true;
       }
       if (colors.get(dep) !== BLACK && dfs(dep)) return true;
     }
     pathStack.pop();
+    stackIndex.delete(node);
     colors.set(node, BLACK);
     return false;
   }
@@ -77,11 +81,9 @@ function dfsColorMark(dag: Map<string, string[]>): string[] {
 
 // Returns a valid topological order (dependencies before their consumers).
 // Throws StoryGraphCycleError when the graph contains a cycle.
+// Uses Kahn's algorithm; dfsColorMark is only invoked when a cycle is confirmed
+// (result.length < nodes.size) to extract the cycle path for the error.
 export function topologicalSort(graph: StoryGraph): string[] {
-  const cycle = dfsColorMark(graph.edges);
-  if (cycle.length > 0) throw new StoryGraphCycleError(cycle);
-
-  // Kahn's algorithm over the nodes present in the graph.
   const indegree = new Map<string, number>();
   const adj = new Map<string, string[]>(); // dep → [consumers of dep]
 
@@ -115,6 +117,12 @@ export function topologicalSort(graph: StoryGraph): string[] {
     }
   }
 
+  // Kahn's naturally detects cycles: unprocessed nodes remain when a cycle exists.
+  if (result.length < graph.nodes.size) {
+    const cycle = dfsColorMark(graph.edges);
+    throw new StoryGraphCycleError(cycle);
+  }
+
   return result;
 }
 
@@ -123,6 +131,8 @@ export function topologicalSort(graph: StoryGraph): string[] {
 // Returns the cycle path as an array of story-IDs when a cycle exists, [] when
 // acyclic. Covers both in-epic story-level cycles (via dfsColorMark) and
 // cross-repo cycles (via validateCrossRepoEdges from crossRepoReadiness.ts).
+// For cross-repo cycles, returns the IDs of all stories that reside in the
+// repos involved in the cycle — not the repo slugs themselves.
 export function detectCycles(
   graph: StoryGraph,
   opts?: { manifest?: WorkspaceManifest; primarySlug?: string },
@@ -131,11 +141,22 @@ export function detectCycles(
   if (cycle.length > 0) return cycle;
 
   if (opts?.manifest) {
+    const primarySlug = opts.primarySlug ?? '';
     const stories = Array.from(graph.nodes.values());
-    const errors = validateCrossRepoEdges(stories, opts.manifest, opts.primarySlug ?? '');
+    const errors = validateCrossRepoEdges(stories, opts.manifest, primarySlug);
     if (errors.length > 0) {
-      // Return the repo slugs involved in the first cross-repo cycle edge.
-      return [errors[0].consumerSlug, errors[0].producerSlug];
+      // Collect the repo slugs that participate in the cycle.
+      const cycleRepos = new Set<string>();
+      for (const e of errors) {
+        cycleRepos.add(e.consumerSlug);
+        cycleRepos.add(e.producerSlug);
+      }
+      // Map back to story IDs: return the IDs of stories that belong to the
+      // offending repos. story.repo falls back to primarySlug when unset.
+      const ids = stories
+        .filter(s => cycleRepos.has(s.repo ?? primarySlug))
+        .map(s => s.id);
+      return ids.length > 0 ? ids : [errors[0].consumerSlug, errors[0].producerSlug];
     }
   }
 
@@ -144,10 +165,12 @@ export function detectCycles(
 
 // ─── findReadyStories ────────────────────────────────────────────────────────
 
-// Returns stories whose every declared dependency is present in the completed set.
+// Returns stories that are eligible to dispatch: not yet completed themselves,
+// and every declared dependency is present in the completed set.
 export function findReadyStories(graph: StoryGraph, completed: Set<string>): Story[] {
   const ready: Story[] = [];
   for (const [id, story] of graph.nodes) {
+    if (completed.has(id)) continue; // already done — do not re-dispatch
     const deps = graph.edges.get(id) ?? [];
     if (deps.every(dep => completed.has(dep))) {
       ready.push(story);
@@ -162,12 +185,13 @@ export function findReadyStories(graph: StoryGraph, completed: Set<string>): Sto
 // Stories absent estimated_effort contribute 0 to the weight; when all stories
 // lack effort data the longest path by edge count is returned with
 // estimatedMinutes = 0 (ADR-5 fallback).
+// Uses a parent-pointer DP table to avoid O(n²) path-array copying.
 export function criticalPath(graph: StoryGraph): CriticalPathResult {
   if (graph.nodes.size === 0) return { chain: [], estimatedMinutes: 0 };
 
   const order = topologicalSort(graph); // throws StoryGraphCycleError for cyclic input
 
-  type DPEntry = { weight: number; length: number; path: string[] };
+  type DPEntry = { weight: number; length: number; parent: string | null };
   const dp = new Map<string, DPEntry>();
 
   for (const id of order) {
@@ -176,7 +200,7 @@ export function criticalPath(graph: StoryGraph): CriticalPathResult {
     const deps = (graph.edges.get(id) ?? []).filter(d => graph.nodes.has(d));
 
     if (deps.length === 0) {
-      dp.set(id, { weight: nodeWeight, length: 1, path: [id] });
+      dp.set(id, { weight: nodeWeight, length: 1, parent: null });
     } else {
       let best: DPEntry | null = null;
       for (const dep of deps) {
@@ -185,25 +209,37 @@ export function criticalPath(graph: StoryGraph): CriticalPathResult {
         const w = prev.weight + nodeWeight;
         const l = prev.length + 1;
         if (!best || w > best.weight || (w === best.weight && l > best.length)) {
-          best = { weight: w, length: l, path: [...prev.path, id] };
+          best = { weight: w, length: l, parent: dep };
         }
       }
       // Fallback for deps that are all outside the graph (no valid predecessor found).
-      dp.set(id, best ?? { weight: nodeWeight, length: 1, path: [id] });
+      dp.set(id, best ?? { weight: nodeWeight, length: 1, parent: null });
     }
   }
 
+  let globalBestId: string | null = null;
   let globalBest: DPEntry | null = null;
-  for (const val of dp.values()) {
+  for (const [id, val] of dp) {
     if (
       !globalBest ||
       val.weight > globalBest.weight ||
       (val.weight === globalBest.weight && val.length > globalBest.length)
     ) {
       globalBest = val;
+      globalBestId = id;
     }
   }
 
-  if (!globalBest) return { chain: [], estimatedMinutes: 0 };
-  return { chain: globalBest.path, estimatedMinutes: globalBest.weight };
+  if (!globalBest || globalBestId === null) return { chain: [], estimatedMinutes: 0 };
+
+  // Reconstruct path by walking parent pointers from the terminal node.
+  const chain: string[] = [];
+  let curr: string | null = globalBestId;
+  while (curr !== null) {
+    chain.push(curr);
+    curr = dp.get(curr)!.parent;
+  }
+  chain.reverse();
+
+  return { chain, estimatedMinutes: globalBest.weight };
 }

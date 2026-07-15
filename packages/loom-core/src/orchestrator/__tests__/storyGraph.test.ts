@@ -302,7 +302,8 @@ describe('findReadyStories — single dependency satisfied', () => {
     const ready = findReadyStories(g, new Set(['story-001-002']));
     const ids = ready.map(s => s.id);
     assert.ok(ids.includes('story-001-001'), 'story-001-001 should be ready');
-    assert.ok(ids.includes('story-001-002'), 'story-001-002 (no deps) should also be ready');
+    // story-001-002 is already completed → must not be re-dispatched
+    assert.ok(!ids.includes('story-001-002'), 'story-001-002 (already completed) should not be returned');
   });
 });
 
