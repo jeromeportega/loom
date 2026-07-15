@@ -73,6 +73,110 @@ import { StoryRetryService } from './StoryRetryService.js';
 import { recordStallKill, recordAutoRecovery } from './StallKillAudit.js';
 import { classifyWorkerExit } from './classifyWorkerExit.js';
 
+// ─── LOOM_PROVIDES helpers (epic-095 story-095-004) ──────────────────────────
+// Exported at module level so unit tests can exercise them directly.
+
+/**
+ * Thrown by `parseLoomProvides` when a LOOM_PROVIDES line is found but its
+ * JSON payload is malformed or not a plain object.
+ */
+export class LoomProvidesParseError extends Error {
+  constructor(public readonly raw: string) {
+    super(`LOOM_PROVIDES trailer is malformed: ${raw.slice(0, 100)}`);
+    this.name = 'LoomProvidesParseError';
+  }
+}
+
+/**
+ * Checks whether every `requires` entry on `story` is satisfied by the
+ * `completedProvides` map (story-id → parsed provides object).
+ * Returns `{ ok: true, unmet: [] }` when all keys are present, or
+ * `{ ok: false, unmet: [key, ...] }` listing every missing key.
+ */
+export function checkRequires(
+  story: Story,
+  completedProvides: Map<string, Record<string, unknown>>
+): { ok: boolean; unmet: string[] } {
+  if (!story.requires || Object.keys(story.requires).length === 0) {
+    return { ok: true, unmet: [] };
+  }
+  const unmet: string[] = [];
+  for (const [key, sourceStoryId] of Object.entries(story.requires)) {
+    const storyProvides = completedProvides.get(sourceStoryId);
+    if (!storyProvides || !(key in storyProvides)) {
+      unmet.push(key);
+    }
+  }
+  return { ok: unmet.length === 0, unmet };
+}
+
+/**
+ * Appends a `## Upstream Provides` block to `basePrompt` listing every
+ * key/value pair from `provides` that this story's `requires` map references.
+ * No-op (returns `basePrompt` unchanged) when `story.requires` is absent or empty.
+ */
+export function injectProvidesSection(
+  basePrompt: string,
+  story: Story,
+  provides: Map<string, Record<string, unknown>>
+): string {
+  if (!story.requires || Object.keys(story.requires).length === 0) {
+    return basePrompt;
+  }
+  const entries: Array<[string, unknown]> = [];
+  for (const [key, sourceStoryId] of Object.entries(story.requires)) {
+    const storyProvides = provides.get(sourceStoryId);
+    if (storyProvides !== undefined && key in storyProvides) {
+      entries.push([key, storyProvides[key]]);
+    }
+  }
+  if (entries.length === 0) {
+    return basePrompt;
+  }
+  const lines = [
+    '',
+    '## Upstream Provides',
+    '',
+    'The following values were produced by upstream stories and are available for use:',
+    '',
+    ...entries.map(([key, value]) => `- **${key}**: ${JSON.stringify(value)}`),
+  ];
+  return basePrompt + lines.join('\n');
+}
+
+/**
+ * Scans `rawOutput` for the last line that starts with `LOOM_PROVIDES ` (own
+ * line, trimmed) and parses the JSON payload.
+ *
+ * - Returns `null` when no matching line is found (no trailer present).
+ * - Returns the parsed `Record<string, unknown>` on a valid JSON-object trailer.
+ * - Throws `LoomProvidesParseError` when a matching line is found but the JSON
+ *   is malformed or not a plain object (array, null, primitive).
+ */
+export function parseLoomProvides(rawOutput: string): Record<string, unknown> | null {
+  const MARKER = 'LOOM_PROVIDES ';
+  let lastMatch: string | null = null;
+  for (const line of rawOutput.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(MARKER)) {
+      lastMatch = trimmed;
+    }
+  }
+  if (lastMatch === null) return null;
+
+  const jsonStr = lastMatch.slice(MARKER.length).trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    throw new LoomProvidesParseError(lastMatch);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new LoomProvidesParseError(lastMatch);
+  }
+  return parsed as Record<string, unknown>;
+}
+
 export interface SupervisorOptions {
   projectRoot: string;
   db: Database.Database;
@@ -1089,6 +1193,28 @@ export class Supervisor {
             (firstActiveEpic === undefined || t.epicId === firstActiveEpic)
         );
         if (!ready) break;
+
+        // Check typed requires before acquiring a slot or spawning a worker.
+        // When satisfied, provides values are injected into the worker prompt
+        // inside dispatch(). When unmet, block without consuming concurrency.
+        if (ready.story.requires && Object.keys(ready.story.requires).length > 0) {
+          const providesMap = this.buildProvidesMapForStory(ready.story);
+          const check = checkRequires(ready.story, providesMap);
+          if (!check.ok) {
+            ready.status = 'blocked';
+            this.agents.updateStatus(ready.agentId, 'blocked');
+            this.skillUsage.recordOutcome(ready.agentId, 'blocked');
+            this.audit.record({
+              agent_id: ready.agentId,
+              action: 'requires_unmet',
+              command: ready.story.id,
+              allowed: false,
+              detail: { unmet: check.unmet },
+            });
+            continue;
+          }
+        }
+
         if (limiter) {
           const slot = limiter.acquire(
             `${path.basename(this.opts.projectRoot)}:${ready.story.id}`
@@ -1986,6 +2112,18 @@ export class Supervisor {
       }
     };
 
+    // Compute upstream provides section for injection into worker prompt.
+    // Only when the story has `requires` entries — otherwise no-op to keep
+    // the prompt byte-identical to the pre-feature baseline.
+    let upstreamProvidesSection: string | undefined;
+    if (task.story.requires && Object.keys(task.story.requires).length > 0) {
+      const providesMap = this.buildProvidesMapForStory(task.story);
+      const section = injectProvidesSection('', task.story, providesMap);
+      if (section.trim().length > 0) {
+        upstreamProvidesSection = section;
+      }
+    }
+
     const assignment: WorkerAssignment = {
       storyId: task.story.id,
       epicId: task.epicId,
@@ -1998,6 +2136,7 @@ export class Supervisor {
       hasDependents: this.storiesWithDependents.has(task.story.id),
       skills: this.selectSkills(task.story, task.agentId),
       worktreeContext: { repoSlug, worktreePath: wt.path },
+      ...(upstreamProvidesSection !== undefined ? { upstreamProvidesSection } : {}),
       onOutput,
       onPid,
       onTrace,
@@ -2547,8 +2686,49 @@ export class Supervisor {
   }
 
   private applyResult(task: StoryTask, result: WorkerResult): void {
-    const status: AgentStatus =
+    let status: AgentStatus =
       result.status === 'done' ? (result.prUrl ? 'pr_open' : 'done') : 'failed';
+
+    // Parse and persist LOOM_PROVIDES when the story declares `provides`.
+    // Only enforced on a successful worker exit — failures keep the failed status.
+    // Stories without `provides` skip this block entirely (backward-compat: no
+    // extra audit entries, prompt byte-identical to pre-feature).
+    if (SUCCESS.has(status) && task.story.provides && Object.keys(task.story.provides).length > 0) {
+      const rawOutput = result.logTail ?? '';
+      let parsedProvides: Record<string, unknown> | null = null;
+      let parseErr: LoomProvidesParseError | null = null;
+      try {
+        parsedProvides = parseLoomProvides(rawOutput);
+      } catch (err) {
+        if (err instanceof LoomProvidesParseError) parseErr = err;
+      }
+
+      if (parseErr !== null) {
+        // Malformed trailer → block
+        status = 'blocked';
+        this.audit.record({
+          agent_id: task.agentId,
+          action: 'provides_parse_failed',
+          command: task.story.id,
+          allowed: false,
+          detail: { reason: 'malformed', raw: parseErr.raw.slice(0, 200) },
+        });
+      } else if (parsedProvides === null) {
+        // Absent trailer when story.provides is declared → block
+        status = 'blocked';
+        this.audit.record({
+          agent_id: task.agentId,
+          action: 'provides_parse_failed',
+          command: task.story.id,
+          allowed: false,
+          detail: { reason: 'trailer_absent' },
+        });
+      } else {
+        // Valid provides → persist to agents.provides_output
+        this.agents.setProvidesOutput(task.agentId, JSON.stringify(parsedProvides));
+      }
+    }
+
     task.status = status;
     this.agents.updateStatus(task.agentId, status, {
       pr_url: result.prUrl ?? null,
@@ -2784,6 +2964,33 @@ export class Supervisor {
       command: task.story.id,
       detail: { status, reason },
     });
+  }
+
+  /**
+   * Builds a Map<storyId → provides object> from the persisted `provides_output`
+   * column of completed stories referenced in `story.requires`. Used by both the
+   * `checkRequires` call (dispatch gate) and `injectProvidesSection` (prompt
+   * injection). Returns an empty map when `story.requires` is absent.
+   */
+  private buildProvidesMapForStory(story: Story): Map<string, Record<string, unknown>> {
+    const result = new Map<string, Record<string, unknown>>();
+    if (!story.requires) return result;
+    const seen = new Set<string>();
+    for (const sourceStoryId of Object.values(story.requires)) {
+      if (seen.has(sourceStoryId)) continue;
+      seen.add(sourceStoryId);
+      const agent = this.agents.getByStory(sourceStoryId);
+      if (!agent?.provides_output) continue;
+      try {
+        const parsed = JSON.parse(agent.provides_output);
+        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+          result.set(sourceStoryId, parsed as Record<string, unknown>);
+        }
+      } catch {
+        // Ignore malformed persisted provides_output
+      }
+    }
+    return result;
   }
 
 }

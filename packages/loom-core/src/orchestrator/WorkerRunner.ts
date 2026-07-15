@@ -131,6 +131,14 @@ export interface WorkerAssignment {
    */
   onPhaseBoundary?: (info: { phase: 'implement' | 'verify'; summary: string }) => void;
   /**
+   * Pre-rendered "## Upstream Provides" section (epic-095 story-095-004).
+   * Set by the Supervisor when the story has `requires` entries that are
+   * satisfied; `buildWorkerPrompt` appends this to the story block so the
+   * worker sees upstream output values verbatim. Absent when the story has
+   * no `requires` (backward-compat: prompt is byte-identical to pre-feature).
+   */
+  upstreamProvidesSection?: string;
+  /**
    * Per-story worktree confinement context — the repo slug and worktree path this
    * story is isolated to. Set by the Supervisor at dispatch so guardrail hooks
    * can enforce that writes stay within the story's own worktree and repo.
