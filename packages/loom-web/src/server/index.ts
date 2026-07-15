@@ -110,7 +110,10 @@ export function createApp(opts: CreateAppOptions): Express {
   // readOnly=false (default): token required on every request (byte-identical
   // to the old requireToken behavior).
   // readOnly=true: GET/HEAD pass tokenless; non-GET/HEAD → 403 without token.
-  app.use('/api', accessGuard({ token: opts.token, readOnly: opts.readOnly ?? false }));
+  // Saved to a variable so security-sensitive routes can reference it explicitly
+  // and survive any future sub-router or mount-point refactor.
+  const guard = accessGuard({ token: opts.token, readOnly: opts.readOnly ?? false });
+  app.use('/api', guard);
 
   // Resolve the static dir once; registration happens below in each code path.
   const defaultStaticDir = path.join(__dirname, '../../client-dist');
@@ -195,7 +198,7 @@ export function createApp(opts: CreateAppOptions): Express {
   const workerLogs = new WorkerLogStore(path.join(currentProjectRoot, '.loom'));
 
   // ─── Route modules (owned by sibling stories; mounted here) ─────────────
-  registerAuditVerifyRoute(app, { auditLog });
+  registerAuditVerifyRoute(app, { auditLog, authMiddleware: guard });
   registerAutonomyRoutes(app, { epicStore, auditLog });
   registerFleetRoutes(app, { epicStore, agentStore, db: opts.db, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });
   registerInboxRoutes(app, { epicStore, agentStore, projectRoot: currentProjectRoot, unifiedRegistry: opts.unifiedRegistry });

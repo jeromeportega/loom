@@ -50,7 +50,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await srv.close();
+  if (srv) await srv.close();
   fs.rmSync(loomHomeDir, { recursive: true, force: true });
   if (prevLoomHome === undefined) delete process.env.LOOM_HOME;
   else process.env.LOOM_HOME = prevLoomHome;
@@ -58,7 +58,7 @@ afterEach(async () => {
 
 const authed = (opts: RequestInit = {}): RequestInit => ({
   ...opts,
-  headers: { 'x-loom-token': TOKEN, ...(opts.headers as Record<string, string> ?? {}) },
+  headers: { ...(opts.headers as Record<string, string> ?? {}), 'x-loom-token': TOKEN },
 });
 
 describe('GET /api/audit/verify — auth', () => {
@@ -135,14 +135,43 @@ describe('GET /api/audit/verify — no new npm dependencies', () => {
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
     };
-    // The route uses @loom-ai/core and express, both already present.
-    // Assert no unexpected additions by confirming known-absent packages are still absent.
     const allDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
-    // This test documents the invariant: no new packages were introduced.
-    // If this list needs updating, ensure the addition was intentional.
-    const forbidden = ['axios', 'node-fetch', 'got', 'ky', 'superagent'];
-    for (const depName of forbidden) {
-      assert.ok(!(depName in allDeps), `unexpected new dependency: ${depName}`);
+    // Snapshot of the full dependency key set established before this feature.
+    // Any addition — intentional or accidental — must be reflected here.
+    const EXPECTED_DEPS = new Set([
+      '@atlaskit/pragmatic-drag-and-drop',
+      '@loom-ai/core',
+      'express',
+      '@radix-ui/react-slot',
+      '@radix-ui/react-tabs',
+      '@tanstack/react-query',
+      '@testing-library/react',
+      '@types/express',
+      '@types/node',
+      '@types/react',
+      '@types/react-dom',
+      '@vitejs/plugin-react',
+      'autoprefixer',
+      'class-variance-authority',
+      'clsx',
+      'jsdom',
+      'postcss',
+      'react',
+      'react-dom',
+      'react-router-dom',
+      'tailwind-merge',
+      'tailwindcss',
+      'typescript',
+      'vite',
+      'vitest',
+    ]);
+    for (const key of Object.keys(allDeps)) {
+      assert.ok(EXPECTED_DEPS.has(key), `unexpected new dependency: ${key}`);
     }
+    assert.equal(
+      Object.keys(allDeps).length,
+      EXPECTED_DEPS.size,
+      'dependency count changed — update EXPECTED_DEPS if intentional'
+    );
   });
 });

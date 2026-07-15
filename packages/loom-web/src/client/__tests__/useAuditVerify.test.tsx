@@ -1,12 +1,19 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React from 'react';
 import { useAuditVerify } from '../hooks/useAuditVerify';
 
+vi.mock('../lib/api', () => ({
+  apiFetch: vi.fn(),
+  apiPost: vi.fn(),
+  eventSourceUrl: vi.fn((p: string) => p),
+}));
+
+import * as apiModule from '../lib/api';
+
 afterEach(() => {
   vi.restoreAllMocks();
-  vi.unstubAllGlobals();
 });
 
 function makeWrapper() {
@@ -20,7 +27,7 @@ function makeWrapper() {
 
 describe('useAuditVerify — query key and URL', () => {
   it("passes ['audit', 'verify'] as queryKey and fetches /api/audit/verify", async () => {
-    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({
+    vi.mocked(apiModule.apiFetch).mockResolvedValue({
       ok: true,
       json: async () => ({
         ok: true,
@@ -34,16 +41,16 @@ describe('useAuditVerify — query key and URL', () => {
     renderHook(() => useAuditVerify(), { wrapper: makeWrapper() });
 
     await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalled();
+      expect(apiModule.apiFetch).toHaveBeenCalled();
     });
 
-    const calledUrl = fetchSpy.mock.calls[0][0] as string;
+    const calledUrl = vi.mocked(apiModule.apiFetch).mock.calls[0][0] as string;
     expect(calledUrl).toContain('/api/audit/verify');
   });
 
   it('returns data with ok: true when the endpoint responds with an intact chain', async () => {
     const mockResult = { ok: true, hashedRows: 3, legacyRows: 0, fromId: 1, toId: 3 };
-    vi.spyOn(global, 'fetch').mockResolvedValue({
+    vi.mocked(apiModule.apiFetch).mockResolvedValue({
       ok: true,
       json: async () => mockResult,
     } as Response);
@@ -58,7 +65,7 @@ describe('useAuditVerify — query key and URL', () => {
   });
 
   it('returns an error when the endpoint returns a non-retryable HTTP error (403)', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValue({
+    vi.mocked(apiModule.apiFetch).mockResolvedValue({
       ok: false,
       status: 403,
       json: async () => ({ error: 'forbidden' }),
