@@ -103,7 +103,7 @@ describe('AuditIntegrityBadge — ok: false', () => {
   it('renders a Badge with variant="destructive" when ok is false', () => {
     vi.mocked(useAuditVerifyModule.useAuditVerify).mockReturnValue(
       makeQueryResult<VerifyChainResult>({
-        data: { ok: false, hashedRows: 3, legacyRows: 0, fromId: 1, toId: 3, brokenAtId: 42, reason: 'hash mismatch' },
+        data: { ok: false, hashedRows: 3, legacyRows: 0, fromId: 1, toId: 3, brokenAtId: 42, reason: 'entry-hash-mismatch' },
         isSuccess: true,
         status: 'success',
       })
@@ -117,7 +117,7 @@ describe('AuditIntegrityBadge — ok: false', () => {
   it('includes brokenAtId (42) in the label when ok is false', () => {
     vi.mocked(useAuditVerifyModule.useAuditVerify).mockReturnValue(
       makeQueryResult<VerifyChainResult>({
-        data: { ok: false, hashedRows: 3, legacyRows: 0, fromId: 1, toId: 3, brokenAtId: 42, reason: 'hash mismatch' },
+        data: { ok: false, hashedRows: 3, legacyRows: 0, fromId: 1, toId: 3, brokenAtId: 42, reason: 'entry-hash-mismatch' },
         isSuccess: true,
         status: 'success',
       })
@@ -180,6 +180,36 @@ describe('AuditIntegrityBadge — error state', () => {
     );
 
     expect(() => renderBadge()).not.toThrow();
+  });
+});
+
+describe('AuditIntegrityBadge — shapeless body guard', () => {
+  it('renders Unknown (neutral) when data is null, without throwing', () => {
+    vi.mocked(useAuditVerifyModule.useAuditVerify).mockReturnValue(
+      makeQueryResult<VerifyChainResult>({
+        data: null as unknown as VerifyChainResult,
+        isSuccess: true,
+        status: 'success',
+      })
+    );
+
+    expect(() => renderBadge()).not.toThrow();
+    expect(screen.getByText('Unknown')).not.toBeNull();
+  });
+
+  it('renders Unknown (neutral) when data is a shapeless {} object, without throwing', () => {
+    vi.mocked(useAuditVerifyModule.useAuditVerify).mockReturnValue(
+      makeQueryResult<VerifyChainResult>({
+        data: {} as unknown as VerifyChainResult,
+        isSuccess: true,
+        status: 'success',
+      })
+    );
+
+    expect(() => renderBadge()).not.toThrow();
+    expect(screen.getByText('Unknown')).not.toBeNull();
+    expect(screen.queryByText('Chain intact')).toBeNull();
+    expect(screen.queryByText(/Chain broken/)).toBeNull();
   });
 });
 

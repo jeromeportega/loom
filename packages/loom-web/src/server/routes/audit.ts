@@ -1,4 +1,4 @@
-import type { Express, NextFunction, Request, RequestHandler, Response } from 'express';
+import type { Express, Request, RequestHandler, Response } from 'express';
 import { AuditLog } from '@loom-ai/core';
 
 interface AuditVerifyDeps {
@@ -8,11 +8,12 @@ interface AuditVerifyDeps {
 }
 
 export function registerAuditVerifyRoute(app: Express, deps: AuditVerifyDeps): void {
-  app.get('/api/audit/verify', deps.authMiddleware, (_req: Request, res: Response, next: NextFunction): void => {
+  app.get('/api/audit/verify', deps.authMiddleware, (_req: Request, res: Response): void => {
     try {
       res.json(deps.auditLog.verifyChain());
     } catch (err) {
-      next(err);
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: message });
     }
   });
 }
