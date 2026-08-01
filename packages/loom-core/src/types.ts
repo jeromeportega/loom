@@ -158,6 +158,20 @@ export interface AgentRecord {
    * story was re-split (epic-095 story-095-005). NULL = use YAML deps.
    */
   dep_overrides: string | null;
+  /**
+   * JSON array of the sub-story ids that replaced this story via a reroute
+   * (epic-095 reroute rework). Non-NULL marks the ORIGINAL as superseded so the
+   * restart map-build fully excludes it from the in-memory tasks map — the row
+   * itself keeps status='failed' as the historical record. NULL = not superseded.
+   */
+  superseded_by: string | null;
+  /**
+   * JSON map (requires-key -> new sourceStoryId) that overrides a downstream
+   * story's YAML `requires` after an upstream was re-split (epic-095 reroute
+   * rework). Mirrors dep_overrides; applied by rewriting story.requires in
+   * memory. NULL = use YAML requires.
+   */
+  requires_overrides: string | null;
 }
 
 export interface EpicRecord {

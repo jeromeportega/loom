@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 33;
+export const SCHEMA_VERSION = 34;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -559,6 +559,20 @@ export function runMigrations(db: Database.Database): void {
   }
   if (!agentCols.some((c) => c.name === 'dep_overrides')) {
     db.exec('ALTER TABLE agents ADD COLUMN dep_overrides TEXT');
+  }
+  // v34: reroute-rework columns (epic-095 rework). PRAGMA-guarded additive ALTERs.
+  // superseded_by: JSON array of the sub-story ids that replaced this story via a
+  // reroute. Non-NULL marks the ORIGINAL as superseded so the restart map-build
+  // fully excludes it from the in-memory tasks map (the row keeps status='failed',
+  // which is already terminal everywhere — no new status enum, no re-dispatch).
+  // requires_overrides: JSON map (key -> sourceStoryId) that supersedes a
+  // downstream story's YAML `requires` after an upstream was re-split — mirrors
+  // dep_overrides, applied by rewriting story.requires in-memory.
+  if (!agentCols.some((c) => c.name === 'superseded_by')) {
+    db.exec('ALTER TABLE agents ADD COLUMN superseded_by TEXT');
+  }
+  if (!agentCols.some((c) => c.name === 'requires_overrides')) {
+    db.exec('ALTER TABLE agents ADD COLUMN requires_overrides TEXT');
   }
   if (!epicCols.some((c) => c.name === 'planner_model')) {
     db.exec('ALTER TABLE epics ADD COLUMN planner_model TEXT');

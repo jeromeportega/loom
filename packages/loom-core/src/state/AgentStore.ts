@@ -369,4 +369,36 @@ export class AgentStore {
       .get(storyId, epicId) as { dep_overrides: string | null } | undefined;
     return row?.dep_overrides ?? null;
   }
+
+  /**
+   * Returns the superseded_by JSON (array of sub-story ids) for a story, or null
+   * when the story was not superseded by a reroute. A non-null value means the
+   * restart map-build must fully exclude this story from the tasks map.
+   */
+  getSupersededBy(storyId: string, epicId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT superseded_by FROM agents
+         WHERE story_id = ? AND epic_id = ?
+         ORDER BY updated_at DESC, id DESC LIMIT 1`
+      )
+      .get(storyId, epicId) as { superseded_by: string | null } | undefined;
+    return row?.superseded_by ?? null;
+  }
+
+  /**
+   * Returns the requires_overrides JSON (key -> sourceStoryId map) for a story,
+   * or null when no override is set. Applied by re-pointing story.requires in
+   * memory after an upstream re-split — mirrors getDepOverrides.
+   */
+  getRequiresOverrides(storyId: string, epicId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT requires_overrides FROM agents
+         WHERE story_id = ? AND epic_id = ?
+         ORDER BY updated_at DESC, id DESC LIMIT 1`
+      )
+      .get(storyId, epicId) as { requires_overrides: string | null } | undefined;
+    return row?.requires_overrides ?? null;
+  }
 }

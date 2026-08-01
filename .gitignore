@@ -41,6 +41,10 @@ site/
 # Local-only state (per machine, never useful to check in):
 .loom/loom.db*
 .loom/worktrees/
+# Nested package-level .loom state dirs created when running loom from a
+# workspace subdir (e.g. packages/loom-core/.loom/loom.db) — local-only.
+**/.loom/loom.db*
+packages/*/.loom/
 
 # Generated planning working directory — the EpicFinalizer promotes the
 # final brief / PRD / architecture / epic.yaml for each *delivered* epic

@@ -77,9 +77,12 @@ import { classifyWorkerExit } from './classifyWorkerExit.js';
 import {
   handleReroute,
   injectSubStories,
+  validateSubStories,
   RerouteBudgetExhaustedError,
+  RerouteValidationError,
   type ReroutePayload,
   type DownstreamOverride,
+  type DownstreamRequiresOverride,
 } from './rerouteHandler.js';
 import { LOOM_TOO_BIG_SIGNAL } from './constants.js';
 
@@ -851,6 +854,16 @@ export class Supervisor {
       if (repoFilter === undefined) {
         const latestRows = this.agents.listLatestByEpic(epicId);
         for (const row of latestRows) {
+          // Superseded original (epic-095 reroute rework): a prior reroute replaced
+          // this story with sub-stories. Fully EXCLUDE it from the tasks map so the
+          // finalize gate (every SUCCESS) and storiesDone/Total never see a stale
+          // failed original. The DB row keeps status='failed' as the historical
+          // record; superseded_by is the durable marker. Mirrors the live-path
+          // tasks.delete(originalId) in doReroute.
+          if (row.superseded_by != null) {
+            tasks.delete(row.story_id);
+            continue;
+          }
           // Sub-story recovery: rows with story_json were injected by injectSubStories.
           if (row.story_json != null && !tasks.has(row.story_id)) {
             try {
@@ -879,6 +892,20 @@ export class Supervisor {
                 const newDeps = JSON.parse(row.dep_overrides) as string[];
                 t.story = { ...t.story, dependencies: newDeps };
               } catch { /* corrupt dep_overrides: leave YAML deps unchanged */ }
+            }
+          }
+          // requires_overrides recovery (epic-095 reroute rework): re-point a
+          // downstream story's `requires` map exactly as dep_overrides re-points
+          // its dependencies, so checkRequires / buildProvidesMapForStory resolve
+          // to the sub-story that now provides the required key instead of the
+          // superseded original (whose provides_output is NULL).
+          if (row.requires_overrides != null) {
+            const t = tasks.get(row.story_id);
+            if (t) {
+              try {
+                const newReq = JSON.parse(row.requires_overrides) as Record<string, string>;
+                t.story = { ...t.story, requires: newReq };
+              } catch { /* corrupt requires_overrides: leave YAML requires unchanged */ }
             }
           }
         }
@@ -1389,7 +1416,28 @@ export class Supervisor {
       if (this.pendingReroutes.has(storyId)) {
         const pending = this.pendingReroutes.get(storyId)!;
         this.pendingReroutes.delete(storyId);
-        await this.doReroute(task, pending, tasks);
+        try {
+          await this.doReroute(task, pending, tasks);
+        } catch (err) {
+          // Graceful failure: a single un-splittable story (budget exhausted,
+          // invalid PM sub-graph, or internal error) fails ALONE. Never rethrow
+          // out of the dispatch loop — that would abort the whole run and orphan
+          // in-flight workers (their inFlight promises abandoned, slots/worktrees
+          // leaked). doReroute already set task.status='failed'; the DB row is
+          // 'failed' from applyResult. Record and move on.
+          this.audit.record({
+            action:  'reroute_failed',
+            command: storyId,
+            allowed: false,
+            detail: {
+              epicId: task.epicId,
+              reason: err instanceof RerouteBudgetExhaustedError ? 'budget_exhausted'
+                    : err instanceof RerouteValidationError ? 'invalid_sub_graph'
+                    : 'internal_error',
+              error:  err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
         continue;
       }
       // Rolling integration: fold a just-succeeded story into the live epic
@@ -3255,123 +3303,179 @@ export class Supervisor {
 
   /**
    * Handles a queued reroute for a story whose applyResult set `pendingReroutes`.
-   * Calls the PM persona to decompose the original story into N ≥ 2 sub-stories,
-   * injects them atomically into DB, and updates the in-memory tasks map so the
-   * dispatchLoop dispatches them without re-loading from disk.
+   * Budget-gated PM decompose → Supervisor allocates schema-valid sub-story IDs →
+   * validate the sub-graph → re-point every downstream dependent (dependencies onto
+   * ALL sub-stories, `requires` onto the providing sub-story) → atomically inject +
+   * supersede the original → mirror in the in-memory tasks map → clean up the
+   * original's worktree.
    *
-   * On RerouteBudgetExhaustedError: marks original task 'failed' in memory and
-   * throws so the Supervisor's run() surfaces the error for the operator.
-   * On any other PM error: same — throws to surface for manual intervention.
+   * Throws (RerouteBudgetExhaustedError / RerouteValidationError / internal) so the
+   * dispatch-loop sweep can mark this ONE story failed and continue — a single
+   * un-splittable story must never abort the run or orphan concurrent workers.
    */
   private async doReroute(
     task:    StoryTask,
     pending: { trigger: 'LOOM_TOO_BIG' | 'cap'; fanOutPayload: string },
     tasks:   Map<string, StoryTask>
   ): Promise<void> {
+    const original = task.story;
     const payload: ReroutePayload = {
-      story:         task.story,
+      story:         original,
       fanOutPayload: pending.fanOutPayload,
       trigger:       pending.trigger,
     };
 
-    let subStories: Story[];
+    // Coverage keys: `requires` keys that some downstream demands FROM the original.
+    // The PM must arrange exactly one sub-story to `provides` each (validated below).
+    const coverageKeys = this.computeCoverageKeys(original.id, tasks);
+
+    let result: { subStories: Story[]; parentResplitCount: number };
     try {
-      subStories = await handleReroute(payload, {
-        pmAgent:  this.opts.pmAgent!,
-        db:       this.opts.db,
-        epicId:   task.epicId,
-        auditLog: this.audit,
-        agents:   this.agents,
+      result = await handleReroute(payload, {
+        pmAgent:      this.opts.pmAgent!,
+        agents:       this.agents,
+        epicId:       task.epicId,
+        auditLog:     this.audit,
+        coverageKeys,
       });
     } catch (err) {
-      // On budget exhaustion or PM failure the DB already shows 'failed' from
-      // the normal applyResult path. Reflect that in memory and propagate.
       task.status = 'failed';
-      throw err;
+      throw err; // budget-exhausted / insufficient — swept + continued by the caller
     }
 
-    // All post-handleReroute mutations — wrapped so any throw sets task.status='failed'
-    // before propagating, keeping in-memory and DB state consistent.
     try {
-      // Pre-flight ID collision check: run BEFORE injectSubStories so a collision
-      // never partially writes sub-story rows to the DB. A partial write would leave
-      // orphan rows that recovery sees as dispatchable tasks, producing a stalled DAG.
+      // The Supervisor (sole holder of the full DAG) stamps schema-valid
+      // `story-NNN-MMM` IDs and remaps the sub-stories' internal references.
+      const subStories = this.allocateSubStoryIds(task.epicId, tasks, result.subStories);
+
+      // Validate the id-stamped sub-graph before any DB write.
+      validateSubStories(original, subStories, new Set(tasks.keys()), coverageKeys);
+
+      const allSubIds = subStories.map((s) => s.id);
+      // key -> the sub-story that provides it (exactly one, per validation).
+      const providerFor = new Map<string, string>();
       for (const sub of subStories) {
-        if (tasks.has(sub.id)) {
-          throw new Error(
-            `PM reroute for ${task.story.id} returned sub-story ID "${sub.id}" that ` +
-            `already exists in the active tasks map — ID collision. Marking original story failed.`
-          );
+        if (!sub.provides) continue;
+        for (const k of Object.keys(sub.provides)) {
+          if (coverageKeys.includes(k)) providerFor.set(k, sub.id);
         }
       }
 
-      // Re-point every in-flight task that depends on the original story to the
-      // final sub-story. The final sub-story is the logical "gate" that the original
-      // story provided — once it completes, downstream work can proceed.
-      const finalSubStory = subStories[subStories.length - 1];
-      const downstreamOverrides: DownstreamOverride[] = [];
+      // Re-point downstream dependents: dependencies onto ALL sub-stories (so
+      // downstream waits for the whole re-split), requires onto the provider.
+      const depOverrides: DownstreamOverride[] = [];
+      const requiresOverrides: DownstreamRequiresOverride[] = [];
       for (const t of tasks.values()) {
-        if (t.story.dependencies.includes(task.story.id)) {
-          const newDeps = t.story.dependencies.map((d) =>
-            d === task.story.id ? finalSubStory.id : d
+        if (t.story.id === original.id) continue;
+        if (t.story.dependencies.includes(original.id)) {
+          const newDeps = t.story.dependencies.flatMap((d) =>
+            d === original.id ? allSubIds : [d]
           );
-          downstreamOverrides.push({ storyId: t.story.id, newDependencies: newDeps });
+          depOverrides.push({ storyId: t.story.id, newDependencies: newDeps });
+        }
+        if (t.story.requires) {
+          let changed = false;
+          const newReq: Record<string, string> = { ...t.story.requires };
+          for (const [k, src] of Object.entries(t.story.requires)) {
+            if (src === original.id) { newReq[k] = providerFor.get(k)!; changed = true; }
+          }
+          if (changed) requiresOverrides.push({ storyId: t.story.id, newRequires: newReq });
         }
       }
 
-      // Atomically write sub-story agent rows + dep_override updates to DB.
-      injectSubStories(
-        task.story,
-        subStories,
-        task.epicId,
-        this.opts.db,
-        this.audit,
-        downstreamOverrides
-      );
+      // Atomic: sub rows (seeded resplit) + dep/requires overrides + supersede original.
+      injectSubStories(original, subStories, task.epicId, this.opts.db, this.audit, {
+        parentResplitCount: result.parentResplitCount,
+        depOverrides,
+        requiresOverrides,
+      });
 
-      // Mirror DB writes in the in-memory tasks map so this run's dispatchLoop
-      // can immediately schedule sub-stories without a full reload.
+      // Mirror the committed DB writes in the in-memory tasks map.
       for (const sub of subStories) {
         const agentRow = this.agents.getByStory(sub.id);
         if (!agentRow) {
-          // injectSubStories just wrote this row in a committed transaction; a
-          // null result here means the DB is in an inconsistent state — surface
-          // immediately rather than silently dropping the sub-story from dispatch.
           throw new Error(
             `Internal error: agent row for injected sub-story ${sub.id} not found ` +
-            `immediately after injectSubStories transaction committed`
+            `immediately after injectSubStories committed`
           );
         }
-        tasks.set(sub.id, {
-          epicId:  task.epicId,
-          story:   sub,
-          agentId: agentRow.id,
-          status:  'pending',
-        });
+        tasks.set(sub.id, { epicId: task.epicId, story: sub, agentId: agentRow.id, status: 'pending' });
       }
-      for (const override of downstreamOverrides) {
-        const t = tasks.get(override.storyId);
-        if (t) {
-          t.story = { ...t.story, dependencies: override.newDependencies };
-        }
+      for (const ov of depOverrides) {
+        const t = tasks.get(ov.storyId);
+        if (t) t.story = { ...t.story, dependencies: ov.newDependencies };
+      }
+      for (const ov of requiresOverrides) {
+        const t = tasks.get(ov.storyId);
+        if (t) t.story = { ...t.story, requires: ov.newRequires };
       }
 
-      // Remove original from the in-memory tasks map — it is superseded by sub-stories.
-      // DB shows 'failed' from applyResult (the correct historical record). Removing
-      // from the map prevents it from counting in storiesDone/Failed and from being
-      // re-dispatched. Downstream tasks already have dep_overrides re-pointing them
-      // to the final sub-story, so they don't wait on this story ID any more.
-      tasks.delete(task.story.id);
+      // The original is superseded (DB row now has superseded_by; keeps status='failed').
+      tasks.delete(original.id);
+      // Reclaim the original's worktree — it will never be retried.
+      this.removeStoryWorktree(original.id);
 
       this.opts.onWorkerEvent?.({
         type:        'rerouted',
-        storyId:     task.story.id,
-        subStoryIds: subStories.map((s) => s.id),
+        storyId:     original.id,
+        subStoryIds: allSubIds,
         trigger:     pending.trigger,
       });
     } catch (err) {
       task.status = 'failed';
-      throw err;
+      throw err; // validation / internal — swept + continued by the caller
+    }
+  }
+
+  /** Keys that some downstream (in the tasks map) `requires` FROM `originalId`. */
+  private computeCoverageKeys(originalId: string, tasks: Map<string, StoryTask>): string[] {
+    const keys = new Set<string>();
+    for (const t of tasks.values()) {
+      if (t.story.id === originalId || !t.story.requires) continue;
+      for (const [k, src] of Object.entries(t.story.requires)) {
+        if (src === originalId) keys.add(k);
+      }
+    }
+    return [...keys];
+  }
+
+  /**
+   * Stamps schema-valid `story-<epicNum>-<NNN>` IDs onto PM-returned sub-stories
+   * (the PM uses placeholder IDs it can't guarantee are unique or well-formed), and
+   * remaps each sub-story's internal `dependencies`/`requires` references from the
+   * placeholder IDs to the freshly allocated ones. New numbers continue past the max
+   * `-MMM` currently present in the epic (YAML + already-injected).
+   */
+  private allocateSubStoryIds(
+    epicId:  string,
+    tasks:   Map<string, StoryTask>,
+    rawSubs: Story[]
+  ): Story[] {
+    const epicNum = epicId.match(/-(\d{3})$/)?.[1] ?? '000';
+    let maxMMM = 0;
+    for (const id of tasks.keys()) {
+      const m = id.match(/^story-\d{3}-(\d{3})$/);
+      if (m) maxMMM = Math.max(maxMMM, parseInt(m[1], 10));
+    }
+    const idMap = new Map<string, string>();
+    rawSubs.forEach((sub, i) => {
+      idMap.set(sub.id, `story-${epicNum}-${String(maxMMM + 1 + i).padStart(3, '0')}`);
+    });
+    const remap = (id: string) => idMap.get(id) ?? id;
+    return rawSubs.map((sub) => ({
+      ...sub,
+      id:           idMap.get(sub.id)!,
+      dependencies: sub.dependencies.map(remap),
+      ...(sub.requires
+        ? { requires: Object.fromEntries(Object.entries(sub.requires).map(([k, v]) => [k, remap(v)])) }
+        : {}),
+    }));
+  }
+
+  /** Best-effort removal of a superseded story's worktree across all repo managers. */
+  private removeStoryWorktree(storyId: string): void {
+    for (const mgr of this.wtByRepo.values()) {
+      try { mgr.remove(storyId); } catch { /* best-effort: worktree may not exist */ }
     }
   }
 

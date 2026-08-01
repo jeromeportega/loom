@@ -201,6 +201,8 @@ describe('DatabaseMigrationV22 — agents.log_bytes (story-019-001)', () => {
       resplit_count: 0,
       story_json: null,
       dep_overrides: null,
+      superseded_by: null,
+      requires_overrides: null,
     };
     assert.equal(record.log_bytes, null);
 

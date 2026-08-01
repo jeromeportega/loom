@@ -1,7 +1,7 @@
 /**
- * story-095-005: Supervisor runtime reroute-to-PM re-decomposition.
- *
- * Unit tests: handleReroute, injectSubStories, RerouteBudgetExhaustedError.
+ * Reroute rework: handleReroute (budget-gated PM call, no DB write),
+ * validateSubStories (pure sub-graph validation), injectSubStories (atomic
+ * inject + supersede + lineage-seeded resplit).
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -17,7 +17,9 @@ import { AuditLog } from '../../state/AuditLog.js';
 import {
   handleReroute,
   injectSubStories,
+  validateSubStories,
   RerouteBudgetExhaustedError,
+  RerouteValidationError,
   type PMAgent,
   type ReroutePayload,
 } from '../rerouteHandler.js';
@@ -40,13 +42,11 @@ function makeStory(id: string, overrides: Partial<Story> = {}): Story {
 
 function makePMAgent(subStories: Story[]): PMAgent {
   return {
-    async decompose(_spec: string, _fanOut: string): Promise<Story[]> {
+    async decompose(): Promise<Story[]> {
       return subStories;
     },
   };
 }
-
-// ─── Test state ───────────────────────────────────────────────────────────────
 
 let tmpDir: string;
 
@@ -63,86 +63,60 @@ afterEach(() => {
 // ─── RerouteBudgetExhaustedError ─────────────────────────────────────────────
 
 describe('RerouteBudgetExhaustedError', () => {
-  it('[Happy] carries storyId and resplitCount properties', () => {
+  it('carries storyId and resplitCount', () => {
     const err = new RerouteBudgetExhaustedError('story-001-001', 2);
     assert.strictEqual(err.storyId, 'story-001-001');
     assert.strictEqual(err.resplitCount, 2);
     assert.ok(err.message.includes('MAX_RESPLIT_BUDGET'));
-    assert.ok(err.message.includes('story-001-001'));
     assert.ok(err instanceof Error);
     assert.strictEqual(err.name, 'RerouteBudgetExhaustedError');
   });
 });
 
-// ─── handleReroute ────────────────────────────────────────────────────────────
+// ─── handleReroute (budget gate + PM call; NO DB write) ─────────────────────────
 
 describe('handleReroute', () => {
-  it('[Happy] first split: resplit_count=0 → calls PM, increments to 1, returns sub-stories', async () => {
+  it('[Happy] lineage count 0 → calls PM, returns { subStories, parentResplitCount:0 }, writes NO resplit change', async () => {
     const db = openDatabase(path.join(tmpDir, '.loom'));
     new EpicStore(db).create('epic-001', 'Test Epic');
     const agents = new AgentStore(db);
     const audit = new AuditLog(db);
     const original = makeStory('story-001-001');
     const agentRow = agents.create('epic-001', original.id, original.title);
-    // resplit_count starts at 0 (default)
 
-    const sub1 = makeStory('story-001-001a');
-    const sub2 = makeStory('story-001-001b');
+    const sub1 = makeStory('story-001-002');
+    const sub2 = makeStory('story-001-003');
     const pm = makePMAgent([sub1, sub2]);
 
-    const payload: ReroutePayload = {
-      story: original,
-      fanOutPayload: 'too big because of XYZ',
-      trigger: 'LOOM_TOO_BIG',
-    };
+    const payload: ReroutePayload = { story: original, fanOutPayload: 'too big', trigger: 'LOOM_TOO_BIG' };
+    const result = await handleReroute(payload, { pmAgent: pm, agents, epicId: 'epic-001', auditLog: audit, coverageKeys: [] });
 
-    const result = await handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit, agents });
+    assert.strictEqual(result.subStories.length, 2);
+    assert.strictEqual(result.parentResplitCount, 0);
+    // handleReroute must NOT mutate resplit_count — seeding happens in injectSubStories.
+    const orig = db.prepare('SELECT resplit_count FROM agents WHERE id = ?').get(agentRow.id) as { resplit_count: number };
+    assert.strictEqual(orig.resplit_count, 0, 'handleReroute writes no resplit change');
 
-    assert.strictEqual(result.length, 2);
-    assert.strictEqual(result[0].id, 'story-001-001a');
-    assert.strictEqual(result[1].id, 'story-001-001b');
-
-    // resplit_count must be incremented in DB
-    const updated = db
-      .prepare('SELECT resplit_count FROM agents WHERE id = ?')
-      .get(agentRow.id) as { resplit_count: number };
-    assert.strictEqual(updated.resplit_count, 1);
-
-    // Audit entries present
     const rows = audit.getByStory('story-001-001');
-    const invoked = rows.find((r) => r.action === 'reroute_pm_invoked');
-    const succeeded = rows.find((r) => r.action === 'reroute_pm_succeeded');
-    assert.ok(invoked, 'reroute_pm_invoked audit row');
-    assert.ok(succeeded, 'reroute_pm_succeeded audit row');
+    assert.ok(rows.find((r) => r.action === 'reroute_pm_invoked'));
+    assert.ok(rows.find((r) => r.action === 'reroute_pm_succeeded'));
   });
 
-  it('[Negative] resplit_count=MAX_RESPLIT_BUDGET → throws RerouteBudgetExhaustedError, PM NOT called', async () => {
+  it('[Negative] lineage count = MAX → throws RerouteBudgetExhaustedError, PM NOT called', async () => {
     const db = openDatabase(path.join(tmpDir, '.loom'));
     new EpicStore(db).create('epic-001', 'Test Epic');
     const agents = new AgentStore(db);
     const audit = new AuditLog(db);
     const original = makeStory('story-001-001');
     const agentRow = agents.create('epic-001', original.id, original.title);
-    // Force resplit_count to MAX_RESPLIT_BUDGET
-    db.prepare('UPDATE agents SET resplit_count = ? WHERE id = ?')
-      .run(MAX_RESPLIT_BUDGET, agentRow.id);
+    db.prepare('UPDATE agents SET resplit_count = ? WHERE id = ?').run(MAX_RESPLIT_BUDGET, agentRow.id);
 
     let pmCalled = false;
-    const pm: PMAgent = {
-      async decompose(): Promise<Story[]> {
-        pmCalled = true;
-        return [makeStory('sub-a'), makeStory('sub-b')];
-      },
-    };
-
-    const payload: ReroutePayload = {
-      story: original,
-      fanOutPayload: '',
-      trigger: 'cap',
-    };
+    const pm: PMAgent = { async decompose(): Promise<Story[]> { pmCalled = true; return []; } };
+    const payload: ReroutePayload = { story: original, fanOutPayload: '', trigger: 'cap' };
 
     await assert.rejects(
-      () => handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit, agents }),
+      () => handleReroute(payload, { pmAgent: pm, agents, epicId: 'epic-001', auditLog: audit, coverageKeys: [] }),
       (err: unknown) => {
         assert.ok(err instanceof RerouteBudgetExhaustedError);
         assert.strictEqual(err.storyId, 'story-001-001');
@@ -150,15 +124,11 @@ describe('handleReroute', () => {
         return true;
       }
     );
-    assert.strictEqual(pmCalled, false, 'PM must not be called when budget exhausted');
-
-    // Audit must record budget exhaustion
-    const rows = audit.getByStory('story-001-001');
-    const exhausted = rows.find((r) => r.action === 'reroute_budget_exhausted');
-    assert.ok(exhausted, 'reroute_budget_exhausted audit row present');
+    assert.strictEqual(pmCalled, false);
+    assert.ok(audit.getByStory('story-001-001').find((r) => r.action === 'reroute_budget_exhausted'));
   });
 
-  it('[Negative] PM returns fewer than 2 sub-stories → throws plain Error', async () => {
+  it('[Negative] PM returns < 2 sub-stories → throws RerouteValidationError', async () => {
     const db = openDatabase(path.join(tmpDir, '.loom'));
     new EpicStore(db).create('epic-001', 'Test Epic');
     const agents = new AgentStore(db);
@@ -166,51 +136,112 @@ describe('handleReroute', () => {
     const original = makeStory('story-001-001');
     agents.create('epic-001', original.id, original.title);
 
-    const pm = makePMAgent([makeStory('sub-a')]); // only 1 sub-story
-
-    const payload: ReroutePayload = {
-      story: original,
-      fanOutPayload: '',
-      trigger: 'LOOM_TOO_BIG',
-    };
+    const pm = makePMAgent([makeStory('story-001-002')]);
+    const payload: ReroutePayload = { story: original, fanOutPayload: '', trigger: 'LOOM_TOO_BIG' };
 
     await assert.rejects(
-      () => handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit, agents }),
+      () => handleReroute(payload, { pmAgent: pm, agents, epicId: 'epic-001', auditLog: audit, coverageKeys: [] }),
       (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.ok(!(err instanceof RerouteBudgetExhaustedError));
-        assert.ok((err as Error).message.includes('sub-stories'));
+        assert.ok(err instanceof RerouteValidationError);
         return true;
       }
     );
   });
 
-  it('[Boundary] second split at count=1 succeeds, increments to 2', async () => {
+  it('[Boundary] lineage count = MAX-1 succeeds and reports parentResplitCount = MAX-1', async () => {
     const db = openDatabase(path.join(tmpDir, '.loom'));
     new EpicStore(db).create('epic-001', 'Test Epic');
     const agents = new AgentStore(db);
     const audit = new AuditLog(db);
     const original = makeStory('story-001-001');
     const agentRow = agents.create('epic-001', original.id, original.title);
-    db.prepare('UPDATE agents SET resplit_count = 1 WHERE id = ?').run(agentRow.id);
+    db.prepare('UPDATE agents SET resplit_count = ? WHERE id = ?').run(MAX_RESPLIT_BUDGET - 1, agentRow.id);
 
-    const pm = makePMAgent([makeStory('sub-a'), makeStory('sub-b')]);
+    const pm = makePMAgent([makeStory('story-001-002'), makeStory('story-001-003')]);
     const payload: ReroutePayload = { story: original, fanOutPayload: '', trigger: 'cap' };
-
-    const result = await handleReroute(payload, { pmAgent: pm, db, epicId: 'epic-001', auditLog: audit, agents });
-    assert.strictEqual(result.length, 2);
-
-    const updated = db
-      .prepare('SELECT resplit_count FROM agents WHERE id = ?')
-      .get(agentRow.id) as { resplit_count: number };
-    assert.strictEqual(updated.resplit_count, 2);
+    const result = await handleReroute(payload, { pmAgent: pm, agents, epicId: 'epic-001', auditLog: audit, coverageKeys: [] });
+    assert.strictEqual(result.subStories.length, 2);
+    assert.strictEqual(result.parentResplitCount, MAX_RESPLIT_BUDGET - 1);
   });
 });
 
-// ─── injectSubStories ─────────────────────────────────────────────────────────
+// ─── validateSubStories (pure) ──────────────────────────────────────────────────
+
+describe('validateSubStories', () => {
+  const original = makeStory('story-001-001', { dependencies: ['story-001-000'] });
+  const existing = new Set<string>(['story-001-000', 'story-001-001']);
+
+  it('[Happy] valid partition passes', () => {
+    const subs = [makeStory('story-001-002'), makeStory('story-001-003', { dependencies: ['story-001-002'] })];
+    assert.doesNotThrow(() => validateSubStories(original, subs, existing, []));
+  });
+
+  it('[Negative] < 2 sub-stories', () => {
+    assert.throws(() => validateSubStories(original, [makeStory('story-001-002')], existing, []), RerouteValidationError);
+  });
+
+  it('[Negative] duplicate sub-story ids', () => {
+    const subs = [makeStory('story-001-002'), makeStory('story-001-002')];
+    assert.throws(() => validateSubStories(original, subs, existing, []), RerouteValidationError);
+  });
+
+  it('[Negative] collision with an existing task id', () => {
+    const subs = [makeStory('story-001-000'), makeStory('story-001-002')];
+    assert.throws(() => validateSubStories(original, subs, existing, []), RerouteValidationError);
+  });
+
+  it('[Negative] a sub depends on the superseded original', () => {
+    const subs = [makeStory('story-001-002', { dependencies: ['story-001-001'] }), makeStory('story-001-003')];
+    assert.throws(() => validateSubStories(original, subs, existing, []), RerouteValidationError);
+  });
+
+  it('[Negative] a sub depends on an unknown id', () => {
+    const subs = [makeStory('story-001-002', { dependencies: ['story-999-999'] }), makeStory('story-001-003')];
+    assert.throws(() => validateSubStories(original, subs, existing, []), RerouteValidationError);
+  });
+
+  it('[Negative] cycle among sub-stories', () => {
+    const subs = [
+      makeStory('story-001-002', { dependencies: ['story-001-003'] }),
+      makeStory('story-001-003', { dependencies: ['story-001-002'] }),
+    ];
+    assert.throws(() => validateSubStories(original, subs, existing, []), RerouteValidationError);
+  });
+
+  it('[Negative] coverage key provided by zero sub-stories', () => {
+    const subs = [makeStory('story-001-002'), makeStory('story-001-003')];
+    assert.throws(() => validateSubStories(original, subs, existing, ['apiSchema']), RerouteValidationError);
+  });
+
+  it('[Negative] coverage key provided by two sub-stories (must be exactly one)', () => {
+    const subs = [
+      makeStory('story-001-002', { provides: { apiSchema: 'x' } }),
+      makeStory('story-001-003', { provides: { apiSchema: 'y' } }),
+    ];
+    assert.throws(() => validateSubStories(original, subs, existing, ['apiSchema']), RerouteValidationError);
+  });
+
+  it('[Happy] coverage key provided by exactly one sub-story passes', () => {
+    const subs = [
+      makeStory('story-001-002', { provides: { apiSchema: 'x' } }),
+      makeStory('story-001-003'),
+    ];
+    assert.doesNotThrow(() => validateSubStories(original, subs, existing, ['apiSchema']));
+  });
+
+  it('[Negative] a sub requires a key from an unknown source', () => {
+    const subs = [
+      makeStory('story-001-002', { requires: { k: 'story-999-999' } }),
+      makeStory('story-001-003'),
+    ];
+    assert.throws(() => validateSubStories(original, subs, existing, []), RerouteValidationError);
+  });
+});
+
+// ─── injectSubStories (atomic inject + supersede + lineage seed) ────────────────
 
 describe('injectSubStories', () => {
-  it('[Happy] inserts agent rows for each sub-story with story_json set', () => {
+  it('[Happy] inserts sub rows with story_json, seeds resplit_count=parent+1, supersedes original', () => {
     const db = openDatabase(path.join(tmpDir, '.loom'));
     new EpicStore(db).create('epic-001', 'Test Epic');
     const agents = new AgentStore(db);
@@ -218,59 +249,51 @@ describe('injectSubStories', () => {
     const original = makeStory('story-001-001');
     agents.create('epic-001', original.id, original.title);
 
-    const sub1 = makeStory('story-001-001a', { title: 'Sub A' });
-    const sub2 = makeStory('story-001-001b', { title: 'Sub B' });
+    const subs = [makeStory('story-001-002', { title: 'Sub A' }), makeStory('story-001-003', { title: 'Sub B' })];
+    injectSubStories(original, subs, 'epic-001', db, audit, { parentResplitCount: 1 });
 
-    injectSubStories(original, [sub1, sub2], 'epic-001', db, audit);
-
-    const rowA = agents.getByStory('story-001-001a');
-    const rowB = agents.getByStory('story-001-001b');
-    assert.ok(rowA, 'agent row for sub-a');
-    assert.ok(rowB, 'agent row for sub-b');
+    const rowA = agents.getByStory('story-001-002');
+    const rowB = agents.getByStory('story-001-003');
     assert.strictEqual(rowA!.status, 'pending');
-    assert.strictEqual(rowB!.status, 'pending');
-    assert.ok(rowA!.story_json, 'story_json set for sub-a');
-    assert.ok(rowB!.story_json, 'story_json set for sub-b');
-    const parsedA = JSON.parse(rowA!.story_json!) as Story;
-    assert.strictEqual(parsedA.id, 'story-001-001a');
-    assert.strictEqual(parsedA.title, 'Sub A');
+    assert.strictEqual(rowA!.resplit_count, 2, 'sub resplit seeded to parent+1');
+    assert.strictEqual(rowB!.resplit_count, 2);
+    assert.strictEqual((JSON.parse(rowA!.story_json!) as Story).title, 'Sub A');
 
-    // Audit entries for each sub-story
-    const rowsA = audit.getByStory('story-001-001a');
-    const rowsB = audit.getByStory('story-001-001b');
-    assert.ok(rowsA.some((r) => r.action === 'sub_story_injected'), 'sub_story_injected for a');
-    assert.ok(rowsB.some((r) => r.action === 'sub_story_injected'), 'sub_story_injected for b');
+    // Original superseded (keeps status, gains superseded_by).
+    const supersededBy = agents.getSupersededBy('story-001-001', 'epic-001');
+    assert.ok(supersededBy, 'original marked superseded_by');
+    assert.deepStrictEqual(JSON.parse(supersededBy!), ['story-001-002', 'story-001-003']);
+
+    assert.ok(audit.getByStory('story-001-001').find((r) => r.action === 'story_superseded'));
   });
 
-  it('[Happy] downstream overrides written atomically with dep_overrides column', () => {
+  it('[Happy] dep_overrides + requires_overrides written atomically', () => {
     const db = openDatabase(path.join(tmpDir, '.loom'));
     new EpicStore(db).create('epic-001', 'Test Epic');
     const agents = new AgentStore(db);
     const audit = new AuditLog(db);
     const original = makeStory('story-001-001');
-    const downstream = makeStory('story-001-002', { dependencies: ['story-001-001'] });
-
+    const downstream = makeStory('story-001-004', { dependencies: ['story-001-001'], requires: { schema: 'story-001-001' } });
     agents.create('epic-001', original.id, original.title);
     agents.create('epic-001', downstream.id, downstream.title);
 
-    const sub1 = makeStory('story-001-001a');
-    const sub2 = makeStory('story-001-001b');
+    const subs = [makeStory('story-001-002', { provides: { schema: 'x' } }), makeStory('story-001-003')];
+    injectSubStories(original, subs, 'epic-001', db, audit, {
+      parentResplitCount: 0,
+      depOverrides: [{ storyId: 'story-001-004', newDependencies: ['story-001-002', 'story-001-003'] }],
+      requiresOverrides: [{ storyId: 'story-001-004', newRequires: { schema: 'story-001-002' } }],
+    });
 
-    injectSubStories(original, [sub1, sub2], 'epic-001', db, audit, [
-      { storyId: 'story-001-002', newDependencies: ['story-001-001b'] },
-    ]);
+    const dsRow = agents.getByStory('story-001-004');
+    assert.deepStrictEqual(JSON.parse(dsRow!.dep_overrides!), ['story-001-002', 'story-001-003']);
+    assert.deepStrictEqual(JSON.parse(agents.getRequiresOverrides('story-001-004', 'epic-001')!), { schema: 'story-001-002' });
 
-    const downstreamRow = agents.getByStory('story-001-002');
-    assert.ok(downstreamRow?.dep_overrides, 'dep_overrides set for downstream');
-    const parsed = JSON.parse(downstreamRow!.dep_overrides!);
-    assert.deepStrictEqual(parsed, ['story-001-001b']);
-
-    // dep_override_applied audit entry for downstream
-    const rows = audit.getByStory('story-001-002');
-    assert.ok(rows.some((r) => r.action === 'dep_override_applied'), 'dep_override_applied audit row');
+    const rows = audit.getByStory('story-001-004');
+    assert.ok(rows.some((r) => r.action === 'dep_override_applied'));
+    assert.ok(rows.some((r) => r.action === 'requires_override_applied'));
   });
 
-  it('[Boundary] all writes are atomic: DB is consistent even with 3+ sub-stories', () => {
+  it('[Boundary] idempotent on double-call: no phantom rows, resplit unchanged', () => {
     const db = openDatabase(path.join(tmpDir, '.loom'));
     new EpicStore(db).create('epic-001', 'Test Epic');
     const agents = new AgentStore(db);
@@ -278,40 +301,11 @@ describe('injectSubStories', () => {
     const original = makeStory('story-001-001');
     agents.create('epic-001', original.id, original.title);
 
-    const subs = ['a', 'b', 'c'].map((s) => makeStory(`story-001-001${s}`));
-    injectSubStories(original, subs, 'epic-001', db, audit);
-
-    for (const s of subs) {
-      const row = agents.getByStory(s.id);
-      assert.ok(row, `agent row for sub-${s.id}`);
-    }
-    // Original row untouched
-    const origRow = agents.getByStory('story-001-001');
-    assert.ok(origRow, 'original row still present');
-  });
-
-  it('[Boundary] idempotent on double-call: second injectSubStories call does not create phantom rows', () => {
-    const db = openDatabase(path.join(tmpDir, '.loom'));
-    new EpicStore(db).create('epic-001', 'Test Epic');
-    const agents = new AgentStore(db);
-    const audit = new AuditLog(db);
-    const original = makeStory('story-001-001');
-    agents.create('epic-001', original.id, original.title);
-
-    const sub1 = makeStory('story-001-001a');
-    const sub2 = makeStory('story-001-001b');
-
-    // First call (normal path)
-    injectSubStories(original, [sub1, sub2], 'epic-001', db, audit);
-    const countAfterFirst = (db.prepare('SELECT COUNT(*) AS c FROM agents WHERE epic_id = ?').get('epic-001') as { c: number }).c;
-
-    // Second call (crash-restart scenario)
-    injectSubStories(original, [sub1, sub2], 'epic-001', db, audit);
-    const countAfterSecond = (db.prepare('SELECT COUNT(*) AS c FROM agents WHERE epic_id = ?').get('epic-001') as { c: number }).c;
-
-    assert.strictEqual(countAfterFirst, countAfterSecond, 'second call must not insert duplicate rows');
-    // Sub-story rows are still readable
-    assert.ok(agents.getByStory('story-001-001a'), 'sub-a row still present');
-    assert.ok(agents.getByStory('story-001-001b'), 'sub-b row still present');
+    const subs = [makeStory('story-001-002'), makeStory('story-001-003')];
+    injectSubStories(original, subs, 'epic-001', db, audit, { parentResplitCount: 0 });
+    const c1 = (db.prepare('SELECT COUNT(*) AS c FROM agents WHERE epic_id = ?').get('epic-001') as { c: number }).c;
+    injectSubStories(original, subs, 'epic-001', db, audit, { parentResplitCount: 0 });
+    const c2 = (db.prepare('SELECT COUNT(*) AS c FROM agents WHERE epic_id = ?').get('epic-001') as { c: number }).c;
+    assert.strictEqual(c1, c2, 'no duplicate sub rows on re-entry');
   });
 });

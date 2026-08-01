@@ -113,7 +113,7 @@ describe('DatabaseMigrationV31 — agents.provides_output + agents.resplit_count
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
     assert.equal(ver.version, SCHEMA_VERSION, 'schema_version must equal SCHEMA_VERSION constant');
-    assert.equal(SCHEMA_VERSION, 33, 'SCHEMA_VERSION constant must be 33 (decomposition migration renumbered from v31 onto the v32 audit base)');
+    assert.equal(SCHEMA_VERSION, 34, 'SCHEMA_VERSION constant must be 34 (v33 decomposition + v34 reroute-rework columns)');
 
     const agentCols = db.prepare('PRAGMA table_info(agents)').all() as {
       name: string;
@@ -177,7 +177,7 @@ describe('DatabaseMigrationV31 — agents.provides_output + agents.resplit_count
     const ver = db
       .prepare('SELECT version FROM schema_version LIMIT 1')
       .get() as { version: number };
-    assert.equal(ver.version, 33, 'schema_version must remain 33 after second run');
+    assert.equal(ver.version, 34, 'schema_version must remain 34 after second run');
 
     const agentCols = db.prepare('PRAGMA table_info(agents)').all() as { name: string }[];
     const providesCount = agentCols.filter((c) => c.name === 'provides_output').length;
