@@ -592,6 +592,15 @@ export class Supervisor {
     { trigger: 'LOOM_TOO_BIG' | 'cap'; fanOutPayload: string }
   >();
 
+  /**
+   * True while this run is a cross-repo PARTITION (run({repoFilter})). Reroute is
+   * disabled under partitioning: computeCoverageKeys / the downstream re-point loop
+   * only see the partition's tasks, so a cross-partition dependent could be silently
+   * left un-re-pointed. Today CrossRepoCoordinator (the only repoFilter caller) never
+   * carries a pmAgent, so this is a latent-safety guard for a future wiring.
+   */
+  private partitioned = false;
+
   // ─── Operator-guidance file-watch state ───────────────────────────────
   // The Supervisor watches `.loom/guidance/<story-id>.md` and pushes
   // appended deltas into each live worker's stdin via the per-spawn
@@ -709,6 +718,9 @@ export class Supervisor {
       epicIds = singleId !== undefined ? [singleId] : epicIdsOrOpts.epicIds;
       repoFilter = epicIdsOrOpts.repoFilter;
     }
+    // Record partition mode so applyResult's reroute injection points can disable
+    // reroute under cross-repo partitioning (see the `partitioned` field).
+    this.partitioned = repoFilter !== undefined;
     // Determine scope structurally from the resolved input — a single story-prefixed
     // ID is a standalone-story dispatch; everything else is an epic dispatch.
     const initialScope: RunScope = (epicIds?.length === 1 && epicIds[0]?.startsWith('story-'))
@@ -809,12 +821,13 @@ export class Supervisor {
       if (this.rolling) this.reconcileIntegratingAgents(epicId);
       const { manifest: mf, primarySlug: ps } = this.manifestContext();
       // Restart-recovery snapshot (epic-095 reroute rework). Capture each story's
-      // latest agent row BEFORE the taskFor loop below runs — taskFor mints a fresh
-      // 'pending' row (with superseded_by / dep_overrides / requires_overrides all
-      // NULL) for any non-SUCCESS story, which would MASK the reroute markers if we
-      // read them post-loop. Snapshotting first is what makes the reroute durable
-      // across a `loom run` restart. Only the simple (non-repoFilter) path can carry
-      // reroute state — cross-repo partitioning never split-and-reroutes.
+      // latest agent row BEFORE the taskFor loop below runs. taskFor mints a fresh
+      // 'pending' row for any non-SUCCESS story; that row carries dep_overrides /
+      // requires_overrides forward (via AgentStore.create) but NOT superseded_by, so
+      // a superseded original's fresh row would MASK its marker if read post-loop.
+      // Snapshotting first is what lets us skip the original before taskFor runs and
+      // makes the reroute durable across a `loom run` restart. Only the simple
+      // (non-repoFilter) path can carry reroute state — cross-repo never reroutes.
       const rerouteSnapshot =
         repoFilter === undefined ? this.agents.listLatestByEpic(epicId) : [];
       const supersededIds = new Set<string>(
@@ -3284,7 +3297,7 @@ export class Supervisor {
         : scanLogTailForTooBigSignal(result.logTail ?? '');
     // Guard: a successful worker that incidentally printed the signal must not be
     // re-decomposed. Only reroute when the worker actually did not finish the story.
-    if (effectiveTooBigPayload !== undefined && result.status !== 'done' && this.opts.pmAgent) {
+    if (effectiveTooBigPayload !== undefined && result.status !== 'done' && this.opts.pmAgent && !this.partitioned) {
       this.pendingReroutes.set(task.story.id, {
         trigger: 'LOOM_TOO_BIG',
         fanOutPayload: effectiveTooBigPayload,
@@ -3296,7 +3309,7 @@ export class Supervisor {
     // Injection point B: reroute on absoluteCapMs kill (epic-095-005).
     // A 'cap' kill means the story is genuinely too large for a single worker
     // run; re-decompose it rather than treating it as a permanent failure.
-    if (result.killReason === 'cap' && this.opts.pmAgent) {
+    if (result.killReason === 'cap' && this.opts.pmAgent && !this.partitioned) {
       this.pendingReroutes.set(task.story.id, {
         trigger: 'cap',
         fanOutPayload: '',
@@ -3466,12 +3479,15 @@ export class Supervisor {
     }
     // Allocate ids BY INDEX (not via a placeholder-keyed map) so two subs that share
     // a duplicate PM placeholder id still get DISTINCT allocated ids. padStart(3) is a
-    // minimum width — values > 999 simply widen, staying regex-matchable above.
+    // minimum width; note that beyond 999 sub-stories in one epic the id widens to 4
+    // digits, which StorySchema (`-\d{3}`) rejects on restart — a practically
+    // unreachable ceiling (>999 stories in a single epic), not a supported range.
     const allocated = rawSubs.map((_, i) => `story-${epicNum}-${String(maxMMM + 1 + i).padStart(3, '0')}`);
-    // The reference remap still keys on placeholder id → allocated id. A duplicate
-    // placeholder maps to the LAST occurrence's allocated id; that only affects a sub
-    // that *references* the duplicate placeholder, and validateSubStories rejects any
-    // resulting inconsistency (graceful fail) rather than producing a bad DAG.
+    // The reference remap keys on placeholder id → allocated id. If the PM emits a
+    // duplicate placeholder, a sibling referencing it resolves to the LAST occurrence's
+    // allocated id — a valid (uniquely-id'd, acyclic) but possibly-misordered edge on
+    // garbage input; all subs still run. A self-referential duplicate is caught by the
+    // self-dependency check in validateSubStories.
     const idMap = new Map<string, string>();
     rawSubs.forEach((sub, i) => idMap.set(sub.id, allocated[i]));
     const remap = (id: string) => idMap.get(id) ?? id;

@@ -375,8 +375,9 @@ describe('Supervisor reroute — MAX_RESPLIT_BUDGET enforcement (AC-5)', () => {
     const db = openDatabase(path.join(repoDir, '.loom'));
 
     // Pre-seed a 'failed' agent with resplit_count=MAX_RESPLIT_BUDGET. AgentStore.create
-    // carries forward MAX(resplit_count), so the run's active agent starts exhausted and
-    // handleReroute throws RerouteBudgetExhaustedError — which the sweep swallows.
+    // carries forward the latest row's resplit_count (uniform across a story's rows), so
+    // the run's active agent starts exhausted and handleReroute throws
+    // RerouteBudgetExhaustedError — which the sweep swallows.
     const agents = new AgentStore(db);
     const origAgent = agents.create('epic-001', 'story-001-001', original.title);
     db.prepare('UPDATE agents SET status = ?, resplit_count = ? WHERE id = ?')

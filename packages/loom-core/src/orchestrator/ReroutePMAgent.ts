@@ -67,8 +67,8 @@ export class ReroutePMAgent implements PMAgent {
     const instruction =
       'A single story turned out too large to implement safely in one worktree. Decompose it into ' +
       '2–6 SMALLER, independently-implementable sub-stories that together deliver the SAME ' +
-      'acceptance criteria. Each sub-story is a JSON object with: id, title, description, ' +
-      'acceptance_criteria (string[]), estimated_complexity ("trivial"|"small"|"medium"|"large"), ' +
+      'acceptance criteria. Each sub-story is a JSON object with: id, title (5–100 chars), ' +
+      'description, acceptance_criteria (string[]), estimated_complexity ("trivial"|"small"|"medium"|"large"), ' +
       'dependencies (string[]), and optional provides/requires/tech_notes. Use SIMPLE placeholder ' +
       'ids like "sub-1","sub-2" — they will be reassigned. Express ordering BETWEEN sub-stories via ' +
       '`dependencies` referencing those placeholder ids. Keep each sub-story genuinely smaller than ' +

@@ -196,11 +196,17 @@ export function validateSubStories(
     if (providers.length > 1) fail(`required key "${key}" is provided by ${providers.length} sub-stories (must be exactly one)`);
   }
 
-  // Each sub's own `requires` resolves to a sibling sub-story or an existing story.
+  // Each sub's own `requires` resolves to a sibling sub-story or an existing story —
+  // but NEVER the superseded original. `existingTaskIds` still contains original.id at
+  // validation time (it's removed from the tasks map only after injection), so guard it
+  // explicitly: a sub that requires the original would resolve to a row whose
+  // provides_output is NULL (the original never completes) and block forever. Mirrors
+  // the dependencies guard above.
   const knownProviders = new Set<string>([...subIdSet, ...existingTaskIds]);
   for (const sub of subStories) {
     if (!sub.requires) continue;
     for (const [key, src] of Object.entries(sub.requires)) {
+      if (src === original.id) fail(`sub-story ${sub.id} requires "${key}" from the superseded original`);
       if (!knownProviders.has(src)) fail(`sub-story ${sub.id} requires "${key}" from ${src}, which is not a known story`);
     }
   }

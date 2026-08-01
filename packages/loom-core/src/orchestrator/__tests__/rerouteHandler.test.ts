@@ -236,6 +236,16 @@ describe('validateSubStories', () => {
     ];
     assert.throws(() => validateSubStories(original, subs, existing, []), RerouteValidationError);
   });
+
+  it('[Negative] a sub requires a key FROM the superseded original', () => {
+    // The original is still in existingTaskIds at validation time; a sub requiring it
+    // would resolve to a NULL-provides row and block forever. Must be rejected.
+    const subs = [
+      makeStory('story-001-002', { requires: { schema: 'story-001-001' } }),
+      makeStory('story-001-003'),
+    ];
+    assert.throws(() => validateSubStories(original, subs, existing, []), RerouteValidationError);
+  });
 });
 
 // ─── injectSubStories (atomic inject + supersede + lineage seed) ────────────────
