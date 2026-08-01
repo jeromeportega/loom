@@ -91,8 +91,13 @@ function buildProjectCards(
   // which presents them separately as stories).
   const epics = epicStore.list({ includeStandalone: true });
   return epics.map((epic) => {
-    // Per-story dedup: one row per story_id, most-recent attempt.
-    const latestAgents = agentStore.listLatestByEpic(epic.id);
+    // Per-story dedup: one row per story_id, most-recent attempt. Exclude
+    // superseded originals (epic-095 reroute rework): their row stays 'failed'
+    // as history but the story was replaced by sub-stories — showing it would
+    // put a phantom red card + blocker on a successfully-rerouted epic.
+    const latestAgents = agentStore
+      .listLatestByEpic(epic.id)
+      .filter((a) => a.superseded_by == null);
     const stories: FleetStory[] = latestAgents.map((a) => ({
       story_id: a.story_id,
       status: a.status,

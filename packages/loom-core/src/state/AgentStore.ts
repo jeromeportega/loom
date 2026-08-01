@@ -22,7 +22,7 @@ const ACTIVE_STATUSES = new Set<AgentStatus>(['running', 'pr_open']);
 export class AgentStore {
   constructor(private db: Database.Database) {}
 
-  create(epicId: string, storyId: string, storyTitle?: string): AgentRecord {
+  create(epicId: string, storyId: string, storyTitle?: string, storyJson?: string): AgentRecord {
     const id = `agent-${storyId}-${crypto.randomBytes(AGENT_ID_RANDOM_BYTES).toString('hex')}`;
     const now = new Date().toISOString();
     // Carry forward the resplit_count from any prior agent row so the re-split
@@ -30,15 +30,33 @@ export class AgentStore {
     // Filter by epic_id so cross-epic stories with recycled IDs don't contaminate
     // each other's budget counters.
     const prior = this.db
-      .prepare('SELECT MAX(resplit_count) AS mc FROM agents WHERE story_id = ? AND epic_id = ?')
-      .get(storyId, epicId) as { mc: number | null };
-    const inheritedResplit = prior?.mc ?? 0;
+      .prepare(
+        `SELECT resplit_count, dep_overrides, requires_overrides
+         FROM agents WHERE story_id = ? AND epic_id = ?
+         ORDER BY updated_at DESC, id DESC LIMIT 1`
+      )
+      .get(storyId, epicId) as
+      | { resplit_count: number; dep_overrides: string | null; requires_overrides: string | null }
+      | undefined;
+    const inheritedResplit = prior?.resplit_count ?? 0;
+    // Carry forward a downstream story's reroute re-point (dep_overrides /
+    // requires_overrides) onto every fresh attempt row (epic-095 reroute rework), so
+    // the re-point stays DURABLE across any number of `loom run` restarts — not just
+    // the first (a reroute is permanent; the original never comes back). Normal
+    // stories have both NULL → byte-identical to before.
+    const inheritedDep = prior?.dep_overrides ?? null;
+    const inheritedRequires = prior?.requires_overrides ?? null;
+    // storyJson is set ONLY for a re-dispatched injected sub-story (epic-095 reroute
+    // rework): a fresh pending attempt row must carry story_json forward so the next
+    // restart still recognizes it as a sub-story to hydrate. Normal callers pass
+    // nothing → NULL (byte-identical to before).
     this.db
       .prepare(
-        `INSERT INTO agents (id, epic_id, story_id, story_title, status, resplit_count, updated_at)
-         VALUES (?, ?, ?, ?, 'pending', ?, ?)`
+        `INSERT INTO agents
+           (id, epic_id, story_id, story_title, status, resplit_count, dep_overrides, requires_overrides, story_json, updated_at)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`
       )
-      .run(id, epicId, storyId, storyTitle ?? null, inheritedResplit, now);
+      .run(id, epicId, storyId, storyTitle ?? null, inheritedResplit, inheritedDep, inheritedRequires, storyJson ?? null, now);
     return this.get(id)!;
   }
 
@@ -371,9 +389,9 @@ export class AgentStore {
   }
 
   /**
-   * Returns the superseded_by JSON (array of sub-story ids) for a story, or null
-   * when the story was not superseded by a reroute. A non-null value means the
-   * restart map-build must fully exclude this story from the tasks map.
+   * Returns the superseded_by JSON (array of sub-story ids) for a story's latest
+   * row, or null when it was not superseded by a reroute. Read helper for tests
+   * and status surfaces; the restart map-build computes its own snapshot set.
    */
   getSupersededBy(storyId: string, epicId: string): string | null {
     const row = this.db
@@ -387,9 +405,8 @@ export class AgentStore {
   }
 
   /**
-   * Returns the requires_overrides JSON (key -> sourceStoryId map) for a story,
-   * or null when no override is set. Applied by re-pointing story.requires in
-   * memory after an upstream re-split — mirrors getDepOverrides.
+   * Returns the requires_overrides JSON (key -> sourceStoryId) for a story's latest
+   * row, or null when no override is set. Mirrors getDepOverrides.
    */
   getRequiresOverrides(storyId: string, epicId: string): string | null {
     const row = this.db

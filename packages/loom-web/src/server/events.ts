@@ -107,7 +107,12 @@ export function eventStreamHandler(opts: EventStreamOptions) {
           ) {
             // Per-story dedup so the SSE epic-card counts match the REST
             // list endpoint and MCP get_status — a retried story counts once.
-            const counts = agentStore.listLatestByEpic(epic.id).reduce(
+            // Exclude superseded originals (epic-095 reroute rework) so a
+            // rerouted epic doesn't show a phantom failed story.
+            const counts = agentStore
+              .listLatestByEpic(epic.id)
+              .filter((a) => a.superseded_by == null)
+              .reduce(
               (acc, a) => {
                 acc.total += 1;
                 if (a.status === 'done' || a.status === 'pr_open') acc.done += 1;

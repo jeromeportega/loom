@@ -8,12 +8,14 @@ import { SharedContract } from './SharedContract.js';
 import { selfAssessmentInstruction } from './selfAssessment.js';
 import { EpicBuildup } from './EpicBuildup.js';
 import { conventionsInstruction } from './conventionsMarker.js';
-import { LOOM_TOO_BIG_SIGNAL } from './constants.js';
+import { formatTooBigSignal } from './constants.js';
 
 /**
  * Instruction block (runtime reroute, epic-095): tells the worker it MAY bail out
  * of an over-scoped story by emitting the LOOM_TOO_BIG signal EARLY, before making
- * destructive edits, so loom re-decomposes it via the PM.
+ * destructive edits, so loom re-decomposes it via the PM. The exact emit line comes
+ * from `formatTooBigSignal` — the same helper the Supervisor parses with — so the
+ * prompt and the capture can never drift.
  */
 function tooBigSignalInstruction(): string {
   return (
@@ -23,7 +25,7 @@ function tooBigSignalInstruction(): string {
     'independent changes — more than one focused worktree should carry — do NOT attempt ' +
     'it partially and do NOT delete/rewrite broadly to force it through. Instead emit a ' +
     'single line:\n' +
-    `\`${LOOM_TOO_BIG_SIGNAL}: <one-line reason + how you would split it>\`\n` +
+    `\`${formatTooBigSignal('<one-line reason + how you would split it>')}\`\n` +
     'then stop without committing. loom will route the story back to the PM to break it ' +
     'into smaller stories. Emit this EARLY (during analysis, before editing) so nothing ' +
     'destructive happens. Only use it for genuinely oversized stories — a normal-sized ' +

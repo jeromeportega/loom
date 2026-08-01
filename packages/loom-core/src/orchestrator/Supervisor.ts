@@ -84,7 +84,7 @@ import {
   type DownstreamOverride,
   type DownstreamRequiresOverride,
 } from './rerouteHandler.js';
-import { LOOM_TOO_BIG_SIGNAL } from './constants.js';
+import { LOOM_TOO_BIG_SIGNAL, matchTooBigSignal } from './constants.js';
 
 // ─── LOOM_PROVIDES helpers (epic-095 story-095-004) ──────────────────────────
 // Exported at module level so unit tests can exercise them directly.
@@ -216,12 +216,8 @@ export function parseLoomProvides(rawOutput: string): Record<string, unknown> | 
 function scanLogTailForTooBigSignal(logTail: string): string | undefined {
   let result: string | undefined;
   for (const line of logTail.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed === LOOM_TOO_BIG_SIGNAL) {
-      result = '';
-    } else if (trimmed.startsWith(LOOM_TOO_BIG_SIGNAL + ' ')) {
-      result = trimmed.slice(LOOM_TOO_BIG_SIGNAL.length).trim();
-    }
+    const payload = matchTooBigSignal(line);
+    if (payload !== undefined) result = payload; // last occurrence wins
   }
   return result;
 }
@@ -812,7 +808,26 @@ export class Supervisor {
       // — duplicating work whose merge may already be on epic/<id>.
       if (this.rolling) this.reconcileIntegratingAgents(epicId);
       const { manifest: mf, primarySlug: ps } = this.manifestContext();
+      // Restart-recovery snapshot (epic-095 reroute rework). Capture each story's
+      // latest agent row BEFORE the taskFor loop below runs — taskFor mints a fresh
+      // 'pending' row (with superseded_by / dep_overrides / requires_overrides all
+      // NULL) for any non-SUCCESS story, which would MASK the reroute markers if we
+      // read them post-loop. Snapshotting first is what makes the reroute durable
+      // across a `loom run` restart. Only the simple (non-repoFilter) path can carry
+      // reroute state — cross-repo partitioning never split-and-reroutes.
+      const rerouteSnapshot =
+        repoFilter === undefined ? this.agents.listLatestByEpic(epicId) : [];
+      const supersededIds = new Set<string>(
+        rerouteSnapshot.filter((r) => r.superseded_by != null).map((r) => r.story_id)
+      );
+
       for (const story of this.loadStories(epicId)) {
+        // Superseded original: a prior run rerouted this YAML story into sub-stories.
+        // Skip it entirely — no task, no taskFor row — so it is neither re-dispatched
+        // nor re-split, and so its stale 'failed' row never masks the supersede marker.
+        if (repoFilter === undefined && supersededIds.has(story.id)) {
+          continue;
+        }
         // When repoFilter is set, skip stories that belong to a different repo.
         // This is the seam consumed by CrossRepoCoordinator (story-058-005) to
         // dispatch one repo partition at a time.
@@ -847,33 +862,35 @@ export class Supervisor {
           tasks.set(story.id, this.taskFor(epicId, story));
         }
       }
-      // Restart recovery: re-hydrate injected sub-stories and dep_overrides that
-      // survive across runs in the DB but are absent from the YAML plan file.
-      // Only runs in the simple (non-repoFilter) path — cross-repo partitioning
-      // does not split-and-reroute within a partition, so sub-stories won't exist.
+      // Restart recovery: re-hydrate injected sub-stories + re-apply downstream
+      // dep/requires overrides from the PRE-taskFor snapshot (post-loop rows are
+      // masked — see the snapshot comment above). Only the non-repoFilter path.
       if (repoFilter === undefined) {
-        const latestRows = this.agents.listLatestByEpic(epicId);
-        for (const row of latestRows) {
-          // Superseded original (epic-095 reroute rework): a prior reroute replaced
-          // this story with sub-stories. Fully EXCLUDE it from the tasks map so the
-          // finalize gate (every SUCCESS) and storiesDone/Total never see a stale
-          // failed original. The DB row keeps status='failed' as the historical
-          // record; superseded_by is the durable marker. Mirrors the live-path
-          // tasks.delete(originalId) in doReroute.
-          if (row.superseded_by != null) {
-            tasks.delete(row.story_id);
-            continue;
-          }
+        for (const row of rerouteSnapshot) {
+          // Superseded originals were already skipped in the loop above, so their
+          // masking row was never created; nothing to do here.
+          if (row.superseded_by != null) continue;
           // Sub-story recovery: rows with story_json were injected by injectSubStories.
           if (row.story_json != null && !tasks.has(row.story_id)) {
             try {
               const parsed = StorySchema.parse(JSON.parse(row.story_json));
-              tasks.set(parsed.id, {
-                epicId,
-                story:   parsed,
-                agentId: row.id,
-                status:  row.status,
-              });
+              if (FAILURE.has(row.status)) {
+                // A transiently-failed injected sub-story must be retried on the next
+                // run — mirroring taskFor's "failed YAML story ⇒ fresh pending attempt"
+                // semantics. Injected sub-stories never pass through taskFor (they are
+                // not in the YAML), so without this a failed sub-story would hydrate as
+                // terminal 'failed' and strand the epic forever. Mint a fresh pending
+                // row that carries story_json forward so future restarts still see it.
+                const retry = this.agents.create(epicId, parsed.id, parsed.title, row.story_json);
+                tasks.set(parsed.id, { epicId, story: parsed, agentId: retry.id, status: 'pending' });
+              } else {
+                tasks.set(parsed.id, {
+                  epicId,
+                  story:   parsed,
+                  agentId: row.id,
+                  status:  row.status,
+                });
+              }
             } catch {
               this.audit.record({
                 action: 'sub_story_json_corrupt',
@@ -2259,15 +2276,9 @@ export class Supervisor {
           const section = tooBigLineBuffer.slice(0, nlIdx);
           tooBigLineBuffer = tooBigLineBuffer.slice(nlIdx + 1);
           for (const rawLine of section.split('\n')) {
-            const trimmed = rawLine.trim();
-            if (
-              trimmed === LOOM_TOO_BIG_SIGNAL ||
-              trimmed.startsWith(LOOM_TOO_BIG_SIGNAL + ' ')
-            ) {
-              this.capturedTooBigSignals.set(
-                task.story.id,
-                trimmed.slice(LOOM_TOO_BIG_SIGNAL.length).trim()
-              );
+            const payload = matchTooBigSignal(rawLine);
+            if (payload !== undefined) {
+              this.capturedTooBigSignals.set(task.story.id, payload);
             }
           }
         }
@@ -2418,15 +2429,9 @@ export class Supervisor {
           this.capturedProvidesLines.set(task.story.id, capturedProvidesLineLocal);
         }
         // Flush any incomplete LOOM_TOO_BIG line from the buffer (epic-095-005).
-        const pendingTooBig = tooBigLineBuffer.trim();
-        if (
-          pendingTooBig === LOOM_TOO_BIG_SIGNAL ||
-          pendingTooBig.startsWith(LOOM_TOO_BIG_SIGNAL + ' ')
-        ) {
-          this.capturedTooBigSignals.set(
-            task.story.id,
-            pendingTooBig.slice(LOOM_TOO_BIG_SIGNAL.length).trim()
-          );
+        const pendingPayload = matchTooBigSignal(tooBigLineBuffer);
+        if (pendingPayload !== undefined) {
+          this.capturedTooBigSignals.set(task.story.id, pendingPayload);
         }
         return { storyId: task.story.id, result };
       })
@@ -3454,17 +3459,25 @@ export class Supervisor {
     const epicNum = epicId.match(/-(\d{3})$/)?.[1] ?? '000';
     let maxMMM = 0;
     for (const id of tasks.keys()) {
-      const m = id.match(/^story-\d{3}-(\d{3})$/);
+      // Match 3+ digits so a prior 4-digit allocation (MMM > 999) is still counted,
+      // never re-allocated as a colliding lower number.
+      const m = id.match(/^story-\d{3}-(\d{3,})$/);
       if (m) maxMMM = Math.max(maxMMM, parseInt(m[1], 10));
     }
+    // Allocate ids BY INDEX (not via a placeholder-keyed map) so two subs that share
+    // a duplicate PM placeholder id still get DISTINCT allocated ids. padStart(3) is a
+    // minimum width — values > 999 simply widen, staying regex-matchable above.
+    const allocated = rawSubs.map((_, i) => `story-${epicNum}-${String(maxMMM + 1 + i).padStart(3, '0')}`);
+    // The reference remap still keys on placeholder id → allocated id. A duplicate
+    // placeholder maps to the LAST occurrence's allocated id; that only affects a sub
+    // that *references* the duplicate placeholder, and validateSubStories rejects any
+    // resulting inconsistency (graceful fail) rather than producing a bad DAG.
     const idMap = new Map<string, string>();
-    rawSubs.forEach((sub, i) => {
-      idMap.set(sub.id, `story-${epicNum}-${String(maxMMM + 1 + i).padStart(3, '0')}`);
-    });
+    rawSubs.forEach((sub, i) => idMap.set(sub.id, allocated[i]));
     const remap = (id: string) => idMap.get(id) ?? id;
-    return rawSubs.map((sub) => ({
+    return rawSubs.map((sub, i) => ({
       ...sub,
-      id:           idMap.get(sub.id)!,
+      id:           allocated[i],
       dependencies: sub.dependencies.map(remap),
       ...(sub.requires
         ? { requires: Object.fromEntries(Object.entries(sub.requires).map(([k, v]) => [k, remap(v)])) }

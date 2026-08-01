@@ -345,7 +345,11 @@ function collectJsonEpics(
     const verdicts = epicStore.getIntakeVerdicts(validRows.map((e) => e.id));
     const out: JsonEpic[] = [];
     for (const epic of validRows) {
-      const latest = agentStore.listLatestByEpic(epic.id);
+      // Exclude superseded originals (epic-095 reroute rework): their row stays
+      // 'failed' as history but the story was replaced by sub-stories.
+      const latest = agentStore
+        .listLatestByEpic(epic.id)
+        .filter((a) => a.superseded_by == null);
 
       if (epic.kind === STANDALONE_KIND) {
         // Standalone story — surface the story id as the top-level id, never
@@ -625,7 +629,9 @@ function renderLoomDir(
       // (matches `loom_get_status`). A story that was blocked then retried
       // to done shows as 'done' once, with a "(retry N)" tag when the
       // attempt count exceeds 1.
-      const agents = agentStore.listLatestByEpic(epic.id);
+      const agents = agentStore
+        .listLatestByEpic(epic.id)
+        .filter((a) => a.superseded_by == null);
       if (agents.length === 0) {
         console.log('      No agents dispatched yet.');
       } else {
@@ -669,7 +675,9 @@ function renderLoomDir(
 
     // Render standalone stories with story framing (never as "epic-NNN with N stories").
     for (const container of standalones) {
-      const agents = agentStore.listLatestByEpic(container.id);
+      const agents = agentStore
+        .listLatestByEpic(container.id)
+        .filter((a) => a.superseded_by == null);
       const archivedTag = container.archived_at ? '  🗄 [archived]' : '';
       if (agents.length === 0) {
         // Container exists but no agent dispatched yet (planning phase).

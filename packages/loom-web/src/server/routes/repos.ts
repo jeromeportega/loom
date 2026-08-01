@@ -91,8 +91,10 @@ function toAgentSummary(
 }
 
 function countByStatus(
-  agents: ReturnType<AgentStore['listByEpic']>
+  allAgents: ReturnType<AgentStore['listByEpic']>
 ): EpicStatus['stories'] {
+  // Exclude superseded originals (epic-095 reroute rework) — see index.ts countByStatus.
+  const agents = allAgents.filter((a) => a.superseded_by == null);
   const counts = { total: agents.length, done: 0, failed: 0, blocked: 0, pending: 0, running: 0 };
   for (const a of agents) {
     if (a.status === 'done' || a.status === 'pr_open') counts.done += 1;

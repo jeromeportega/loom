@@ -541,7 +541,7 @@ describe('v32 migration: SCHEMA_VERSION constant', () => {
     assert.equal(SCHEMA_VERSION, 34);
   });
 
-  it('runMigrations() on a v31 DB advances schema_version to current (33)', () => {
+  it('runMigrations() on a v31 DB advances schema_version to current (34)', () => {
     const dbPath = path.join(tmpDir, 'v32-version-bump.db');
     const db = seedV31Db(dbPath);
     assert.equal(schemaVersion(db), 31, 'precondition: starts at v31');

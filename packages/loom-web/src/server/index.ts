@@ -789,8 +789,13 @@ function openPeer(
 }
 
 function countByStatus(
-  agents: ReturnType<AgentStore['listByEpic']>
+  allAgents: ReturnType<AgentStore['listByEpic']>
 ): EpicStatus['stories'] {
+  // Exclude superseded originals (epic-095 reroute rework): their row keeps
+  // status='failed' as the historical record, but the story was replaced by
+  // sub-stories — counting it would show a permanent phantom failure on a
+  // successfully-rerouted epic.
+  const agents = allAgents.filter((a) => a.superseded_by == null);
   const counts = {
     total: agents.length,
     done: 0,

@@ -20,7 +20,7 @@ import { AuditLog } from '../../state/AuditLog.js';
 import { StoryRetryService } from '../StoryRetryService.js';
 import { Supervisor } from '../Supervisor.js';
 import { MockWorkerRunner } from '../MockWorkerRunner.js';
-import { MAX_RESPLIT_BUDGET, LOOM_TOO_BIG_SIGNAL } from '../constants.js';
+import { MAX_RESPLIT_BUDGET, LOOM_TOO_BIG_SIGNAL, formatTooBigSignal } from '../constants.js';
 import type { PMAgent } from '../rerouteHandler.js';
 import type { Story } from '../../types.js';
 import type { WorkerEvent } from '../WorkerRunner.js';
@@ -118,7 +118,9 @@ describe('Supervisor reroute — LOOM_TOO_BIG signal (AC-1, AC-6)', () => {
           status: 'failed' as const,
           commitCount: 0,
           summary: 'too big',
-          logTail: `Did some work.\n${LOOM_TOO_BIG_SIGNAL} needs to be split\n`,
+          // Use the EXACT colon form the worker prompt instructs, proving the
+          // real emit format drives a reroute end-to-end (regression guard).
+          logTail: `Did some work.\n${formatTooBigSignal('needs to be split')}\n`,
           killReason: undefined,
         };
       }
@@ -479,5 +481,83 @@ describe('Supervisor reroute — sub-story ID allocation avoids collisions', () 
     // Allocated ids are fresh, schema-valid, and never reuse the existing 002.
     assert.deepStrictEqual(subIds, ['story-001-003', 'story-001-004'], 'allocated past the max existing number');
     assert.ok(!subIds.includes('story-001-002'), 'never collides with the existing story');
+  });
+});
+
+// ─── Restart durability: reroute state must survive a second run() ──────────────
+// The re-gate reproduced two restart bugs: taskFor minted a fresh 'pending' row for
+// the superseded original (re-dispatching + re-splitting it every restart), and a
+// failed injected sub-story was never retried (stranding the epic). These drive
+// run() TWICE against one DB — the exact scenario the single-run tests missed.
+
+describe('Supervisor reroute — restart durability', () => {
+  it('[Restart] superseded original is NOT re-dispatched or re-split on a second run', async () => {
+    // Two YAML stories so the epic stays in_progress after run 1 (the sibling fails).
+    const original = makeStory('story-001-001');
+    const sibling = makeStory('story-001-002');
+    seedEpic(repoDir, 'epic-001', [original, sibling]);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+    const pm = makePMAgent([makeStory('ph-a'), makeStory('ph-b')]);
+
+    // RUN 1: original re-splits; sibling fails (keeps the epic in_progress).
+    const worker1 = new MockWorkerRunner((a) => {
+      if (a.storyId === 'story-001-001') {
+        return { status: 'failed' as const, commitCount: 0, summary: 'big', logTail: `${formatTooBigSignal('split')}\n` };
+      }
+      if (a.storyId === 'story-001-002') {
+        return { status: 'failed' as const, commitCount: 0, summary: 'transient', logTail: '' };
+      }
+      return { status: 'done' as const, commitCount: 1, summary: 'done', logTail: '' };
+    });
+    await new Supervisor({ projectRoot: repoDir, db, worker: worker1, maxConcurrent: 3, lease: false, pmAgent: pm }).run(['epic-001']);
+
+    // RUN 2 (restart): a fresh Supervisor rebuilds the map. The superseded original
+    // must be absent; only the previously-failed sibling retries.
+    const run2Dispatched: string[] = [];
+    const worker2 = new MockWorkerRunner((a) => {
+      run2Dispatched.push(a.storyId);
+      return { status: 'done' as const, commitCount: 1, summary: 'done', logTail: '' };
+    });
+    const events2: WorkerEvent[] = [];
+    await new Supervisor({
+      projectRoot: repoDir, db, worker: worker2, maxConcurrent: 3, lease: false, pmAgent: pm,
+      onWorkerEvent: (e) => events2.push(e),
+    }).run(['epic-001']);
+
+    assert.ok(!run2Dispatched.includes('story-001-001'), 'superseded original must NOT be re-dispatched on restart');
+    assert.ok(!events2.some((e) => e.type === 'rerouted'), 'no second-generation reroute on restart');
+    const agents = new AgentStore(db);
+    assert.ok(agents.getSupersededBy('story-001-001', 'epic-001'), 'original still superseded');
+  });
+
+  it('[Restart] a failed injected sub-story is retried (not stranded) on a second run', async () => {
+    const original = makeStory('story-001-001');
+    seedEpic(repoDir, 'epic-001', [original]);
+    const db = openDatabase(path.join(repoDir, '.loom'));
+    const pm = makePMAgent([makeStory('ph-a'), makeStory('ph-b')]);
+
+    // RUN 1: original re-splits; the FIRST sub-story fails, the second succeeds.
+    let firstSubFailed = false;
+    const worker1 = new MockWorkerRunner((a) => {
+      if (a.storyId === 'story-001-001') {
+        return { status: 'failed' as const, commitCount: 0, summary: 'big', logTail: `${formatTooBigSignal('split')}\n` };
+      }
+      if (!firstSubFailed) { firstSubFailed = true; return { status: 'failed' as const, commitCount: 0, summary: 'transient', logTail: '' }; }
+      return { status: 'done' as const, commitCount: 1, summary: 'done', logTail: '' };
+    });
+    const r1 = await new Supervisor({ projectRoot: repoDir, db, worker: worker1, maxConcurrent: 1, lease: false, pmAgent: pm }).run(['epic-001']);
+    assert.strictEqual(r1.storiesDone, 1, 'one sub done in run 1');
+    assert.strictEqual(r1.storiesFailed, 1, 'one sub failed in run 1');
+
+    // RUN 2 (restart): the failed sub-story must retry and complete.
+    const run2Dispatched: string[] = [];
+    const worker2 = new MockWorkerRunner((a) => {
+      run2Dispatched.push(a.storyId);
+      return { status: 'done' as const, commitCount: 1, summary: 'done', logTail: '' };
+    });
+    const r2 = await new Supervisor({ projectRoot: repoDir, db, worker: worker2, maxConcurrent: 1, lease: false, pmAgent: pm }).run(['epic-001']);
+
+    assert.ok(run2Dispatched.length > 0, 'the failed sub-story was re-dispatched on restart (not stranded)');
+    assert.strictEqual(r2.storiesFailed, 0, 'no failures remain after the retry');
   });
 });

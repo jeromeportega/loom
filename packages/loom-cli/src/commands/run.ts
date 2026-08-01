@@ -443,12 +443,15 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     });
   }
 
-  // Runtime reroute-to-PM (epic-095 reroute rework). Best-effort like reviewerLlm:
-  // when the LLM client is constructible, the Supervisor gains a real decompose-
-  // capable PM so a LOOM_TOO_BIG / cap-killed story is re-decomposed into sub-stories
-  // instead of dying failed, and workers get the LOOM_TOO_BIG opt-out block. When
-  // construction fails (e.g. no session), reroute stays inactive and behavior is
-  // exactly pre-feature — no new policy knob gates it.
+  // Runtime reroute-to-PM (epic-095 reroute rework). The Supervisor gains a real
+  // decompose-capable PM so a LOOM_TOO_BIG / cap-killed story is re-decomposed into
+  // sub-stories instead of dying failed, and the implement prompt gains the
+  // LOOM_TOO_BIG opt-out block. Reroute is on in every real `loom run` — the client
+  // construction is a stateless CLI wrapper that does not throw; a genuinely absent
+  // session surfaces later (per-call), where the graceful sweep marks that one
+  // reroute failed. The try/catch is defensive only. No policy knob gates it; a
+  // caller that leaves pmAgent/rerouteEnabled unset (e.g. tests) gets pre-feature
+  // behavior with a byte-identical worker prompt.
   let reroutePmAgent: ReroutePMAgent | undefined;
   try {
     reroutePmAgent = new ReroutePMAgent({
