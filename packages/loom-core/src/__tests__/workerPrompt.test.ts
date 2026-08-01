@@ -178,6 +178,33 @@ describe('buildWorkerPrompt', () => {
     assert.ok(!prompt.includes('LOOM_SELF_ASSESSMENT'));
   });
 
+  // ── LOOM_TOO_BIG emission (runtime reroute, epic-095) ──────────────────────
+  it('appends the LOOM_TOO_BIG opt-out block when requestTooBigSignal is on', () => {
+    const prompt = buildWorkerPrompt(assignment(), { requestTooBigSignal: true });
+    assert.ok(prompt.includes('LOOM_TOO_BIG'), 'worker is told the signal');
+    assert.ok(prompt.includes('too big to do safely'));
+  });
+
+  it('is byte-identical to the baseline when requestTooBigSignal is off (bench discipline)', () => {
+    const baseline = buildWorkerPrompt(assignment());
+    const off = buildWorkerPrompt(assignment(), { requestTooBigSignal: false });
+    assert.equal(off, baseline);
+    assert.ok(!off.includes('LOOM_TOO_BIG'));
+  });
+
+  it('does NOT emit the too-big block on the verify phase even when on', () => {
+    const prompt = buildWorkerPrompt(assignment(), { requestTooBigSignal: true, phase: 'verify' });
+    assert.ok(!prompt.includes('LOOM_TOO_BIG'));
+  });
+
+  it('does NOT emit the too-big block on a revision pass even when on', () => {
+    const prompt = buildWorkerPrompt(assignment(), {
+      requestTooBigSignal: true,
+      revisionContext: 'fix the null check',
+    });
+    assert.ok(!prompt.includes('LOOM_TOO_BIG'));
+  });
+
   it('cursor pull-guidance hint instructs CLI usage, not MCP tool (story-002-005 AC#1)', () => {
     const a = assignment();
     const prompt = buildWorkerPrompt(a, { pullGuidanceHint: true });

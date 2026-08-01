@@ -52,6 +52,11 @@ export interface WorkerFactoryOptions {
   workerAuth?: 'inherit' | 'session';
   /** ADAPTIVE_COST — 'on' requests the worker self-assessment marker (B1). */
   adaptiveCost?: 'on' | 'off';
+  /**
+   * Runtime reroute active (epic-095): when true, the implement prompt gains the
+   * LOOM_TOO_BIG opt-out block. Set by run.ts iff a reroute PM was constructed.
+   */
+  rerouteEnabled?: boolean;
   /** loom state database — required for the Review Forge orchestrated path (FR-6). */
   db?: Database.Database;
   /** LLM client — presence gates the Review Forge orchestrated path (FR-7). */
@@ -152,6 +157,7 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
       phases: opts.phases,
       workerAuth: opts.workerAuth,
       adaptiveCost: opts.adaptiveCost,
+      rerouteEnabled: opts.rerouteEnabled,
       hungRequestMs: opts.hungRequestMs,
       reviewOrchestrator,
     });
@@ -172,6 +178,7 @@ export function createWorker(opts: WorkerFactoryOptions): WorkerRunner {
     handoff: opts.handoff,
     phases: opts.phases,
     adaptiveCost: opts.adaptiveCost,
+    rerouteEnabled: opts.rerouteEnabled,
     hungRequestMs: opts.hungRequestMs,
     reviewOrchestrator,
   });

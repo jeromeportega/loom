@@ -5,6 +5,10 @@ export { WorktreeJanitor } from './WorktreeJanitor.js';
 export type { OrphanWorktree, OrphanReason } from './WorktreeJanitor.js';
 export { Supervisor } from './Supervisor.js';
 export type { SupervisorOptions, SupervisorResult } from './Supervisor.js';
+export { ReroutePMAgent } from './ReroutePMAgent.js';
+export type { ReroutePMAgentOptions } from './ReroutePMAgent.js';
+// NB: the reroute PMAgent interface is intentionally NOT re-exported here — it
+// would collide with planner/PMAgent. Import it from './rerouteHandler.js' directly.
 export type {
   WorkerRunner,
   WorkerAssignment,

@@ -203,6 +203,12 @@ export interface CliWorkerOptions {
    */
   adaptiveCost?: 'on' | 'off';
   /**
+   * Runtime reroute active (epic-095): when true, the implement prompt gains the
+   * LOOM_TOO_BIG opt-out block so the worker can bail on an oversized story. Off ⇒
+   * prompt byte-identical to the bench baseline.
+   */
+  rerouteEnabled?: boolean;
+  /**
    * HUNG_REQUEST_SECONDS × 1000 — tighter kill bound applied
    * when the subprocess enters `requesting` state and no streamed response
    * arrives within this window. Forwarded to WorkerTimeoutGuard. 0 or undefined
@@ -259,6 +265,8 @@ export abstract class BaseCliWorker implements WorkerRunner {
   private phasesEnabled: boolean;
   /** When true, request + parse the worker self-assessment marker (B1). */
   private adaptiveCostEnabled: boolean;
+  /** When true, append the LOOM_TOO_BIG opt-out block to the implement prompt. */
+  private rerouteEnabled: boolean;
   /** When true, inject epic build-up and request + parse conventions marker. */
   private epicBuildupEnabled: boolean;
   /** When true, strip inherited Anthropic API auth from the worker spawn env. */
@@ -292,6 +300,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
     this.handoffEnabled = (opts.handoff ?? 'telemetry') !== 'off';
     this.phasesEnabled = (opts.phases ?? 'off') === 'on';
     this.adaptiveCostEnabled = (opts.adaptiveCost ?? 'off') === 'on';
+    this.rerouteEnabled = opts.rerouteEnabled ?? false;
     this.epicBuildupEnabled = (opts.epicBuildup ?? 'off') === 'on';
     this.sessionAuth = (opts.workerAuth ?? 'inherit') === 'session';
     this.hungRequestMs = opts.hungRequestMs;
@@ -542,6 +551,7 @@ export abstract class BaseCliWorker implements WorkerRunner {
       pullGuidanceHint: this.pullGuidanceHint(),
       includeHandoff: this.handoffEnabled,
       requestSelfAssessment: this.adaptiveCostEnabled,
+      requestTooBigSignal: this.rerouteEnabled,
       ...(this.phasesEnabled ? { phase: 'implement' as const } : {}),
     });
     // The single integration seam for epic-006's infra auto-retry: a detected

@@ -16,6 +16,7 @@ import {
   createLLMClient,
   CursorCliClient,
   modelFor,
+  ReroutePMAgent,
   createGlobalLimiter,
   EpicFinalizer,
   CodeReviewAgent,
@@ -442,6 +443,24 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     });
   }
 
+  // Runtime reroute-to-PM (epic-095 reroute rework). Best-effort like reviewerLlm:
+  // when the LLM client is constructible, the Supervisor gains a real decompose-
+  // capable PM so a LOOM_TOO_BIG / cap-killed story is re-decomposed into sub-stories
+  // instead of dying failed, and workers get the LOOM_TOO_BIG opt-out block. When
+  // construction fails (e.g. no session), reroute stays inactive and behavior is
+  // exactly pre-feature — no new policy knob gates it.
+  let reroutePmAgent: ReroutePMAgent | undefined;
+  try {
+    reroutePmAgent = new ReroutePMAgent({
+      llm: createLLMClient(policy.agents.llm_backend),
+      model: modelFor(policy, 'planning'),
+    });
+  } catch (err) {
+    reroutePmAgent = undefined;
+    console.log(`  (runtime reroute disabled: ${(err as Error).message})`);
+  }
+  const rerouteEnabled = reroutePmAgent !== undefined;
+
   // Build worker options as a named variable so TypeScript's structural typing
   // allows the epic-030 fields (hungRequestMs, declared by story-030-002 on
   // WorkerFactoryOptions) to pass through without excess-property errors.
@@ -465,6 +484,7 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     phases: PHASES,
     workerAuth: policy.agents.worker_auth,
     adaptiveCost: ADAPTIVE_COST,
+    rerouteEnabled,
     db,
     llm: reviewerLlm,
   };
@@ -476,6 +496,8 @@ export async function runRun(epicIds: string[], opts: RunOptions = {}): Promise<
     projectRoot,
     db,
     worker: createWorker(workerOpts),
+    // Runtime reroute PM (undefined ⇒ reroute inactive; pre-feature behavior).
+    pmAgent: reroutePmAgent,
     maxConcurrent: policy.agents.max_concurrent,
     skillStore,
     skillGenerator,
