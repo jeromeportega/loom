@@ -433,32 +433,35 @@ export class PolicyEngine {
    */
   private checkWrapperPrograms(raw: string): PolicyCheckResult {
     const cmd = parseCommand(raw);
-    // Wrappers blocked at the HEAD (argv[0], by basename so `/usr/bin/env` counts).
-    // `env` lives here only — it is a common word deeper in a command line
-    // (`npm run env`, `make env`), so it is NOT matched at other positions.
-    const headWrappers = new Set(['bash', 'sh', 'zsh', 'ash', 'dash', 'eval', 'exec', 'env', 'coproc']);
-    if (headWrappers.has(path.basename(cmd.program))) {
+    // `env` runs an arbitrary command but is a common word deeper in a line
+    // (`npm run env`, `make env`), so match it at the HEAD only (by basename, so
+    // `/usr/bin/env` counts).
+    if (path.basename(cmd.program) === 'env') {
       return {
         allowed: false,
         rule: 'shell.wrapper_program',
-        reason: `"${path.basename(cmd.program)}" wraps an arbitrary command — invoke the target program directly so its arguments can be policy-checked`,
+        reason: `"env" wraps an arbitrary command — invoke the target program directly so its arguments can be policy-checked`,
       };
     }
-    // Shells that run an arbitrary UNPARSED string via `-c`. An exec-prefix runner
-    // (`nice`/`timeout 5`/`sudo`/`env`) shifts these off argv[0]
-    // (`nice bash -c '…'`, `timeout -s KILL 9 bash -c '…'`, `env X=1 sh -c '…'`)
-    // and would otherwise reopen the ENTIRE guard (the payload is a quoted, never
-    // parsed token). Match by basename ANYWHERE — no runner allow-list, no
-    // option-arity guessing. Fail-closed: a bare shell name as an argument
-    // (`which bash`) is also blocked; rare, and a false negative here defeats
-    // every downstream check.
-    const shellWrappers = new Set(['bash', 'sh', 'zsh', 'ash', 'dash', 'eval', 'exec', 'coproc']);
-    const hit = cmd.argv.findIndex((t, i) => i > 0 && shellWrappers.has(path.basename(t)));
+    // Shells / eval that run an arbitrary UNPARSED payload (usually via `-c`).
+    // Match by basename ANYWHERE — argv[0], OR shifted behind an exec-prefix runner
+    // (`nice bash -c '…'`, `timeout -s KILL 9 ksh -c '…'`, `env X=1 sh -c '…'`), OR
+    // by path (`/bin/bash -c`). Otherwise a shifted wrapper reopens the ENTIRE
+    // guard (the payload is a quoted, never-parsed token). Arity-free, no runner
+    // allow-list. Covers the -c-capable shells (bash/sh/zsh/ash/dash/ksh/csh/…),
+    // not just bash. Fail-closed: a bare shell name as an argument (`which bash`,
+    // `npm i fish`) is also blocked — rare, and a false negative here defeats every
+    // downstream check.
+    const SHELL_WRAPPERS = new Set([
+      'bash', 'sh', 'zsh', 'ash', 'dash', 'ksh', 'rksh', 'mksh', 'pdksh',
+      'csh', 'tcsh', 'fish', 'rbash', 'eval', 'exec', 'coproc',
+    ]);
+    const hit = cmd.argv.findIndex((t) => SHELL_WRAPPERS.has(path.basename(t)));
     if (hit !== -1) {
       return {
         allowed: false,
         rule: 'shell.wrapper_program',
-        reason: `"${path.basename(cmd.argv[hit])}" (a shell/eval wrapper) may not appear in a command — a wrapper shifted behind a prefix runner would run an unchecked payload; invoke the target program directly`,
+        reason: `"${path.basename(cmd.argv[hit])}" (a shell/eval wrapper) may not appear in a command — a wrapper (even shifted behind a prefix runner) would run an unchecked payload; invoke the target program directly`,
       };
     }
     return { allowed: true };

@@ -333,6 +333,13 @@ describe('PolicyEngine — wrapper programs', () => {
     "nice env sh -c 'x'",
     '/bin/bash -c "x"',                 // full-path (basename match)
     'xargs sh -c "x"',
+    // -c-capable shells beyond bash/sh must be covered too (direct + shifted).
+    "ksh -c 'x'",
+    "csh -c 'x'",
+    "tcsh -c 'x'",
+    "fish -c 'x'",
+    "nice ksh -c 'x'",
+    'timeout 5 fish -c "x"',
   ]) {
     it(`blocks a prefix-shifted/pathed shell wrapper: ${cmd}`, () => {
       const r = defaultEngine.check(cmd);
