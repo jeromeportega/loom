@@ -44,6 +44,30 @@ function firstFetchToolIndex(argv: string[], patternIndex: number): number {
   return Infinity;
 }
 
+/**
+ * If `program` (matched by BASENAME, so `/opt/homebrew/bin/git` and `./git` both
+ * count) appears anywhere in argv, return a ParsedCommand rooted at that token —
+ * so a name-keyed checker (checkGit/checkRm) still fires when the invocation is
+ * given by path or shifted by an exec-prefix wrapper (`nice git …`,
+ * `timeout 5 git …`). Returns null when the program is absent. Arity-free: the
+ * program is found wherever it sits; no runner allow-list or option parsing.
+ * Fields mirror parseCommand() (subcommand/flags/args over the tokens after it),
+ * with `program` normalized to the bare name.
+ */
+function effectiveCommandFor(argv: string[], program: string): ParsedCommand | null {
+  const idx = argv.findIndex((t) => path.basename(t) === program);
+  if (idx === -1) return null;
+  const sub = argv.slice(idx);
+  const rest = sub.slice(1);
+  return {
+    argv: sub,
+    program,
+    subcommand: rest.find((t) => !t.startsWith('-')) ?? null,
+    flags: rest.filter((t) => t.startsWith('-')),
+    args: rest.filter((t) => !t.startsWith('-')),
+  };
+}
+
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
 export interface WorktreeContext {
   /** Agent's own worktree root — canonicalized absolute path, no trailing slash. */
@@ -175,13 +199,21 @@ export class PolicyEngine {
       };
     }
 
-    if (cmd.program === 'git') {
-      const gitResult = this.checkGit(cmd, rawCommand);
+    // Detect git/rm by BASENAME at any argv position, not just cmd.program, so a
+    // path (`/opt/homebrew/bin/git`, `./git`) or an exec-prefix wrapper
+    // (`nice git …`, `timeout 5 git …`) can't shift the program token off the
+    // checked program and skip checkGit/checkRm. Arity-free — mirrors the
+    // position-based fetch-tool detection; no runner allow-list or per-option
+    // parsing. (`bash -c`/`eval`/`env`/`coproc` are already blocked upstream.)
+    const gitCmd = effectiveCommandFor(cmd.argv, 'git');
+    if (gitCmd) {
+      const gitResult = this.checkGit(gitCmd, rawCommand);
       if (!gitResult.allowed) return gitResult;
     }
 
-    if (cmd.program === 'rm') {
-      const rmResult = this.checkRm(cmd, rawCommand);
+    const rmCmd = effectiveCommandFor(cmd.argv, 'rm');
+    if (rmCmd) {
+      const rmResult = this.checkRm(rmCmd, rawCommand);
       if (!rmResult.allowed) return rmResult;
     }
 
@@ -360,6 +392,12 @@ export class PolicyEngine {
       // string, so a literal `<(` inside a quoted operand is unaffected. Legit
       // uses (`diff <(a) <(b)`) must be issued as separate, checkable commands.
       [/[<>]\(/, 'process substitution'],
+      // A bare subshell `( … )` runs its contents in a child shell — `(git push
+      // --force)` would otherwise pass (program parses as "(git", so checkGit
+      // never fires). Blocked on the quote-stripped string; escaped `\(` (e.g.
+      // `find . \( -name a … \)`) and quoted parens collapse to placeholders
+      // first, so real grouping is caught while legit paren use is not.
+      [/[()]/, 'subshell / command grouping'],
       [/(?<!&)&(?!&)/, '& backgrounding'],
       // A raw newline/CR is a command separator too — an UNQUOTED newline chains a
       // second command past every per-command check. stripQuoted() runs above, so a
@@ -386,7 +424,7 @@ export class PolicyEngine {
    */
   private checkWrapperPrograms(raw: string): PolicyCheckResult {
     const cmd = parseCommand(raw);
-    const wrappers = new Set(['bash', 'sh', 'zsh', 'ash', 'dash', 'eval', 'exec', 'env']);
+    const wrappers = new Set(['bash', 'sh', 'zsh', 'ash', 'dash', 'eval', 'exec', 'env', 'coproc']);
     if (wrappers.has(cmd.program)) {
       // `env VAR=value cmd` is benign if cmd itself is benign, but parsing that
       // properly is out of scope for MVP. Block all wrapper programs uniformly

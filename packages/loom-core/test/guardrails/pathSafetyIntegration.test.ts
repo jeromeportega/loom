@@ -297,3 +297,61 @@ describe('PolicyEngine — command substitution inside DOUBLE quotes is blocked 
     });
   }
 });
+
+describe('PolicyEngine — bare subshell grouping is blocked (regression guard)', () => {
+  for (const cmd of ['(git push --force origin main)', '( git push --force origin main )', '(rm -rf /etc)']) {
+    it(`blocks subshell: ${cmd}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.equal(r.allowed, false, `must be blocked: ${cmd}`);
+      assert.ok('rule' in r && r.rule === 'shell.metacharacters');
+    });
+  }
+  for (const cmd of [
+    'git commit -m "fix (bug #42)"',       // quoted parens
+    'find . \\( -name a -o -name b \\)',   // escaped parens
+    'grep -E "foo(bar|baz)" src',          // quoted regex parens
+  ]) {
+    it(`does NOT false-positive on legit parens: ${cmd}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.ok(r.allowed, `must pass: ${cmd} -> ${JSON.stringify(r)}`);
+    });
+  }
+});
+
+describe('PolicyEngine — git/rm detected by basename past wrappers/paths (regression guard)', () => {
+  // checkGit/checkRm key on the program NAME; a path or exec-prefix wrapper must
+  // not shift the token off git/rm and skip the check (a real force-push bypass).
+  for (const cmd of [
+    'nice git push --force origin main',
+    'timeout 5 git push --force origin main',
+    'timeout -s KILL 9 git push --force origin main', // option-ARG form (arity-free)
+    'nohup git push --force origin main',
+    'command git push --force origin main',
+    '/opt/homebrew/bin/git push --force origin main',
+    './git push --force origin main',
+    'bin/git push --force origin main',
+  ]) {
+    it(`blocks wrapped/pathed force-push: ${cmd}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.equal(r.allowed, false, `must be blocked: ${cmd}`);
+    });
+  }
+
+  it('nice-wrapped rm of a protected path is blocked', () => {
+    const r = freshEngine().check('nice rm -rf /etc', makeCtx(createDatabase(':memory:')));
+    assert.equal(r.allowed, false);
+  });
+
+  it('coproc is blocked as a wrapper program', () => {
+    const r = freshEngine().check('coproc git push --force origin main', makeCtx(createDatabase(':memory:')));
+    assert.equal(r.allowed, false);
+  });
+
+  // Legit wrapped commands with NO git/rm token must not be falsely dispatched.
+  for (const cmd of ['timeout 30 npm test', 'nice npm run build', 'nohup node server.js']) {
+    it(`does NOT false-dispatch a non-git/rm wrapped command: ${cmd}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.ok(r.allowed, `must pass: ${cmd} -> ${JSON.stringify(r)}`);
+    });
+  }
+});
