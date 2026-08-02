@@ -104,11 +104,33 @@ describe('PolicyEngine — encoding guard integration (story-098-002)', () => {
   it('audit row NOT written when ctx is omitted — guard still denies', () => {
     const engine = freshEngine();
 
-    // No ctx — denial must still fire without crashing (the `?.` guard in
-    // PolicyEngine prevents a TypeError on undefined ctx.audit.record).
+    // No ctx — denial must still fire without crashing (the `if (ctx !== undefined)`
+    // guard in PolicyEngine skips the audit call when ctx is omitted).
     const r = engine.check('cat %2e%2e/secret');
     assert.equal(r.allowed, false);
     assert.ok('rule' in r && r.rule === 'path.unsafe_encoding');
+  });
+
+  it('boolean short flag does not cause the next adversarial token to be skipped', () => {
+    const localDb = createDatabase(':memory:');
+    const ctx = makeCtx(localDb);
+    const engine = freshEngine();
+
+    // `-n` is a boolean short flag for `cat` (no value argument). An earlier
+    // skipNextAsOptValue heuristic incorrectly treated it as value-consuming,
+    // causing `%2e%2e%2fsecret` to be silently skipped — that is the bypass
+    // this test guards against.
+    const r = engine.check('cat -n %2e%2e%2fsecret', ctx);
+    assert.equal(r.allowed, false, 'adversarial token after boolean short flag must be denied');
+    assert.ok(
+      'rule' in r && r.rule === 'path.unsafe_encoding',
+      `expected path.unsafe_encoding, got: ${'rule' in r ? r.rule : 'none'}`,
+    );
+
+    const rows = queryAuditRows(localDb, 'guard_blocked');
+    assert.equal(rows.length, 1, 'one audit row must be written');
+    const detail = JSON.parse(rows[0].detail ?? '{}');
+    assert.equal(detail.token, '%2e%2e%2fsecret', 'audit row must record the adversarial token');
   });
 
   it('tokens after -- end-of-options marker are checked even when starting with -', () => {
