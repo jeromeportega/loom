@@ -66,7 +66,11 @@ function shellSplit(input: string): string[] {
       continue;
     }
 
-    if (ch === ' ' || ch === '\t') {
+    // Newline/CR are word separators too (defense in depth: the metacharacter
+    // check in check() rejects unquoted newlines before this runs, but other
+    // entry points — e.g. read-scope — parse without that pre-check, so a raw
+    // newline must not glue two tokens into one and mask the real program name).
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
       if (current.length > 0) {
         tokens.push(current);
         current = '';

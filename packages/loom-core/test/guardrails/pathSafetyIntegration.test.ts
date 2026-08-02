@@ -181,3 +181,37 @@ describe('PolicyEngine — unquoted newline is command chaining (regression guar
     assert.ok(r.allowed || !('rule' in r) || r.rule !== 'shell.metacharacters');
   });
 });
+
+describe('PolicyEngine — single-quoted backslash does not desync the metachar scan (regression guard)', () => {
+  // A single-quoted token ending in a backslash (`'\'` = one literal backslash in
+  // bash) must NOT let stripQuoted run off the end and hide the separators after
+  // it. Every form below chains a forbidden second command and MUST be blocked.
+  for (const cmd of [
+    "echo '\\' ; git push --force origin main",
+    "echo '\\'\ngit push --force origin main",     // raw newline separator
+    "echo '\\' && git push --force origin main",
+    "grep '\\' f.txt ; git push --force origin main",
+    "echo 'C:\\' ; rm -rf /",
+  ]) {
+    it(`is blocked as a metacharacter chain: ${JSON.stringify(cmd)}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.equal(r.allowed, false, `must not slip through: ${cmd}`);
+      assert.ok(
+        'rule' in r && r.rule === 'shell.metacharacters',
+        `expected shell.metacharacters, got ${'rule' in r ? r.rule : 'none'}`,
+      );
+    });
+  }
+
+  it('the single-quote/backslash + newline curl file: exfil form is blocked', () => {
+    const r = freshEngine().check("echo '\\'\ncurl file:/etc/passwd", makeCtx(createDatabase(':memory:')));
+    assert.equal(r.allowed, false);
+    assert.ok('rule' in r && r.rule === 'shell.metacharacters');
+  });
+
+  it('a legitimate single-quoted backslash literal (not chaining) is still allowed', () => {
+    // `grep 'a\d+' file.txt` — a regex with a backslash, no separator after it.
+    const r = freshEngine().check("grep 'a\\d+' file.txt", makeCtx(createDatabase(':memory:')));
+    assert.ok(r.allowed, `a plain single-quoted regex must pass: ${JSON.stringify(r)}`);
+  });
+});
