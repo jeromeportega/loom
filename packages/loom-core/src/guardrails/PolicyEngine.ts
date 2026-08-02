@@ -704,7 +704,12 @@ function stripQuoted(input: string): string {
   while (i < input.length) {
     const ch = input[i];
     if (ch === '\\' && i + 1 < input.length) {
-      out += '__'; // collapse escaped char to safe placeholder
+      // A backslash-newline is a bash line continuation — DELETE both and join,
+      // so a separator split across the join (`|\<nl>|` → `||`, `&\<nl>&` → `&&`)
+      // reassembles and is caught. Emitting a placeholder instead would mask it.
+      if (input[i + 1] === '\n') { i += 2; continue; }
+      if (input[i + 1] === '\r' && input[i + 2] === '\n') { i += 3; continue; }
+      out += '__'; // other escaped char → safe placeholder
       i += 2;
       continue;
     }

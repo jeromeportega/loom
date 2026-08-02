@@ -38,6 +38,12 @@ function shellSplit(input: string): string[] {
     const ch = input[i];
 
     if (ch === '\\' && i + 1 < input.length) {
+      // bash deletes a backslash-newline (line continuation) and JOINS the
+      // surrounding text into one token — it is NOT a literal char. Embedding the
+      // newline here would split `gi\<nl>t` into a bogus token and mask the real
+      // program name from every downstream check.
+      if (input[i + 1] === '\n') { i += 2; continue; }
+      if (input[i + 1] === '\r' && input[i + 2] === '\n') { i += 3; continue; }
       current += input[++i];
       i++;
       continue;
@@ -74,6 +80,9 @@ function shellSplit(input: string): string[] {
       i++;
       while (i < input.length && input[i] !== '"') {
         if (input[i] === '\\' && i + 1 < input.length) {
+          // Backslash-newline is a line continuation inside "…" too (deleted+joined).
+          if (input[i + 1] === '\n') { i += 2; continue; }
+          if (input[i + 1] === '\r' && input[i + 2] === '\n') { i += 3; continue; }
           current += input[++i];
           i++;
         } else {

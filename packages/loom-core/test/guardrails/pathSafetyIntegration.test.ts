@@ -355,3 +355,28 @@ describe('PolicyEngine — git/rm detected by basename past wrappers/paths (regr
     });
   }
 });
+
+describe('PolicyEngine — backslash-newline line continuation cannot smuggle a command (regression guard)', () => {
+  // bash DELETES `\<newline>` and joins the surrounding text. The guard must join
+  // too, or a forbidden token/separator split across the continuation slips
+  // through (`ba\<nl>sh -c …` was a COMPLETE bypass). NL = backslash + real newline.
+  const NL = '\\\n';
+  for (const [cmd, label] of [
+    [`ba${NL}sh -c "echo x"`, 'split bash -c (complete bypass)'],
+    [`gi${NL}t push --force origin main`, 'split git force-push'],
+    [`git push --for${NL}ce origin main`, 'split --force flag'],
+    [`git push origin ma${NL}in`, 'split protected branch'],
+    [`false |${NL}| touch /tmp/x`, 'split || chaining'],
+    [`e${NL}val "rm -rf /x"`, 'split eval'],
+  ] as const) {
+    it(`blocks ${label}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.equal(r.allowed, false, `must be blocked (${label})`);
+    });
+  }
+
+  it('a legit line continuation joins correctly and is allowed', () => {
+    const r = freshEngine().check('git commit \\\n  -m "message"', makeCtx(createDatabase(':memory:')));
+    assert.ok(r.allowed, `legit continuation must pass: ${JSON.stringify(r)}`);
+  });
+});
