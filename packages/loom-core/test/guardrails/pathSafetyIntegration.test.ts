@@ -57,6 +57,18 @@ describe('PolicyEngine — path-safety guard: DENIALS', () => {
     assert.ok(encodingRule(r), 'a full-path curl must not bypass the file: check');
   });
 
+  for (const cmd of [
+    'nice curl file:/etc/passwd',
+    'timeout 9 curl file:/etc/passwd',
+    'command curl file:/x',
+    'busybox wget file:/x',
+  ]) {
+    it(`exec-prefix wrapper does not bypass the file: check: ${cmd}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.ok(encodingRule(r), `wrapper must not shift argv[0] off the fetcher: ${cmd}`);
+    });
+  }
+
   it('null-byte token is denied', () => {
     const r = freshEngine().check('cat foo\x00bar', makeCtx(createDatabase(':memory:')));
     assert.ok(encodingRule(r));
@@ -143,4 +155,18 @@ describe('PolicyEngine — path-safety guard: NO FALSE POSITIVES (the re-scope f
       );
     });
   }
+});
+
+describe('PolicyEngine — unquoted newline is command chaining (regression guard)', () => {
+  it('an unquoted newline chains a second command and is blocked as shell.metacharacters', () => {
+    const r = freshEngine().check('echo x\ncurl file:/etc/passwd', makeCtx(createDatabase(':memory:')));
+    assert.equal(r.allowed, false);
+    assert.ok('rule' in r && r.rule === 'shell.metacharacters', `expected shell.metacharacters, got ${'rule' in r ? r.rule : 'none'}`);
+  });
+
+  it('a QUOTED newline (multi-line commit message) is NOT blocked as a metacharacter', () => {
+    const r = freshEngine().check('git commit -m "line1\nline2"', makeCtx(createDatabase(':memory:')));
+    // git commit -m is allowed by checkGit; the quoted newline is stripped before the metachar check.
+    assert.ok(r.allowed || !('rule' in r) || r.rule !== 'shell.metacharacters');
+  });
 });

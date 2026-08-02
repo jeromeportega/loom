@@ -22,6 +22,35 @@ const PATH_SAFETY_PATTERN_FIRST = new Set(['grep', 'rg', 'egrep', 'fgrep', 'awk'
 // treated as unsafe; for every other program `file:x` is a literal filename.
 const PATH_SAFETY_FETCH_TOOLS = new Set(['curl', 'wget']);
 
+// Exec-prefix runners: they run a following command with parseable args (unlike
+// bash/eval, which the wrapper guard blocks). Resolving the EFFECTIVE program past
+// them stops `nice curl file:/x` / `timeout 9 curl …` / `busybox wget …` from
+// evading the file: check by shifting argv[0] off the real fetcher.
+const PATH_SAFETY_PREFIX_RUNNERS = new Set([
+  'command', 'nice', 'ionice', 'taskset', 'timeout', 'nohup', 'setsid', 'stdbuf',
+  'busybox', 'xargs', 'time', 'proxychains', 'proxychains4', 'torsocks',
+]);
+
+/**
+ * The effective program name (basename) after skipping leading exec-prefix runners
+ * and their own options/args (flags, a bare-number `timeout` duration, VAR=value).
+ * Errs toward finding the wrapped program so a fetcher can't hide behind a runner.
+ */
+function effectiveProgram(argv: string[]): string {
+  let i = 0;
+  while (i < argv.length - 1) {
+    if (!PATH_SAFETY_PREFIX_RUNNERS.has(path.basename(argv[i]))) break;
+    i++;
+    while (
+      i < argv.length - 1 &&
+      (argv[i].startsWith('-') || /^\d/.test(argv[i]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i]))
+    ) {
+      i++;
+    }
+  }
+  return path.basename(argv[i] ?? argv[0] ?? '');
+}
+
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
 export interface WorktreeContext {
   /** Agent's own worktree root — canonicalized absolute path, no trailing slash. */
@@ -124,9 +153,10 @@ export class PolicyEngine {
     // `./file:x`), so a `file:`-scheme finding is a false positive there (e.g.
     // `git commit -m "file:// is the scheme"`). null-byte / control-char findings
     // apply to every program.
-    // Match on the basename so a full-path invocation (`/usr/bin/curl file:/x`)
-    // can't bypass the file: check — cmd.program is the raw argv[0].
-    const isFetchTool = PATH_SAFETY_FETCH_TOOLS.has(path.basename(cmd.program));
+    // Match on the EFFECTIVE program (basename, past exec-prefix runners) so
+    // neither a full-path invocation (`/usr/bin/curl file:/x`) nor a wrapper
+    // (`nice curl file:/x`) can bypass the file: check.
+    const isFetchTool = PATH_SAFETY_FETCH_TOOLS.has(effectiveProgram(cmd.argv));
     for (const token of pathTokens) {
       const pathResult = checkPathSafety(token);
       if (pathResult.safe) continue;
@@ -327,6 +357,11 @@ export class PolicyEngine {
       [/`/, 'backtick command substitution'],
       [/\$\(/, '$() command substitution'],
       [/(?<!&)&(?!&)/, '& backgrounding'],
+      // A raw newline/CR is a command separator too — an UNQUOTED newline chains a
+      // second command past every per-command check. stripQuoted() runs above, so a
+      // quoted multi-line operand (e.g. a `git commit -m "line1<newline>line2"`
+      // message) is removed before this test and stays allowed.
+      [/[\n\r]/, 'newline command chaining'],
     ];
 
     for (const [re, label] of blockers) {
