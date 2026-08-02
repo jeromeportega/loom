@@ -215,3 +215,52 @@ describe('PolicyEngine — single-quoted backslash does not desync the metachar 
     assert.ok(r.allowed, `a plain single-quoted regex must pass: ${JSON.stringify(r)}`);
   });
 });
+
+describe('PolicyEngine — ANSI-C $\'...\' quoting does not desync the metachar scan (regression guard)', () => {
+  // `$'\''` is ONE literal-quote word in bash (backslash escapes the quote), not
+  // three single-quotes. The guard must model $'...' or the stray quote flips
+  // parity and hides every separator after it. Each separator class below must be
+  // blocked. (`$'\''` is written "$'\\''" in a JS double-quoted string.)
+  for (const [cmd, label] of [
+    ["$'\\''; git push --force origin main", 'semicolon'],
+    ["echo $'\\'' && git push --force origin main", 'and-and'],
+    ["echo $'\\'' || rm -rf /home/user/data", 'or-or'],
+    ["echo $'\\'' & git push --force origin main", 'background-ampersand'],
+    ["echo $'\\''`git push --force origin main`", 'backtick'],
+    ["echo $'\\''$(git push --force origin main)", 'dollar-paren'],
+    ["echo $'\\''\ngit push --force origin main", 'raw-newline'],
+    ["echo $'\\''\ncurl file:/etc/passwd", 'newline-curl-file-exfil'],
+  ] as const) {
+    it(`blocks the $'...' desync via ${label}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.equal(r.allowed, false, `must not slip through (${label}): ${JSON.stringify(cmd)}`);
+    });
+  }
+
+  it("a legitimate ANSI-C string in a commit message (git commit -m $'a\\nb') is still allowed", () => {
+    const r = freshEngine().check("git commit -m $'Title\\n\\nBody'", makeCtx(createDatabase(':memory:')));
+    assert.ok(r.allowed, `ANSI-C commit message must pass: ${JSON.stringify(r)}`);
+  });
+});
+
+describe('PolicyEngine — process substitution is blocked like $() (regression guard)', () => {
+  // `<(cmd)` / `>(cmd)` run an embedded command that would never be policy-checked
+  // — same threat as `$()`/backtick, which are already blocked.
+  for (const cmd of [
+    'cat <(curl file:/etc/passwd)',
+    'cat <(git push --force origin main)',
+    'tee >(git push --force origin main)',
+    'diff <(sort a.txt) <(sort b.txt)', // legit-looking, but still embeds unchecked commands
+  ]) {
+    it(`blocks process substitution: ${cmd}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.equal(r.allowed, false, `must be blocked: ${cmd}`);
+      assert.ok('rule' in r && r.rule === 'shell.metacharacters');
+    });
+  }
+
+  it('a quoted `<(` inside an operand is NOT a false positive', () => {
+    const r = freshEngine().check('git commit -m "use <(subshell) syntax"', makeCtx(createDatabase(':memory:')));
+    assert.ok(r.allowed, `quoted <( must pass: ${JSON.stringify(r)}`);
+  });
+});

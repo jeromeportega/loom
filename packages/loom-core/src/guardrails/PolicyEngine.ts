@@ -354,6 +354,12 @@ export class PolicyEngine {
       [/\|\|/, '|| command chaining'],
       [/`/, 'backtick command substitution'],
       [/\$\(/, '$() command substitution'],
+      // Process substitution `<(cmd)` / `>(cmd)` runs an embedded command exactly
+      // like `$()`/backtick — it must be blocked for the same reason (the inner
+      // command would never be policy-checked). Matched on the quote-stripped
+      // string, so a literal `<(` inside a quoted operand is unaffected. Legit
+      // uses (`diff <(a) <(b)`) must be issued as separate, checkable commands.
+      [/[<>]\(/, 'process substitution'],
       [/(?<!&)&(?!&)/, '& backgrounding'],
       // A raw newline/CR is a command separator too — an UNQUOTED newline chains a
       // second command past every per-command check. stripQuoted() runs above, so a
@@ -662,6 +668,23 @@ function stripQuoted(input: string): string {
     if (ch === '\\' && i + 1 < input.length) {
       out += '__'; // collapse escaped char to safe placeholder
       i += 2;
+      continue;
+    }
+    // ANSI-C quoting $'...': bash processes backslash escapes inside it, and the
+    // string ends at the first UNESCAPED "'" — so `$'\''` is ONE word (a literal
+    // quote), NOT three single-quotes. Model it explicitly; otherwise the stray
+    // "'" desyncs the plain-quote scan below and blanks the rest of the line,
+    // hiding separators after it (same failure class as a single-quoted backslash,
+    // e.g. `$'\'' ; git push --force`). An escaped `\$'…'` never reaches here — the
+    // backslash branch above consumes it (bash: literal `$` + a plain quote).
+    if (ch === '$' && input[i + 1] === "'") {
+      i += 2; // consume `$` and the opening `'`
+      while (i < input.length && input[i] !== "'") {
+        if (input[i] === '\\' && i + 1 < input.length) i++; // skip the escaped char (incl. \')
+        i++;
+      }
+      i++; // closing `'`
+      out += '""'; // one word — no separators leak
       continue;
     }
     if (ch === "'" || ch === '"') {

@@ -43,6 +43,24 @@ function shellSplit(input: string): string[] {
       continue;
     }
 
+    // ANSI-C quoting $'...' — one word; backslash escapes the next char and the
+    // string ends at the first UNESCAPED "'". Mirror stripQuoted() so a stray "'"
+    // can't desync the split and mis-identify the program for the git/rm checks.
+    // (An escaped `\$'…'` is consumed by the backslash branch above.)
+    if (ch === '$' && input[i + 1] === "'") {
+      i += 2; // consume `$` and the opening `'`
+      while (i < input.length && input[i] !== "'") {
+        if (input[i] === '\\' && i + 1 < input.length) {
+          current += input[i + 1];
+          i += 2;
+        } else {
+          current += input[i++];
+        }
+      }
+      i++; // closing `'`
+      continue;
+    }
+
     if (ch === "'") {
       i++;
       while (i < input.length && input[i] !== "'") {
