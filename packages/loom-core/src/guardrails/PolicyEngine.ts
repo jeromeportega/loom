@@ -9,6 +9,7 @@ import { listWorkspaceRoots } from '../retrieval/ManifestResolver.js';
 import { CROSS_REPO_RULES } from '../retrieval/types.js';
 import type { AuditLog } from '../state/AuditLog.js';
 import { CROSS_REPO_ENABLED } from '../orchestrator/constants.js';
+import { checkPathSafety } from './pathSafety.js';
 
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
 export interface WorktreeContext {
@@ -76,6 +77,27 @@ export class PolicyEngine {
     if (!wrapperResult.allowed) return wrapperResult;
 
     const cmd = parseCommand(rawCommand);
+
+    const pathTokens = cmd.argv.slice(1).filter(t => !t.startsWith('-'));
+    for (const token of pathTokens) {
+      const pathResult = checkPathSafety(token);
+      if (!pathResult.safe) {
+        if (ctx !== undefined) {
+          ctx.audit.record({
+            action: 'guard_blocked',
+            command: rawCommand,
+            allowed: false,
+            policy_rule: 'path.unsafe_encoding',
+            detail: { token, rule: pathResult.rule },
+          });
+        }
+        return {
+          allowed: false,
+          rule: 'path.unsafe_encoding',
+          reason: pathResult.reason,
+        };
+      }
+    }
 
     if (cmd.program === 'git') {
       const gitResult = this.checkGit(cmd, rawCommand);
