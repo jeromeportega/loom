@@ -5,7 +5,7 @@
  * Uses a real AuditLog over an in-memory SQLite database so both the return
  * value and the persisted audit row are exercised in every relevant case.
  */
-import { describe, it, before } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createDatabase } from '../../src/state/Database.js';
@@ -45,39 +45,46 @@ function makeCtx(db: Database.Database): WorktreeContext {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('PolicyEngine — encoding guard integration (story-098-002)', () => {
-  let db: Database.Database;
-
-  before(() => {
-    db = createDatabase(':memory:');
-  });
-
   it('percent-encoded dot-traversal is denied with rule path.unsafe_encoding', () => {
+    const localDb = createDatabase(':memory:');
     const engine = freshEngine();
-    const r = engine.check('cat %2e%2e%2fsecret', makeCtx(db));
+    const r = engine.check('cat %2e%2e%2fsecret', makeCtx(localDb));
     assert.equal(r.allowed, false, 'must be denied');
     assert.ok('rule' in r && r.rule === 'path.unsafe_encoding', `unexpected rule: ${'rule' in r ? r.rule : 'none'}`);
     assert.ok('reason' in r && typeof r.reason === 'string' && r.reason.length > 0, 'reason must be non-empty string');
   });
 
   it('encoded-separator variant is denied', () => {
+    const localDb = createDatabase(':memory:');
     const engine = freshEngine();
-    const r = engine.check('cat ..%2fsecret', makeCtx(db));
+    const r = engine.check('cat ..%2fsecret', makeCtx(localDb));
     assert.equal(r.allowed, false);
     assert.ok('rule' in r && r.rule === 'path.unsafe_encoding');
   });
 
   it('file-URI scheme is denied', () => {
+    const localDb = createDatabase(':memory:');
     const engine = freshEngine();
-    const r = engine.check('cat file:///etc/passwd', makeCtx(db));
+    const r = engine.check('cat file:///etc/passwd', makeCtx(localDb));
     assert.equal(r.allowed, false);
     assert.ok('rule' in r && r.rule === 'path.unsafe_encoding');
   });
 
   it('null-byte variant is denied', () => {
+    const localDb = createDatabase(':memory:');
     const engine = freshEngine();
-    const r = engine.check('cat foo\x00bar', makeCtx(db));
+    const r = engine.check('cat foo\x00bar', makeCtx(localDb));
     assert.equal(r.allowed, false);
     assert.ok('rule' in r && r.rule === 'path.unsafe_encoding');
+  });
+
+  it('uppercase percent-encoding is denied (case-insensitive matching)', () => {
+    const localDb = createDatabase(':memory:');
+    const engine = freshEngine();
+    // RFC 3986 requires percent-encoding to be case-insensitive (%2E and %2e are equivalent).
+    const r = engine.check('cat %2E%2E%2Fsecret', makeCtx(localDb));
+    assert.equal(r.allowed, false, 'uppercase percent-encoding must be denied');
+    assert.ok('rule' in r && r.rule === 'path.unsafe_encoding', `expected path.unsafe_encoding, got: ${'rule' in r ? r.rule : 'none'}`);
   });
 
   it('audit row is written with correct fields on denial', () => {

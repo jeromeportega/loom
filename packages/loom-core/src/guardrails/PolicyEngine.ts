@@ -11,6 +11,12 @@ import type { AuditLog } from '../state/AuditLog.js';
 import { CROSS_REPO_ENABLED } from '../orchestrator/constants.js';
 import { checkPathSafety } from './pathSafety.js';
 
+// Matches any RFC-3986 URI scheme with authority (e.g. https://, rsync://, s3://)
+// EXCEPT file:// — file:// is the attack vector targeted by checkPathSafety's
+// url-scheme rule and must not be excluded from path-safety inspection.
+// Hoisted to module scope so the RegExp is compiled once, not on every check() call.
+const SAFE_REMOTE_URL_RE = /^(?!file:\/\/)[a-z][a-z0-9+\-.]*:\/\//i;
+
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
 export interface WorktreeContext {
   /** Agent's own worktree root — canonicalized absolute path, no trailing slash. */
@@ -91,7 +97,6 @@ export class PolicyEngine {
     // flags without per-program knowledge, so checking all non-flag positional
     // tokens is the secure-by-default choice (false positives are preferable
     // to false negatives in a defense-in-depth guard).
-    const SAFE_REMOTE_URL_RE = /^(https?|ssh|git|ftp):\/\//i;
     const pathTokens: string[] = [];
     let pastSeparator = false;
     for (const token of cmd.argv.slice(1)) {
