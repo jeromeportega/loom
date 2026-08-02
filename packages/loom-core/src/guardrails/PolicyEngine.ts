@@ -22,33 +22,26 @@ const PATH_SAFETY_PATTERN_FIRST = new Set(['grep', 'rg', 'egrep', 'fgrep', 'awk'
 // treated as unsafe; for every other program `file:x` is a literal filename.
 const PATH_SAFETY_FETCH_TOOLS = new Set(['curl', 'wget']);
 
-// Exec-prefix runners: they run a following command with parseable args (unlike
-// bash/eval, which the wrapper guard blocks). Resolving the EFFECTIVE program past
-// them stops `nice curl file:/x` / `timeout 9 curl …` / `busybox wget …` from
-// evading the file: check by shifting argv[0] off the real fetcher.
-const PATH_SAFETY_PREFIX_RUNNERS = new Set([
-  'command', 'nice', 'ionice', 'taskset', 'timeout', 'nohup', 'setsid', 'stdbuf',
-  'busybox', 'xargs', 'time', 'proxychains', 'proxychains4', 'torsocks',
-]);
-
 /**
- * The effective program name (basename) after skipping leading exec-prefix runners
- * and their own options/args (flags, a bare-number `timeout` duration, VAR=value).
- * Errs toward finding the wrapped program so a fetcher can't hide behind a runner.
+ * Lowest argv index whose basename is a URL-fetching tool (curl/wget), or
+ * Infinity if none. Used to scope a `file:` finding to a real fetch invocation.
+ *
+ * Detection is by POSITION, not by "the effective program name". This is robust
+ * against EVERY exec-prefix wrapper form with no runner list and no per-option
+ * arity guessing: `nice curl …`, `timeout -s KILL 9 curl …`, `env A=1 curl …`,
+ * `sudo -u nobody curl …`, `/usr/bin/curl …` all place the fetcher somewhere in
+ * argv, and it is found wherever it sits. A later `index ≤ file:-token index`
+ * comparison keeps it honest (a fetcher AFTER the token — `cat file:x curl` — is
+ * a mere argument to a non-fetcher, not an invocation). The pattern operand of a
+ * pattern-first tool is excluded so `grep curl file:x` (a search FOR the string
+ * "curl") is not mistaken for an invocation OF curl.
  */
-function effectiveProgram(argv: string[]): string {
-  let i = 0;
-  while (i < argv.length - 1) {
-    if (!PATH_SAFETY_PREFIX_RUNNERS.has(path.basename(argv[i]))) break;
-    i++;
-    while (
-      i < argv.length - 1 &&
-      (argv[i].startsWith('-') || /^\d/.test(argv[i]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i]))
-    ) {
-      i++;
-    }
+function firstFetchToolIndex(argv: string[], patternIndex: number): number {
+  for (let i = 0; i < argv.length; i++) {
+    if (i === patternIndex) continue;
+    if (PATH_SAFETY_FETCH_TOOLS.has(path.basename(argv[i]))) return i;
   }
-  return path.basename(argv[i] ?? argv[0] ?? '');
+  return Infinity;
 }
 
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
@@ -130,37 +123,42 @@ export class PolicyEngine {
     //      positive. Mirrors checkReadScopeCommand.
     // Remote URL operands (`https://`, `ssh://`, …) need NO exclusion: they are not
     // file: URIs and carry no NUL/control bytes, so checkPathSafety passes them.
-    const pathTokens: string[] = [];
+    // Track each positional's argv index so a file:-scheme finding can be scoped
+    // to a fetch invocation by POSITION (see firstFetchToolIndex).
+    const pathTokens: Array<{ token: string; index: number }> = [];
     let pastSeparator = false;
-    let skippedPattern = false;
+    let patternIndex = -1; // argv index of a pattern-first tool's pattern operand
     const isPatternFirst = PATH_SAFETY_PATTERN_FIRST.has(cmd.program);
-    for (const token of cmd.argv.slice(1)) {
+    for (let i = 1; i < cmd.argv.length; i++) {
+      const token = cmd.argv[i];
       if (!pastSeparator && token === '--') {
         pastSeparator = true;
         continue;
       }
       if (!pastSeparator && token.startsWith('-')) continue;
       // First positional of a pattern-first tool = the pattern; skip it once.
-      if (isPatternFirst && !skippedPattern) {
-        skippedPattern = true;
+      if (isPatternFirst && patternIndex === -1) {
+        patternIndex = i;
         continue;
       }
-      pathTokens.push(token);
+      pathTokens.push({ token, index: i });
     }
 
-    // A `file:` token is a local-read threat ONLY for URL-fetching tools (curl,
-    // wget) — for `cat`/`git`/`echo` it is a literal filename (`cat file:x` opens
-    // `./file:x`), so a `file:`-scheme finding is a false positive there (e.g.
-    // `git commit -m "file:// is the scheme"`). null-byte / control-char findings
-    // apply to every program.
-    // Match on the EFFECTIVE program (basename, past exec-prefix runners) so
-    // neither a full-path invocation (`/usr/bin/curl file:/x`) nor a wrapper
-    // (`nice curl file:/x`) can bypass the file: check.
-    const isFetchTool = PATH_SAFETY_FETCH_TOOLS.has(effectiveProgram(cmd.argv));
-    for (const token of pathTokens) {
+    // A `file:` token is a local-read threat ONLY when a URL-fetching tool
+    // (curl/wget) is being invoked — for `cat`/`git`/`echo` it is a literal
+    // filename (`cat file:x` opens `./file:x`), so a `file:`-scheme finding is a
+    // false positive there (e.g. `git commit -m "file:// is the scheme"`).
+    // null-byte / control-char findings apply to every program. Scope by POSITION:
+    // deny a file: token only when a fetcher sits at or before it in argv — robust
+    // against wrappers/full-paths (`nice curl`, `sudo -u u curl`, `/usr/bin/curl`)
+    // with no runner list, and it does not misfire on `cat file:x curl` (fetcher
+    // AFTER the token) or `grep curl file:x` (fetcher name is the pattern operand).
+    const fetchIdx = firstFetchToolIndex(cmd.argv, patternIndex);
+    for (const { token, index } of pathTokens) {
       const pathResult = checkPathSafety(token);
       if (pathResult.safe) continue;
-      if (pathResult.rule === 'file-scheme' && !isFetchTool) continue;
+      // file: is unsafe only if a fetch tool precedes (or is) this token.
+      if (pathResult.rule === 'file-scheme' && fetchIdx > index) continue;
       if (ctx !== undefined) {
         ctx.audit.record({
           action: 'guard_blocked',

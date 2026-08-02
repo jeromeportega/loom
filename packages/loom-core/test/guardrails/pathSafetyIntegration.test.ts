@@ -62,10 +62,19 @@ describe('PolicyEngine — path-safety guard: DENIALS', () => {
     'timeout 9 curl file:/etc/passwd',
     'command curl file:/x',
     'busybox wget file:/x',
+    // Option-ARGUMENT wrapper forms — these bypassed the earlier "effective
+    // program" heuristic (it skipped a flag but landed on the flag's VALUE, not
+    // the fetcher). Position-based detection catches them with no arity guessing.
+    'nice -n 10 curl file:/x',
+    'timeout -s KILL 9 curl file:/etc/passwd',
+    'sudo -u nobody curl file:/etc/passwd',
+    'strace curl file:/x',
+    // (`env … curl` is blocked one layer up as shell.wrapper_program, so it never
+    //  reaches path-safety — covered by the wrapper-program tests, not here.)
   ]) {
     it(`exec-prefix wrapper does not bypass the file: check: ${cmd}`, () => {
       const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
-      assert.ok(encodingRule(r), `wrapper must not shift argv[0] off the fetcher: ${cmd}`);
+      assert.ok(encodingRule(r), `wrapper must not shift the fetcher out of view: ${cmd}`);
     });
   }
 
@@ -142,6 +151,8 @@ describe('PolicyEngine — path-safety guard: NO FALSE POSITIVES (the re-scope f
     'git commit -m "file:// is the scheme"', // MAJOR-2: file: message on a non-fetch tool
     'cat file:notes.txt',                    // MAJOR-2: literal file: filename on a non-fetch tool
     'echo "a\tb tabbed"',                    // tab in a quoted operand
+    'grep curl file:log.txt',                // fetch-tool NAME as a grep pattern, not an invocation
+    'rg wget file:notes',                    // same, ripgrep
   ];
   for (const cmd of ALLOWED) {
     it(`does NOT path-safety-deny: ${cmd}`, () => {
