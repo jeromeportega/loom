@@ -404,6 +404,15 @@ export class PolicyEngine {
       // quoted multi-line operand (e.g. a `git commit -m "line1<newline>line2"`
       // message) is removed before this test and stays allowed.
       [/[\n\r]/, 'newline command chaining'],
+      // Any UNQUOTED shell expansion. bash expands it before the program runs, so
+      // the guard's token view diverges from what executes: `cat${IFS}/etc/shadow`
+      // hides the program+path via word-splitting, and `cat $HOME/../../etc/shadow`
+      // resolves to a path the literal-token path checks never see. Reject `$` +
+      // an expansion-start char (`{`, a name, digit, or `@ * ? ! # $ -`). `$(`/`$((`
+      // are already caught above; quoted `$` (`git commit -m "closes ${J}-42"`) is
+      // blanked by stripQuoted first and stays allowed. Fail-closed: use a literal
+      // resolved path or quote it, so each command stays checkable.
+      [/\$[\w{@*?!#$-]/, 'shell parameter/variable expansion'],
     ];
 
     for (const [re, label] of blockers) {
@@ -424,15 +433,32 @@ export class PolicyEngine {
    */
   private checkWrapperPrograms(raw: string): PolicyCheckResult {
     const cmd = parseCommand(raw);
-    const wrappers = new Set(['bash', 'sh', 'zsh', 'ash', 'dash', 'eval', 'exec', 'env', 'coproc']);
-    if (wrappers.has(cmd.program)) {
-      // `env VAR=value cmd` is benign if cmd itself is benign, but parsing that
-      // properly is out of scope for MVP. Block all wrapper programs uniformly
-      // and let the agent invoke the target program directly.
+    // Wrappers blocked at the HEAD (argv[0], by basename so `/usr/bin/env` counts).
+    // `env` lives here only — it is a common word deeper in a command line
+    // (`npm run env`, `make env`), so it is NOT matched at other positions.
+    const headWrappers = new Set(['bash', 'sh', 'zsh', 'ash', 'dash', 'eval', 'exec', 'env', 'coproc']);
+    if (headWrappers.has(path.basename(cmd.program))) {
       return {
         allowed: false,
         rule: 'shell.wrapper_program',
-        reason: `"${cmd.program}" wraps an arbitrary command — invoke the target program directly so its arguments can be policy-checked`,
+        reason: `"${path.basename(cmd.program)}" wraps an arbitrary command — invoke the target program directly so its arguments can be policy-checked`,
+      };
+    }
+    // Shells that run an arbitrary UNPARSED string via `-c`. An exec-prefix runner
+    // (`nice`/`timeout 5`/`sudo`/`env`) shifts these off argv[0]
+    // (`nice bash -c '…'`, `timeout -s KILL 9 bash -c '…'`, `env X=1 sh -c '…'`)
+    // and would otherwise reopen the ENTIRE guard (the payload is a quoted, never
+    // parsed token). Match by basename ANYWHERE — no runner allow-list, no
+    // option-arity guessing. Fail-closed: a bare shell name as an argument
+    // (`which bash`) is also blocked; rare, and a false negative here defeats
+    // every downstream check.
+    const shellWrappers = new Set(['bash', 'sh', 'zsh', 'ash', 'dash', 'eval', 'exec', 'coproc']);
+    const hit = cmd.argv.findIndex((t, i) => i > 0 && shellWrappers.has(path.basename(t)));
+    if (hit !== -1) {
+      return {
+        allowed: false,
+        rule: 'shell.wrapper_program',
+        reason: `"${path.basename(cmd.argv[hit])}" (a shell/eval wrapper) may not appear in a command — a wrapper shifted behind a prefix runner would run an unchecked payload; invoke the target program directly`,
       };
     }
     return { allowed: true };
