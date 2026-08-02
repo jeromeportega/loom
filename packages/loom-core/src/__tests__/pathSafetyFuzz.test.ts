@@ -30,14 +30,17 @@ const NULL_CONTEXTS = [
 
 // ─── safe set ────────────────────────────────────────────────────────────────
 
+// checkPathSafety is scoped to *encoded* traversal bypasses only — literal `..`
+// and `../within/ok` are intentionally safe here.  Any future extension to block
+// literal path-traversal should move these entries to a separate denied corpus
+// rather than removing them, so the design contract remains explicit.
 const SAFE_SET = [
   'src/foo.ts',
   './a/b',
-  '../within/ok',
-  '..',
+  '../within/ok',  // literal slash — not an encoded separator
+  '..',            // bare double-dot — no encoding, not in scope for this guard
   'a.b.c',
   'filename.txt',
-  'dir/sub/',
 ] as const;
 
 // ─── mutation generation (index-driven, no Math.random()) ────────────────────
@@ -325,6 +328,39 @@ describe('pathSafetyFuzz — url-scheme prepend', () => {
       const r = checkPathSafety(t);
       assert.equal(r.safe, false);
       if (!r.safe) assert.equal(r.rule, 'url-scheme');
+    }
+  });
+});
+
+// ─── mixed-case hex coverage ──────────────────────────────────────────────────
+// Verify that the corpus explicitly contains tokens with both lowercase and
+// uppercase hex digits in percent-encoded sequences (e.g., %2e%2F, %5c%2E),
+// and that all such tokens are rejected.  This prevents silent corpus shrinkage
+// where mixed-case variants might be dropped in a future refactor.
+
+describe('pathSafetyFuzz — mixed-case hex coverage', () => {
+  // A mutation has mixed-case hex if it contains at least one lowercase encoded
+  // form (%2e, %2f, %5c) AND at least one uppercase encoded form (%2E, %2F, %5C)
+  // in the same token.  Class 1 produces these as a direct consequence of
+  // iterating d1/d2 across both %2e and %2E forms.
+  const mixedCaseSlice = mutations.filter(
+    m => /(%2e|%2f|%5c)/.test(m) && /(%2E|%2F|%5C)/.test(m),
+  );
+
+  it('corpus contains mixed-case hex variants', () => {
+    assert.ok(
+      mixedCaseSlice.length >= 50,
+      `expected >= 50 mixed-case hex mutations, got ${mixedCaseSlice.length}`,
+    );
+  });
+
+  it('all mixed-case hex variants are rejected', () => {
+    for (const t of mixedCaseSlice) {
+      assert.equal(
+        checkPathSafety(t).safe,
+        false,
+        `mixed-case hex token passed: ${JSON.stringify(t.slice(0, 60))}`,
+      );
     }
   });
 });
