@@ -31,9 +31,11 @@ const NULL_CONTEXTS = [
 // ─── safe set ────────────────────────────────────────────────────────────────
 
 // checkPathSafety is scoped to *encoded* traversal bypasses only — literal `..`
-// and `../within/ok` are intentionally safe here.  Any future extension to block
-// literal path-traversal should move these entries to a separate denied corpus
-// rather than removing them, so the design contract remains explicit.
+// and `../within/ok` are intentionally safe here.  Blocking literal `..`
+// segments is the responsibility of a separate layer (e.g. the command policy
+// engine); this function is purely an encoding-bypass detector.  Any future
+// extension to block literal traversal should move these entries to a denied
+// corpus rather than removing them, so the design contract remains explicit.
 const SAFE_SET = [
   'src/foo.ts',
   './a/b',
@@ -41,6 +43,7 @@ const SAFE_SET = [
   '..',            // bare double-dot — no encoding, not in scope for this guard
   'a.b.c',
   'filename.txt',
+  'dir/sub/',
 ] as const;
 
 // ─── mutation generation (index-driven, no Math.random()) ────────────────────
@@ -99,6 +102,17 @@ function generateMutations(): string[] {
     mutations.push(`%00${ctx}`, `${ctx}%00`, `%2500${ctx}`, `${ctx}%2500`);
   }
 
+  // Class 5 — C0/DEL control-character injection (5 bytes × 10 contexts = 50)
+  //
+  // Exercises the 'control-char' rule (\x01–\x1f, \x7f) with representative
+  // bytes prepended to each NULL_CONTEXT.  \x00 is excluded here — it fires
+  // 'null-byte' first (rule order is fixed) and is covered by Class 4.
+  for (const byte of ['\x01', '\x08', '\x0a', '\x1f', '\x7f']) {
+    for (const ctx of NULL_CONTEXTS) {
+      mutations.push(`${byte}${ctx}`);
+    }
+  }
+
   return mutations;
 }
 
@@ -135,8 +149,10 @@ describe('pathSafetyFuzz — every encoded-attack mutation is rejected', () => {
 
 // ─── encoding-coverage sub-assertions ────────────────────────────────────────
 // These targeted checks verify that specific hex-case and double-encoded forms
-// are present in the corpus AND are individually rejected, without relying solely
-// on the main loop sweep above.
+// are present in the corpus AND sample-check individual rejection results.
+// Each sub-assert iterates only the first 20 tokens of its filtered slice —
+// a presence check, not an exhaustive sweep.  The main corpus loop above is
+// the comprehensive gate over every mutation.
 
 describe('pathSafetyFuzz — encoded-dot case coverage', () => {
   it('corpus includes %2e (lowercase) variants, all rejected', () => {
@@ -280,9 +296,11 @@ describe('pathSafetyFuzz — null-byte injection at varied offsets', () => {
 
 describe('pathSafetyFuzz — encoded-null coverage', () => {
   it('%00 in corpus returns { safe: false, rule: encoded-null }', () => {
-    const slice = mutations.filter(m => m.includes('%00') && !m.includes('\x00'));
+    // Exclude %2500 tokens: '%2500'.includes('%00') is true (substring match),
+    // but %2500 tokens belong to the double-encoded-null bucket below.
+    const slice = mutations.filter(m => m.includes('%00') && !m.includes('%25') && !m.includes('\x00'));
     assert.ok(slice.length > 0, 'no %00 variants found');
-    for (const t of slice.slice(0, 10)) {
+    for (const t of slice) {
       const r = checkPathSafety(t);
       assert.equal(r.safe, false);
       if (!r.safe) assert.equal(r.rule, 'encoded-null');
@@ -292,7 +310,7 @@ describe('pathSafetyFuzz — encoded-null coverage', () => {
   it('%2500 in corpus returns { safe: false, rule: encoded-null }', () => {
     const slice = mutations.filter(m => m.includes('%2500'));
     assert.ok(slice.length > 0, 'no %2500 variants found');
-    for (const t of slice.slice(0, 10)) {
+    for (const t of slice) {
       const r = checkPathSafety(t);
       assert.equal(r.safe, false);
       if (!r.safe) assert.equal(r.rule, 'encoded-null');
@@ -330,6 +348,36 @@ describe('pathSafetyFuzz — url-scheme prepend', () => {
       if (!r.safe) assert.equal(r.rule, 'url-scheme');
     }
   });
+
+  it('ftp:// prefix returns { safe: false, rule: url-scheme }', () => {
+    const slice = mutations.filter(m => m.startsWith('ftp://'));
+    assert.ok(slice.length > 0, 'no ftp:// variants found');
+    for (const t of slice) {
+      const r = checkPathSafety(t);
+      assert.equal(r.safe, false);
+      if (!r.safe) assert.equal(r.rule, 'url-scheme');
+    }
+  });
+
+  it('data:// prefix returns { safe: false, rule: url-scheme }', () => {
+    const slice = mutations.filter(m => m.startsWith('data://'));
+    assert.ok(slice.length > 0, 'no data:// variants found');
+    for (const t of slice) {
+      const r = checkPathSafety(t);
+      assert.equal(r.safe, false);
+      if (!r.safe) assert.equal(r.rule, 'url-scheme');
+    }
+  });
+
+  it('sftp:// prefix returns { safe: false, rule: url-scheme }', () => {
+    const slice = mutations.filter(m => m.startsWith('sftp://'));
+    assert.ok(slice.length > 0, 'no sftp:// variants found');
+    for (const t of slice) {
+      const r = checkPathSafety(t);
+      assert.equal(r.safe, false);
+      if (!r.safe) assert.equal(r.rule, 'url-scheme');
+    }
+  });
 });
 
 // ─── mixed-case hex coverage ──────────────────────────────────────────────────
@@ -361,6 +409,60 @@ describe('pathSafetyFuzz — mixed-case hex coverage', () => {
         false,
         `mixed-case hex token passed: ${JSON.stringify(t.slice(0, 60))}`,
       );
+    }
+  });
+});
+
+// ─── control-char coverage ───────────────────────────────────────────────────
+
+describe('pathSafetyFuzz — C0/DEL control-character injection (Class 5)', () => {
+  it('\\x01 (SOH) at token start produces rule: control-char', () => {
+    const slice = mutations.filter(m => m.startsWith('\x01'));
+    assert.ok(slice.length > 0, 'no \\x01 mutations found');
+    for (const t of slice) {
+      const r = checkPathSafety(t);
+      assert.equal(r.safe, false, `\\x01 token passed: ${JSON.stringify(t)}`);
+      if (!r.safe) assert.equal(r.rule, 'control-char');
+    }
+  });
+
+  it('\\x08 (BS) at token start produces rule: control-char', () => {
+    const slice = mutations.filter(m => m.startsWith('\x08'));
+    assert.ok(slice.length > 0, 'no \\x08 mutations found');
+    for (const t of slice) {
+      const r = checkPathSafety(t);
+      assert.equal(r.safe, false, `\\x08 token passed: ${JSON.stringify(t)}`);
+      if (!r.safe) assert.equal(r.rule, 'control-char');
+    }
+  });
+
+  it('\\x0a (LF) at token start produces rule: control-char', () => {
+    const slice = mutations.filter(m => m.startsWith('\x0a'));
+    assert.ok(slice.length > 0, 'no \\x0a mutations found');
+    for (const t of slice) {
+      const r = checkPathSafety(t);
+      assert.equal(r.safe, false, `\\x0a token passed: ${JSON.stringify(t)}`);
+      if (!r.safe) assert.equal(r.rule, 'control-char');
+    }
+  });
+
+  it('\\x1f (US) at token start produces rule: control-char', () => {
+    const slice = mutations.filter(m => m.startsWith('\x1f'));
+    assert.ok(slice.length > 0, 'no \\x1f mutations found');
+    for (const t of slice) {
+      const r = checkPathSafety(t);
+      assert.equal(r.safe, false, `\\x1f token passed: ${JSON.stringify(t)}`);
+      if (!r.safe) assert.equal(r.rule, 'control-char');
+    }
+  });
+
+  it('\\x7f (DEL) at token start produces rule: control-char', () => {
+    const slice = mutations.filter(m => m.startsWith('\x7f'));
+    assert.ok(slice.length > 0, 'no \\x7f mutations found');
+    for (const t of slice) {
+      const r = checkPathSafety(t);
+      assert.equal(r.safe, false, `\\x7f token passed: ${JSON.stringify(t)}`);
+      if (!r.safe) assert.equal(r.rule, 'control-char');
     }
   });
 });
