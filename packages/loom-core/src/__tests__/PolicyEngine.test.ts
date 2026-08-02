@@ -321,6 +321,72 @@ describe('PolicyEngine — wrapper programs', () => {
     assert.equal(r.allowed, false);
     assert.equal(r.rule, 'shell.wrapper_program');
   });
+
+  // A wrapper shifted off argv[0] by an exec-prefix runner used to reopen the
+  // whole guard (the `-c` payload is a quoted, never-parsed token). Detect the
+  // shell wrappers by basename ANYWHERE past argv[0].
+  for (const cmd of [
+    "nice bash -c 'git push --force'",
+    "timeout 5 bash -c 'rm -rf /etc'",
+    "timeout -s KILL 9 bash -c 'x'",   // option-arg form (arity-free)
+    "sudo sh -c 'x'",
+    "nice env sh -c 'x'",
+    '/bin/bash -c "x"',                 // full-path (basename match)
+    'xargs sh -c "x"',
+    // -c-capable shells beyond bash/sh must be covered too (direct + shifted).
+    "ksh -c 'x'",
+    "csh -c 'x'",
+    "tcsh -c 'x'",
+    "fish -c 'x'",
+    "nice ksh -c 'x'",
+    'timeout 5 fish -c "x"',
+  ]) {
+    it(`blocks a prefix-shifted/pathed shell wrapper: ${cmd}`, () => {
+      const r = defaultEngine.check(cmd);
+      assert.equal(r.allowed, false, `must block: ${cmd}`);
+      assert.equal(r.rule, 'shell.wrapper_program');
+    });
+  }
+
+  // `env` is a common word deeper in a command line — must NOT false-positive
+  // when it is not the head program.
+  for (const cmd of ['npm run env', 'make env', 'which bash-completion']) {
+    it(`does NOT false-positive on a non-wrapper use: ${cmd}`, () => {
+      assert.equal(defaultEngine.check(cmd).allowed, true, `must allow: ${cmd}`);
+    });
+  }
+});
+
+describe('PolicyEngine — unquoted shell expansion is blocked', () => {
+  // bash expands these before the program runs, so the guard's literal-token view
+  // diverges from what executes (word-split hides program/path; `$VAR` resolves a
+  // path the path checks never see).
+  for (const cmd of [
+    'cat${IFS}/etc/shadow',
+    'rm${IFS}-rf${IFS}/etc',
+    'cat $HOME/../../etc/shadow',
+    'echo $PATH',
+    'cat ${FOO}/x',
+    'curl$IFS-s$IFS"http://x"',
+  ]) {
+    it(`blocks unquoted expansion: ${cmd}`, () => {
+      const r = defaultEngine.check(cmd);
+      assert.equal(r.allowed, false, `must block: ${cmd}`);
+      assert.equal(r.rule, 'shell.metacharacters');
+    });
+  }
+
+  // QUOTED `$` (blanked by stripQuoted) and non-expansion uses must stay allowed.
+  for (const cmd of [
+    'git commit -m "closes ${JIRA}-42"',
+    "awk '{print $1}' file.txt",
+    "sed 's/$/EOL/' file.txt",
+    'grep -c "^" file.txt',
+  ]) {
+    it(`does NOT false-positive on quoted/non-expansion $: ${cmd}`, () => {
+      assert.equal(defaultEngine.check(cmd).allowed, true, `must allow: ${cmd}`);
+    });
+  }
 });
 
 // ─── guard regression: protected-branch push for worker agents (Key Inv 1–2) ─
