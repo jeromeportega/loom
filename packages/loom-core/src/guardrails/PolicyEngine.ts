@@ -17,6 +17,11 @@ import { checkPathSafety } from './pathSafety.js';
 // odd bytes is not a false positive. Mirrors checkReadScopeCommand's list.
 const PATH_SAFETY_PATTERN_FIRST = new Set(['grep', 'rg', 'egrep', 'fgrep', 'awk', 'sed']);
 
+// URL-fetching tools that honor the `file:` scheme as a LOCAL read (the exfil
+// vector `curl file:/etc/passwd`). Only for these programs is a `file:` operand
+// treated as unsafe; for every other program `file:x` is a literal filename.
+const PATH_SAFETY_FETCH_TOOLS = new Set(['curl', 'wget']);
+
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
 export interface WorktreeContext {
   /** Agent's own worktree root — canonicalized absolute path, no trailing slash. */
@@ -114,24 +119,32 @@ export class PolicyEngine {
       pathTokens.push(token);
     }
 
+    // A `file:` token is a local-read threat ONLY for URL-fetching tools (curl,
+    // wget) — for `cat`/`git`/`echo` it is a literal filename (`cat file:x` opens
+    // `./file:x`), so a `file:`-scheme finding is a false positive there (e.g.
+    // `git commit -m "file:// is the scheme"`). null-byte / control-char findings
+    // apply to every program.
+    // Match on the basename so a full-path invocation (`/usr/bin/curl file:/x`)
+    // can't bypass the file: check — cmd.program is the raw argv[0].
+    const isFetchTool = PATH_SAFETY_FETCH_TOOLS.has(path.basename(cmd.program));
     for (const token of pathTokens) {
       const pathResult = checkPathSafety(token);
-      if (!pathResult.safe) {
-        if (ctx !== undefined) {
-          ctx.audit.record({
-            action: 'guard_blocked',
-            command: rawCommand,
-            allowed: false,
-            policy_rule: 'path.unsafe_encoding',
-            detail: { token, rule: pathResult.rule },
-          });
-        }
-        return {
+      if (pathResult.safe) continue;
+      if (pathResult.rule === 'file-scheme' && !isFetchTool) continue;
+      if (ctx !== undefined) {
+        ctx.audit.record({
+          action: 'guard_blocked',
+          command: rawCommand,
           allowed: false,
-          rule: 'path.unsafe_encoding',
-          reason: pathResult.reason,
-        };
+          policy_rule: 'path.unsafe_token',
+          detail: { token, rule: pathResult.rule },
+        });
       }
+      return {
+        allowed: false,
+        rule: 'path.unsafe_token',
+        reason: pathResult.reason,
+      };
     }
 
     if (cmd.program === 'git') {

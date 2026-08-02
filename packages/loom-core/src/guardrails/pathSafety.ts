@@ -41,8 +41,11 @@ export function checkPathSafety(token: string): PathSafetyResult {
   if (/\x00/.test(token)) {
     return { safe: false, reason: 'token contains a null byte', rule: 'null-byte' };
   }
-  // C0 (excluding NUL, handled above) and DEL.
-  if (/[\x01-\x1f\x7f]/.test(token)) {
+  // C0 (excluding NUL, above) and DEL — but NOT tab (\x09), LF (\x0a), or CR
+  // (\x0d): those appear legitimately inside quoted operands (a multi-line
+  // `git commit -m` message), and flagging them broke routine commits. A path
+  // with a NUL is a truncation attack; a path with a tab/newline is just quoted.
+  if (/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(token)) {
     return { safe: false, reason: 'token contains a C0 or DEL control character', rule: 'control-char' };
   }
   if (FILE_SCHEME_RE.test(token)) {

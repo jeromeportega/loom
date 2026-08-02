@@ -33,7 +33,7 @@ function makeCtx(db: Database.Database): WorktreeContext {
 }
 
 function encodingRule(r: ReturnType<PolicyEngine['check']>): boolean {
-  return !r.allowed && 'rule' in r && r.rule === 'path.unsafe_encoding';
+  return !r.allowed && 'rule' in r && r.rule === 'path.unsafe_token';
 }
 
 describe('PolicyEngine — path-safety guard: DENIALS', () => {
@@ -50,6 +50,11 @@ describe('PolicyEngine — path-safety guard: DENIALS', () => {
   it('opaque file: form is denied', () => {
     const r = freshEngine().check('wget file:etc/passwd', makeCtx(createDatabase(':memory:')));
     assert.ok(encodingRule(r));
+  });
+
+  it('full-path fetch invocation (/usr/bin/curl file:/x) is denied — basename match', () => {
+    const r = freshEngine().check('/usr/bin/curl file:/etc/passwd', makeCtx(createDatabase(':memory:')));
+    assert.ok(encodingRule(r), 'a full-path curl must not bypass the file: check');
   });
 
   it('null-byte token is denied', () => {
@@ -80,7 +85,7 @@ describe('PolicyEngine — path-safety guard: AUDIT', () => {
     freshEngine().check('curl file:/etc/passwd', makeCtx(db));
     const rows = guardRows(db);
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].policy_rule, 'path.unsafe_encoding');
+    assert.equal(rows[0].policy_rule, 'path.unsafe_token');
     assert.equal(rows[0].allowed, 0);
     assert.equal(rows[0].command, 'curl file:/etc/passwd');
     const detail = JSON.parse(rows[0].detail ?? '{}');
@@ -110,7 +115,7 @@ describe('PolicyEngine — path-safety guard: AUDIT', () => {
 describe('PolicyEngine — path-safety guard: NO FALSE POSITIVES (the re-scope fixes)', () => {
   // These were all wrongly DENIED before the re-scope. They must pass the
   // path-safety guard now (they may still be denied by an unrelated rule, but
-  // never with path.unsafe_encoding).
+  // never with path.unsafe_token).
   const ALLOWED = [
     'grep %2e src/pathSafety.ts',          // grep pattern with %2e
     "grep file:// src",                     // grep pattern that looks like a scheme
@@ -121,16 +126,20 @@ describe('PolicyEngine — path-safety guard: NO FALSE POSITIVES (the re-scope f
     'curl https://api.example.com/x',       // remote URL operand
     'cat src/main.ts',                      // plain path
     'sed s/%2e/x/ file.txt',                // sed pattern with %2e
+    'git commit -m "Title\n\nBody line"',   // MAJOR-1: multi-line commit message (newline)
+    'git commit -m "file:// is the scheme"', // MAJOR-2: file: message on a non-fetch tool
+    'cat file:notes.txt',                    // MAJOR-2: literal file: filename on a non-fetch tool
+    'echo "a\tb tabbed"',                    // tab in a quoted operand
   ];
   for (const cmd of ALLOWED) {
     it(`does NOT path-safety-deny: ${cmd}`, () => {
       const db = createDatabase(':memory:');
       const r = freshEngine().check(cmd, makeCtx(db));
-      assert.ok(!encodingRule(r), `must not be a path.unsafe_encoding denial: ${cmd}`);
+      assert.ok(!encodingRule(r), `must not be a path.unsafe_token denial: ${cmd}`);
       assert.equal(
-        guardRows(db).filter(row => row.policy_rule === 'path.unsafe_encoding').length,
+        guardRows(db).filter(row => row.policy_rule === 'path.unsafe_token').length,
         0,
-        `no path.unsafe_encoding audit row for: ${cmd}`,
+        `no path.unsafe_token audit row for: ${cmd}`,
       );
     });
   }

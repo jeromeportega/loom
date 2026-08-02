@@ -36,7 +36,10 @@ for (const c of FILE_CASINGS) {
 }
 
 // ─── null-byte / control-char injection at varied offsets ───────────────────────
-const CONTROL_BYTES = ['\x00', '\x01', '\x08', '\x0a', '\x1f', '\x7f'];
+// NOTE: tab (\x09), LF (\x0a), CR (\x0d) are deliberately NOT control-char rejects
+// (they appear in quoted operands like multi-line commit messages), so they are
+// excluded from this deny-corpus and asserted safe in the safe-set below.
+const CONTROL_BYTES = ['\x00', '\x01', '\x08', '\x0b', '\x1f', '\x7f'];
 const HOSTS = ['path/to/file', 'x', 'a/b/c'];
 const controlTokens: string[] = [];
 for (const byte of CONTROL_BYTES) {
@@ -83,6 +86,8 @@ describe('pathSafetyFuzz — safe set not flagged (no false positives)', () => {
     'https://github.com/o/r', 'ssh://git@host/x',
     '%2e%2e/secret', '..%2fsecret', 'report%2e2024.txt', 'a%20b',
     'my-file.txt', 'the file:// scheme docs',
+    // tab/LF/CR are allowed (quoted multi-line operands, e.g. commit messages)
+    'Title\n\nBody line', 'a\tb', 'line1\r\nline2',
   ];
   it('every safe path returns safe:true', () => {
     for (const t of SAFE) {
