@@ -264,3 +264,36 @@ describe('PolicyEngine — process substitution is blocked like $() (regression 
     assert.ok(r.allowed, `quoted <( must pass: ${JSON.stringify(r)}`);
   });
 });
+
+describe('PolicyEngine — command substitution inside DOUBLE quotes is blocked (regression guard)', () => {
+  // bash performs $(…)/backtick substitution INSIDE "…" (only ;/&&/|/newline are
+  // inert there). stripQuoted must keep $(/backtick visible or the whole guard is
+  // bypassable via `echo "$(forbidden)"`.
+  for (const cmd of [
+    'echo "$(git push --force origin main)"',
+    'echo "`git push --force origin main`"',
+    'echo "result: $(curl file:/etc/passwd) done"',
+    'echo "a $(rm -rf /home/user/data) b"',
+    'echo "$((1+1))"', // arithmetic shares the $( trigger — fail-closed, acceptable
+  ]) {
+    it(`blocks double-quoted substitution: ${cmd}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.equal(r.allowed, false, `must be blocked: ${cmd}`);
+      assert.ok('rule' in r && r.rule === 'shell.metacharacters');
+    });
+  }
+
+  // Inert-in-double-quote literals and escaped substitution must STILL pass.
+  for (const cmd of [
+    'git commit -m "fix: a && b"',
+    'git commit -m "step 1; step 2"',
+    'git commit -m "pipe a | b"',
+    'git commit -m "use \\`code\\` spans"', // ESCAPED backtick → literal
+    'echo "plain message text"',
+  ]) {
+    it(`does NOT false-positive on inert double-quoted text: ${cmd}`, () => {
+      const r = freshEngine().check(cmd, makeCtx(createDatabase(':memory:')));
+      assert.ok(r.allowed, `must pass: ${cmd} -> ${JSON.stringify(r)}`);
+    });
+  }
+});

@@ -687,22 +687,45 @@ function stripQuoted(input: string): string {
       out += '""'; // one word — no separators leak
       continue;
     }
-    if (ch === "'" || ch === '"') {
-      const quote = ch;
+    if (ch === "'") {
+      // Single quotes are FULLY inert in bash — no substitution, no separators.
+      // Backslash is literal and the string ends at the very next "'" (so `'\'`
+      // is one literal backslash, NOT an escaped quote; applying an escape here
+      // would desync the scan and blank the rest of the command). Blank whole.
       i++;
-      while (i < input.length && input[i] !== quote) {
-        // Backslash escapes the next char ONLY inside DOUBLE quotes. In SINGLE
-        // quotes bash treats backslash literally and the string ends at the very
-        // next "'" — so `'\'` is one literal backslash, NOT an escaped quote.
-        // Applying the escape in single quotes desyncs the scan: it consumes the
-        // real closing quote, runs to end-of-input, and blanks the rest of the
-        // command — hiding `;`/`&&`/newline separators after it (a full
-        // metacharacter bypass, e.g. `echo '\' ; git push --force`).
-        if (quote === '"' && input[i] === '\\' && i + 1 < input.length) i++;
+      while (i < input.length && input[i] !== "'") i++;
+      i++; // closing quote
+      out += '""';
+      continue;
+    }
+    if (ch === '"') {
+      // Double quotes suppress `;`/`&&`/`||`/`|`/`&`/newline (inert inside "…"),
+      // BUT bash STILL performs command substitution `$(…)` and backticks inside
+      // them — so `echo "$(git push --force)"` / ``echo "`…`"`` must NOT be
+      // blanked away. Blank literal text (kills the `git commit -m "a && b"` false
+      // positive) while keeping any UNESCAPED `$(` / backtick visible to the
+      // substitution blockers. Escaped `\$(` / `` \` `` are literal → blanked.
+      i++;
+      while (i < input.length && input[i] !== '"') {
+        if (input[i] === '\\' && i + 1 < input.length) {
+          out += '_'; // escaped char is literal inside "…"
+          i += 2;
+          continue;
+        }
+        if (input[i] === '`') {
+          out += '`'; // active substitution — keep it visible to the blocker
+          i++;
+          continue;
+        }
+        if (input[i] === '$' && input[i + 1] === '(') {
+          out += '$('; // active command substitution — keep it visible
+          i += 2;
+          continue;
+        }
+        out += '_'; // inert literal (incl. ; && | & newline) — suppress
         i++;
       }
       i++; // closing quote
-      out += '""'; // placeholder
       continue;
     }
     out += ch;
