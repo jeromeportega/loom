@@ -281,7 +281,13 @@ export function createApp(opts: CreateAppOptions): Express {
       // Collapse retries to the latest attempt per story — same dedup the
       // MCP `loom_get_status` does. `countByStatus` then reflects current
       // story state, not "blocked attempt + done attempt = 2 stories."
-      const agents = scopedAgents.listLatestByEpic(epic.id);
+      // Exclude superseded originals (epic-095 reroute rework): their row stays
+      // 'failed' as history but the story was replaced by sub-stories — so both
+      // the counts AND the drilled-down agent list must drop it (else the page
+      // shows "2/2 done" beside a phantom failed 3rd story).
+      const agents = scopedAgents
+        .listLatestByEpic(epic.id)
+        .filter((a) => a.superseded_by == null);
       const counts = countByStatus(agents);
       const detail: EpicDetail = {
         id: epic.id,
@@ -789,8 +795,13 @@ function openPeer(
 }
 
 function countByStatus(
-  agents: ReturnType<AgentStore['listByEpic']>
+  allAgents: ReturnType<AgentStore['listByEpic']>
 ): EpicStatus['stories'] {
+  // Exclude superseded originals (epic-095 reroute rework): their row keeps
+  // status='failed' as the historical record, but the story was replaced by
+  // sub-stories — counting it would show a permanent phantom failure on a
+  // successfully-rerouted epic.
+  const agents = allAgents.filter((a) => a.superseded_by == null);
   const counts = {
     total: agents.length,
     done: 0,

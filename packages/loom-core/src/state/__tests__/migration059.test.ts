@@ -479,7 +479,7 @@ describe('v26 migration — FK deferral implicit proof and schema version', () =
     const db = seedPreV26Db(dbPath);
     runMigrations(db);
     assert.equal(schemaVersion(db), SCHEMA_VERSION);
-    assert.equal(SCHEMA_VERSION, 32);
+    assert.equal(SCHEMA_VERSION, 34);
     db.close();
   });
 });
@@ -537,16 +537,16 @@ function seedV31Db(dbPath: string): Database.Database {
 }
 
 describe('v32 migration: SCHEMA_VERSION constant', () => {
-  it('SCHEMA_VERSION equals 32', () => {
-    assert.equal(SCHEMA_VERSION, 32);
+  it('SCHEMA_VERSION equals 34', () => {
+    assert.equal(SCHEMA_VERSION, 34);
   });
 
-  it('runMigrations() on a v31 DB advances schema_version to 32', () => {
+  it('runMigrations() on a v31 DB advances schema_version to current (34)', () => {
     const dbPath = path.join(tmpDir, 'v32-version-bump.db');
     const db = seedV31Db(dbPath);
     assert.equal(schemaVersion(db), 31, 'precondition: starts at v31');
     runMigrations(db);
-    assert.equal(schemaVersion(db), 32, 'schema_version bumped to 32 after migration');
+    assert.equal(schemaVersion(db), 34, 'schema_version bumped to 34 after migration');
     db.close();
   });
 });
@@ -673,8 +673,8 @@ describe('v32 migration: anchor seed is one-time (security — no self-heal)', (
     ins.run('hashed_a', 'hash-a');
     ins.run('hashed_b', 'hash-b');
 
-    runMigrations(db); // v31 -> v32 upgrade: seeds the anchor once
-    assert.equal(schemaVersion(db), 32);
+    runMigrations(db); // v31 -> current (v34) upgrade: crosses <32, so seeds the anchor once
+    assert.equal(schemaVersion(db), 34);
     assert.equal(
       (db.prepare('SELECT COUNT(*) AS c FROM audit_chain_head').get() as { c: number }).c,
       1,

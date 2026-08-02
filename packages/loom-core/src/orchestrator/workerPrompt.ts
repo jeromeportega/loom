@@ -8,6 +8,30 @@ import { SharedContract } from './SharedContract.js';
 import { selfAssessmentInstruction } from './selfAssessment.js';
 import { EpicBuildup } from './EpicBuildup.js';
 import { conventionsInstruction } from './conventionsMarker.js';
+import { formatTooBigSignal } from './constants.js';
+
+/**
+ * Instruction block (runtime reroute, epic-095): tells the worker it MAY bail out
+ * of an over-scoped story by emitting the LOOM_TOO_BIG signal EARLY, before making
+ * destructive edits, so loom re-decomposes it via the PM. The exact emit line comes
+ * from `formatTooBigSignal` — the same helper the Supervisor parses with — so the
+ * prompt and the capture can never drift.
+ */
+function tooBigSignalInstruction(): string {
+  return (
+    '\n\n### If this story is too big to do safely\n' +
+    'BEFORE making changes, quickly assess scope. If completing this story correctly ' +
+    'would require touching a very large number of files/entities or a high fan-out of ' +
+    'independent changes — more than one focused worktree should carry — do NOT attempt ' +
+    'it partially and do NOT delete/rewrite broadly to force it through. Instead emit a ' +
+    'single line:\n' +
+    `\`${formatTooBigSignal('<one-line reason + how you would split it>')}\`\n` +
+    'then stop without committing. loom will route the story back to the PM to break it ' +
+    'into smaller stories. Emit this EARLY (during analysis, before editing) so nothing ' +
+    'destructive happens. Only use it for genuinely oversized stories — a normal-sized ' +
+    'story should just be implemented.'
+  );
+}
 
 /** Resolves the bundled worker prompt template, shipped at the package root. */
 export function workerTemplatePath(): string {
@@ -91,6 +115,15 @@ export interface BuildWorkerPromptOptions {
    * Off ⇒ no change to prompt. Set from EPIC_BUILDUP.
    */
   requestConventions?: boolean;
+  /**
+   * When true (set by run.ts whenever a runtime-reroute PM is wired), append a
+   * block telling the worker it MAY emit `LOOM_TOO_BIG: <reason>` — EARLY, before
+   * making destructive changes — when the story is too large to complete safely in
+   * one worktree, so loom re-decomposes it via the PM instead of the worker grinding
+   * or half-deleting a tree. Implement-phase only (a verify/revise pass is not where
+   * scope is assessed). Off ⇒ prompt byte-identical to the bench baseline.
+   */
+  requestTooBigSignal?: boolean;
 }
 
 /**
@@ -156,6 +189,13 @@ export function buildWorkerPrompt(
         'reimplementing or duplicating them.\n\n' +
         notes.join('\n\n---\n\n');
     }
+  }
+
+  // Upstream provides side-channel (epic-095). Pre-computed by the Supervisor
+  // when the story has `requires` entries satisfied by upstream stories.
+  // Absent = no-op so a story without `requires` keeps the byte-identical baseline.
+  if (assignment.upstreamProvidesSection && assignment.upstreamProvidesSection.trim().length > 0) {
+    block += assignment.upstreamProvidesSection;
   }
 
   // Epic build-up side-channel (EPIC_BUILDUP=on). Injects the
@@ -268,6 +308,15 @@ export function buildWorkerPrompt(
   // work. Gated so an adaptive-off run keeps the byte-identical baseline prompt.
   if (opts.requestSelfAssessment && opts.phase !== 'verify') {
     block += selfAssessmentInstruction();
+  }
+
+  // Too-big signal (runtime reroute, epic-095). Implement-phase only — a verify
+  // or revise pass is not where scope is assessed, and re-decomposing then would
+  // throw away committed work. Gated so an off run (no reroute PM) keeps the
+  // byte-identical baseline prompt.
+  if (opts.requestTooBigSignal && opts.phase !== 'verify' &&
+      !(opts.revisionContext && opts.revisionContext.trim().length > 0)) {
+    block += tooBigSignalInstruction();
   }
 
   return template.replace('{{STORY_BLOCK}}', block);

@@ -91,8 +91,10 @@ function toAgentSummary(
 }
 
 function countByStatus(
-  agents: ReturnType<AgentStore['listByEpic']>
+  allAgents: ReturnType<AgentStore['listByEpic']>
 ): EpicStatus['stories'] {
+  // Exclude superseded originals (epic-095 reroute rework) — see index.ts countByStatus.
+  const agents = allAgents.filter((a) => a.superseded_by == null);
   const counts = { total: agents.length, done: 0, failed: 0, blocked: 0, pending: 0, running: 0 };
   for (const a of agents) {
     if (a.status === 'done' || a.status === 'pr_open') counts.done += 1;
@@ -233,7 +235,10 @@ export function registerRepoRoutes(app: Express, deps: RepoDeps): void {
       }
       const agentStore = new AgentStore(pDb);
       const auditLog = new AuditLog(pDb);
-      const agents = agentStore.listLatestByEpic(epic.id);
+      // Exclude superseded originals (epic-095 reroute rework) — see index.ts.
+      const agents = agentStore
+        .listLatestByEpic(epic.id)
+        .filter(a => a.superseded_by == null);
       const stories: AgentSummary[] = agents.map(a => toAgentSummary(a, auditLog));
       const response: StoriesResponse = { epic_id: epic.id, stories };
       res.json(response);
@@ -264,8 +269,12 @@ export function registerRepoRoutes(app: Express, deps: RepoDeps): void {
       }
       const agentStore = new AgentStore(pDb);
       const auditLog = new AuditLog(pDb);
-      // Match by story_id within this epic (latest attempt wins).
-      const agents = agentStore.listLatestByEpic(epic.id);
+      // Match by story_id within this epic (latest attempt wins). A superseded
+      // original (epic-095 reroute rework) was replaced by sub-stories and no
+      // longer exists as a live story → 404, not a phantom failed detail.
+      const agents = agentStore
+        .listLatestByEpic(epic.id)
+        .filter(a => a.superseded_by == null);
       const agent = agents.find(a => a.story_id === req.params.storyId);
       if (!agent) {
         res.status(404).json({ error: 'story not found' });

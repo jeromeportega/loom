@@ -1,9 +1,14 @@
+export { loadEpicStories } from './epicCriticalPath.js';
 export { WorktreeManager } from './WorktreeManager.js';
 export type { WorktreeInfo } from './WorktreeManager.js';
 export { WorktreeJanitor } from './WorktreeJanitor.js';
 export type { OrphanWorktree, OrphanReason } from './WorktreeJanitor.js';
 export { Supervisor } from './Supervisor.js';
 export type { SupervisorOptions, SupervisorResult } from './Supervisor.js';
+export { ReroutePMAgent } from './ReroutePMAgent.js';
+export type { ReroutePMAgentOptions } from './ReroutePMAgent.js';
+// NB: the reroute PMAgent interface is intentionally NOT re-exported here — it
+// would collide with planner/PMAgent. Import it from './rerouteHandler.js' directly.
 export type {
   WorkerRunner,
   WorkerAssignment,
@@ -162,4 +167,13 @@ export { CyclicRepoDependencyError, assertNoCycles, detectCyclesInEpicYaml } fro
 export { resolveSmokeCommand } from './SmokeResolver.js';
 export type { NoCallerFinding, NoCallerResult } from './GateNoProductionCaller.js';
 export { checkNoProductionCallers } from './GateNoProductionCaller.js';
+export {
+  buildStoryGraph,
+  topologicalSort,
+  detectCycles,
+  findReadyStories,
+  criticalPath,
+  StoryGraphCycleError,
+} from './storyGraph.js';
+export type { StoryGraph, CriticalPathResult } from './storyGraph.js';
 

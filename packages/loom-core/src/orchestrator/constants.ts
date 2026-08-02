@@ -98,6 +98,37 @@ export const SMOKE_TIMEOUT_MINUTES = 15;
 /** Prune done/merged worktrees at run end. */
 export const PRUNE_ORPHAN_WORKTREES = 'on' as const;
 
+// ─── Decomposition-aware orchestration (epic-095) ────────────────────────────
+/** Signal a worker emits (on its own line in stdout) to request story re-split. */
+export const LOOM_TOO_BIG_SIGNAL = 'LOOM_TOO_BIG' as const;
+/** Max re-split attempts per story before the orchestrator gives up and blocks. */
+export const MAX_RESPLIT_BUDGET = 2;
+
+/**
+ * Single source of truth for BOTH emitting and parsing the too-big signal, so the
+ * worker-prompt instruction and the Supervisor's stdout capture can never drift
+ * (they did once: the prompt said `LOOM_TOO_BIG: reason` but the parser matched
+ * only the space form). Matches the keyword on its own line, optionally followed
+ * by `:` and/or whitespace and a payload — and rejects `LOOM_TOO_BIGGER`. Returns
+ * the trimmed payload (`''` when bare) or `undefined` when the line is not a signal.
+ */
+export function matchTooBigSignal(line: string): string | undefined {
+  const trimmed = line.trim();
+  if (trimmed === LOOM_TOO_BIG_SIGNAL) return '';
+  const rest = trimmed.startsWith(LOOM_TOO_BIG_SIGNAL)
+    ? trimmed.slice(LOOM_TOO_BIG_SIGNAL.length)
+    : undefined;
+  // A real signal is the keyword followed by a separator (`:` or whitespace),
+  // never an alphanumeric/underscore continuation (which would be a longer word).
+  if (rest === undefined || rest.length === 0 || !/^[\s:]/.test(rest)) return undefined;
+  return rest.replace(/^[\s:]+/, '').trim();
+}
+
+/** The exact line a worker should emit; keeps prompt + parser in lockstep. */
+export function formatTooBigSignal(reason: string): string {
+  return `${LOOM_TOO_BIG_SIGNAL}: ${reason}`;
+}
+
 // ─── Cross-repo retrieval ────────────────────────────────────────────────────
 /** Cross-repo read-only retrieval is always enabled. */
 export const CROSS_REPO_ENABLED = true;

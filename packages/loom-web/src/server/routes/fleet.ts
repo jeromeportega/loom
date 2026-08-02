@@ -16,7 +16,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { Express } from 'express';
 import type Database from 'better-sqlite3';
-import { EpicStore, AgentStore, ProjectRegistry, createDatabase, deriveBlocked, PolicyEngine, resolveRepoStatePaths } from '@loom-ai/core';
+import { EpicStore, AgentStore, ProjectRegistry, createDatabase, deriveBlocked, PolicyEngine, resolveRepoStatePaths, loadEpicStories, buildStoryGraph, criticalPath as computeCriticalPath } from '@loom-ai/core';
 import type { ProjectEntry } from '@loom-ai/core';
 import type { EpicCost } from '../../shared/types.js';
 import type { FleetCard, FleetStory, AutonomyLevel } from '../../shared/fleet.js';
@@ -91,8 +91,13 @@ function buildProjectCards(
   // which presents them separately as stories).
   const epics = epicStore.list({ includeStandalone: true });
   return epics.map((epic) => {
-    // Per-story dedup: one row per story_id, most-recent attempt.
-    const latestAgents = agentStore.listLatestByEpic(epic.id);
+    // Per-story dedup: one row per story_id, most-recent attempt. Exclude
+    // superseded originals (epic-095 reroute rework): their row stays 'failed'
+    // as history but the story was replaced by sub-stories — showing it would
+    // put a phantom red card + blocker on a successfully-rerouted epic.
+    const latestAgents = agentStore
+      .listLatestByEpic(epic.id)
+      .filter((a) => a.superseded_by == null);
     const stories: FleetStory[] = latestAgents.map((a) => ({
       story_id: a.story_id,
       status: a.status,
@@ -115,9 +120,25 @@ function buildProjectCards(
       finalize_phase?: string | null;
       epic_pr_url?: string | null;
       kind?: string | null;
+      yaml_path?: string | null;
     };
     const autonomy_level = (epicRow.autonomy_level ?? 'manual') as AutonomyLevel;
     const paused = epicRow.paused_at != null;
+
+    // criticalPath: computed from the epic YAML when effort data is present.
+    const epicCriticalPath = (() => {
+      const yamlPath = epicRow.yaml_path ?? null;
+      if (!yamlPath) return null;
+      const epicStories = loadEpicStories(projectRoot, yamlPath);
+      if (!epicStories) return null;
+      const hasEffortData = epicStories.some(s => (s.estimated_effort ?? 0) > 0);
+      if (!hasEffortData) return null;
+      try {
+        return computeCriticalPath(buildStoryGraph(epicStories));
+      } catch {
+        return null;
+      }
+    })();
 
     return {
       project_root: projectRoot,
@@ -133,6 +154,7 @@ function buildProjectCards(
       planning_phase: epicRow.planning_phase ?? null,
       finalize_phase: epicRow.finalize_phase ?? null,
       epic_pr_url: epicRow.epic_pr_url ?? null,
+      criticalPath: epicCriticalPath,
       ...(epicRow.kind != null ? { kind: epicRow.kind } : {}),
       ...(deriveBlocked(epic) ?? {}),
     };

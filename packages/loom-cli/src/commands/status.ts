@@ -2,6 +2,7 @@ import type { CommandDescription } from '../describe/schema.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync as nodeSpawnSync } from 'node:child_process';
+import yaml from 'js-yaml';
 import {
   INTEGRATION_BRANCH,
   INTEGRATION_BRANCH_LAG_THRESHOLD,
@@ -22,6 +23,10 @@ import {
   deriveBlocked,
   displayModel,
   STANDALONE_KIND,
+  EpicYamlSchema,
+  buildStoryGraph,
+  criticalPath,
+  type CriticalPathResult,
   type IntakeVerdict,
   type EpicRecord,
   type LandingReport,
@@ -340,7 +345,11 @@ function collectJsonEpics(
     const verdicts = epicStore.getIntakeVerdicts(validRows.map((e) => e.id));
     const out: JsonEpic[] = [];
     for (const epic of validRows) {
-      const latest = agentStore.listLatestByEpic(epic.id);
+      // Exclude superseded originals (epic-095 reroute rework): their row stays
+      // 'failed' as history but the story was replaced by sub-stories.
+      const latest = agentStore
+        .listLatestByEpic(epic.id)
+        .filter((a) => a.superseded_by == null);
 
       if (epic.kind === STANDALONE_KIND) {
         // Standalone story — surface the story id as the top-level id, never
@@ -441,6 +450,25 @@ function collectJsonEpics(
     return out;
   } finally {
     db.close();
+  }
+}
+
+/**
+ * Loads the epic YAML and computes its critical path. Returns null when the
+ * YAML is absent, unparseable, or the graph is empty.
+ */
+function loadCriticalPath(yamlPath: string, projectRoot: string): CriticalPathResult | null {
+  const resolvedRoot = path.resolve(projectRoot);
+  const abs = path.resolve(projectRoot, yamlPath);
+  if (!abs.startsWith(resolvedRoot + path.sep) && abs !== resolvedRoot) return null;
+  if (!fs.existsSync(abs)) return null;
+  try {
+    const raw = yaml.load(fs.readFileSync(abs, 'utf8'), { schema: yaml.JSON_SCHEMA });
+    const { stories } = EpicYamlSchema.parse(raw);
+    const graph = buildStoryGraph(stories);
+    return criticalPath(graph);
+  } catch {
+    return null;
   }
 }
 
@@ -574,6 +602,16 @@ function renderLoomDir(
       const v = verdicts.get(epic.id) ?? null;
       console.log(`        verdict: ${v ? `${v.type}/${v.size} (${v.confidence})` : 'no verdict'}`);
 
+      if (epic.yaml_path) {
+        const cp = loadCriticalPath(epic.yaml_path, repoRoot);
+        if (cp !== null && cp.chain.length > 0) {
+          const effortLabel = cp.estimatedMinutes === 0
+            ? '(no effort estimates)'
+            : `${cp.estimatedMinutes} min estimated`;
+          console.log(`        Critical path: ${cp.chain.join(' → ')}  ${effortLabel}`);
+        }
+      }
+
       if (epic.planner_tokens_input || epic.planner_tokens_output) {
         const inn = epic.planner_tokens_input ?? 0;
         const out = epic.planner_tokens_output ?? 0;
@@ -591,7 +629,9 @@ function renderLoomDir(
       // (matches `loom_get_status`). A story that was blocked then retried
       // to done shows as 'done' once, with a "(retry N)" tag when the
       // attempt count exceeds 1.
-      const agents = agentStore.listLatestByEpic(epic.id);
+      const agents = agentStore
+        .listLatestByEpic(epic.id)
+        .filter((a) => a.superseded_by == null);
       if (agents.length === 0) {
         console.log('      No agents dispatched yet.');
       } else {
@@ -635,7 +675,9 @@ function renderLoomDir(
 
     // Render standalone stories with story framing (never as "epic-NNN with N stories").
     for (const container of standalones) {
-      const agents = agentStore.listLatestByEpic(container.id);
+      const agents = agentStore
+        .listLatestByEpic(container.id)
+        .filter((a) => a.superseded_by == null);
       const archivedTag = container.archived_at ? '  🗄 [archived]' : '';
       if (agents.length === 0) {
         // Container exists but no agent dispatched yet (planning phase).

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
-export const SCHEMA_VERSION = 32;
+export const SCHEMA_VERSION = 34;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -530,6 +530,49 @@ export function runMigrations(db: Database.Database): void {
     db.exec(
       'ALTER TABLE agents ADD COLUMN revise_round INTEGER NOT NULL DEFAULT 0'
     );
+  }
+  // v33: decomposition-aware orchestration fields (epic-095 story-095-001;
+  // renumbered from v31 during reconcile onto the v32 audit-chain base — these
+  // are PRAGMA-guarded additive ALTERs, so the number is documentation only).
+  // provides_output: JSON blob from the LOOM_PROVIDES trailer emitted by a
+  // worker; NULL = absent or not yet parsed. Written by story-095-004.
+  // resplit_count: how many re-split attempts have been made for this story
+  // when LOOM_TOO_BIG is signalled; DEFAULT 0 so pre-migration rows read 0
+  // without backfill.
+  if (!agentCols.some((c) => c.name === 'provides_output')) {
+    db.exec('ALTER TABLE agents ADD COLUMN provides_output TEXT');
+  }
+  if (!agentCols.some((c) => c.name === 'resplit_count')) {
+    db.exec(
+      'ALTER TABLE agents ADD COLUMN resplit_count INTEGER NOT NULL DEFAULT 0'
+    );
+  }
+  // v33 (cont.) / epic-095 story-095-005: sub-story injection columns.
+  // story_json: full Story JSON blob for sub-stories created by the reroute
+  // handler; NULL for normal stories. Lets the Supervisor re-hydrate sub-story
+  // objects from DB after a reroute without re-reading the YAML plan.
+  // dep_overrides: JSON array of dependency-id strings that supersedes a
+  // downstream story's YAML-declared dependencies after its upstream was
+  // re-split. NULL = use YAML deps; non-NULL = use this array instead.
+  if (!agentCols.some((c) => c.name === 'story_json')) {
+    db.exec('ALTER TABLE agents ADD COLUMN story_json TEXT');
+  }
+  if (!agentCols.some((c) => c.name === 'dep_overrides')) {
+    db.exec('ALTER TABLE agents ADD COLUMN dep_overrides TEXT');
+  }
+  // v34: reroute-rework columns (epic-095 rework). PRAGMA-guarded additive ALTERs.
+  // superseded_by: JSON array of the sub-story ids that replaced this story via a
+  // reroute. Non-NULL marks the ORIGINAL as superseded so the restart map-build
+  // fully excludes it from the in-memory tasks map (the row keeps status='failed',
+  // which is already terminal everywhere — no new status enum, no re-dispatch).
+  // requires_overrides: JSON map (key -> sourceStoryId) that supersedes a
+  // downstream story's YAML `requires` after an upstream was re-split — mirrors
+  // dep_overrides, applied by rewriting story.requires in-memory.
+  if (!agentCols.some((c) => c.name === 'superseded_by')) {
+    db.exec('ALTER TABLE agents ADD COLUMN superseded_by TEXT');
+  }
+  if (!agentCols.some((c) => c.name === 'requires_overrides')) {
+    db.exec('ALTER TABLE agents ADD COLUMN requires_overrides TEXT');
   }
   if (!epicCols.some((c) => c.name === 'planner_model')) {
     db.exec('ALTER TABLE epics ADD COLUMN planner_model TEXT');
