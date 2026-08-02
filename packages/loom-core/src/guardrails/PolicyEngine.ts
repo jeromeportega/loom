@@ -11,11 +11,11 @@ import type { AuditLog } from '../state/AuditLog.js';
 import { CROSS_REPO_ENABLED } from '../orchestrator/constants.js';
 import { checkPathSafety } from './pathSafety.js';
 
-// Matches any RFC-3986 URI scheme with authority (e.g. https://, rsync://, s3://)
-// EXCEPT file:// — file:// is the attack vector targeted by checkPathSafety's
-// url-scheme rule and must not be excluded from path-safety inspection.
-// Hoisted to module scope so the RegExp is compiled once, not on every check() call.
-const SAFE_REMOTE_URL_RE = /^(?!file:\/\/)[a-z][a-z0-9+\-.]*:\/\//i;
+// Tools whose FIRST positional operand is a pattern/expression, not a path
+// (`grep %2e f`, `sed 's/…/…/' f`). Their pattern token is skipped by the
+// path-safety check so a pattern that happens to look like a file: URI or carry
+// odd bytes is not a false positive. Mirrors checkReadScopeCommand's list.
+const PATH_SAFETY_PATTERN_FIRST = new Set(['grep', 'rg', 'egrep', 'fgrep', 'awk', 'sed']);
 
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
 export interface WorktreeContext {
@@ -84,32 +84,33 @@ export class PolicyEngine {
 
     const cmd = parseCommand(rawCommand);
 
-    // Collect positional argv tokens for path-safety inspection.
-    // Two cases handled:
+    // Collect positional argv tokens for path-safety inspection (checkPathSafety
+    // rejects null bytes, control chars, and file: URIs — see pathSafety.ts).
     //   1. `--` end-of-options: all subsequent tokens are positional, checked
-    //      even when they start with `-` (e.g. `cat -- -%2e%2e%2fsecret`).
-    //   2. Remote URLs (https/http/ssh/git/ftp): legitimate operands passed to
-    //      tools like `gh`, `curl`, `git clone` — exclude from path checking.
-    //      `file://` is NOT excluded because it is the attack vector the
-    //      url-scheme rule targets.
-    // Note: flag-value skipping (e.g. `-m message`) is intentionally absent.
-    // There is no reliable way to distinguish value-taking flags from boolean
-    // flags without per-program knowledge, so checking all non-flag positional
-    // tokens is the secure-by-default choice (false positives are preferable
-    // to false negatives in a defense-in-depth guard).
+    //      even when they start with `-` (e.g. `cat -- -weird`).
+    //   2. Flags (`-x`, `--flag`) before `--` are skipped: they are option names,
+    //      not paths. (A file: URI can't hide behind a leading `-` — checkPathSafety
+    //      anchors `file:` at the token start, and a `-`-prefixed token isn't one.)
+    //   3. Pattern-first tools (grep/sed/…): skip the first positional, which is a
+    //      pattern/expression, not a path — so `grep file://x src` is not a false
+    //      positive. Mirrors checkReadScopeCommand.
+    // Remote URL operands (`https://`, `ssh://`, …) need NO exclusion: they are not
+    // file: URIs and carry no NUL/control bytes, so checkPathSafety passes them.
     const pathTokens: string[] = [];
     let pastSeparator = false;
+    let skippedPattern = false;
+    const isPatternFirst = PATH_SAFETY_PATTERN_FIRST.has(cmd.program);
     for (const token of cmd.argv.slice(1)) {
       if (!pastSeparator && token === '--') {
         pastSeparator = true;
         continue;
       }
-      if (pastSeparator) {
-        pathTokens.push(token);
+      if (!pastSeparator && token.startsWith('-')) continue;
+      // First positional of a pattern-first tool = the pattern; skip it once.
+      if (isPatternFirst && !skippedPattern) {
+        skippedPattern = true;
         continue;
       }
-      if (token.startsWith('-')) continue;
-      if (SAFE_REMOTE_URL_RE.test(token)) continue;
       pathTokens.push(token);
     }
 

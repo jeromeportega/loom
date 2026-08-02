@@ -1,9 +1,12 @@
 /**
- * Integration tests for the adversarial-encoding path guard wired into
- * PolicyEngine.check() (story-098-002).
+ * Integration tests for the re-scoped path-safety guard wired into
+ * PolicyEngine.check().
  *
  * Uses a real AuditLog over an in-memory SQLite database so both the return
- * value and the persisted audit row are exercised in every relevant case.
+ * value and the persisted audit row are exercised. After the epic-098 re-gate the
+ * guard rejects only null bytes, control chars, and file: URIs — percent encodings
+ * are deliberately allowed (shell tools take them literally); the DENY cases below
+ * cover the real threats and the ALLOW cases pin the false-positive fixes.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,256 +16,122 @@ import { AuditLog } from '../../src/state/AuditLog.js';
 import { PolicyEngine, type WorktreeContext } from '../../src/guardrails/PolicyEngine.js';
 import { PolicySchema } from '../../src/types.js';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 function freshEngine(): PolicyEngine {
   return new PolicyEngine(PolicySchema.parse({}));
 }
 
-type AuditRow = {
-  id: number;
-  action: string;
-  command: string | null;
-  allowed: number | null;
-  policy_rule: string | null;
-  detail: string | null;
-};
+type AuditRow = { action: string; command: string | null; allowed: number | null; policy_rule: string | null; detail: string | null };
 
-function queryAuditRows(db: Database.Database, action: string): AuditRow[] {
+function guardRows(db: Database.Database): AuditRow[] {
   return db
-    .prepare('SELECT id, action, command, allowed, policy_rule, detail FROM audit_log WHERE action = ?')
-    .all(action) as AuditRow[];
+    .prepare("SELECT action, command, allowed, policy_rule, detail FROM audit_log WHERE action = 'guard_blocked'")
+    .all() as AuditRow[];
 }
 
 function makeCtx(db: Database.Database): WorktreeContext {
-  return {
-    worktreeRoot: '/tmp/own',
-    loomHome: '/tmp/loomhome',
-    audit: new AuditLog(db),
-  };
+  return { worktreeRoot: '/tmp/own', loomHome: '/tmp/loomhome', audit: new AuditLog(db) };
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+function encodingRule(r: ReturnType<PolicyEngine['check']>): boolean {
+  return !r.allowed && 'rule' in r && r.rule === 'path.unsafe_encoding';
+}
 
-describe('PolicyEngine — encoding guard integration (story-098-002)', () => {
-  it('percent-encoded dot-traversal is denied with rule path.unsafe_encoding', () => {
-    const localDb = createDatabase(':memory:');
-    const engine = freshEngine();
-    const r = engine.check('cat %2e%2e%2fsecret', makeCtx(localDb));
-    assert.equal(r.allowed, false, 'must be denied');
-    assert.ok('rule' in r && r.rule === 'path.unsafe_encoding', `unexpected rule: ${'rule' in r ? r.rule : 'none'}`);
-    assert.ok('reason' in r && typeof r.reason === 'string' && r.reason.length > 0, 'reason must be non-empty string');
+describe('PolicyEngine — path-safety guard: DENIALS', () => {
+  it('file:/// (authority form) is denied', () => {
+    const r = freshEngine().check('curl file:///etc/passwd', makeCtx(createDatabase(':memory:')));
+    assert.ok(encodingRule(r));
   });
 
-  it('encoded-separator variant is denied', () => {
-    const localDb = createDatabase(':memory:');
-    const engine = freshEngine();
-    const r = engine.check('cat ..%2fsecret', makeCtx(localDb));
-    assert.equal(r.allowed, false);
-    assert.ok('rule' in r && r.rule === 'path.unsafe_encoding');
+  it('file:/ (single-slash) — the demonstrated curl bypass — is denied', () => {
+    const r = freshEngine().check('curl file:/etc/passwd', makeCtx(createDatabase(':memory:')));
+    assert.ok(encodingRule(r), 'file:/ must be denied (curl normalizes it to file:/// and reads the file)');
   });
 
-  it('file-URI scheme is denied', () => {
-    const localDb = createDatabase(':memory:');
-    const engine = freshEngine();
-    const r = engine.check('cat file:///etc/passwd', makeCtx(localDb));
-    assert.equal(r.allowed, false);
-    assert.ok('rule' in r && r.rule === 'path.unsafe_encoding');
+  it('opaque file: form is denied', () => {
+    const r = freshEngine().check('wget file:etc/passwd', makeCtx(createDatabase(':memory:')));
+    assert.ok(encodingRule(r));
   });
 
-  it('null-byte variant is denied', () => {
-    const localDb = createDatabase(':memory:');
-    const engine = freshEngine();
-    const r = engine.check('cat foo\x00bar', makeCtx(localDb));
-    assert.equal(r.allowed, false);
-    assert.ok('rule' in r && r.rule === 'path.unsafe_encoding');
+  it('null-byte token is denied', () => {
+    const r = freshEngine().check('cat foo\x00bar', makeCtx(createDatabase(':memory:')));
+    assert.ok(encodingRule(r));
   });
 
-  it('uppercase percent-encoding is denied (case-insensitive matching)', () => {
-    const localDb = createDatabase(':memory:');
-    const engine = freshEngine();
-    // RFC 3986 requires percent-encoding to be case-insensitive (%2E and %2e are equivalent).
-    const r = engine.check('cat %2E%2E%2Fsecret', makeCtx(localDb));
-    assert.equal(r.allowed, false, 'uppercase percent-encoding must be denied');
-    assert.ok('rule' in r && r.rule === 'path.unsafe_encoding', `expected path.unsafe_encoding, got: ${'rule' in r ? r.rule : 'none'}`);
+  it('control-char token is denied', () => {
+    const r = freshEngine().check('cat foo\x01bar', makeCtx(createDatabase(':memory:')));
+    assert.ok(encodingRule(r));
   });
 
-  it('audit row is written with correct fields on denial', () => {
-    const localDb = createDatabase(':memory:');
-    const ctx = makeCtx(localDb);
-    const engine = freshEngine();
-
-    const rawCmd = 'cat %2e%2e%2fsecret';
-    engine.check(rawCmd, ctx);
-
-    const rows = queryAuditRows(localDb, 'guard_blocked');
-    assert.equal(rows.length, 1, 'exactly one guard_blocked row must be written');
-    const row = rows[0];
-    assert.equal(row.action, 'guard_blocked');
-    assert.equal(row.policy_rule, 'path.unsafe_encoding');
-    assert.equal(row.allowed, 0, 'allowed must be 0 (false)');
-    assert.equal(row.command, rawCmd);
-
-    const detail = JSON.parse(row.detail ?? '{}');
-    assert.equal(detail.token, '%2e%2e%2fsecret', 'detail.token must be the offending token');
-    assert.equal(detail.rule, 'encoded-dot', 'detail.rule must match checkPathSafety rule');
+  it('denial is structural — fires with cross_repo disabled and no ctx', () => {
+    const engine = new PolicyEngine(PolicySchema.parse({ cross_repo: { enabled: false } }));
+    assert.ok(encodingRule(engine.check('curl file:/etc/passwd')));           // no ctx
+    assert.ok(encodingRule(engine.check('curl file:/etc/passwd', makeCtx(createDatabase(':memory:')))));
   });
 
-  it('audit row NOT written when ctx is omitted — guard still denies', () => {
-    const engine = freshEngine();
-
-    // No ctx — denial must still fire without crashing (the `if (ctx !== undefined)`
-    // guard in PolicyEngine skips the audit call when ctx is omitted).
-    const r = engine.check('cat %2e%2e/secret');
-    assert.equal(r.allowed, false);
-    assert.ok('rule' in r && r.rule === 'path.unsafe_encoding');
+  it('post-`--` token starting with `-` is still checked', () => {
+    const r = freshEngine().check('curl -- file:/etc/passwd', makeCtx(createDatabase(':memory:')));
+    assert.ok(encodingRule(r));
   });
+});
 
-  it('boolean short flag does not cause the next adversarial token to be skipped', () => {
-    const localDb = createDatabase(':memory:');
-    const ctx = makeCtx(localDb);
-    const engine = freshEngine();
-
-    // `-n` is a boolean short flag for `cat` (no value argument). An earlier
-    // skipNextAsOptValue heuristic incorrectly treated it as value-consuming,
-    // causing `%2e%2e%2fsecret` to be silently skipped — that is the bypass
-    // this test guards against.
-    const r = engine.check('cat -n %2e%2e%2fsecret', ctx);
-    assert.equal(r.allowed, false, 'adversarial token after boolean short flag must be denied');
-    assert.ok(
-      'rule' in r && r.rule === 'path.unsafe_encoding',
-      `expected path.unsafe_encoding, got: ${'rule' in r ? r.rule : 'none'}`,
-    );
-
-    const rows = queryAuditRows(localDb, 'guard_blocked');
-    assert.equal(rows.length, 1, 'one audit row must be written');
-    const detail = JSON.parse(rows[0].detail ?? '{}');
-    assert.equal(detail.token, '%2e%2e%2fsecret', 'audit row must record the adversarial token');
-  });
-
-  it('tokens after -- end-of-options marker are checked even when starting with -', () => {
-    const localDb = createDatabase(':memory:');
-    const ctx = makeCtx(localDb);
-    const engine = freshEngine();
-
-    // `-%2e%2e%2fsecret` starts with `-` but appears after `--`, so it is a
-    // positional argument — the encoding guard must not skip it.
-    const r = engine.check('cat -- -%2e%2e%2fsecret', ctx);
-    assert.equal(r.allowed, false, 'post-separator token must be denied');
-    assert.ok(
-      'rule' in r && r.rule === 'path.unsafe_encoding',
-      `expected path.unsafe_encoding, got: ${'rule' in r ? r.rule : 'none'}`,
-    );
-
-    const rows = queryAuditRows(localDb, 'guard_blocked');
-    assert.equal(rows.length, 1, 'one audit row must be written for the post-separator token');
-    const detail = JSON.parse(rows[0].detail ?? '{}');
-    assert.equal(detail.token, '-%2e%2e%2fsecret');
-  });
-
-  it('flags are not inspected — --stat token does not cause denial', () => {
-    const localDb = createDatabase(':memory:');
-    const ctx = makeCtx(localDb);
-    const engine = freshEngine();
-
-    // --stat is a flag (starts with -); src/foo.ts is safe
-    const r = engine.check('git diff --stat src/foo.ts', ctx);
-    // Must not be a path.unsafe_encoding denial
-    if (!r.allowed) {
-      assert.ok(
-        !('rule' in r) || r.rule !== 'path.unsafe_encoding',
-        `--stat flag must not trigger encoding guard, got rule: ${'rule' in r ? r.rule : 'none'}`,
-      );
-    }
-    const rows = queryAuditRows(localDb, 'guard_blocked');
-    const encodingRows = rows.filter(row => row.policy_rule === 'path.unsafe_encoding');
-    assert.equal(encodingRows.length, 0, 'no encoding guard rows must be written for safe flags');
-  });
-
-  it('first-match-wins: two bad tokens produce exactly one audit row', () => {
-    const localDb = createDatabase(':memory:');
-    const ctx = makeCtx(localDb);
-    const engine = freshEngine();
-
-    // Two adversarial tokens — only the first should be recorded
-    engine.check('cat %2e%2e%2fsecret file:///etc/passwd', ctx);
-
-    const rows = queryAuditRows(localDb, 'guard_blocked');
-    assert.equal(rows.length, 1, 'exactly one audit row for the first bad token');
-    const detail = JSON.parse(rows[0].detail ?? '{}');
-    assert.equal(detail.token, '%2e%2e%2fsecret', 'row must be for the first token');
-  });
-
-  it('safe path command passes encoding guard (passes through to subsequent checks)', () => {
-    const localDb = createDatabase(':memory:');
-    const ctx = makeCtx(localDb);
-    const engine = freshEngine();
-
-    // src/main.ts is safe — encoding guard must not short-circuit it
-    const r = engine.check('cat src/main.ts', ctx);
-    // Whatever downstream produces, it must NOT be path.unsafe_encoding
-    if (!r.allowed) {
-      assert.ok(
-        !('rule' in r) || r.rule !== 'path.unsafe_encoding',
-        `safe path must not be denied by encoding guard, got rule: ${'rule' in r ? r.rule : 'none'}`,
-      );
-    }
-    const rows = queryAuditRows(localDb, 'guard_blocked');
-    const encodingRows = rows.filter(row => row.policy_rule === 'path.unsafe_encoding');
-    assert.equal(encodingRows.length, 0, 'encoding guard must not produce rows for safe paths');
-  });
-
-  it('encoding guard fires regardless of policy.yaml knobs', () => {
-    // Construct engine with cross_repo_enabled false and other knobs
-    const policy = PolicySchema.parse({ cross_repo: { enabled: false } });
-    const engine = new PolicyEngine(policy);
-    const localDb = createDatabase(':memory:');
-    const ctx = makeCtx(localDb);
-
-    const r = engine.check('cat %2e%2e%2fsecret', ctx);
-    assert.equal(r.allowed, false, 'encoding guard must fire regardless of policy knobs');
-    assert.ok('rule' in r && r.rule === 'path.unsafe_encoding');
-  });
-
-  it('encoded-separator token audit row detail contains correct token and rule', () => {
-    const localDb = createDatabase(':memory:');
-    const ctx = makeCtx(localDb);
-    const engine = freshEngine();
-
-    engine.check('cat ..%2fsecret', ctx);
-
-    const rows = queryAuditRows(localDb, 'guard_blocked');
+describe('PolicyEngine — path-safety guard: AUDIT', () => {
+  it('writes one guard_blocked row with token + rule on a file: denial', () => {
+    const db = createDatabase(':memory:');
+    freshEngine().check('curl file:/etc/passwd', makeCtx(db));
+    const rows = guardRows(db);
     assert.equal(rows.length, 1);
+    assert.equal(rows[0].policy_rule, 'path.unsafe_encoding');
+    assert.equal(rows[0].allowed, 0);
+    assert.equal(rows[0].command, 'curl file:/etc/passwd');
     const detail = JSON.parse(rows[0].detail ?? '{}');
-    assert.equal(detail.token, '..%2fsecret');
-    assert.equal(detail.rule, 'encoded-sep');
+    assert.equal(detail.token, 'file:/etc/passwd');
+    assert.equal(detail.rule, 'file-scheme');
   });
 
-  it('file-URI scheme audit row detail contains correct token and rule', () => {
-    const localDb = createDatabase(':memory:');
-    const ctx = makeCtx(localDb);
-    const engine = freshEngine();
-
-    engine.check('cat file:///etc/passwd', ctx);
-
-    const rows = queryAuditRows(localDb, 'guard_blocked');
-    assert.equal(rows.length, 1);
-    const detail = JSON.parse(rows[0].detail ?? '{}');
-    assert.equal(detail.token, 'file:///etc/passwd');
-    assert.equal(detail.rule, 'url-scheme');
-  });
-
-  it('null-byte token audit row detail contains correct token and rule', () => {
-    const localDb = createDatabase(':memory:');
-    const ctx = makeCtx(localDb);
-    const engine = freshEngine();
-
-    engine.check('cat foo\x00bar', ctx);
-
-    const rows = queryAuditRows(localDb, 'guard_blocked');
-    assert.equal(rows.length, 1);
-    const detail = JSON.parse(rows[0].detail ?? '{}');
-    assert.equal(detail.token, 'foo\x00bar');
+  it('null-byte denial records rule null-byte', () => {
+    const db = createDatabase(':memory:');
+    freshEngine().check('cat foo\x00bar', makeCtx(db));
+    const detail = JSON.parse(guardRows(db)[0].detail ?? '{}');
     assert.equal(detail.rule, 'null-byte');
   });
+
+  it('first-match-wins: two bad tokens produce exactly one row', () => {
+    const db = createDatabase(':memory:');
+    freshEngine().check('curl file:/a file:/b', makeCtx(db));
+    assert.equal(guardRows(db).length, 1);
+  });
+
+  it('no audit row (no crash) when ctx is omitted, but guard still denies', () => {
+    const r = freshEngine().check('curl file:/etc/passwd');
+    assert.ok(encodingRule(r));
+  });
+});
+
+describe('PolicyEngine — path-safety guard: NO FALSE POSITIVES (the re-scope fixes)', () => {
+  // These were all wrongly DENIED before the re-scope. They must pass the
+  // path-safety guard now (they may still be denied by an unrelated rule, but
+  // never with path.unsafe_encoding).
+  const ALLOWED = [
+    'grep %2e src/pathSafety.ts',          // grep pattern with %2e
+    "grep file:// src",                     // grep pattern that looks like a scheme
+    'gh api repos/o/r/contents/dir%2Ffile', // GitHub requires %2F
+    'git commit -m "handle %2f and file:// tokens"', // commit message
+    'cat report%2e2024.txt',                // real filename with %
+    'git clone https://github.com/o/r',     // remote URL operand
+    'curl https://api.example.com/x',       // remote URL operand
+    'cat src/main.ts',                      // plain path
+    'sed s/%2e/x/ file.txt',                // sed pattern with %2e
+  ];
+  for (const cmd of ALLOWED) {
+    it(`does NOT path-safety-deny: ${cmd}`, () => {
+      const db = createDatabase(':memory:');
+      const r = freshEngine().check(cmd, makeCtx(db));
+      assert.ok(!encodingRule(r), `must not be a path.unsafe_encoding denial: ${cmd}`);
+      assert.equal(
+        guardRows(db).filter(row => row.policy_rule === 'path.unsafe_encoding').length,
+        0,
+        `no path.unsafe_encoding audit row for: ${cmd}`,
+      );
+    });
+  }
 });

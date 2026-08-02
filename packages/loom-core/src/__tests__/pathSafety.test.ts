@@ -4,15 +4,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { checkPathSafety } from '../guardrails/pathSafety.js';
 
+// checkPathSafety guards the RAW SHELL surface, so it targets only null bytes,
+// control chars, and file: URIs — the classes dangerous at that layer. Percent
+// encodings are deliberately NOT checked (shell tools take args literally; see
+// pathSafety.ts) — the safe-set below proves they now pass.
+
 // ─── null-byte rule ──────────────────────────────────────────────────────────
 
 describe('checkPathSafety — null-byte rule', () => {
-  it('rejects token containing \\x00', () => {
+  it('rejects a token containing \\x00', () => {
     const r = checkPathSafety('foo\x00bar');
     assert.equal(r.safe, false);
     if (!r.safe) {
       assert.equal(r.rule, 'null-byte');
-      assert.ok(r.reason.length > 0, 'reason must be a non-empty string');
+      assert.ok(r.reason.length > 0);
     }
   });
 });
@@ -20,205 +25,96 @@ describe('checkPathSafety — null-byte rule', () => {
 // ─── control-char rule ───────────────────────────────────────────────────────
 
 describe('checkPathSafety — control-char rule', () => {
-  it('rejects token with \\x01 at start (not null byte)', () => {
-    const r = checkPathSafety('\x01abc');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'control-char');
-  });
-
-  it('rejects token with \\x1f at end (not null byte)', () => {
-    const r = checkPathSafety('abc\x1f');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'control-char');
-  });
-
-  it('rejects token with DEL \\x7f (not null byte)', () => {
-    const r = checkPathSafety('abc\x7f');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'control-char');
-  });
-});
-
-// ─── encoded-dot rule ────────────────────────────────────────────────────────
-
-describe('checkPathSafety — encoded-dot rule', () => {
-  it('rejects %2e%2e/secret (lowercase)', () => {
-    const r = checkPathSafety('%2e%2e/secret');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-dot');
-  });
-
-  it('rejects %2E%2E/secret (uppercase, case-insensitive)', () => {
-    const r = checkPathSafety('%2E%2E/secret');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-dot');
-  });
-
-  it('rejects %252e%252e/secret (double-encoded)', () => {
-    const r = checkPathSafety('%252e%252e/secret');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-dot');
-  });
-});
-
-// ─── encoded-sep rule ────────────────────────────────────────────────────────
-
-describe('checkPathSafety — encoded-sep rule', () => {
-  it('rejects ..%2fsecret (encoded forward slash, lowercase)', () => {
-    const r = checkPathSafety('..%2fsecret');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-sep');
-  });
-
-  it('rejects ..%5csecret (encoded backslash, lowercase)', () => {
-    const r = checkPathSafety('..%5csecret');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-sep');
-  });
-
-  it('rejects %2F (uppercase forward slash)', () => {
-    const r = checkPathSafety('%2F');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-sep');
-  });
-
-  it('rejects %5C (uppercase backslash)', () => {
-    const r = checkPathSafety('%5C');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-sep');
-  });
-
-  it('rejects %252f (double-encoded forward slash)', () => {
-    const r = checkPathSafety('%252f');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-sep');
-  });
-
-  it('rejects %255c (double-encoded backslash)', () => {
-    const r = checkPathSafety('%255c');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-sep');
-  });
-});
-
-// ─── encoded-null rule ───────────────────────────────────────────────────────
-
-describe('checkPathSafety — encoded-null rule', () => {
-  it('rejects %00 (percent-encoded null)', () => {
-    const r = checkPathSafety('%00');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-null');
-  });
-
-  it('rejects %2500 (double-encoded null)', () => {
-    const r = checkPathSafety('%2500');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-null');
-  });
-
-  it('rejects %00 with suffix', () => {
-    const r = checkPathSafety('%00suffix');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-null');
-  });
-});
-
-// ─── url-scheme rule ─────────────────────────────────────────────────────────
-
-describe('checkPathSafety — url-scheme rule', () => {
-  it('rejects file:///etc/passwd', () => {
-    const r = checkPathSafety('file:///etc/passwd');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'url-scheme');
-  });
-
-  it('rejects http://evil.com/path', () => {
-    const r = checkPathSafety('http://evil.com/path');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'url-scheme');
-  });
-
-  it('rejects https://x.com', () => {
-    const r = checkPathSafety('https://x.com');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'url-scheme');
-  });
-
-  it('allows foo/bar (starts with f but is not a URI scheme)', () => {
-    const r = checkPathSafety('foo/bar');
-    assert.equal(r.safe, true);
-  });
-});
-
-// ─── safe set ────────────────────────────────────────────────────────────────
-
-describe('checkPathSafety — safe set (false-positive guard)', () => {
-  const safeTokens = [
-    'src/foo.ts',
-    './a/b',
-    '../within/ok',
-    '..',
-    'a.b.c',
-    'filename.txt',
-    'dir/sub/',
-  ];
-
-  for (const token of safeTokens) {
-    it(`allows: ${JSON.stringify(token)}`, () => {
-      const r = checkPathSafety(token);
-      assert.equal(r.safe, true, `expected safe=true for token ${JSON.stringify(token)}`);
+  for (const [name, tok] of [['C0 start', '\x01abc'], ['C0 mid', 'abc\x1fdef'], ['DEL', 'abc\x7f']] as const) {
+    it(`rejects a token with a ${name} control character`, () => {
+      const r = checkPathSafety(tok);
+      assert.equal(r.safe, false);
+      if (!r.safe) assert.equal(r.rule, 'control-char');
     });
   }
 });
 
-// ─── four demonstrated-gap tokens ────────────────────────────────────────────
+// ─── file-scheme rule (all forms — the epic-098 re-gate exploit) ────────────────
 
-describe('checkPathSafety — demonstrated-gap tokens', () => {
-  it('rejects %2e%2e%2fsecret', () => {
-    const r = checkPathSafety('%2e%2e%2fsecret');
-    assert.equal(r.safe, false);
-  });
-
-  it('rejects ..%2fsecret', () => {
-    const r = checkPathSafety('..%2fsecret');
-    assert.equal(r.safe, false);
-  });
-
-  it('rejects file:///etc/passwd', () => {
-    const r = checkPathSafety('file:///etc/passwd');
-    assert.equal(r.safe, false);
-  });
-
-  it('rejects foo\\x00bar (null-byte variant)', () => {
-    const r = checkPathSafety('foo\x00bar');
-    assert.equal(r.safe, false);
-  });
+describe('checkPathSafety — file-scheme rule', () => {
+  // The original `://`-only rule missed `file:/` (single slash), which curl
+  // normalizes to `file:///` and reads. ALL forms must be rejected.
+  for (const tok of [
+    'file:///etc/passwd',   // authority form
+    'file:/etc/passwd',     // single-slash (RFC-8089) — the bypass
+    'file:etc/passwd',      // opaque form
+    'FILE:/etc/passwd',     // case-insensitive
+    'file:/Users/v/.ssh/id_rsa',
+    ' file:/etc/passwd',    // leading whitespace (quoted arg) must not slip the anchor
+  ]) {
+    it(`rejects ${JSON.stringify(tok)}`, () => {
+      const r = checkPathSafety(tok);
+      assert.equal(r.safe, false, `${tok} must be rejected`);
+      if (!r.safe) assert.equal(r.rule, 'file-scheme');
+    });
+  }
 });
 
-// ─── rule ordering (first-match-wins) ────────────────────────────────────────
+// ─── rule ordering (first-match-wins) ──────────────────────────────────────────
 
 describe('checkPathSafety — rule ordering', () => {
-  it('token with \\x00 AND %2e returns rule: null-byte (first-match-wins)', () => {
-    const r = checkPathSafety('foo\x00%2e');
-    assert.equal(r.safe, false);
+  it('null-byte precedes control-char', () => {
+    const r = checkPathSafety('a\x00\x01b');
     if (!r.safe) assert.equal(r.rule, 'null-byte');
   });
-
-  it('token with %2e AND %2f returns rule: encoded-dot (encoded-dot fires before encoded-sep)', () => {
-    const r = checkPathSafety('%2e%2f');
-    assert.equal(r.safe, false);
-    if (!r.safe) assert.equal(r.rule, 'encoded-dot');
+  it('control-char precedes file-scheme (a control byte in a file: token → control-char)', () => {
+    const r = checkPathSafety('file:\x01/etc');
+    if (!r.safe) assert.equal(r.rule, 'control-char');
   });
 });
 
-// ─── static module guard ─────────────────────────────────────────────────────
+// ─── safe set — NO false positives ─────────────────────────────────────────────
 
-describe('checkPathSafety — static module guard', () => {
-  it('compiled pathSafety.js contains no fs require and no path.resolve', () => {
-    // At runtime __dirname is dist/__tests__/; the compiled module is one level up
-    const compiled = path.join(__dirname, '..', 'guardrails', 'pathSafety.js');
-    const src = fs.readFileSync(compiled, 'utf8');
-    assert.ok(!/require.*['"].*fs['"]/.test(src), 'must not require fs');
-    assert.ok(!/path\.resolve/.test(src), 'must not call path.resolve');
+describe('checkPathSafety — safe set (no false positives)', () => {
+  const SAFE = [
+    // plain paths
+    'src/foo.ts', './a/b', '../within/ok', '..', 'a.b.c', 'filename.txt', 'dir/sub/',
+    // remote URL operands — benign, must pass (not file:)
+    'https://github.com/o/r', 'ssh://git@host/x', 'git://host/x.git',
+    // percent-encodings are NO LONGER flagged (deliberate re-scope): these are
+    // literal to the shell and were false positives before.
+    '%2e%2e/secret', '..%2fsecret', 'report%2e2024.txt', 'a%20b', '100%.md', 'x=%2F%2Fy',
+    // "file" as a substring, not a scheme
+    'my-file.txt', 'profile://not-a-scheme-prefix'.replace('profile', 'notfile'),
+    'the file:// docs', // does not START with file:
+  ];
+  for (const tok of SAFE) {
+    it(`allows ${JSON.stringify(tok)}`, () => {
+      assert.equal(checkPathSafety(tok).safe, true, `${tok} must be safe`);
+    });
+  }
+});
+
+// ─── documented gaps (out of scope by design — see pathSafety.ts) ──────────────
+// These are NOT blocked and that is a deliberate threat-model decision: percent /
+// unicode / overlong traversal only matters where a path is DECODED+RESOLVED
+// (the read-scope/cross-repo resolveArg layer handles real `../`), not at this raw
+// shell-token layer. Asserting they are `safe:true` makes the boundary explicit —
+// if a future change wants to defend one, it flips a documented line.
+describe('checkPathSafety — documented out-of-scope gaps', () => {
+  for (const tok of ['%25252f', '..\\..\\secret', '%c0%ae%c0%afsecret', '．．／secret']) {
+    it(`does not block ${JSON.stringify(tok)} (resolution-layer concern, by design)`, () => {
+      assert.equal(checkPathSafety(tok).safe, true);
+    });
+  }
+});
+
+// ─── module purity ─────────────────────────────────────────────────────────────
+
+describe('checkPathSafety — pure module', () => {
+  it('compiled module requires no fs and calls no path.resolve', () => {
+    // Read the COMPILED artifact next to this test in dist/ — the thing that
+    // actually runs. A pure module has zero requires and no fs/path resolution.
+    const compiled = fs.readFileSync(
+      path.resolve(__dirname, '../guardrails/pathSafety.js'),
+      'utf8'
+    );
+    assert.ok(!/require\(['"](node:)?fs['"]\)/.test(compiled), 'must not require fs');
+    assert.ok(!/\.resolve\(/.test(compiled), 'must not call path.resolve');
   });
 });
