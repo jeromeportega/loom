@@ -9,6 +9,64 @@ import { listWorkspaceRoots } from '../retrieval/ManifestResolver.js';
 import { CROSS_REPO_RULES } from '../retrieval/types.js';
 import type { AuditLog } from '../state/AuditLog.js';
 import { CROSS_REPO_ENABLED } from '../orchestrator/constants.js';
+import { checkPathSafety } from './pathSafety.js';
+
+// Tools whose FIRST positional operand is a pattern/expression, not a path
+// (`grep %2e f`, `sed 's/…/…/' f`). Their pattern token is skipped by the
+// path-safety check so a pattern that happens to look like a file: URI or carry
+// odd bytes is not a false positive. Mirrors checkReadScopeCommand's list.
+const PATH_SAFETY_PATTERN_FIRST = new Set(['grep', 'rg', 'egrep', 'fgrep', 'awk', 'sed']);
+
+// URL-fetching tools that honor the `file:` scheme as a LOCAL read (the exfil
+// vector `curl file:/etc/passwd`). Only for these programs is a `file:` operand
+// treated as unsafe; for every other program `file:x` is a literal filename.
+const PATH_SAFETY_FETCH_TOOLS = new Set(['curl', 'wget']);
+
+/**
+ * Lowest argv index whose basename is a URL-fetching tool (curl/wget), or
+ * Infinity if none. Used to scope a `file:` finding to a real fetch invocation.
+ *
+ * Detection is by POSITION, not by "the effective program name". This is robust
+ * against EVERY exec-prefix wrapper form with no runner list and no per-option
+ * arity guessing: `nice curl …`, `timeout -s KILL 9 curl …`, `env A=1 curl …`,
+ * `sudo -u nobody curl …`, `/usr/bin/curl …` all place the fetcher somewhere in
+ * argv, and it is found wherever it sits. A later `index ≤ file:-token index`
+ * comparison keeps it honest (a fetcher AFTER the token — `cat file:x curl` — is
+ * a mere argument to a non-fetcher, not an invocation). The pattern operand of a
+ * pattern-first tool is excluded so `grep curl file:x` (a search FOR the string
+ * "curl") is not mistaken for an invocation OF curl.
+ */
+function firstFetchToolIndex(argv: string[], patternIndex: number): number {
+  for (let i = 0; i < argv.length; i++) {
+    if (i === patternIndex) continue;
+    if (PATH_SAFETY_FETCH_TOOLS.has(path.basename(argv[i]))) return i;
+  }
+  return Infinity;
+}
+
+/**
+ * If `program` (matched by BASENAME, so `/opt/homebrew/bin/git` and `./git` both
+ * count) appears anywhere in argv, return a ParsedCommand rooted at that token —
+ * so a name-keyed checker (checkGit/checkRm) still fires when the invocation is
+ * given by path or shifted by an exec-prefix wrapper (`nice git …`,
+ * `timeout 5 git …`). Returns null when the program is absent. Arity-free: the
+ * program is found wherever it sits; no runner allow-list or option parsing.
+ * Fields mirror parseCommand() (subcommand/flags/args over the tokens after it),
+ * with `program` normalized to the bare name.
+ */
+function effectiveCommandFor(argv: string[], program: string): ParsedCommand | null {
+  const idx = argv.findIndex((t) => path.basename(t) === program);
+  if (idx === -1) return null;
+  const sub = argv.slice(idx);
+  const rest = sub.slice(1);
+  return {
+    argv: sub,
+    program,
+    subcommand: rest.find((t) => !t.startsWith('-')) ?? null,
+    flags: rest.filter((t) => t.startsWith('-')),
+    args: rest.filter((t) => !t.startsWith('-')),
+  };
+}
 
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
 export interface WorktreeContext {
@@ -77,13 +135,85 @@ export class PolicyEngine {
 
     const cmd = parseCommand(rawCommand);
 
-    if (cmd.program === 'git') {
-      const gitResult = this.checkGit(cmd, rawCommand);
+    // Collect positional argv tokens for path-safety inspection (checkPathSafety
+    // rejects null bytes, control chars, and file: URIs — see pathSafety.ts).
+    //   1. `--` end-of-options: all subsequent tokens are positional, checked
+    //      even when they start with `-` (e.g. `cat -- -weird`).
+    //   2. Flags (`-x`, `--flag`) before `--` are skipped: they are option names,
+    //      not paths. (A file: URI can't hide behind a leading `-` — checkPathSafety
+    //      anchors `file:` at the token start, and a `-`-prefixed token isn't one.)
+    //   3. Pattern-first tools (grep/sed/…): skip the first positional, which is a
+    //      pattern/expression, not a path — so `grep file://x src` is not a false
+    //      positive. Mirrors checkReadScopeCommand.
+    // Remote URL operands (`https://`, `ssh://`, …) need NO exclusion: they are not
+    // file: URIs and carry no NUL/control bytes, so checkPathSafety passes them.
+    // Track each positional's argv index so a file:-scheme finding can be scoped
+    // to a fetch invocation by POSITION (see firstFetchToolIndex).
+    const pathTokens: Array<{ token: string; index: number }> = [];
+    let pastSeparator = false;
+    let patternIndex = -1; // argv index of a pattern-first tool's pattern operand
+    const isPatternFirst = PATH_SAFETY_PATTERN_FIRST.has(cmd.program);
+    for (let i = 1; i < cmd.argv.length; i++) {
+      const token = cmd.argv[i];
+      if (!pastSeparator && token === '--') {
+        pastSeparator = true;
+        continue;
+      }
+      if (!pastSeparator && token.startsWith('-')) continue;
+      // First positional of a pattern-first tool = the pattern; skip it once.
+      if (isPatternFirst && patternIndex === -1) {
+        patternIndex = i;
+        continue;
+      }
+      pathTokens.push({ token, index: i });
+    }
+
+    // A `file:` token is a local-read threat ONLY when a URL-fetching tool
+    // (curl/wget) is being invoked — for `cat`/`git`/`echo` it is a literal
+    // filename (`cat file:x` opens `./file:x`), so a `file:`-scheme finding is a
+    // false positive there (e.g. `git commit -m "file:// is the scheme"`).
+    // null-byte / control-char findings apply to every program. Scope by POSITION:
+    // deny a file: token only when a fetcher sits at or before it in argv — robust
+    // against wrappers/full-paths (`nice curl`, `sudo -u u curl`, `/usr/bin/curl`)
+    // with no runner list, and it does not misfire on `cat file:x curl` (fetcher
+    // AFTER the token) or `grep curl file:x` (fetcher name is the pattern operand).
+    const fetchIdx = firstFetchToolIndex(cmd.argv, patternIndex);
+    for (const { token, index } of pathTokens) {
+      const pathResult = checkPathSafety(token);
+      if (pathResult.safe) continue;
+      // file: is unsafe only if a fetch tool precedes (or is) this token.
+      if (pathResult.rule === 'file-scheme' && fetchIdx > index) continue;
+      if (ctx !== undefined) {
+        ctx.audit.record({
+          action: 'guard_blocked',
+          command: rawCommand,
+          allowed: false,
+          policy_rule: 'path.unsafe_token',
+          detail: { token, rule: pathResult.rule },
+        });
+      }
+      return {
+        allowed: false,
+        rule: 'path.unsafe_token',
+        reason: pathResult.reason,
+      };
+    }
+
+    // Detect git/rm by BASENAME at any argv position, not just cmd.program, so a
+    // path (`/opt/homebrew/bin/git`, `./git`) or an exec-prefix wrapper
+    // (`nice git …`, `timeout 5 git …`) can't shift the program token off the
+    // checked program and skip checkGit/checkRm. Arity-free — mirrors the
+    // position-based fetch-tool detection; no runner allow-list or per-option
+    // parsing. (`bash -c`/`eval`/`env`/`coproc` are already blocked upstream.)
+    const gitCmd = effectiveCommandFor(cmd.argv, 'git');
+    if (gitCmd) {
+      const gitResult = this.checkGit(gitCmd, rawCommand);
       if (!gitResult.allowed) return gitResult;
     }
 
-    if (cmd.program === 'rm') {
-      const rmResult = this.checkRm(cmd, rawCommand);
+    const rmCmd = effectiveCommandFor(cmd.argv, 'rm');
+    if (rmCmd) {
+      const rmResult = this.checkRm(rmCmd, rawCommand);
       if (!rmResult.allowed) return rmResult;
     }
 
@@ -256,7 +386,24 @@ export class PolicyEngine {
       [/\|\|/, '|| command chaining'],
       [/`/, 'backtick command substitution'],
       [/\$\(/, '$() command substitution'],
+      // Process substitution `<(cmd)` / `>(cmd)` runs an embedded command exactly
+      // like `$()`/backtick — it must be blocked for the same reason (the inner
+      // command would never be policy-checked). Matched on the quote-stripped
+      // string, so a literal `<(` inside a quoted operand is unaffected. Legit
+      // uses (`diff <(a) <(b)`) must be issued as separate, checkable commands.
+      [/[<>]\(/, 'process substitution'],
+      // A bare subshell `( … )` runs its contents in a child shell — `(git push
+      // --force)` would otherwise pass (program parses as "(git", so checkGit
+      // never fires). Blocked on the quote-stripped string; escaped `\(` (e.g.
+      // `find . \( -name a … \)`) and quoted parens collapse to placeholders
+      // first, so real grouping is caught while legit paren use is not.
+      [/[()]/, 'subshell / command grouping'],
       [/(?<!&)&(?!&)/, '& backgrounding'],
+      // A raw newline/CR is a command separator too — an UNQUOTED newline chains a
+      // second command past every per-command check. stripQuoted() runs above, so a
+      // quoted multi-line operand (e.g. a `git commit -m "line1<newline>line2"`
+      // message) is removed before this test and stays allowed.
+      [/[\n\r]/, 'newline command chaining'],
     ];
 
     for (const [re, label] of blockers) {
@@ -277,7 +424,7 @@ export class PolicyEngine {
    */
   private checkWrapperPrograms(raw: string): PolicyCheckResult {
     const cmd = parseCommand(raw);
-    const wrappers = new Set(['bash', 'sh', 'zsh', 'ash', 'dash', 'eval', 'exec', 'env']);
+    const wrappers = new Set(['bash', 'sh', 'zsh', 'ash', 'dash', 'eval', 'exec', 'env', 'coproc']);
     if (wrappers.has(cmd.program)) {
       // `env VAR=value cmd` is benign if cmd itself is benign, but parsing that
       // properly is out of scope for MVP. Block all wrapper programs uniformly
@@ -557,19 +704,71 @@ function stripQuoted(input: string): string {
   while (i < input.length) {
     const ch = input[i];
     if (ch === '\\' && i + 1 < input.length) {
-      out += '__'; // collapse escaped char to safe placeholder
+      // A backslash-newline is a bash line continuation — DELETE both and join,
+      // so a separator split across the join (`|\<nl>|` → `||`, `&\<nl>&` → `&&`)
+      // reassembles and is caught. Emitting a placeholder instead would mask it.
+      if (input[i + 1] === '\n') { i += 2; continue; }
+      if (input[i + 1] === '\r' && input[i + 2] === '\n') { i += 3; continue; }
+      out += '__'; // other escaped char → safe placeholder
       i += 2;
       continue;
     }
-    if (ch === "'" || ch === '"') {
-      const quote = ch;
+    // ANSI-C quoting $'...': bash processes backslash escapes inside it, and the
+    // string ends at the first UNESCAPED "'" — so `$'\''` is ONE word (a literal
+    // quote), NOT three single-quotes. Model it explicitly; otherwise the stray
+    // "'" desyncs the plain-quote scan below and blanks the rest of the line,
+    // hiding separators after it (same failure class as a single-quoted backslash,
+    // e.g. `$'\'' ; git push --force`). An escaped `\$'…'` never reaches here — the
+    // backslash branch above consumes it (bash: literal `$` + a plain quote).
+    if (ch === '$' && input[i + 1] === "'") {
+      i += 2; // consume `$` and the opening `'`
+      while (i < input.length && input[i] !== "'") {
+        if (input[i] === '\\' && i + 1 < input.length) i++; // skip the escaped char (incl. \')
+        i++;
+      }
+      i++; // closing `'`
+      out += '""'; // one word — no separators leak
+      continue;
+    }
+    if (ch === "'") {
+      // Single quotes are FULLY inert in bash — no substitution, no separators.
+      // Backslash is literal and the string ends at the very next "'" (so `'\'`
+      // is one literal backslash, NOT an escaped quote; applying an escape here
+      // would desync the scan and blank the rest of the command). Blank whole.
       i++;
-      while (i < input.length && input[i] !== quote) {
-        if (input[i] === '\\' && i + 1 < input.length) i++;
+      while (i < input.length && input[i] !== "'") i++;
+      i++; // closing quote
+      out += '""';
+      continue;
+    }
+    if (ch === '"') {
+      // Double quotes suppress `;`/`&&`/`||`/`|`/`&`/newline (inert inside "…"),
+      // BUT bash STILL performs command substitution `$(…)` and backticks inside
+      // them — so `echo "$(git push --force)"` / ``echo "`…`"`` must NOT be
+      // blanked away. Blank literal text (kills the `git commit -m "a && b"` false
+      // positive) while keeping any UNESCAPED `$(` / backtick visible to the
+      // substitution blockers. Escaped `\$(` / `` \` `` are literal → blanked.
+      i++;
+      while (i < input.length && input[i] !== '"') {
+        if (input[i] === '\\' && i + 1 < input.length) {
+          out += '_'; // escaped char is literal inside "…"
+          i += 2;
+          continue;
+        }
+        if (input[i] === '`') {
+          out += '`'; // active substitution — keep it visible to the blocker
+          i++;
+          continue;
+        }
+        if (input[i] === '$' && input[i + 1] === '(') {
+          out += '$('; // active command substitution — keep it visible
+          i += 2;
+          continue;
+        }
+        out += '_'; // inert literal (incl. ; && | & newline) — suppress
         i++;
       }
       i++; // closing quote
-      out += '""'; // placeholder
       continue;
     }
     out += ch;
