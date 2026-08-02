@@ -78,7 +78,42 @@ export class PolicyEngine {
 
     const cmd = parseCommand(rawCommand);
 
-    const pathTokens = cmd.argv.slice(1).filter(t => !t.startsWith('-'));
+    // Collect positional argv tokens for path-safety inspection.
+    // Three cases handled:
+    //   1. `--` end-of-options: all subsequent tokens are positional, checked
+    //      even when they start with `-` (e.g. `cat -- -%2e%2e%2fsecret`).
+    //   2. Short-flag value: a token immediately following a single-char flag
+    //      (-m, -e, …) is its option value, not a file path — skip it.
+    //   3. Remote URLs (https/http/ssh/git/ftp): legitimate operands passed to
+    //      tools like `gh`, `curl`, `git clone` — exclude from path checking.
+    //      `file://` is NOT excluded because it is the attack vector the
+    //      url-scheme rule targets.
+    const SAFE_REMOTE_URL_RE = /^(https?|ssh|git|ftp):\/\//i;
+    const pathTokens: string[] = [];
+    let pastSeparator = false;
+    let skipNextAsOptValue = false;
+    for (const token of cmd.argv.slice(1)) {
+      if (!pastSeparator && token === '--') {
+        pastSeparator = true;
+        skipNextAsOptValue = false;
+        continue;
+      }
+      if (pastSeparator) {
+        pathTokens.push(token);
+        continue;
+      }
+      if (skipNextAsOptValue) {
+        skipNextAsOptValue = false;
+        continue;
+      }
+      if (token.startsWith('-')) {
+        if (token.length === 2) skipNextAsOptValue = true;
+        continue;
+      }
+      if (SAFE_REMOTE_URL_RE.test(token)) continue;
+      pathTokens.push(token);
+    }
+
     for (const token of pathTokens) {
       const pathResult = checkPathSafety(token);
       if (!pathResult.safe) {

@@ -102,17 +102,33 @@ describe('PolicyEngine — encoding guard integration (story-098-002)', () => {
   });
 
   it('audit row NOT written when ctx is omitted — guard still denies', () => {
-    const localDb = createDatabase(':memory:');
     const engine = freshEngine();
 
-    // No ctx — denial must still fire, no crash
+    // No ctx — denial must still fire without crashing (the `?.` guard in
+    // PolicyEngine prevents a TypeError on undefined ctx.audit.record).
     const r = engine.check('cat %2e%2e/secret');
     assert.equal(r.allowed, false);
     assert.ok('rule' in r && r.rule === 'path.unsafe_encoding');
+  });
 
-    // No audit row written
+  it('tokens after -- end-of-options marker are checked even when starting with -', () => {
+    const localDb = createDatabase(':memory:');
+    const ctx = makeCtx(localDb);
+    const engine = freshEngine();
+
+    // `-%2e%2e%2fsecret` starts with `-` but appears after `--`, so it is a
+    // positional argument — the encoding guard must not skip it.
+    const r = engine.check('cat -- -%2e%2e%2fsecret', ctx);
+    assert.equal(r.allowed, false, 'post-separator token must be denied');
+    assert.ok(
+      'rule' in r && r.rule === 'path.unsafe_encoding',
+      `expected path.unsafe_encoding, got: ${'rule' in r ? r.rule : 'none'}`,
+    );
+
     const rows = queryAuditRows(localDb, 'guard_blocked');
-    assert.equal(rows.length, 0, 'no audit row must be written when ctx is absent');
+    assert.equal(rows.length, 1, 'one audit row must be written for the post-separator token');
+    const detail = JSON.parse(rows[0].detail ?? '{}');
+    assert.equal(detail.token, '-%2e%2e%2fsecret');
   });
 
   it('flags are not inspected — --stat token does not cause denial', () => {
