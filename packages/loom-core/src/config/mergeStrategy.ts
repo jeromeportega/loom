@@ -19,6 +19,9 @@ export const MERGE_STRATEGY: Record<string, MergeStrategy> = {
   'git.protected_branches':     'union',
   'git.forbidden_flags':        'union',
   'filesystem.protected_paths': 'union',
+  // Egress denylist (epic-100): union so a repo/team layer can only ADD forbidden
+  // network programs, never remove a default one — no layer can weaken egress.
+  'commands.forbidden_programs': 'union',
 
   // ── Guard allowlists — intersect, most-restrictive, precedence-independent (ADR-004) ──
   // The effective set is the tightest intersection across all present layers.

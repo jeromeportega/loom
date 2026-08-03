@@ -22,6 +22,26 @@ const PATH_SAFETY_PATTERN_FIRST = new Set(['grep', 'rg', 'egrep', 'fgrep', 'awk'
 // treated as unsafe; for every other program `file:x` is a literal filename.
 const PATH_SAFETY_FETCH_TOOLS = new Set(['curl', 'wget']);
 
+// Inline-code interpreters — forbidden for a WORKER only when invoked with an
+// inline-exec flag (`python -c`, `node -e`) or fed code on stdin via a pipe.
+// Running a repo SCRIPT (`python train.py`) is allowed: its contents pass the
+// write-scope guard + the finalizer diff review, whereas inline `-c` code is
+// un-reviewable. basename matched by regex so versioned names (`python3.11`) and
+// bundled flags (`python -bc`) are caught; the path is stripped first.
+const INLINE_INTERPRETERS: Array<{ re: RegExp; inline: (flag: string) => boolean }> = [
+  // Token-CONSUMING exec flags: the exec letter consumes the REST of the token as
+  // code, so match a PREFIX — `python -c'import os'` (no space) fuses the code
+  // onto the flag token; anchoring the letter at end-of-token ($) would miss it.
+  { re: /^python(\d+(\.\d+)*)?$/, inline: (f) => /^-[A-Za-z]*c/.test(f) },   // -c, -bc, -c'code'
+  { re: /^perl$/,                 inline: (f) => /^-[A-Za-z]*[eE]/.test(f) }, // -e, -E, -ne, -pe, -e'code'
+  { re: /^ruby$/,                 inline: (f) => /^-[A-Za-z]*e/.test(f) },    // -e, -ne, -e'code'
+  { re: /^php$/,                  inline: (f) => /^-[rR]/.test(f) },          // -r, -R, -r'code'
+  { re: /^(Rscript|R)$/,          inline: (f) => /^-e/.test(f) },            // -e, -e'code'
+  // node/bun take a SEPARATE arg (a fused `-e'x'` errors in the runtime), so match
+  // exactly; plus the fused long form `--eval=…` / `--print=…`.
+  { re: /^(node|nodejs|bun)$/,    inline: (f) => f === '-e' || f === '-p' || /^--(eval|print)(=|$)/.test(f) },
+];
+
 /**
  * Lowest argv index whose basename is a URL-fetching tool (curl/wget), or
  * Infinity if none. Used to scope a `file:` finding to a real fetch invocation.
@@ -66,6 +86,51 @@ function effectiveCommandFor(argv: string[], program: string): ParsedCommand | n
     flags: rest.filter((t) => t.startsWith('-')),
     args: rest.filter((t) => !t.startsWith('-')),
   };
+}
+
+// Exec-prefix runners that execute a FOLLOWING program (with parseable args). Used
+// to find command positions past them, so `nice curl` / `timeout 5 curl` count as
+// a curl invocation while `git add src/http` (http as a path operand) does not.
+const EGRESS_DELEGATORS = new Set([
+  'nice', 'ionice', 'taskset', 'chrt', 'timeout', 'nohup', 'setsid', 'stdbuf',
+  'sudo', 'doas', 'env', 'command', 'xargs', 'time', 'watch', 'parallel', 'flock',
+  'proxychains', 'proxychains4', 'torsocks', 'busybox', 'unbuffer',
+]);
+
+/**
+ * Argv indices that are a COMMAND position — where a token names a program being
+ * run, not a mere operand. That is argv[0], the token after a `|`, the program
+ * wrapped by a delegator run (`nice`/`timeout 5`/… + its flags/number/VAR= args),
+ * and the target of find's `-exec`/`-execdir`/`-ok`. Scoping the egress check to
+ * these fixes the false positive where a network-tool NAME is a path operand
+ * (`git add src/http`, `git checkout -b links`) while still catching wrappers,
+ * pipes, and find-exec. Residual (documented): a delegator argument that is a bare
+ * word — an option VALUE (`timeout -s KILL 9 curl`) or a positional operand
+ * (`sudo -u nobody curl`, `flock /tmp/l curl`) — stops the walk early. Rare,
+ * deliberate forms; a full fix needs per-delegator arity, which this deliberately
+ * avoids. (In a worker, `sudo`/`flock`-wrapped exfil also requires those tools.)
+ */
+function commandPositions(argv: string[]): Set<number> {
+  const pos = new Set<number>();
+  let atSegStart = true; // start of a pipe segment
+  let skippingDelegatorArgs = false;
+  const isDelegatorArg = (t: string) =>
+    t.startsWith('-') || /^\d/.test(t) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t);
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i];
+    if (tok === '|') { atSegStart = true; skippingDelegatorArgs = false; continue; }
+    if (atSegStart || skippingDelegatorArgs) {
+      if (skippingDelegatorArgs && isDelegatorArg(tok)) continue; // still a delegator's own arg
+      pos.add(i);
+      if (EGRESS_DELEGATORS.has(path.basename(tok))) { atSegStart = false; skippingDelegatorArgs = true; }
+      else { atSegStart = false; skippingDelegatorArgs = false; }
+      continue;
+    }
+    if (tok === '-exec' || tok === '-execdir' || tok === '-ok') {
+      if (i + 1 < argv.length) pos.add(i + 1); // find runs the next token as a program
+    }
+  }
+  return pos;
 }
 
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
@@ -392,6 +457,11 @@ export class PolicyEngine {
       // string, so a literal `<(` inside a quoted operand is unaffected. Legit
       // uses (`diff <(a) <(b)`) must be issued as separate, checkable commands.
       [/[<>]\(/, 'process substitution'],
+      // Here-string `<<< 'code'` feeds a string to the program's stdin on ONE line
+      // (no newline, so the newline guard never fires) — an interpreter fed this
+      // way runs un-reviewable code (`python <<<'import os…'`). Block it like the
+      // substitution forms; a heredoc `<<EOF` needs a newline and is already caught.
+      [/<<</, 'here-string'],
       // A bare subshell `( … )` runs its contents in a child shell — `(git push
       // --force)` would otherwise pass (program parses as "(git", so checkGit
       // never fires). Blocked on the quote-stripped string; escaped `\(` (e.g.
@@ -463,6 +533,73 @@ export class PolicyEngine {
         rule: 'shell.wrapper_program',
         reason: `"${path.basename(cmd.argv[hit])}" (a shell/eval wrapper) may not appear in a command — a wrapper (even shifted behind a prefix runner) would run an unchecked payload; invoke the target program directly`,
       };
+    }
+    return { allowed: true };
+  }
+
+  /**
+   * WORKER-scoped egress guard (call only in a worker session, like read-scope;
+   * operators run curl/ssh unrestricted). Denies:
+   *  - a `commands.forbidden_programs` network tool (curl/wget/nc/…) at a COMMAND
+   *    position (argv[0], after `|`, wrapped by a delegator, or a find `-exec`
+   *    target), so wrappers/paths/pipes/find-exec are caught while a network-tool
+   *    NAME used as a path operand (`git add src/http`) is not.
+   *  - an inline-code interpreter at a command position (`python -c`, `node -e`,
+   *    or an interpreter fed code on stdin via a pipe) — a repo SCRIPT
+   *    (`python x.py`) is allowed. See INLINE_INTERPRETERS.
+   *  - a `/dev/tcp`|`/dev/udp` redirection target (tool-free bash network exfil).
+   * Residuals (documented, deferred): `python -m http.server` module egress,
+   * `deno run --allow-net`, awk `system()`, and double-quoted `$HOME` read-scope.
+   */
+  checkForbiddenPrograms(command: string): PolicyCheckResult {
+    const cmd = parseCommand(command);
+    if (cmd.argv.length === 0) return { allowed: true };
+    const forbidden = new Set(this.policy.commands.forbidden_programs);
+
+    // Tool-free network exfil: a redirect to a bash pseudo-device socket.
+    // `shellSplit` keeps the redirect operator FUSED to the path, so the token can
+    // be `>/dev/tcp/…`, `>>/dev/udp/…`, `1>/dev/tcp/…`, `3<>/dev/tcp/…`, `&>/dev/…`,
+    // `</dev/tcp/…` (socket READ / C2 pull), or a bare `/dev/tcp/…` (space-separated
+    // redirect). Match an optional leading fd-number + redirect operator; anchored,
+    // so `mydir/dev/tcp/x`, `./dev/tcp/note`, `/dev/tcpfoo/x`, `/dev/null` don't match.
+    for (const tok of cmd.argv) {
+      if (/^\d*(?:>>?|<>?|[<>]&?|&>>?)?\/dev\/(tcp|udp)\//.test(tok)) {
+        return {
+          allowed: false,
+          rule: 'commands.forbidden_program',
+          reason: `"${tok}" opens a network socket (bash /dev/tcp) — network egress is not permitted from a worker session`,
+        };
+      }
+    }
+
+    const cmdPos = commandPositions(cmd.argv);
+    for (const i of cmdPos) {
+      const base = path.basename(cmd.argv[i]);
+
+      if (forbidden.has(base)) {
+        return {
+          allowed: false,
+          rule: 'commands.forbidden_program',
+          reason: `"${base}" (network/egress tool) may not be run from a worker session — persist results to a file the finalizer can review instead of transferring data over the network`,
+        };
+      }
+
+      const interp = INLINE_INTERPRETERS.find((x) => x.re.test(base));
+      if (interp) {
+        // Args belonging to THIS invocation (up to the next pipe = a new command).
+        const seg: string[] = [];
+        for (let j = i + 1; j < cmd.argv.length && cmd.argv[j] !== '|'; j++) seg.push(cmd.argv[j]);
+        const inlineFlag = seg.some((t) => t.startsWith('-') && interp.inline(t));
+        const afterPipe = i > 0 && cmd.argv[i - 1] === '|';
+        const hasScript = seg.some((t) => !t.startsWith('-')); // a script-file / module positional
+        if (inlineFlag || (afterPipe && !hasScript)) {
+          return {
+            allowed: false,
+            rule: 'commands.forbidden_program',
+            reason: `"${base}" running inline or piped code is not permitted from a worker session — put the code in a script file (which the finalizer can review) and run that file`,
+          };
+        }
+      }
     }
     return { allowed: true };
   }
