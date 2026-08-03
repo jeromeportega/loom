@@ -93,9 +93,11 @@ properties:
           - rsync
         description: |
           Network/egress programs a WORKER may not run (operators are unaffected —
-          enforced only in worker sessions, like read-scope). Matched by basename at
-          any argv position, so wrappers/paths/pipes (nice curl, xargs curl,
-          find … -exec curl, echo x | curl) cannot hide them. Inline-code
+          enforced only in worker sessions, like read-scope). Detected at command
+          positions (argv[0], after a pipe, wrapped by a delegator like nice/timeout,
+          or a find -exec target), so nice curl / xargs curl / find … -exec curl /
+          echo x | curl are caught while a tool name used as a path operand
+          (git add src/http) is not. Inline-code
           interpreters (python -c, node -e, perl -e, …) are blocked by baked logic,
           not this list — running a repo script (python x.py) stays allowed. Merged
           as a union denylist (ADR-004): a team/repo layer can only ADD programs,

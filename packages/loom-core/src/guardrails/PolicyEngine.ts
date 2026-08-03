@@ -29,12 +29,17 @@ const PATH_SAFETY_FETCH_TOOLS = new Set(['curl', 'wget']);
 // un-reviewable. basename matched by regex so versioned names (`python3.11`) and
 // bundled flags (`python -bc`) are caught; the path is stripped first.
 const INLINE_INTERPRETERS: Array<{ re: RegExp; inline: (flag: string) => boolean }> = [
-  { re: /^python(\d+(\.\d+)*)?$/, inline: (f) => /^-[A-Za-z]*c$/.test(f) },        // -c, -bc
-  { re: /^perl$/,                 inline: (f) => /^-[A-Za-z]*[eE]$/.test(f) },      // -e, -E, -ne, -pe
-  { re: /^ruby$/,                 inline: (f) => /^-[A-Za-z]*e$/.test(f) },         // -e, -ne, -pe
-  { re: /^(node|nodejs)$/,        inline: (f) => f === '-e' || f === '--eval' || f === '-p' || f === '--print' },
-  { re: /^php$/,                  inline: (f) => f === '-r' || f === '-R' },
-  { re: /^(Rscript|R)$/,          inline: (f) => f === '-e' },
+  // Token-CONSUMING exec flags: the exec letter consumes the REST of the token as
+  // code, so match a PREFIX — `python -c'import os'` (no space) fuses the code
+  // onto the flag token; anchoring the letter at end-of-token ($) would miss it.
+  { re: /^python(\d+(\.\d+)*)?$/, inline: (f) => /^-[A-Za-z]*c/.test(f) },   // -c, -bc, -c'code'
+  { re: /^perl$/,                 inline: (f) => /^-[A-Za-z]*[eE]/.test(f) }, // -e, -E, -ne, -pe, -e'code'
+  { re: /^ruby$/,                 inline: (f) => /^-[A-Za-z]*e/.test(f) },    // -e, -ne, -e'code'
+  { re: /^php$/,                  inline: (f) => /^-[rR]/.test(f) },          // -r, -R, -r'code'
+  { re: /^(Rscript|R)$/,          inline: (f) => /^-e/.test(f) },            // -e, -e'code'
+  // node/bun take a SEPARATE arg (a fused `-e'x'` errors in the runtime), so match
+  // exactly; plus the fused long form `--eval=…` / `--print=…`.
+  { re: /^(node|nodejs|bun)$/,    inline: (f) => f === '-e' || f === '-p' || /^--(eval|print)(=|$)/.test(f) },
 ];
 
 /**
@@ -81,6 +86,48 @@ function effectiveCommandFor(argv: string[], program: string): ParsedCommand | n
     flags: rest.filter((t) => t.startsWith('-')),
     args: rest.filter((t) => !t.startsWith('-')),
   };
+}
+
+// Exec-prefix runners that execute a FOLLOWING program (with parseable args). Used
+// to find command positions past them, so `nice curl` / `timeout 5 curl` count as
+// a curl invocation while `git add src/http` (http as a path operand) does not.
+const EGRESS_DELEGATORS = new Set([
+  'nice', 'ionice', 'taskset', 'chrt', 'timeout', 'nohup', 'setsid', 'stdbuf',
+  'sudo', 'doas', 'env', 'command', 'xargs', 'time', 'watch', 'parallel', 'flock',
+  'proxychains', 'proxychains4', 'torsocks', 'busybox', 'unbuffer',
+]);
+
+/**
+ * Argv indices that are a COMMAND position — where a token names a program being
+ * run, not a mere operand. That is argv[0], the token after a `|`, the program
+ * wrapped by a delegator run (`nice`/`timeout 5`/… + its flags/number/VAR= args),
+ * and the target of find's `-exec`/`-execdir`/`-ok`. Scoping the egress check to
+ * these fixes the false positive where a network-tool NAME is a path operand
+ * (`git add src/http`, `git checkout -b links`) while still catching wrappers,
+ * pipes, and find-exec. Residual (documented): an option-VALUE delegator arg
+ * (`timeout -s KILL 9 curl`) stops the walk early — a rare, deliberate form.
+ */
+function commandPositions(argv: string[]): Set<number> {
+  const pos = new Set<number>();
+  let atSegStart = true; // start of a pipe segment
+  let skippingDelegatorArgs = false;
+  const isDelegatorArg = (t: string) =>
+    t.startsWith('-') || /^\d/.test(t) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(t);
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i];
+    if (tok === '|') { atSegStart = true; skippingDelegatorArgs = false; continue; }
+    if (atSegStart || skippingDelegatorArgs) {
+      if (skippingDelegatorArgs && isDelegatorArg(tok)) continue; // still a delegator's own arg
+      pos.add(i);
+      if (EGRESS_DELEGATORS.has(path.basename(tok))) { atSegStart = false; skippingDelegatorArgs = true; }
+      else { atSegStart = false; skippingDelegatorArgs = false; }
+      continue;
+    }
+    if (tok === '-exec' || tok === '-execdir' || tok === '-ok') {
+      if (i + 1 < argv.length) pos.add(i + 1); // find runs the next token as a program
+    }
+  }
+  return pos;
 }
 
 /** Context the caller provides so the cross-repo guard can enforce workspace boundaries. */
@@ -407,6 +454,11 @@ export class PolicyEngine {
       // string, so a literal `<(` inside a quoted operand is unaffected. Legit
       // uses (`diff <(a) <(b)`) must be issued as separate, checkable commands.
       [/[<>]\(/, 'process substitution'],
+      // Here-string `<<< 'code'` feeds a string to the program's stdin on ONE line
+      // (no newline, so the newline guard never fires) — an interpreter fed this
+      // way runs un-reviewable code (`python <<<'import os…'`). Block it like the
+      // substitution forms; a heredoc `<<EOF` needs a newline and is already caught.
+      [/<<</, 'here-string'],
       // A bare subshell `( … )` runs its contents in a child shell — `(git push
       // --force)` would otherwise pass (program parses as "(git", so checkGit
       // never fires). Blocked on the quote-stripped string; escaped `\(` (e.g.
@@ -485,13 +537,14 @@ export class PolicyEngine {
   /**
    * WORKER-scoped egress guard (call only in a worker session, like read-scope;
    * operators run curl/ssh unrestricted). Denies:
-   *  - a `commands.forbidden_programs` network tool (curl/wget/nc/…) found by
-   *    BASENAME at any argv position, so wrappers/paths/pipes (`nice curl`,
-   *    `xargs curl`, `find … -exec curl`, `echo x | curl`) can't hide it; the
-   *    pattern operand of a pattern-first tool (`grep curl f`) is excluded.
-   *  - an inline-code interpreter invocation (`python -c`, `node -e`, or an
-   *    interpreter fed code on stdin via a pipe) — a repo SCRIPT (`python x.py`)
-   *    is allowed. See INLINE_INTERPRETERS.
+   *  - a `commands.forbidden_programs` network tool (curl/wget/nc/…) at a COMMAND
+   *    position (argv[0], after `|`, wrapped by a delegator, or a find `-exec`
+   *    target), so wrappers/paths/pipes/find-exec are caught while a network-tool
+   *    NAME used as a path operand (`git add src/http`) is not.
+   *  - an inline-code interpreter at a command position (`python -c`, `node -e`,
+   *    or an interpreter fed code on stdin via a pipe) — a repo SCRIPT
+   *    (`python x.py`) is allowed. See INLINE_INTERPRETERS.
+   *  - a `/dev/tcp`|`/dev/udp` redirection target (tool-free bash network exfil).
    * Residuals (documented, deferred): `python -m http.server` module egress,
    * `deno run --allow-net`, awk `system()`, and double-quoted `$HOME` read-scope.
    */
@@ -500,17 +553,19 @@ export class PolicyEngine {
     if (cmd.argv.length === 0) return { allowed: true };
     const forbidden = new Set(this.policy.commands.forbidden_programs);
 
-    // Exclude the pattern operand of a pattern-first tool (`grep curl f` — `curl`
-    // is a search string, not an invocation). It is the first positional.
-    let patternIndex = -1;
-    if (PATH_SAFETY_PATTERN_FIRST.has(path.basename(cmd.argv[0]))) {
-      for (let i = 1; i < cmd.argv.length; i++) {
-        if (!cmd.argv[i].startsWith('-')) { patternIndex = i; break; }
+    // Tool-free network exfil: a redirect to a bash pseudo-device socket.
+    for (const tok of cmd.argv) {
+      if (/^\/dev\/(tcp|udp)\//.test(tok)) {
+        return {
+          allowed: false,
+          rule: 'commands.forbidden_program',
+          reason: `"${tok}" opens a network socket (bash /dev/tcp) — network egress is not permitted from a worker session`,
+        };
       }
     }
 
-    for (let i = 0; i < cmd.argv.length; i++) {
-      if (i === patternIndex) continue;
+    const cmdPos = commandPositions(cmd.argv);
+    for (const i of cmdPos) {
       const base = path.basename(cmd.argv[i]);
 
       if (forbidden.has(base)) {

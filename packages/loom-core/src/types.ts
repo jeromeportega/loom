@@ -392,9 +392,11 @@ export const PolicySchema = z.object({
   commands: z
     .object({
       // Network/exfil programs a WORKER may not run (operators are unaffected —
-      // enforced only in worker sessions, like read-scope). Detected by basename
-      // at any argv position, so wrappers/paths/pipes (`nice curl`, `xargs curl`,
-      // `find … -exec curl`) can't hide them. Inline-code interpreters
+      // enforced only in worker sessions, like read-scope). Detected at command
+      // positions (argv[0], after a pipe, wrapped by a delegator, a find -exec
+      // target), so `nice curl`/`xargs curl`/`find … -exec curl`/`echo x | curl`
+      // are caught while a tool name used as a path operand (`git add src/http`)
+      // is not. Inline-code interpreters
       // (`python -c`, `node -e`, …) are handled by baked logic, NOT this list.
       // Merged as a union denylist (ADR-004): a team/repo layer can only ADD
       // programs, never remove a default — no layer weakens egress.
