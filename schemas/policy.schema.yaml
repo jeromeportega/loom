@@ -62,6 +62,45 @@ properties:
         default: "."
         description: Root directory agents may read/search within, in addition to their own worktree. '.' = repo root, resolved relative to the worktree at hook time (not on init). On by default; independent of cross_repo.enabled.
 
+  commands:
+    type: object
+    properties:
+      forbidden_programs:
+        type: array
+        items:
+          type: string
+        default:
+          - curl
+          - wget
+          - nc
+          - ncat
+          - netcat
+          - socat
+          - telnet
+          - ftp
+          - tftp
+          - aria2c
+          - lynx
+          - w3m
+          - links
+          - elinks
+          - httpie
+          - http
+          - https
+          - scp
+          - sftp
+          - ssh
+          - rsync
+        description: |
+          Network/egress programs a WORKER may not run (operators are unaffected —
+          enforced only in worker sessions, like read-scope). Matched by basename at
+          any argv position, so wrappers/paths/pipes (nice curl, xargs curl,
+          find … -exec curl, echo x | curl) cannot hide them. Inline-code
+          interpreters (python -c, node -e, perl -e, …) are blocked by baked logic,
+          not this list — running a repo script (python x.py) stays allowed. Merged
+          as a union denylist (ADR-004): a team/repo layer can only ADD programs,
+          never remove a default — no layer can weaken egress.
+
   agents:
     type: object
     properties:

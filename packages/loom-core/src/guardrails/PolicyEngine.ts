@@ -22,6 +22,21 @@ const PATH_SAFETY_PATTERN_FIRST = new Set(['grep', 'rg', 'egrep', 'fgrep', 'awk'
 // treated as unsafe; for every other program `file:x` is a literal filename.
 const PATH_SAFETY_FETCH_TOOLS = new Set(['curl', 'wget']);
 
+// Inline-code interpreters — forbidden for a WORKER only when invoked with an
+// inline-exec flag (`python -c`, `node -e`) or fed code on stdin via a pipe.
+// Running a repo SCRIPT (`python train.py`) is allowed: its contents pass the
+// write-scope guard + the finalizer diff review, whereas inline `-c` code is
+// un-reviewable. basename matched by regex so versioned names (`python3.11`) and
+// bundled flags (`python -bc`) are caught; the path is stripped first.
+const INLINE_INTERPRETERS: Array<{ re: RegExp; inline: (flag: string) => boolean }> = [
+  { re: /^python(\d+(\.\d+)*)?$/, inline: (f) => /^-[A-Za-z]*c$/.test(f) },        // -c, -bc
+  { re: /^perl$/,                 inline: (f) => /^-[A-Za-z]*[eE]$/.test(f) },      // -e, -E, -ne, -pe
+  { re: /^ruby$/,                 inline: (f) => /^-[A-Za-z]*e$/.test(f) },         // -e, -ne, -pe
+  { re: /^(node|nodejs)$/,        inline: (f) => f === '-e' || f === '--eval' || f === '-p' || f === '--print' },
+  { re: /^php$/,                  inline: (f) => f === '-r' || f === '-R' },
+  { re: /^(Rscript|R)$/,          inline: (f) => f === '-e' },
+];
+
 /**
  * Lowest argv index whose basename is a URL-fetching tool (curl/wget), or
  * Infinity if none. Used to scope a `file:` finding to a real fetch invocation.
@@ -463,6 +478,65 @@ export class PolicyEngine {
         rule: 'shell.wrapper_program',
         reason: `"${path.basename(cmd.argv[hit])}" (a shell/eval wrapper) may not appear in a command — a wrapper (even shifted behind a prefix runner) would run an unchecked payload; invoke the target program directly`,
       };
+    }
+    return { allowed: true };
+  }
+
+  /**
+   * WORKER-scoped egress guard (call only in a worker session, like read-scope;
+   * operators run curl/ssh unrestricted). Denies:
+   *  - a `commands.forbidden_programs` network tool (curl/wget/nc/…) found by
+   *    BASENAME at any argv position, so wrappers/paths/pipes (`nice curl`,
+   *    `xargs curl`, `find … -exec curl`, `echo x | curl`) can't hide it; the
+   *    pattern operand of a pattern-first tool (`grep curl f`) is excluded.
+   *  - an inline-code interpreter invocation (`python -c`, `node -e`, or an
+   *    interpreter fed code on stdin via a pipe) — a repo SCRIPT (`python x.py`)
+   *    is allowed. See INLINE_INTERPRETERS.
+   * Residuals (documented, deferred): `python -m http.server` module egress,
+   * `deno run --allow-net`, awk `system()`, and double-quoted `$HOME` read-scope.
+   */
+  checkForbiddenPrograms(command: string): PolicyCheckResult {
+    const cmd = parseCommand(command);
+    if (cmd.argv.length === 0) return { allowed: true };
+    const forbidden = new Set(this.policy.commands.forbidden_programs);
+
+    // Exclude the pattern operand of a pattern-first tool (`grep curl f` — `curl`
+    // is a search string, not an invocation). It is the first positional.
+    let patternIndex = -1;
+    if (PATH_SAFETY_PATTERN_FIRST.has(path.basename(cmd.argv[0]))) {
+      for (let i = 1; i < cmd.argv.length; i++) {
+        if (!cmd.argv[i].startsWith('-')) { patternIndex = i; break; }
+      }
+    }
+
+    for (let i = 0; i < cmd.argv.length; i++) {
+      if (i === patternIndex) continue;
+      const base = path.basename(cmd.argv[i]);
+
+      if (forbidden.has(base)) {
+        return {
+          allowed: false,
+          rule: 'commands.forbidden_program',
+          reason: `"${base}" (network/egress tool) may not be run from a worker session — persist results to a file the finalizer can review instead of transferring data over the network`,
+        };
+      }
+
+      const interp = INLINE_INTERPRETERS.find((x) => x.re.test(base));
+      if (interp) {
+        // Args belonging to THIS invocation (up to the next pipe = a new command).
+        const seg: string[] = [];
+        for (let j = i + 1; j < cmd.argv.length && cmd.argv[j] !== '|'; j++) seg.push(cmd.argv[j]);
+        const inlineFlag = seg.some((t) => t.startsWith('-') && interp.inline(t));
+        const afterPipe = i > 0 && cmd.argv[i - 1] === '|';
+        const hasScript = seg.some((t) => !t.startsWith('-')); // a script-file / module positional
+        if (inlineFlag || (afterPipe && !hasScript)) {
+          return {
+            allowed: false,
+            rule: 'commands.forbidden_program',
+            reason: `"${base}" running inline or piped code is not permitted from a worker session — put the code in a script file (which the finalizer can review) and run that file`,
+          };
+        }
+      }
     }
     return { allowed: true };
   }

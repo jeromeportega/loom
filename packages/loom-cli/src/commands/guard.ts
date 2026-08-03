@@ -154,6 +154,17 @@ export async function runGuardHook(): Promise<void> {
       // allow, as before. (Follow-up: fail closed on invalid policy.)
       process.exit(EXIT_ALLOW);
     }
+    // Egress guard — worker-scoped, like read-scope: network tools (curl/wget/…)
+    // and inline-code interpreters (`python -c`, `node -e`) can exfiltrate or read
+    // outside read-scope, so a worker may not run them (operators are unaffected).
+    const egressResult = engine.checkForbiddenPrograms(command);
+    if (!egressResult.allowed) {
+      process.stderr.write(
+        JSON.stringify({ loom_guard: 'blocked', rule: egressResult.rule, reason: egressResult.reason }) + '\n',
+      );
+      process.exit(EXIT_BLOCK_WITH_FEEDBACK);
+    }
+
     const ctx = buildReadScopeCtx(engine, projectRoot);
     const readResult = engine.checkReadScopeCommand(command, ctx);
     if (!readResult.allowed) {

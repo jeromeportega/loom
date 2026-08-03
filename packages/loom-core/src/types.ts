@@ -389,6 +389,24 @@ export const PolicySchema = z.object({
       allowed_read_root: z.string().default('.'),   // '.' = repo root, resolved relative to the worktree at hook time (not on init); on-by-default; independent of cross_repo.enabled
     })
     .default({}),
+  commands: z
+    .object({
+      // Network/exfil programs a WORKER may not run (operators are unaffected —
+      // enforced only in worker sessions, like read-scope). Detected by basename
+      // at any argv position, so wrappers/paths/pipes (`nice curl`, `xargs curl`,
+      // `find … -exec curl`) can't hide them. Inline-code interpreters
+      // (`python -c`, `node -e`, …) are handled by baked logic, NOT this list.
+      // Merged as a union denylist (ADR-004): a team/repo layer can only ADD
+      // programs, never remove a default — no layer weakens egress.
+      forbidden_programs: z
+        .array(z.string())
+        .default([
+          'curl', 'wget', 'nc', 'ncat', 'netcat', 'socat', 'telnet',
+          'ftp', 'tftp', 'aria2c', 'lynx', 'w3m', 'links', 'elinks',
+          'httpie', 'http', 'https', 'scp', 'sftp', 'ssh', 'rsync',
+        ]),
+    })
+    .default({}),
   agents: z
     .object({
       max_concurrent: z.number().int().min(1).default(5),

