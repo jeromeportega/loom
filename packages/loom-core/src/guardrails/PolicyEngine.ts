@@ -104,8 +104,11 @@ const EGRESS_DELEGATORS = new Set([
  * and the target of find's `-exec`/`-execdir`/`-ok`. Scoping the egress check to
  * these fixes the false positive where a network-tool NAME is a path operand
  * (`git add src/http`, `git checkout -b links`) while still catching wrappers,
- * pipes, and find-exec. Residual (documented): an option-VALUE delegator arg
- * (`timeout -s KILL 9 curl`) stops the walk early — a rare, deliberate form.
+ * pipes, and find-exec. Residual (documented): a delegator argument that is a bare
+ * word — an option VALUE (`timeout -s KILL 9 curl`) or a positional operand
+ * (`sudo -u nobody curl`, `flock /tmp/l curl`) — stops the walk early. Rare,
+ * deliberate forms; a full fix needs per-delegator arity, which this deliberately
+ * avoids. (In a worker, `sudo`/`flock`-wrapped exfil also requires those tools.)
  */
 function commandPositions(argv: string[]): Set<number> {
   const pos = new Set<number>();
@@ -554,8 +557,13 @@ export class PolicyEngine {
     const forbidden = new Set(this.policy.commands.forbidden_programs);
 
     // Tool-free network exfil: a redirect to a bash pseudo-device socket.
+    // `shellSplit` keeps the redirect operator FUSED to the path, so the token can
+    // be `>/dev/tcp/…`, `>>/dev/udp/…`, `1>/dev/tcp/…`, `3<>/dev/tcp/…`, `&>/dev/…`,
+    // `</dev/tcp/…` (socket READ / C2 pull), or a bare `/dev/tcp/…` (space-separated
+    // redirect). Match an optional leading fd-number + redirect operator; anchored,
+    // so `mydir/dev/tcp/x`, `./dev/tcp/note`, `/dev/tcpfoo/x`, `/dev/null` don't match.
     for (const tok of cmd.argv) {
-      if (/^\/dev\/(tcp|udp)\//.test(tok)) {
+      if (/^\d*(?:>>?|<>?|[<>]&?|&>>?)?\/dev\/(tcp|udp)\//.test(tok)) {
         return {
           allowed: false,
           rule: 'commands.forbidden_program',
