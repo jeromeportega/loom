@@ -17,6 +17,8 @@ import { SharedContract } from '../orchestrator/SharedContract.js';
 import { loadOwnershipMap, computeWithinEpicOverlaps } from '../orchestrator/ContractOwnership.js';
 import { deriveSameFileSerialization } from '../orchestrator/SerializeOverlaps.js';
 import type { SerializationEdge } from '../orchestrator/SerializeOverlaps.js';
+import { reconcileProvidesRequires } from './contractReconcile.js';
+import type { ClosureResult } from './contractReconcile.js';
 import { epicId, epicNumber, storyId, idNumber, planningPaths, planningRelPaths } from './paths.js';
 import { PlanningOutputSink } from './PlanningOutputSink.js';
 import type { PlanningEvent } from './PlanningEvent.js';
@@ -62,6 +64,14 @@ export interface PlanResult {
    * (which produces its own inline tech_notes without the Architect step).
    */
   techNotesEnrichmentFailed: boolean;
+  /**
+   * Plan-time provides/requires closure result (Slice 1 of the canonical
+   * contract). Present on the full-epic path; absent on the standalone path
+   * (a single story has no siblings to reconcile). `ok === false` means the
+   * decomposition has an unsatisfiable story dependency and the CLI gate hard-
+   * fails the plan. WARN-kind violations may be present with `ok === true`.
+   */
+  reconciliation?: ClosureResult;
   usage: LLMUsage;
   /**
    * Set only on the standalone-story path (intake_routing + size='story').
@@ -480,6 +490,14 @@ export class Planner {
     const audit = new AuditLog(this.opts.db);
     applySameFileSerialization(architect.epics, this.opts.projectRoot, audit, runId, this.planningRoot);
 
+    // Reconciliation gate input (computed AFTER serialization so the `unordered`
+    // ordering check sees any dependency edges the serializer injected). Universe
+    // = every story across every epic/repo in the run, since `requires` resolves
+    // by global story id. The CLI hard-fails when `ok === false`.
+    const reconciliation = reconcileProvidesRequires(
+      architect.epics.flatMap((e) => e.stories)
+    );
+
     // Terminal region (story-065-004): set run attribution for the epic planning path.
     // Fail-open (ADR-006) — attribution errors must never abort the planning run.
     try {
@@ -514,6 +532,7 @@ export class Planner {
       storyCount,
       storiesEnriched: architect.storiesEnriched,
       techNotesEnrichmentFailed: architect.techNotesEnrichmentFailed,
+      reconciliation,
       usage,
     };
   }

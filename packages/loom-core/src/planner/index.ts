@@ -13,6 +13,17 @@ export { StandaloneStoryAgent } from './StandaloneStoryAgent.js';
 export { Planner } from './Planner.js';
 export type { PlanResult, PlannerOptions } from './Planner.js';
 export {
+  reconcileProvidesRequires,
+  isClosureFailure,
+  describeClosureViolation,
+  summarizeClosureFailures,
+} from './contractReconcile.js';
+export type {
+  ClosureResult,
+  ClosureViolation,
+  ClosureViolationKind,
+} from './contractReconcile.js';
+export {
   planningPaths,
   planningRelPaths,
   epicId,

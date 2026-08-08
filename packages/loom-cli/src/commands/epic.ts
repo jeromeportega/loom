@@ -24,6 +24,9 @@ import {
   persistLedger,
   writeGrillingAuditRow,
   appendResolvedDecisionsAppendix,
+  isClosureFailure,
+  describeClosureViolation,
+  summarizeClosureFailures,
 } from '@loom-ai/core';
 import type { LLMClient } from '@loom-ai/core';
 import { recordIntakeClassification } from '../intake/recordIntakeClassification.js';
@@ -329,6 +332,29 @@ export async function runEpic(
     console.error(`  ${gate.verdict}`);
     console.error('  The plan was rejected and will not be offered for execution. Plan again with `loom weave`.\n');
     process.exit(1);
+  }
+
+  // Reconciliation gate (contract closure, epic-102). A story that `requires` an
+  // output no sibling `provides` — or requires from itself, or a requires-cycle —
+  // is a GUARANTEED runtime stall (the requiring story soft-skips every tick then
+  // is swept to `blocked`). Catch it at plan time and refuse the plan, mirroring
+  // the tech_notes gate. NOT overridable by --force (a dangling requires is a
+  // certain stall, not a quality judgment — like the tech_notes gate, force is
+  // brief-only). `unordered` violations are advisory: surfaced, non-fatal.
+  if (result.reconciliation) {
+    for (const w of result.reconciliation.violations) {
+      if (!isClosureFailure(w)) console.error(`  ⚠ ${describeClosureViolation(w)}`);
+    }
+    if (!result.reconciliation.ok) {
+      const reason = summarizeClosureFailures(result.reconciliation);
+      for (const epicId of result.epicIds) store.reject(epicId, reason);
+      console.error('\n  Reconciliation gate FAILED — the decomposition has unsatisfiable story dependencies.');
+      for (const v of result.reconciliation.violations) {
+        if (isClosureFailure(v)) console.error(`  ✗ ${describeClosureViolation(v)}`);
+      }
+      console.error('  The plan was rejected and will not be offered for execution. Fix the provides/requires wiring and plan again with `loom weave`.\n');
+      process.exit(1);
+    }
   }
 
   console.log('  Planning complete.\n');
