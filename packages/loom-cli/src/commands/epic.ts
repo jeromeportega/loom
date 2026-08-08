@@ -19,6 +19,11 @@ import {
   INTAKE_ROUTING,
   SHARED_CONTRACT,
   QA_PLANNING,
+  seedDecisionTree,
+  runGrillingInterview,
+  persistLedger,
+  writeGrillingAuditRow,
+  appendResolvedDecisionsAppendix,
 } from '@loom-ai/core';
 import type { LLMClient } from '@loom-ai/core';
 import { recordIntakeClassification } from '../intake/recordIntakeClassification.js';
@@ -235,6 +240,38 @@ export async function runEpic(
     audit: new AuditLog(db),
     epicId: reservedId,
   });
+
+  // ── Intake grilling gate (epic-101) ─────────────────────────────────────────
+  // Resolve ambiguity with the operator BEFORE the planning cascade, so a subtle
+  // wrong assumption is confirmed up front instead of silently cascading. Seeds
+  // the design tree from the BriefRefiner critique already computed above (no
+  // second critique engine). Interactive ONLY (TTY) and ONLY for epic-sized work;
+  // every other path — non-TTY/CI, story-sized, or classification failure
+  // (routing === undefined) — skips it and runs byte-identically to the pre-gate
+  // baseline. This hook lives only on the weave/epic path; the four non-weave
+  // planner.run callers (propose, scope-opportunity, web propose, eval bench) are
+  // untouched.
+  if (process.stdout.isTTY && routing?.size === 'epic') {
+    const decisions = seedDecisionTree(refinement);
+    const grilling = await runGrillingInterview(decisions, {
+      llm,
+      model: modelFor(policy, 'planning'),
+      repoRoot: projectRoot,
+    });
+    await persistLedger(reservedId, grilling.resolved, loomDir);
+    writeGrillingAuditRow(
+      new AuditLog(db),
+      reservedId,
+      grilling.tokenCost,
+      grilling.outcome,
+      grilling.resolved.length,
+    );
+    if (grilling.outcome === 'cancelled') {
+      store.reject(reservedId, 'grilling gate: cancelled');
+      process.exit(1);
+    }
+    brief = appendResolvedDecisionsAppendix(brief, grilling.resolved);
+  }
 
   console.log('\n  Planning your epic — Analyst → PM → Architect.');
   console.log(`  Backend: ${policy.agents.llm_backend}. Runs headless, takes a few minutes.\n`);
