@@ -261,14 +261,29 @@ export async function runEpic(
       model: modelFor(policy, 'planning'),
       repoRoot: projectRoot,
     });
-    await persistLedger(reservedId, grilling.resolved, loomDir);
-    writeGrillingAuditRow(
-      new AuditLog(db),
-      reservedId,
-      grilling.tokenCost,
-      grilling.outcome,
-      grilling.resolved.length,
-    );
+    // Persist the ledger + audit row best-effort, each in its OWN fail-open block.
+    // A failure in one sink must never prevent the other (so an fs error writing
+    // the ledger does not skip the DB audit row, honoring the all-actions-logged
+    // invariant when the DB is healthy), nor the cancel-path reject below — a
+    // throw there would orphan the reserved epic in 'planning', the exact
+    // stuck-state class the cancel path exists to avoid — nor the brief append.
+    // Fail-open, mirroring the planner's attribution pattern (ADR-006).
+    try {
+      await persistLedger(reservedId, grilling.resolved, loomDir);
+    } catch (err) {
+      console.error('  (grilling ledger persistence failed; continuing):', (err as Error).message);
+    }
+    try {
+      writeGrillingAuditRow(
+        new AuditLog(db),
+        reservedId,
+        grilling.tokenCost,
+        grilling.outcome,
+        grilling.resolved.length,
+      );
+    } catch (err) {
+      console.error('  (grilling audit-row persistence failed; continuing):', (err as Error).message);
+    }
     if (grilling.outcome === 'cancelled') {
       store.reject(reservedId, 'grilling gate: cancelled');
       process.exit(1);
